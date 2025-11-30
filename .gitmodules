@@ -1,0 +1,10 @@
+[submodule "src/ThirdParty/imgui"]
+	path = src/ThirdParty/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+[submodule "src/ThirdParty/glfw"]
+	path = src/ThirdParty/glfw
+	url = https://github.com/TheCherno/glfw.git
+[submodule "src/ThirdParty/ImGuizmo"]
+	path = src/ThirdParty/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git
