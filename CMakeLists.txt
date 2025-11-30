@@ -67,17 +67,32 @@ target_link_libraries(core PUBLIC glad glm imgui imguizmo)
 
 # ==================== Executable ====================
 add_executable(main src/main.cpp)
-target_link_libraries(main PRIVATE core glfw OpenGL::GL)
 
-# Optional: remove console window on Windows (uncomment if you want GUI-only app)
-#if(WIN32)
-#    set_target_properties(main PROPERTIES WIN32_EXECUTABLE TRUE)
-#endif()
-
-# Linux needs these extra libs
+# Link order matters on Linux
 if(NOT WIN32)
-    target_link_libraries(main PRIVATE dl pthread X11)
+    find_package(X11 REQUIRED)
+    target_include_directories(main PRIVATE ${X11_INCLUDE_DIR})
+
+    target_link_libraries(main PRIVATE
+        core          # your code + static libs
+        imgui         # ImGui
+        imguizmo      # ImGuizmo
+        glad          # GLAD
+        glm           # header-only, harmless
+        glfw          # GLFW depends on X11
+        OpenGL::GL
+        pthread
+        dl
+        ${X11_LIBRARIES}  # Must come AFTER libraries that need X11
+        Xrandr
+        Xi
+        Xinerama
+        Xcursor
+    )
+else()
+    target_link_libraries(main PRIVATE core glfw OpenGL::GL)
 endif()
+
 
 # ==================== Copy Resources folder after build ====================
 add_custom_command(TARGET main POST_BUILD
