@@ -2556,42 +2556,70 @@ private:
     void renderHierarchyPanel() {
         ImGui::Begin("Hierarchy", &showHierarchy);
 
+        // -------------------------------
+        // TOP TOOLBAR (row with + button)
+        // -------------------------------
+        {
+            // Child helps align things more cleanly
+            ImGui::BeginChild("HierarchyToolbar", ImVec2(0, 28), false);
+
+            // "+" button top-left
+            if (ImGui::Button("+", ImVec2(24, 24))) {
+                ImGui::OpenPopup("CreateMenu");
+            }
+
+            // Popup create menu
+            if (ImGui::BeginPopup("CreateMenu")) {
+                if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
+                if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
+                if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+                ImGui::EndPopup();
+            }
+
+            ImGui::EndChild();
+        }
+
+        ImGui::Separator();
+
+        // -------------------------------
+        // SEARCH BAR
+        // -------------------------------
         static char searchBuffer[128] = "";
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##search", "Search objects...", searchBuffer, sizeof(searchBuffer));
 
         ImGui::Separator();
 
-        if (ImGui::Button("+ Cube")) addObject(ObjectType::Cube, "Cube");
-        ImGui::SameLine();
-        if (ImGui::Button("+ Sphere")) addObject(ObjectType::Sphere, "Sphere");
-        ImGui::SameLine();
-        if (ImGui::Button("+ Capsule")) addObject(ObjectType::Capsule, "Capsule");
-
-        ImGui::Separator();
-
+        // -------------------------------
+        // HIERARCHY TREE
+        // -------------------------------
         ImGui::BeginChild("SceneTree", ImVec2(0, 0), false);
 
         std::string filter = searchBuffer;
         std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
 
         for (size_t i = 0; i < sceneObjects.size(); i++) {
-            if (sceneObjects[i].parentId != -1) continue;
+            if (sceneObjects[i].parentId != -1)
+                continue;
 
             renderObjectNode(sceneObjects[i], filter);
         }
 
-        ImGui::EndChild();
-
-        if (ImGui::BeginPopupContextWindow("HierarchyContextMenu", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight)) {
+        // Right-click empty space
+        if (ImGui::BeginPopupContextWindow("HierarchyBackground",
+                ImGuiPopupFlags_MouseButtonRight |
+                ImGuiPopupFlags_NoOpenOverItems))
+        {
             if (ImGui::BeginMenu("Create")) {
-                if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
-                if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");
+                if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
+                if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
                 if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
                 ImGui::EndMenu();
             }
             ImGui::EndPopup();
         }
+
+        ImGui::EndChild();
 
         ImGui::End();
     }
