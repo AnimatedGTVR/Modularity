@@ -14,7 +14,7 @@ GLFWwindow* Window::makeWindow() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Modularity", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();

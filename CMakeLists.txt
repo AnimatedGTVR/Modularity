@@ -33,12 +33,12 @@ target_include_directories(glad PUBLIC src/ThirdParty/glad)
 add_library(glm INTERFACE)
 target_include_directories(glm INTERFACE src/ThirdParty/glm)
 
-# ImGuizmo ←←← THIS WAS THE BUG
+# ImGuizmo
 add_library(imguizmo STATIC
     src/ThirdParty/ImGuizmo/ImGuizmo.cpp
 )
 target_include_directories(imguizmo PUBLIC src/ThirdParty/ImGuizmo)
-target_link_libraries(imguizmo PUBLIC imgui glm)   # ImGuizmo uses ImGui + GLM
+target_link_libraries(imguizmo PUBLIC imgui glm)
 
 # Dear ImGui
 set(IMGUI_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/imgui)
@@ -54,49 +54,73 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(imgui PRIVATE glfw)
 
-# ==================== Your code ====================
-file(GLOB_RECURSE PROJECT_SOURCES
-    src/*.cpp
-    src/*.c
+# ==================== Your code (separated files) ====================
+set(ENGINE_SOURCES
+    src/Camera.cpp
+    src/Rendering.cpp
+    src/ProjectManager.cpp
+    src/EditorUI.cpp
+    src/Engine.cpp
+    src/EnginePanels.cpp
+    src/Shaders/Shader_Manager/Shader.cpp
+    src/Skybox/Skybox.cpp
+    src/Textures/Texture.cpp
+    src/WinView/Window.cpp
 )
-list(FILTER PROJECT_SOURCES EXCLUDE REGEX "src/ThirdParty/|src/main\\.cpp")
 
-add_library(core STATIC ${PROJECT_SOURCES})
-target_include_directories(core PUBLIC include)
+set(ENGINE_HEADERS
+    src/Common.h
+    src/SceneObject.h
+    src/Camera.h
+    src/Rendering.h
+    src/ProjectManager.h
+    src/EditorUI.h
+    src/Engine.h
+)
+
+add_library(core STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "Disable Assimp warnings as errors" FORCE)
+add_subdirectory(src/ThirdParty/assimp EXCLUDE_FROM_ALL)
+target_link_libraries(core PUBLIC assimp)
+target_include_directories(core PUBLIC 
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
+)
 target_link_libraries(core PUBLIC glad glm imgui imguizmo)
 
+
 # ==================== Executable ====================
-add_executable(main src/main.cpp)
+add_executable(Modularity src/main.cpp)
 
 # Link order matters on Linux
 if(NOT WIN32)
     find_package(X11 REQUIRED)
-    target_include_directories(main PRIVATE ${X11_INCLUDE_DIR})
+    target_include_directories(Modularity PRIVATE ${X11_INCLUDE_DIR})
 
-    target_link_libraries(main PRIVATE
-        core          # your code + static libs
-        imgui         # ImGui
-        imguizmo      # ImGuizmo
-        glad          # GLAD
-        glm           # header-only, harmless
-        glfw          # GLFW depends on X11
+    target_link_libraries(Modularity PRIVATE
+        core
+        imgui
+        imguizmo
+        glad
+        glm
+        glfw
         OpenGL::GL
         pthread
         dl
-        ${X11_LIBRARIES}  # Must come AFTER libraries that need X11
+        ${X11_LIBRARIES}
         Xrandr
         Xi
         Xinerama
         Xcursor
     )
 else()
-    target_link_libraries(main PRIVATE core glfw OpenGL::GL)
+    target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
 endif()
 
-
 # ==================== Copy Resources folder after build ====================
-add_custom_command(TARGET main POST_BUILD
+add_custom_command(TARGET Modularity POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/Resources
-        $<TARGET_FILE_DIR:main>/Resources
+        $<TARGET_FILE_DIR:Modularity>/Resources
 )

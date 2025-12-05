@@ -8,3 +8,6 @@
 [submodule "src/ThirdParty/ImGuizmo"]
 	path = src/ThirdParty/ImGuizmo
 	url = https://github.com/CedricGuillemet/ImGuizmo.git
+[submodule "src/ThirdParty/assimp"]
+	path = src/ThirdParty/assimp
+	url = https://github.com/assimp/assimp.git
