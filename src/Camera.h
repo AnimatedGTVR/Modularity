@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Common.h"
-#include <GLFW/glfw3.h>
+#include "ThirdParty/glfw/include/GLFW/glfw3.h"
 
 class Camera {
 public:

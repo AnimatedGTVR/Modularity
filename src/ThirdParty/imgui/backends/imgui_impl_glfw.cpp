@@ -122,7 +122,7 @@
 #else
 #define GLFW_HAS_X11_OR_WAYLAND     0
 #endif
-#include <GLFW/glfw3.h>
+#include "../../glfw/include/GLFW/glfw3.h"
 #ifdef _WIN32
 #undef APIENTRY
 #ifndef GLFW_EXPOSE_NATIVE_WIN32    // for glfwGetWin32Window()

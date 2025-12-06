@@ -42,6 +42,7 @@ target_link_libraries(imguizmo PUBLIC imgui glm)
 
 # Dear ImGui
 set(IMGUI_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/imgui)
+
 add_library(imgui STATIC
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_demo.cpp
@@ -51,32 +52,27 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
-target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+
+target_include_directories(imgui PUBLIC
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${PROJECT_SOURCE_DIR}/src/ThirdParty/glfw/include    # <-- FIX
+)
+
 target_link_libraries(imgui PRIVATE glfw)
 
 # ==================== Your code (separated files) ====================
-set(ENGINE_SOURCES
-    src/Camera.cpp
-    src/Rendering.cpp
-    src/ProjectManager.cpp
-    src/EditorUI.cpp
-    src/Engine.cpp
-    src/EnginePanels.cpp
-    src/Shaders/Shader_Manager/Shader.cpp
-    src/Skybox/Skybox.cpp
-    src/Textures/Texture.cpp
-    src/WinView/Window.cpp
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
+    ${PROJECT_SOURCE_DIR}/src/*.cpp
 )
 
-set(ENGINE_HEADERS
-    src/Common.h
-    src/SceneObject.h
-    src/Camera.h
-    src/Rendering.h
-    src/ProjectManager.h
-    src/EditorUI.h
-    src/Engine.h
+file(GLOB_RECURSE ENGINE_HEADERS CONFIGURE_DEPENDS
+    ${PROJECT_SOURCE_DIR}/src/*.h
+    ${PROJECT_SOURCE_DIR}/src/*.hpp
 )
+
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
+list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 
 add_library(core STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "Disable Assimp warnings as errors" FORCE)

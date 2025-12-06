@@ -34,3 +34,4 @@ cd build
 cmake ..
 cmake --build . -- -j"$(nproc)"
 cp -r ../Resources .
+cp Resources/imgui.ini .

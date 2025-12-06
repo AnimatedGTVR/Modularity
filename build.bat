@@ -3,7 +3,7 @@ setlocal
 
 echo.
 echo ================================
-echo   Modularity - VS 2026 Build
+echo           Modularity
 echo ================================
 echo.
 
@@ -38,6 +38,7 @@ if errorlevel 1 (
 
 echo [INFO] Copying Resources...
 xcopy /e /i /y "..\Resources" "Resources\" >nul
+copy /Y Resources\imgui.ini .
 
 echo.
 echo =========================================
