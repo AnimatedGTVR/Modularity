@@ -35,4 +35,4 @@ cmake ..
 cmake --build . -- -j"$(nproc)"
 cp -r ../Resources .
 cp Resources/imgui.ini .
-ln -s build/compile_commands.json compile_commands.json
+ln -sf build/compile_commands.json compile_commands.json
