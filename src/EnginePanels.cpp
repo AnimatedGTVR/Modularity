@@ -1,4 +1,747 @@
 #include "Engine.h"
+#include "ModelLoader.h"
+#include <algorithm>
+
+#ifdef _WIN32
+#include <shlobj.h>
+#endif
+
+namespace FileIcons {
+    // Draw a folder icon
+    void DrawFolderIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float w = size;
+        float h = size * 0.75f;
+        float tabW = w * 0.4f;
+        float tabH = h * 0.15f;
+        
+        // Folder body
+        drawList->AddRectFilled(
+            ImVec2(pos.x, pos.y + tabH),
+            ImVec2(pos.x + w, pos.y + h),
+            color, 3.0f
+        );
+        // Folder tab
+        drawList->AddRectFilled(
+            ImVec2(pos.x, pos.y),
+            ImVec2(pos.x + tabW, pos.y + tabH + 2),
+            color, 2.0f
+        );
+    }
+    
+    // Draw a scene/document icon
+    void DrawSceneIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float w = size * 0.8f;
+        float h = size;
+        float cornerSize = w * 0.25f;
+        
+        // Main document body
+        ImVec2 p1 = ImVec2(pos.x, pos.y);
+        ImVec2 p2 = ImVec2(pos.x + w - cornerSize, pos.y);
+        ImVec2 p3 = ImVec2(pos.x + w, pos.y + cornerSize);
+        ImVec2 p4 = ImVec2(pos.x + w, pos.y + h);
+        ImVec2 p5 = ImVec2(pos.x, pos.y + h);
+        
+        drawList->AddQuadFilled(p1, ImVec2(pos.x + w - cornerSize, pos.y), ImVec2(pos.x + w - cornerSize, pos.y + h), p5, color);
+        drawList->AddTriangleFilled(p2, p3, ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), color);
+        drawList->AddRectFilled(ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), p4, color);
+        
+        // Corner fold
+        drawList->AddTriangleFilled(p2, ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), p3, 
+            IM_COL32(255, 255, 255, 60));
+        
+        // Scene icon indicator (play triangle)
+        float cx = pos.x + w * 0.5f;
+        float cy = pos.y + h * 0.55f;
+        float triSize = size * 0.25f;
+        drawList->AddTriangleFilled(
+            ImVec2(cx - triSize * 0.4f, cy - triSize * 0.5f),
+            ImVec2(cx - triSize * 0.4f, cy + triSize * 0.5f),
+            ImVec2(cx + triSize * 0.5f, cy),
+            IM_COL32(255, 255, 255, 180)
+        );
+    }
+    
+    // Draw a 3D model icon (cube wireframe)
+    void DrawModelIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float s = size * 0.8f;
+        float offset = size * 0.1f;
+        float depth = s * 0.3f;
+        
+        // Front face
+        ImVec2 f1 = ImVec2(pos.x + offset, pos.y + offset + depth);
+        ImVec2 f2 = ImVec2(pos.x + offset + s, pos.y + offset + depth);
+        ImVec2 f3 = ImVec2(pos.x + offset + s, pos.y + offset + s);
+        ImVec2 f4 = ImVec2(pos.x + offset, pos.y + offset + s);
+        
+        // Back face
+        ImVec2 b1 = ImVec2(f1.x + depth, f1.y - depth);
+        ImVec2 b2 = ImVec2(f2.x + depth, f2.y - depth);
+        ImVec2 b3 = ImVec2(f3.x + depth, f3.y - depth);
+        
+        // Fill front face
+        drawList->AddQuadFilled(f1, f2, f3, f4, color);
+        
+        // Fill top face
+        drawList->AddQuadFilled(f1, f2, b2, b1, IM_COL32(
+            (color & 0xFF) * 0.7f,
+            ((color >> 8) & 0xFF) * 0.7f,
+            ((color >> 16) & 0xFF) * 0.7f,
+            (color >> 24) & 0xFF
+        ));
+        
+        // Fill right face
+        drawList->AddQuadFilled(f2, b2, b3, f3, IM_COL32(
+            (color & 0xFF) * 0.5f,
+            ((color >> 8) & 0xFF) * 0.5f,
+            ((color >> 16) & 0xFF) * 0.5f,
+            (color >> 24) & 0xFF
+        ));
+        
+        // Edges
+        ImU32 edgeColor = IM_COL32(255, 255, 255, 100);
+        drawList->AddLine(f1, f2, edgeColor, 1.0f);
+        drawList->AddLine(f2, f3, edgeColor, 1.0f);
+        drawList->AddLine(f3, f4, edgeColor, 1.0f);
+        drawList->AddLine(f4, f1, edgeColor, 1.0f);
+        drawList->AddLine(f1, b1, edgeColor, 1.0f);
+        drawList->AddLine(f2, b2, edgeColor, 1.0f);
+        drawList->AddLine(b1, b2, edgeColor, 1.0f);
+        drawList->AddLine(f3, b3, edgeColor, 1.0f);
+        drawList->AddLine(b2, b3, edgeColor, 1.0f);
+    }
+    
+    // Draw a texture/image icon
+    void DrawTextureIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float padding = size * 0.1f;
+        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
+        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
+        
+        // Frame
+        drawList->AddRectFilled(tl, br, color, 2.0f);
+        
+        // Mountain landscape
+        float midY = pos.y + size * 0.6f;
+        drawList->AddTriangleFilled(
+            ImVec2(pos.x + size * 0.2f, br.y - padding),
+            ImVec2(pos.x + size * 0.45f, midY),
+            ImVec2(pos.x + size * 0.7f, br.y - padding),
+            IM_COL32(60, 60, 60, 255)
+        );
+        drawList->AddTriangleFilled(
+            ImVec2(pos.x + size * 0.5f, br.y - padding),
+            ImVec2(pos.x + size * 0.7f, midY + size * 0.1f),
+            ImVec2(pos.x + size * 0.9f, br.y - padding),
+            IM_COL32(80, 80, 80, 255)
+        );
+        
+        // Sun
+        float sunR = size * 0.1f;
+        drawList->AddCircleFilled(ImVec2(pos.x + size * 0.75f, pos.y + size * 0.35f), sunR, IM_COL32(255, 220, 100, 255));
+    }
+    
+    // Draw a shader icon (code brackets)
+    void DrawShaderIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float padding = size * 0.15f;
+        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
+        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
+        
+        // Background
+        drawList->AddRectFilled(tl, br, color, 3.0f);
+        
+        // Code lines
+        ImU32 lineColor = IM_COL32(255, 255, 255, 180);
+        float lineY = pos.y + size * 0.35f;
+        float lineH = size * 0.08f;
+        float lineSpacing = size * 0.15f;
+        
+        drawList->AddRectFilled(ImVec2(pos.x + size * 0.25f, lineY), ImVec2(pos.x + size * 0.7f, lineY + lineH), lineColor);
+        lineY += lineSpacing;
+        drawList->AddRectFilled(ImVec2(pos.x + size * 0.3f, lineY), ImVec2(pos.x + size * 0.8f, lineY + lineH), lineColor);
+        lineY += lineSpacing;
+        drawList->AddRectFilled(ImVec2(pos.x + size * 0.25f, lineY), ImVec2(pos.x + size * 0.55f, lineY + lineH), lineColor);
+    }
+    
+    // Draw an audio icon (speaker/waveform)
+    void DrawAudioIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float padding = size * 0.15f;
+        
+        // Speaker body
+        float spkW = size * 0.25f;
+        float spkH = size * 0.3f;
+        float cx = pos.x + size * 0.35f;
+        float cy = pos.y + size * 0.5f;
+        
+        drawList->AddRectFilled(
+            ImVec2(cx - spkW * 0.5f, cy - spkH * 0.5f),
+            ImVec2(cx + spkW * 0.5f, cy + spkH * 0.5f),
+            color
+        );
+        
+        // Speaker cone
+        drawList->AddTriangleFilled(
+            ImVec2(cx + spkW * 0.5f, cy - spkH * 0.5f),
+            ImVec2(cx + spkW * 0.5f, cy + spkH * 0.5f),
+            ImVec2(cx + spkW * 1.2f, cy + spkH),
+            color
+        );
+        drawList->AddTriangleFilled(
+            ImVec2(cx + spkW * 0.5f, cy - spkH * 0.5f),
+            ImVec2(cx + spkW * 1.2f, cy - spkH),
+            ImVec2(cx + spkW * 1.2f, cy + spkH),
+            color
+        );
+        
+        // Sound waves
+        ImU32 waveColor = IM_COL32(255, 255, 255, 150);
+        float waveX = cx + spkW * 1.5f;
+        drawList->AddBezierQuadratic(
+            ImVec2(waveX, cy - size * 0.15f),
+            ImVec2(waveX + size * 0.1f, cy),
+            ImVec2(waveX, cy + size * 0.15f),
+            waveColor, 2.0f
+        );
+        waveX += size * 0.12f;
+        drawList->AddBezierQuadratic(
+            ImVec2(waveX, cy - size * 0.22f),
+            ImVec2(waveX + size * 0.12f, cy),
+            ImVec2(waveX, cy + size * 0.22f),
+            waveColor, 2.0f
+        );
+    }
+    
+    // Draw a generic file icon
+    void DrawFileIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float w = size * 0.7f;
+        float h = size * 0.9f;
+        float offsetX = (size - w) * 0.5f;
+        float offsetY = (size - h) * 0.5f;
+        float cornerSize = w * 0.25f;
+        
+        ImVec2 p1 = ImVec2(pos.x + offsetX, pos.y + offsetY);
+        ImVec2 p2 = ImVec2(pos.x + offsetX + w - cornerSize, pos.y + offsetY);
+        ImVec2 p3 = ImVec2(pos.x + offsetX + w, pos.y + offsetY + cornerSize);
+        ImVec2 p4 = ImVec2(pos.x + offsetX + w, pos.y + offsetY + h);
+        ImVec2 p5 = ImVec2(pos.x + offsetX, pos.y + offsetY + h);
+        
+        // Main body
+        drawList->AddQuadFilled(p1, p2, ImVec2(p2.x, p4.y), p5, color);
+        drawList->AddTriangleFilled(p2, p3, ImVec2(p2.x, p3.y), color);
+        drawList->AddRectFilled(ImVec2(p2.x, p3.y), p4, color);
+        
+        // Corner fold
+        drawList->AddTriangleFilled(p2, ImVec2(p2.x, p3.y), p3, IM_COL32(255, 255, 255, 50));
+    }
+    
+    // Draw a script/code icon
+    void DrawScriptIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float padding = size * 0.12f;
+        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
+        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
+        
+        // Background
+        drawList->AddRectFilled(tl, br, color, 3.0f);
+        
+        // Brackets < >
+        ImU32 bracketColor = IM_COL32(255, 255, 255, 200);
+        float cx = pos.x + size * 0.5f;
+        float cy = pos.y + size * 0.5f;
+        float bSize = size * 0.2f;
+        
+        // Left bracket <
+        drawList->AddLine(ImVec2(cx - bSize * 0.5f, cy - bSize), ImVec2(cx - bSize * 1.5f, cy), bracketColor, 2.5f);
+        drawList->AddLine(ImVec2(cx - bSize * 1.5f, cy), ImVec2(cx - bSize * 0.5f, cy + bSize), bracketColor, 2.5f);
+        
+        // Right bracket >
+        drawList->AddLine(ImVec2(cx + bSize * 0.5f, cy - bSize), ImVec2(cx + bSize * 1.5f, cy), bracketColor, 2.5f);
+        drawList->AddLine(ImVec2(cx + bSize * 1.5f, cy), ImVec2(cx + bSize * 0.5f, cy + bSize), bracketColor, 2.5f);
+    }
+    
+    // Draw a text icon
+    void DrawTextIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        DrawFileIcon(drawList, pos, size, color);
+        
+        // Text lines
+        ImU32 lineColor = IM_COL32(255, 255, 255, 150);
+        float startX = pos.x + size * 0.25f;
+        float endX = pos.x + size * 0.65f;
+        float lineY = pos.y + size * 0.4f;
+        float lineH = size * 0.06f;
+        float spacing = size * 0.12f;
+        
+        for (int i = 0; i < 3; i++) {
+            float w = (i == 1) ? (endX - startX) * 0.7f : (endX - startX);
+            drawList->AddRectFilled(ImVec2(startX, lineY), ImVec2(startX + w, lineY + lineH), lineColor);
+            lineY += spacing;
+        }
+    }
+    
+    void DrawIcon(ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, ImU32 color) {
+        switch (category) {
+            case FileCategory::Folder:  DrawFolderIcon(drawList, pos, size, color); break;
+            case FileCategory::Scene:   DrawSceneIcon(drawList, pos, size, color); break;
+            case FileCategory::Model:   DrawModelIcon(drawList, pos, size, color); break;
+            case FileCategory::Material:DrawShaderIcon(drawList, pos, size, color); break;
+            case FileCategory::Texture: DrawTextureIcon(drawList, pos, size, color); break;
+            case FileCategory::Shader:  DrawShaderIcon(drawList, pos, size, color); break;
+            case FileCategory::Script:  DrawScriptIcon(drawList, pos, size, color); break;
+            case FileCategory::Audio:   DrawAudioIcon(drawList, pos, size, color); break;
+            case FileCategory::Text:    DrawTextIcon(drawList, pos, size, color); break;
+            default:                    DrawFileIcon(drawList, pos, size, color); break;
+        }
+    }
+}
+
+void Engine::renderFileBrowserPanel() {
+    ImGui::Begin("Project", &showFileBrowser);
+
+    if (fileBrowser.needsRefresh) {
+        fileBrowser.refresh();
+    }
+    
+    // Get colors for categories
+    auto getCategoryColor = [](FileCategory cat) -> ImU32 {
+        switch (cat) {
+            case FileCategory::Folder:  return IM_COL32(255, 200, 80, 255);   // Yellow/orange
+            case FileCategory::Scene:   return IM_COL32(100, 180, 255, 255);  // Blue
+            case FileCategory::Model:   return IM_COL32(100, 220, 140, 255);  // Green
+            case FileCategory::Material:return IM_COL32(220, 200, 120, 255);  // Gold
+            case FileCategory::Texture: return IM_COL32(220, 130, 220, 255);  // Purple/pink
+            case FileCategory::Shader:  return IM_COL32(255, 140, 90, 255);   // Orange
+            case FileCategory::Script:  return IM_COL32(130, 200, 255, 255);  // Light blue
+            case FileCategory::Audio:   return IM_COL32(255, 180, 100, 255);  // Warm orange
+            case FileCategory::Text:    return IM_COL32(180, 180, 180, 255);  // Gray
+            default:                    return IM_COL32(150, 150, 150, 255);  // Dark gray
+        }
+    };
+    
+    // === TOOLBAR ===
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
+    
+    // Navigation buttons
+    bool canGoBack = fileBrowser.historyIndex > 0;
+    bool canGoForward = fileBrowser.historyIndex < (int)fileBrowser.pathHistory.size() - 1;
+    bool canGoUp = fileBrowser.currentPath != fileBrowser.projectRoot && 
+                   fileBrowser.currentPath.has_parent_path();
+    
+    ImGui::BeginDisabled(!canGoBack);
+    if (ImGui::Button("<##Back", ImVec2(24, 0))) {
+        fileBrowser.navigateBack();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Back");
+    }
+    
+    ImGui::SameLine();
+    
+    ImGui::BeginDisabled(!canGoForward);
+    if (ImGui::Button(">##Forward", ImVec2(24, 0))) {
+        fileBrowser.navigateForward();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Forward");
+    }
+    
+    ImGui::SameLine();
+    
+    ImGui::BeginDisabled(!canGoUp);
+    if (ImGui::Button("^##Up", ImVec2(24, 0))) {
+        fileBrowser.navigateUp();
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Up one folder");
+    }
+    
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+    
+    // Breadcrumb path
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+    
+    fs::path relativePath = fs::relative(fileBrowser.currentPath, fileBrowser.projectRoot);
+    std::vector<fs::path> pathParts;
+    fs::path accumulated = fileBrowser.projectRoot;
+    
+    pathParts.push_back(fileBrowser.projectRoot);
+    for (const auto& part : relativePath) {
+        if (part != ".") {
+            accumulated /= part;
+            pathParts.push_back(accumulated);
+        }
+    }
+    
+    for (size_t i = 0; i < pathParts.size(); i++) {
+        std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
+        if (ImGui::SmallButton(name.c_str())) {
+            fileBrowser.navigateTo(pathParts[i]);
+        }
+        if (i < pathParts.size() - 1) {
+            ImGui::SameLine(0, 2);
+            ImGui::TextDisabled("/");
+            ImGui::SameLine(0, 2);
+        }
+    }
+    
+    ImGui::PopStyleColor(2);
+    
+    ImGui::PopStyleVar();
+    
+    // === SECOND ROW: Search, Scale Slider, View Mode ===
+    ImGui::Spacing();
+    
+    // Search box
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::InputTextWithHint("##Search", "Search...", fileBrowserSearch, sizeof(fileBrowserSearch))) {
+        fileBrowser.searchFilter = fileBrowserSearch;
+        fileBrowser.needsRefresh = true;
+    }
+    
+    ImGui::SameLine();
+    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+    ImGui::SameLine();
+    
+    bool isGridMode = fileBrowser.viewMode == FileBrowserViewMode::Grid;
+    if (isGridMode) {
+        ImGui::Text("Size:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100);
+        ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.5f, 2.0f, "%.1fx");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Icon Size: %.1fx", fileBrowserIconScale);
+        }
+        ImGui::SameLine();
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+        ImGui::SameLine();
+    }
+    
+    // View mode toggle
+    if (ImGui::Button(isGridMode ? "Grid" : "List", ImVec2(50, 0))) {
+        fileBrowser.viewMode = isGridMode ? FileBrowserViewMode::List : FileBrowserViewMode::Grid;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
+    }
+    
+    ImGui::SameLine();
+    
+    if (ImGui::Button("Refresh", ImVec2(60, 0))) {
+        fileBrowser.needsRefresh = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("New Mat", ImVec2(70, 0))) {
+        fs::path target = fileBrowser.currentPath / "NewMaterial.mat";
+        int counter = 1;
+        while (fs::exists(target)) {
+            target = fileBrowser.currentPath / ("NewMaterial" + std::to_string(counter++) + ".mat");
+        }
+        SceneObject temp("Material", ObjectType::Cube, -1);
+        temp.materialPath = target.string();
+        saveMaterialToFile(temp);
+        fileBrowser.needsRefresh = true;
+    }
+    
+    ImGui::Separator();
+    
+    // === FILE CONTENT AREA ===
+    ImGui::BeginChild("FileContent", ImVec2(0, 0), false);
+    
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    
+    if (fileBrowser.viewMode == FileBrowserViewMode::Grid) {
+        float baseIconSize = 64.0f;
+        float iconSize = baseIconSize * fileBrowserIconScale;
+        float padding = 8.0f * fileBrowserIconScale;
+        float textHeight = 32.0f;  // Space for filename text
+        float cellWidth = iconSize + padding * 2;
+        float cellHeight = iconSize + padding * 2 + textHeight;
+        
+        float windowWidth = ImGui::GetContentRegionAvail().x;
+        int columns = std::max(1, (int)((windowWidth + padding) / (cellWidth + padding)));
+        
+        // Use a table for consistent grid layout
+        if (ImGui::BeginTable("FileGrid", columns, ImGuiTableFlags_NoPadInnerX)) {
+            for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
+                const auto& entry = fileBrowser.entries[i];
+                std::string filename = entry.path().filename().string();
+                FileCategory category = fileBrowser.getFileCategory(entry);
+                bool isSelected = fileBrowser.selectedFile == entry.path();
+                
+                ImGui::TableNextColumn();
+                ImGui::PushID(i);
+                
+                // Cell content area
+                ImVec2 cellStart = ImGui::GetCursorScreenPos();
+                ImVec2 cellEnd(cellStart.x + cellWidth, cellStart.y + cellHeight);
+                
+                // Invisible button for the entire cell
+                if (ImGui::InvisibleButton("##cell", ImVec2(cellWidth, cellHeight))) {
+                    fileBrowser.selectedFile = entry.path();
+                }
+                bool hovered = ImGui::IsItemHovered();
+                bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(0);
+                
+                // Draw background
+                ImU32 bgColor = isSelected ? IM_COL32(70, 110, 160, 200) :
+                               (hovered ? IM_COL32(60, 65, 75, 180) : IM_COL32(0, 0, 0, 0));
+                if (bgColor != IM_COL32(0, 0, 0, 0)) {
+                    drawList->AddRectFilled(cellStart, cellEnd, bgColor, 6.0f);
+                }
+                
+                // Draw border on selection
+                if (isSelected) {
+                    drawList->AddRect(cellStart, cellEnd, IM_COL32(100, 150, 220, 255), 6.0f, 0, 2.0f);
+                }
+                
+                // Draw icon centered in cell
+                ImVec2 iconPos(
+                    cellStart.x + (cellWidth - iconSize) * 0.5f,
+                    cellStart.y + padding
+                );
+                FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category));
+                
+                // Draw filename below icon (centered, with wrapping)
+                std::string displayName = filename;
+                float maxTextWidth = cellWidth - 4;
+                
+                // Truncate if too long
+                ImVec2 textSize = ImGui::CalcTextSize(displayName.c_str());
+                if (textSize.x > maxTextWidth) {
+                    while (displayName.length() > 3) {
+                        displayName.pop_back();
+                        if (ImGui::CalcTextSize((displayName + "...").c_str()).x <= maxTextWidth) {
+                            break;
+                        }
+                    }
+                    displayName += "...";
+                    textSize = ImGui::CalcTextSize(displayName.c_str());
+                }
+                
+                ImVec2 textPos(
+                    cellStart.x + (cellWidth - textSize.x) * 0.5f,
+                    cellStart.y + padding + iconSize + 4
+                );
+                
+                // Text with subtle shadow for readability
+                drawList->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 100), displayName.c_str());
+                drawList->AddText(textPos, IM_COL32(230, 230, 230, 255), displayName.c_str());
+                
+                // Handle double click
+                if (doubleClicked) {
+                    if (entry.is_directory()) {
+                        fileBrowser.navigateTo(entry.path());
+                    } else if (fileBrowser.isModelFile(entry)) {
+                        bool isObj = fileBrowser.isOBJFile(entry);
+                        std::string defaultName = entry.path().stem().string();
+                        if (isObj) {
+                            pendingOBJPath = entry.path().string();
+                            strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
+                            showImportOBJDialog = true;
+                        } else {
+                            pendingModelPath = entry.path().string();
+                            strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
+                            showImportModelDialog = true;
+                        }
+                    } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                        if (SceneObject* sel = getSelectedObject()) {
+                            sel->materialPath = entry.path().string();
+                            loadMaterialFromFile(*sel);
+                        }
+                    } else if (fileBrowser.isSceneFile(entry)) {
+                        std::string sceneName = entry.path().stem().string();
+                        loadScene(sceneName);
+                        logToConsole("Loaded scene: " + sceneName);
+                    }
+                }
+                
+                // Context menu
+                if (ImGui::BeginPopupContextItem("FileContextMenu")) {
+                    if (ImGui::MenuItem("Open")) {
+                        if (entry.is_directory()) {
+                            fileBrowser.navigateTo(entry.path());
+                        } else if (fileBrowser.isSceneFile(entry)) {
+                            std::string sceneName = entry.path().stem().string();
+                            loadScene(sceneName);
+                        }
+                    }
+                    if (fileBrowser.isModelFile(entry)) {
+                        bool isObj = fileBrowser.isOBJFile(entry);
+                        if (ImGui::MenuItem("Import to Scene")) {
+                            std::string defaultName = entry.path().stem().string();
+                            if (isObj) {
+                                pendingOBJPath = entry.path().string();
+                                strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
+                                showImportOBJDialog = true;
+                            } else {
+                                pendingModelPath = entry.path().string();
+                                strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
+                                showImportModelDialog = true;
+                            }
+                        }
+                        if (ImGui::MenuItem("Quick Import")) {
+                            if (isObj) {
+                                importOBJToScene(entry.path().string(), "");
+                            } else {
+                                importModelToScene(entry.path().string(), "");
+                            }
+                        }
+                    }
+                    if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                        if (ImGui::MenuItem("Apply to Selected")) {
+                            if (SceneObject* sel = getSelectedObject()) {
+                                sel->materialPath = entry.path().string();
+                                loadMaterialFromFile(*sel);
+                            }
+                        }
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Show in Explorer")) {
+                        #ifdef _WIN32
+                        std::string cmd = "explorer \"" + entry.path().parent_path().string() + "\"";
+                        system(cmd.c_str());
+                        #elif __linux__
+                        std::string cmd = "xdg-open \"" + entry.path().parent_path().string() + "\"";
+                        system(cmd.c_str());
+                        #endif
+                    }
+                    ImGui::EndPopup();
+                }
+                
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        
+    } else {
+        // List View
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));
+        
+        for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
+            const auto& entry = fileBrowser.entries[i];
+            std::string filename = entry.path().filename().string();
+            FileCategory category = fileBrowser.getFileCategory(entry);
+            bool isSelected = fileBrowser.selectedFile == entry.path();
+            
+            ImGui::PushID(i);
+            
+            // Selectable row
+            if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 20))) {
+                fileBrowser.selectedFile = entry.path();
+                
+                if (ImGui::IsMouseDoubleClicked(0)) {
+                    if (entry.is_directory()) {
+                        fileBrowser.navigateTo(entry.path());
+                    } else if (fileBrowser.isModelFile(entry)) {
+                        bool isObj = fileBrowser.isOBJFile(entry);
+                        std::string defaultName = entry.path().stem().string();
+                        if (isObj) {
+                            pendingOBJPath = entry.path().string();
+                            strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
+                            showImportOBJDialog = true;
+                        } else {
+                            pendingModelPath = entry.path().string();
+                            strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
+                            showImportModelDialog = true;
+                        }
+                    } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                        if (SceneObject* sel = getSelectedObject()) {
+                            sel->materialPath = entry.path().string();
+                            loadMaterialFromFile(*sel);
+                        }
+                    } else if (fileBrowser.isSceneFile(entry)) {
+                        std::string sceneName = entry.path().stem().string();
+                        loadScene(sceneName);
+                        logToConsole("Loaded scene: " + sceneName);
+                    }
+                }
+            }
+            
+            // Context menu
+            if (ImGui::BeginPopupContextItem("FileContextMenu")) {
+                if (ImGui::MenuItem("Open")) {
+                    if (entry.is_directory()) {
+                        fileBrowser.navigateTo(entry.path());
+                    } else if (fileBrowser.isSceneFile(entry)) {
+                        std::string sceneName = entry.path().stem().string();
+                        loadScene(sceneName);
+                    }
+                }
+                if (fileBrowser.isModelFile(entry)) {
+                    bool isObj = fileBrowser.isOBJFile(entry);
+                    if (ImGui::MenuItem("Import to Scene")) {
+                        std::string defaultName = entry.path().stem().string();
+                        if (isObj) {
+                            pendingOBJPath = entry.path().string();
+                            strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
+                            showImportOBJDialog = true;
+                        } else {
+                            pendingModelPath = entry.path().string();
+                            strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
+                            showImportModelDialog = true;
+                        }
+                    }
+                    if (ImGui::MenuItem("Quick Import")) {
+                        if (isObj) {
+                            importOBJToScene(entry.path().string(), "");
+                        } else {
+                            importModelToScene(entry.path().string(), "");
+                        }
+                    }
+                }
+                if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                    if (ImGui::MenuItem("Apply to Selected")) {
+                        if (SceneObject* sel = getSelectedObject()) {
+                            sel->materialPath = entry.path().string();
+                            loadMaterialFromFile(*sel);
+                        }
+                    }
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Show in Explorer")) {
+                    #ifdef _WIN32
+                    std::string cmd = "explorer \"" + entry.path().parent_path().string() + "\"";
+                    system(cmd.c_str());
+                    #elif __linux__
+                    std::string cmd = "xdg-open \"" + entry.path().parent_path().string() + "\"";
+                    system(cmd.c_str());
+                    #endif
+                }
+                ImGui::EndPopup();
+            }
+            
+            // Draw icon inline
+            ImGui::SameLine(4);
+            ImVec2 iconPos = ImGui::GetCursorScreenPos();
+            iconPos.y -= 2;
+            FileIcons::DrawIcon(drawList, category, iconPos, 16, getCategoryColor(category));
+            
+            ImGui::SameLine(26);
+            
+            // Color-coded filename
+            ImVec4 textColor;
+            switch (category) {
+                case FileCategory::Folder:  textColor = ImVec4(1.0f, 0.85f, 0.4f, 1.0f); break;
+                case FileCategory::Scene:   textColor = ImVec4(0.5f, 0.75f, 1.0f, 1.0f); break;
+                case FileCategory::Model:   textColor = ImVec4(0.5f, 0.9f, 0.6f, 1.0f); break;
+                case FileCategory::Material:textColor = ImVec4(0.95f, 0.8f, 0.45f, 1.0f); break;
+                case FileCategory::Texture: textColor = ImVec4(0.9f, 0.6f, 0.9f, 1.0f); break;
+                default:                    textColor = ImVec4(0.85f, 0.85f, 0.85f, 1.0f); break;
+            }
+            ImGui::TextColored(textColor, "%s", filename.c_str());
+            
+            ImGui::PopID();
+        }
+        
+        ImGui::PopStyleVar();
+    }
+    
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
@@ -87,91 +830,109 @@ void Engine::renderLauncher() {
         {
             #ifdef _WIN32
             system("start https://github.com");
-            #elif __APPLE__
-            system("open https://github.com");
             #else
-            system("xdg-open https://github.com");
+            system("xdg-open https://github.com &");
             #endif
         }
 
-        if (ImGui::Button("Settings", ImVec2(-1, 30.0f)))
+        if (ImGui::Button("Exit", ImVec2(-1, 30.0f)))
         {
-            logToConsole("Settings clicked");
+            glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
         }
 
         ImGui::EndChild();
 
         ImGui::SameLine();
 
-        ImGui::BeginChild("LauncherRight", ImVec2(0, 0), false);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.10f, 0.11f, 1.0f));
+        ImGui::BeginChild("LauncherRight", ImVec2(0, 0), true);
+        ImGui::PopStyleColor();
 
-        ImGui::Spacing();
-        ImGui::Text("Recent Projects");
-        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.78f, 1.0f), "RECENT PROJECTS");
         ImGui::Spacing();
 
         if (projectManager.recentProjects.empty())
         {
+            ImGui::Spacing();
             ImGui::TextDisabled("No recent projects");
-            ImGui::TextDisabled("Create a new project or open an existing one");
+            ImGui::TextDisabled("Create a new project to get started!");
         }
         else
         {
-            for (size_t i = 0; i < projectManager.recentProjects.size(); i++)
+            float availWidth = ImGui::GetContentRegionAvail().x;
+            for (size_t i = 0; i < projectManager.recentProjects.size(); ++i)
             {
                 const auto& rp = projectManager.recentProjects[i];
-
                 ImGui::PushID(static_cast<int>(i));
 
-                ImVec2 buttonSize(-1, 60.0f);
-                ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+                char label[512];
+                std::snprintf(label, sizeof(label), "%s\n%s",
+                            rp.name.c_str(), rp.path.c_str());
 
-                if (ImGui::InvisibleButton("##project", buttonSize))
+                ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.20f, 0.30f, 0.45f, 0.40f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.38f, 0.55f, 0.70f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.20f, 0.35f, 0.60f, 0.90f));
+
+                bool selected = ImGui::Selectable(
+                    label,
+                    false,
+                    ImGuiSelectableFlags_AllowDoubleClick,
+                    ImVec2(availWidth, 48.0f)
+                );
+
+                ImGui::PopStyleColor(3);
+                
+                // Dummy to extend window bounds properly
+                ImGui::Dummy(ImVec2(0, 0));
+
+                if (selected || ImGui::IsItemClicked(ImGuiMouseButton_Left))
                 {
                     OpenProjectPath(rp.path);
                 }
 
-                bool isHovered = ImGui::IsItemHovered();
-                ImU32 bgColor = isHovered ? IM_COL32(40, 40, 45, 255) : IM_COL32(30, 30, 35, 255);
+                if (ImGui::BeginPopupContextItem("RecentProjectContext"))
+                {
+                    if (ImGui::MenuItem("Open"))
+                    {
+                        OpenProjectPath(rp.path);
+                    }
 
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    cursorPos,
-                    ImVec2(cursorPos.x + ImGui::GetContentRegionAvail().x, cursorPos.y + buttonSize.y),
-                    bgColor,
-                    4.0f
-                );
+                    if (ImGui::MenuItem("Remove from Recent"))
+                    {
+                        projectManager.recentProjects.erase(
+                            projectManager.recentProjects.begin() + i
+                        );
+                        projectManager.saveRecentProjects();
+                        ImGui::EndPopup();
+                        ImGui::PopID();
+                        break;
+                    }
 
-                ImVec2 savedCursor = ImGui::GetCursorPos();
-
-                ImGui::SetCursorScreenPos(ImVec2(cursorPos.x + 12, cursorPos.y + 10));
-                ImGui::TextColored(ImVec4(0.45f, 0.72f, 0.95f, 1.0f), "[P]");
-                ImGui::SameLine();
-                ImGui::Text("%s", rp.name.c_str());
-
-                ImGui::SetCursorScreenPos(ImVec2(cursorPos.x + 12, cursorPos.y + 32));
-                ImGui::TextDisabled("%s", rp.path.c_str());
-
-                ImGui::SetCursorPos(savedCursor);
-                ImGui::Dummy(ImVec2(0, 4.0f));
+                    ImGui::EndPopup();
+                }
 
                 ImGui::PopID();
+                ImGui::Spacing();
             }
         }
 
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextDisabled("Modularity Engine - Version 1.0.1");
+
         ImGui::EndChild();
-
-        if (projectManager.showNewProjectDialog) {
-            renderNewProjectDialog();
-        }
-
-        if (projectManager.showOpenProjectDialog) {
-            renderOpenProjectDialog();
-        }
     }
-    ImGui::End();
 
+    ImGui::End();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
+
+    if (projectManager.showNewProjectDialog)
+        renderNewProjectDialog();
+    if (projectManager.showOpenProjectDialog)
+        renderOpenProjectDialog();
 }
 
 void Engine::renderNewProjectDialog() {
@@ -179,24 +940,33 @@ void Engine::renderNewProjectDialog() {
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 200), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(500, 250), ImGuiCond_Appearing);
 
-    if (ImGui::Begin("Create New Project", &projectManager.showNewProjectDialog,
+    if (ImGui::Begin("New Project", &projectManager.showNewProjectDialog,
                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
 
         ImGui::Text("Project Name:");
         ImGui::SetNextItemWidth(-1);
         ImGui::InputText("##ProjectName", projectManager.newProjectName,
-                        sizeof(projectManager.newProjectName));
+                       sizeof(projectManager.newProjectName));
 
         ImGui::Spacing();
 
         ImGui::Text("Location:");
         ImGui::SetNextItemWidth(-70);
         ImGui::InputText("##Location", projectManager.newProjectLocation,
-                        sizeof(projectManager.newProjectLocation));
+                       sizeof(projectManager.newProjectLocation));
         ImGui::SameLine();
         if (ImGui::Button("Browse")) {
+        }
+
+        ImGui::Spacing();
+
+        if (strlen(projectManager.newProjectName) > 0) {
+            fs::path previewPath = fs::path(projectManager.newProjectLocation) /
+                                  projectManager.newProjectName;
+            ImGui::TextDisabled("Project will be created at:");
+            ImGui::TextWrapped("%s", previewPath.string().c_str());
         }
 
         if (!projectManager.errorMessage.empty()) {
@@ -214,21 +984,25 @@ void Engine::renderNewProjectDialog() {
 
         if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0))) {
             projectManager.showNewProjectDialog = false;
+            memset(projectManager.newProjectName, 0, sizeof(projectManager.newProjectName));
         }
 
         ImGui::SameLine();
 
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.3f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.6f, 0.4f, 1.0f));
         if (ImGui::Button("Create", ImVec2(buttonWidth, 0))) {
             if (strlen(projectManager.newProjectName) == 0) {
                 projectManager.errorMessage = "Please enter a project name";
+            } else if (strlen(projectManager.newProjectLocation) == 0) {
+                projectManager.errorMessage = "Please specify a location";
             } else {
                 createNewProject(projectManager.newProjectName,
                                projectManager.newProjectLocation);
-                if (projectManager.currentProject.isLoaded) {
-                    projectManager.showNewProjectDialog = false;
-                }
+                projectManager.showNewProjectDialog = false;
             }
         }
+        ImGui::PopStyleColor(2);
     }
     ImGui::End();
 }
@@ -277,16 +1051,11 @@ void Engine::renderOpenProjectDialog() {
             if (strlen(projectManager.openProjectPath) == 0) {
                 projectManager.errorMessage = "Please enter a project path";
             } else {
-                if (projectManager.loadProject(projectManager.openProjectPath)) {
-                    if (!initRenderer()) {
-                        addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
-                    } else {
-                        showLauncher = false;
-                        loadRecentScenes();
-                        addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
-                    }
+                OpenProjectPath(projectManager.openProjectPath);
+                if (!projectManager.errorMessage.empty()) {
+                    // Error handled in OpenProjectPath
                 } else {
-                    addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
+                    projectManager.showOpenProjectDialog = false;
                 }
             }
         }
@@ -349,6 +1118,10 @@ void Engine::renderMainMenuBar() {
             if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
             if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");
             if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+            if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
+            if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
+            if (ImGui::MenuItem("Spot Light")) addObject(ObjectType::SpotLight, "Spot Light");
+            if (ImGui::MenuItem("Area Light")) addObject(ObjectType::AreaLight, "Area Light");
             ImGui::EndMenu();
         }
 
@@ -400,6 +1173,10 @@ void Engine::renderHierarchyPanel() {
             if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
             if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
             if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+            if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
+            if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
+            if (ImGui::MenuItem("Spot Light")) addObject(ObjectType::SpotLight, "Spot Light");
+            if (ImGui::MenuItem("Area Light")) addObject(ObjectType::AreaLight, "Area Light");
             ImGui::EndMenu();
         }
         ImGui::EndPopup();
@@ -431,6 +1208,11 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
         case ObjectType::Sphere: icon = "(O)"; break;
         case ObjectType::Capsule: icon = "[|]"; break;
         case ObjectType::OBJMesh: icon = "[M]"; break;
+        case ObjectType::Model: icon = "[A]"; break;
+        case ObjectType::DirectionalLight: icon = "(D)"; break;
+        case ObjectType::PointLight: icon = "(P)"; break;
+        case ObjectType::SpotLight: icon = "(S)"; break;
+        case ObjectType::AreaLight: icon = "(L)"; break;
     }
 
     bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s %s", icon, obj.name.c_str());
@@ -483,99 +1265,24 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
     }
 }
 
-void Engine::renderFileBrowserPanel() {
-    ImGui::Begin("File Browser", &showFileBrowser);
-
-    if (fileBrowser.needsRefresh) {
-        fileBrowser.refresh();
-    }
-
-    if (ImGui::Button("<")) {
-        fileBrowser.navigateUp();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh")) {
-        fileBrowser.needsRefresh = true;
-    }
-    ImGui::SameLine();
-
-    std::string pathStr = fileBrowser.currentPath.string();
-    ImGui::TextWrapped("%s", pathStr.c_str());
-
-    ImGui::Separator();
-
-    ImGui::BeginChild("FileList", ImVec2(0, 0), false);
-
-    for (const auto& entry : fileBrowser.entries) {
-        const char* icon = fileBrowser.getFileIcon(entry);
-        std::string filename = entry.path().filename().string();
-
-        bool isSelected = (fileBrowser.selectedFile == entry.path());
-        bool isOBJ = fileBrowser.isOBJFile(entry);
-
-        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-        if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
-
-        if (isOBJ) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
-        }
-
-        ImGui::TreeNodeEx(filename.c_str(), flags, "%s %s", icon, filename.c_str());
-        
-        if (isOBJ) {
-            ImGui::PopStyleColor();
-        }
-
-        if (ImGui::IsItemClicked()) {
-            fileBrowser.selectedFile = entry.path();
-        }
-
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-            if (entry.is_directory()) {
-                fileBrowser.navigateTo(entry.path());
-            } else if (isOBJ) {
-                pendingOBJPath = entry.path().string();
-                std::string defaultName = entry.path().stem().string();
-                strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
-                showImportOBJDialog = true;
-            } else {
-                logToConsole("Selected file: " + filename);
-            }
-        }
-
-        if (ImGui::BeginPopupContextItem()) {
-            if (ImGui::MenuItem("Open")) {
-                if (entry.is_directory()) {
-                    fileBrowser.navigateTo(entry.path());
-                }
-            }
-            if (isOBJ) {
-                if (ImGui::MenuItem("Import to Scene")) {
-                    pendingOBJPath = entry.path().string();
-                    std::string defaultName = entry.path().stem().string();
-                    strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
-                    showImportOBJDialog = true;
-                }
-                if (ImGui::MenuItem("Quick Import")) {
-                    importOBJToScene(entry.path().string(), "");
-                }
-            }
-            if (ImGui::MenuItem("Show in Explorer")) {
-                #ifdef _WIN32
-                std::string cmd = "explorer \"" + entry.path().parent_path().string() + "\"";
-                system(cmd.c_str());
-                #endif
-            }
-            ImGui::EndPopup();
-        }
-    }
-
-    ImGui::EndChild();
-    ImGui::End();
-}
-
 void Engine::renderInspectorPanel() {
     ImGui::Begin("Inspector", &showInspector);
+
+    // Environment controls
+    if (Skybox* skybox = renderer.getSkybox()) {
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.45f, 0.55f, 1.0f));
+        if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
+            float tod = skybox->getTimeOfDay();
+            ImGui::TextDisabled("Day/Night Cycle");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderFloat("##DayNight", &tod, 0.0f, 1.0f, "%.2f")) {
+                skybox->setTimeOfDay(tod);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+        }
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
 
     if (selectedObjectId == -1) {
         ImGui::TextDisabled("No object selected");
@@ -611,8 +1318,19 @@ void Engine::renderInspectorPanel() {
 
         ImGui::Text("Type:");
         ImGui::SameLine();
-        const char* typeNames[] = { "Cube", "Sphere", "Capsule", "OBJ Mesh" };
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeNames[(int)obj.type]);
+        const char* typeLabel = "Unknown";
+        switch (obj.type) {
+            case ObjectType::Cube:       typeLabel = "Cube"; break;
+            case ObjectType::Sphere:     typeLabel = "Sphere"; break;
+            case ObjectType::Capsule:    typeLabel = "Capsule"; break;
+            case ObjectType::OBJMesh:    typeLabel = "OBJ Mesh"; break;
+            case ObjectType::Model:      typeLabel = "Model"; break;
+        case ObjectType::DirectionalLight: typeLabel = "Directional Light"; break;
+        case ObjectType::PointLight: typeLabel = "Point Light"; break;
+        case ObjectType::SpotLight:  typeLabel = "Spot Light"; break;
+        case ObjectType::AreaLight:  typeLabel = "Area Light"; break;
+        }
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
 
         ImGui::Text("ID:");
         ImGui::SameLine();
@@ -667,6 +1385,176 @@ void Engine::renderInspectorPanel() {
 
     ImGui::PopStyleColor();
 
+    // Material section (skip for pure light objects)
+    if (obj.type != ObjectType::DirectionalLight && obj.type != ObjectType::PointLight && obj.type != ObjectType::SpotLight && obj.type != ObjectType::AreaLight) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
+
+        if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+
+            if (ImGui::ColorEdit3("Color", &obj.material.color.x)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            if (ImGui::SliderFloat("Ambient", &obj.material.ambientStrength, 0.0f, 1.0f)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::SliderFloat("Specular", &obj.material.specularStrength, 0.0f, 2.0f)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::SliderFloat("Shininess", &obj.material.shininess, 1.0f, 256.0f)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::SliderFloat("Texture Mix", &obj.material.textureMix, 0.0f, 1.0f)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Textures");
+            char albedoBuf[512] = {};
+            std::snprintf(albedoBuf, sizeof(albedoBuf), "%s", obj.albedoTexturePath.c_str());
+            if (ImGui::InputText("Albedo##Tex", albedoBuf, sizeof(albedoBuf))) {
+                obj.albedoTexturePath = albedoBuf;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
+                if (ImGui::Button("Use Selected##Albedo")) {
+                    obj.albedoTexturePath = fileBrowser.selectedFile.string();
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            } else {
+                ImGui::Button("Use Selected##Albedo");
+            }
+
+            ImGui::Checkbox("Use Overlay", &obj.useOverlay);
+            char overlayBuf[512] = {};
+            std::snprintf(overlayBuf, sizeof(overlayBuf), "%s", obj.overlayTexturePath.c_str());
+            if (ImGui::InputText("Overlay##Tex", overlayBuf, sizeof(overlayBuf))) {
+                obj.overlayTexturePath = overlayBuf;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
+                if (ImGui::Button("Use Selected##Overlay")) {
+                    obj.overlayTexturePath = fileBrowser.selectedFile.string();
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            } else {
+                ImGui::Button("Use Selected##Overlay");
+            }
+
+            char normalBuf[512] = {};
+            std::snprintf(normalBuf, sizeof(normalBuf), "%s", obj.normalMapPath.c_str());
+            if (ImGui::InputText("Normal Map##Tex", normalBuf, sizeof(normalBuf))) {
+                obj.normalMapPath = normalBuf;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
+                if (ImGui::Button("Use Selected##Normal")) {
+                    obj.normalMapPath = fileBrowser.selectedFile.string();
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            } else {
+                ImGui::Button("Use Selected##Normal");
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Material Asset");
+            static char matPathBuf[512] = {};
+            if (!obj.materialPath.empty()) {
+                std::snprintf(matPathBuf, sizeof(matPathBuf), "%s", obj.materialPath.c_str());
+            }
+            if (ImGui::InputText("Path##Mat", matPathBuf, sizeof(matPathBuf))) {
+                // Defer applying until user hits button
+            }
+            if (ImGui::Button("Apply Material")) {
+                obj.materialPath = matPathBuf;
+                loadMaterialFromFile(obj);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save Material")) {
+                obj.materialPath = matPathBuf;
+                saveMaterialToFile(obj);
+            }
+
+            ImGui::Unindent(10.0f);
+        }
+
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.type == ObjectType::DirectionalLight || obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.45f, 0.2f, 1.0f));
+        if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+
+            int currentType = (obj.type == ObjectType::DirectionalLight) ? 0 :
+                              (obj.type == ObjectType::PointLight) ? 1 :
+                              (obj.type == ObjectType::SpotLight) ? 2 : 3;
+            const char* typeLabels[] = { "Directional", "Point", "Spot", "Area" };
+            if (ImGui::Combo("Type", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
+                if (currentType == 0) obj.type = ObjectType::DirectionalLight;
+                else if (currentType == 1) obj.type = ObjectType::PointLight;
+                else if (currentType == 2) obj.type = ObjectType::SpotLight;
+                else obj.type = ObjectType::AreaLight;
+                obj.light.type = (currentType == 0 ? LightType::Directional :
+                                  currentType == 1 ? LightType::Point :
+                                  currentType == 2 ? LightType::Spot : LightType::Area);
+                // Reset sensible defaults when type changes
+                if (obj.type == ObjectType::DirectionalLight) {
+                    obj.light.intensity = 1.0f;
+                } else if (obj.type == ObjectType::PointLight) {
+                    obj.light.range = 12.0f;
+                    obj.light.intensity = 2.0f;
+                } else if (obj.type == ObjectType::SpotLight) {
+                    obj.light.range = 15.0f;
+                    obj.light.intensity = 2.5f;
+                    obj.light.innerAngle = 15.0f;
+                    obj.light.outerAngle = 25.0f;
+                } else if (obj.type == ObjectType::AreaLight) {
+                    obj.light.range = 10.0f;
+                    obj.light.intensity = 3.0f;
+                    obj.light.size = glm::vec2(2.0f, 2.0f);
+                }
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            if (ImGui::ColorEdit3("Color", &obj.light.color.x)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::SliderFloat("Intensity", &obj.light.intensity, 0.0f, 10.0f)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (obj.type != ObjectType::DirectionalLight) {
+                if (ImGui::SliderFloat("Range", &obj.light.range, 0.0f, 50.0f)) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            }
+            if (ImGui::Checkbox("Enabled", &obj.light.enabled)) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            if (obj.type == ObjectType::SpotLight) {
+                if (ImGui::SliderFloat("Inner Angle", &obj.light.innerAngle, 1.0f, 90.0f)) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+                if (ImGui::SliderFloat("Outer Angle", &obj.light.outerAngle, obj.light.innerAngle, 120.0f)) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            }
+
+            if (obj.type == ObjectType::AreaLight) {
+                if (ImGui::DragFloat2("Size", &obj.light.size.x, 0.05f, 0.1f, 10.0f)) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            }
+
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
     if (obj.type == ObjectType::OBJMesh) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.4f, 1.0f));
@@ -717,6 +1605,57 @@ void Engine::renderInspectorPanel() {
             ImGui::Unindent(10.0f);
         }
         
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.type == ObjectType::Model) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.65f, 1.0f));
+
+        if (ImGui::CollapsingHeader("Model Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+
+            const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+            if (meshInfo) {
+                ImGui::Text("Source File:");
+                ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
+
+                ImGui::Spacing();
+
+                ImGui::Text("Vertices: %d", meshInfo->vertexCount);
+                ImGui::Text("Faces: %d", meshInfo->faceCount);
+                ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
+                ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
+
+                ImGui::Spacing();
+
+                if (ImGui::Button("Reload Model", ImVec2(-1, 0))) {
+                    ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                    if (result.success) {
+                        obj.meshId = result.meshIndex;
+                        addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                    } else {
+                        addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                    }
+                }
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
+                ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
+
+                if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
+                    ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                    if (result.success) {
+                        obj.meshId = result.meshIndex;
+                        addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                    } else {
+                        addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                    }
+                }
+            }
+
+            ImGui::Unindent(10.0f);
+        }
+
         ImGui::PopStyleColor();
     }
 
@@ -799,7 +1738,7 @@ void Engine::renderViewport() {
 
         glm::mat4 view = camera.getViewMatrix();
 
-        renderer.beginRender(view, proj);
+        renderer.beginRender(view, proj, camera.position);
         renderer.renderScene(camera, sceneObjects);
         unsigned int tex = renderer.getViewportTexture();
 
@@ -910,7 +1849,7 @@ void Engine::renderViewport() {
     // Overlay hint
     ImGui::SetCursorPos(ImVec2(10, 30));
     ImGui::TextColored(
-        ImVec4(1, 1, 1, 0.6f),
+        ImVec4(1, 1, 1, 0.3f),
         "WASD: Move | QE: Up/Down | Shift: Sprint | ESC: Release | F11: Fullscreen"
     );
 
@@ -1038,6 +1977,50 @@ void Engine::renderDialogs() {
         }
         ImGui::End();
     }
+
+    // General model import dialog (Assimp-backed)
+    if (showImportModelDialog) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(420, 180), ImGuiCond_Appearing);
+
+        if (ImGui::Begin("Import Model", &showImportModelDialog,
+                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
+            ImGui::Text("File: %s", fs::path(pendingModelPath).filename().string().c_str());
+            ImGui::TextDisabled("%s", pendingModelPath.c_str());
+
+            ImGui::Spacing();
+
+            ImGui::Text("Object Name:");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##ImportModelName", importModelName, sizeof(importModelName));
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            float buttonWidth = 80;
+            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - buttonWidth * 2 - 20);
+
+            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0))) {
+                showImportModelDialog = false;
+                pendingModelPath.clear();
+            }
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.6f, 0.4f, 1.0f));
+            if (ImGui::Button("Import", ImVec2(buttonWidth, 0))) {
+                importModelToScene(pendingModelPath, importModelName);
+                showImportModelDialog = false;
+                pendingModelPath.clear();
+                memset(importModelName, 0, sizeof(importModelName));
+            }
+            ImGui::PopStyleColor(2);
+        }
+        ImGui::End();
+    }
 }
 
 void Engine::renderProjectBrowserPanel() {
@@ -1101,7 +2084,7 @@ void Engine::renderProjectBrowserPanel() {
         }
     }
     
-    if (ImGui::CollapsingHeader("Loaded Meshes")) {
+    if (ImGui::CollapsingHeader("Loaded OBJ Meshes")) {
         const auto& meshes = g_objLoader.getAllMeshes();
         if (meshes.empty()) {
             ImGui::TextDisabled("No meshes loaded");
@@ -1115,6 +2098,33 @@ void Engine::renderProjectBrowserPanel() {
                 
                 ImGui::TreeNodeEx((void*)(intptr_t)i, flags, "[M] %s", mesh.name.c_str());
                 
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("Vertices: %d", mesh.vertexCount);
+                    ImGui::Text("Faces: %d", mesh.faceCount);
+                    ImGui::Text("Has Normals: %s", mesh.hasNormals ? "Yes" : "No");
+                    ImGui::Text("Has UVs: %s", mesh.hasTexCoords ? "Yes" : "No");
+                    ImGui::TextDisabled("%s", mesh.path.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Loaded Models (Assimp)")) {
+        const auto& meshes = getModelLoader().getAllMeshes();
+        if (meshes.empty()) {
+            ImGui::TextDisabled("No models loaded");
+            ImGui::TextDisabled("Import FBX/GLTF/other supported models from File Browser");
+        } else {
+            for (size_t i = 0; i < meshes.size(); i++) {
+                const auto& mesh = meshes[i];
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
+                                          ImGuiTreeNodeFlags_SpanAvailWidth |
+                                          ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+                ImGui::TreeNodeEx((void*)(intptr_t)(10000 + i), flags, "[A] %s", mesh.name.c_str());
+
                 if (ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
                     ImGui::Text("Vertices: %d", mesh.vertexCount);

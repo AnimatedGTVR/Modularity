@@ -5,6 +5,7 @@
 #include "../include/Shaders/Shader.h"
 #include "../include/Textures/Texture.h"
 #include "../include/Skybox/Skybox.h"
+#include <unordered_map>
 
 // Cube vertex data (position + normal + texcoord)
 extern float vertices[];
@@ -59,6 +60,7 @@ private:
     Shader* shader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
+    std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
@@ -71,11 +73,12 @@ public:
     ~Renderer();
 
     void initialize();
+    Texture* getTexture(const std::string& path);
     void resize(int w, int h);
     int getWidth() const { return currentWidth; }
     int getHeight() const { return currentHeight; }
 
-    void beginRender(const glm::mat4& view, const glm::mat4& proj);
+    void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
     void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects);

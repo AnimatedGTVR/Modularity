@@ -61,6 +61,7 @@ private:
     char importModelName[128] = "";  // For Assimp models
     
     char fileBrowserSearch[256] = "";
+    float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -106,6 +107,8 @@ private:
     void duplicateSelected();
     void deleteSelected();
     void setParent(int childId, int parentId);
+    void loadMaterialFromFile(SceneObject& obj);
+    void saveMaterialToFile(const SceneObject& obj);
     
     // Console/logging
     void addConsoleMessage(const std::string& message, ConsoleMessageType type);

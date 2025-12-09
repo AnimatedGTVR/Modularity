@@ -101,6 +101,9 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
         return FileCategory::Model;
     }
     
+    // Material files
+    if (ext == ".mat") return FileCategory::Material;
+
     // Texture files
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || 
         ext == ".tga" || ext == ".dds" || ext == ".hdr") {
@@ -139,6 +142,7 @@ const char* FileBrowser::getFileIcon(const fs::directory_entry& entry) const {
         case FileCategory::Folder:  return "folder";
         case FileCategory::Scene:   return "scene";
         case FileCategory::Model:   return "model";
+        case FileCategory::Material: return "material";
         case FileCategory::Texture: return "image";
         case FileCategory::Shader:  return "shader";
         case FileCategory::Script:  return "code";

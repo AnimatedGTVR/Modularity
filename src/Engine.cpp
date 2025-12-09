@@ -1,5 +1,7 @@
 #include "Engine.h"
+#include "ModelLoader.h"
 #include <iostream>
+#include <fstream>
 
 void window_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -109,13 +111,8 @@ void Engine::run() {
             if (aspect <= 0.0f) aspect = 1.0f;
             glm::mat4 proj = glm::perspective(glm::radians(FOV), aspect, NEAR_PLANE, FAR_PLANE);
 
-            renderer.beginRender(view, proj);
-            
-            for (const auto& obj : sceneObjects) {
-                renderer.renderObject(obj);
-            }
-
-            renderer.renderSkybox(view, proj);
+            renderer.beginRender(view, proj, camera.position);
+            renderer.renderScene(camera, sceneObjects);
             renderer.endRender();
         }
 
@@ -226,6 +223,108 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
                         ConsoleMessageType::Success);
     } else {
         addConsoleMessage("Imported OBJ: " + name, ConsoleMessageType::Success);
+    }
+}
+
+void Engine::importModelToScene(const std::string& filepath, const std::string& objectName) {
+    auto& modelLoader = getModelLoader();
+    ModelLoadResult result = modelLoader.loadModel(filepath);
+
+    if (!result.success) {
+        addConsoleMessage("Failed to load model: " + result.errorMessage, ConsoleMessageType::Error);
+        return;
+    }
+
+    int id = nextObjectId++;
+    std::string name = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
+
+    SceneObject obj(name, ObjectType::Model, id);
+    obj.meshPath = filepath;
+    obj.meshId = result.meshIndex;
+
+    sceneObjects.push_back(obj);
+    selectedObjectId = id;
+
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+
+    addConsoleMessage(
+        "Imported model: " + name + " (" +
+        std::to_string(result.vertexCount) + " verts, " +
+        std::to_string(result.faceCount) + " faces, " +
+        std::to_string(result.meshCount) + " meshes)",
+        ConsoleMessageType::Success
+    );
+}
+
+void Engine::loadMaterialFromFile(SceneObject& obj) {
+    if (obj.materialPath.empty()) return;
+    try {
+        std::ifstream f(obj.materialPath);
+        if (!f.is_open()) {
+            addConsoleMessage("Failed to open material: " + obj.materialPath, ConsoleMessageType::Error);
+            return;
+        }
+        std::string line;
+        while (std::getline(f, line)) {
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            if (line.empty() || line[0] == '#') continue;
+            auto pos = line.find('=');
+            if (pos == std::string::npos) continue;
+            std::string key = line.substr(0, pos);
+            std::string val = line.substr(pos + 1);
+            if (key == "color") {
+                sscanf(val.c_str(), "%f,%f,%f", &obj.material.color.r, &obj.material.color.g, &obj.material.color.b);
+            } else if (key == "ambient") {
+                obj.material.ambientStrength = std::stof(val);
+            } else if (key == "specular") {
+                obj.material.specularStrength = std::stof(val);
+            } else if (key == "shininess") {
+                obj.material.shininess = std::stof(val);
+            } else if (key == "textureMix") {
+                obj.material.textureMix = std::stof(val);
+            } else if (key == "albedo") {
+                obj.albedoTexturePath = val;
+            } else if (key == "overlay") {
+                obj.overlayTexturePath = val;
+            } else if (key == "normal") {
+                obj.normalMapPath = val;
+            } else if (key == "useOverlay") {
+                obj.useOverlay = std::stoi(val) != 0;
+            }
+        }
+        addConsoleMessage("Applied material: " + obj.materialPath, ConsoleMessageType::Success);
+        projectManager.currentProject.hasUnsavedChanges = true;
+    } catch (...) {
+        addConsoleMessage("Failed to read material: " + obj.materialPath, ConsoleMessageType::Error);
+    }
+}
+
+void Engine::saveMaterialToFile(const SceneObject& obj) {
+    if (obj.materialPath.empty()) {
+        addConsoleMessage("Material path is empty", ConsoleMessageType::Warning);
+        return;
+    }
+    try {
+        std::ofstream f(obj.materialPath);
+        if (!f.is_open()) {
+            addConsoleMessage("Failed to open material for writing: " + obj.materialPath, ConsoleMessageType::Error);
+            return;
+        }
+        f << "# Material\n";
+        f << "color=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
+        f << "ambient=" << obj.material.ambientStrength << "\n";
+        f << "specular=" << obj.material.specularStrength << "\n";
+        f << "shininess=" << obj.material.shininess << "\n";
+        f << "textureMix=" << obj.material.textureMix << "\n";
+        f << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
+        f << "albedo=" << obj.albedoTexturePath << "\n";
+        f << "overlay=" << obj.overlayTexturePath << "\n";
+        f << "normal=" << obj.normalMapPath << "\n";
+        addConsoleMessage("Saved material: " + obj.materialPath, ConsoleMessageType::Success);
+    } catch (...) {
+        addConsoleMessage("Failed to save material: " + obj.materialPath, ConsoleMessageType::Error);
     }
 }
 
@@ -375,6 +474,12 @@ void Engine::loadScene(const std::string& sceneName) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
         selectedObjectId = -1;
+        bool hasDirLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
+            return o.type == ObjectType::DirectionalLight;
+        });
+        if (!hasDirLight) {
+            addObject(ObjectType::DirectionalLight, "Directional Light");
+        }
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
     } else {
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
@@ -396,6 +501,7 @@ void Engine::createNewScene(const std::string& sceneName) {
     projectManager.currentProject.hasUnsavedChanges = true;
 
     addObject(ObjectType::Cube, "Cube");
+    addObject(ObjectType::DirectionalLight, "Directional Light");
     saveCurrentScene();
 
     addConsoleMessage("Created new scene: " + sceneName, ConsoleMessageType::Success);
@@ -405,6 +511,21 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
     int id = nextObjectId++;
     std::string name = baseName + " " + std::to_string(id);
     sceneObjects.push_back(SceneObject(name, type, id));
+    // Light defaults
+    if (type == ObjectType::PointLight) {
+        sceneObjects.back().light.type = LightType::Point;
+        sceneObjects.back().light.range = 12.0f;
+        sceneObjects.back().light.intensity = 2.0f;
+    } else if (type == ObjectType::SpotLight) {
+        sceneObjects.back().light.type = LightType::Spot;
+        sceneObjects.back().light.range = 15.0f;
+        sceneObjects.back().light.intensity = 2.5f;
+    } else if (type == ObjectType::AreaLight) {
+        sceneObjects.back().light.type = LightType::Area;
+        sceneObjects.back().light.range = 10.0f;
+        sceneObjects.back().light.intensity = 3.0f;
+        sceneObjects.back().light.size = glm::vec2(2.0f, 2.0f);
+    }
     selectedObjectId = id;
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -424,6 +545,13 @@ void Engine::duplicateSelected() {
         newObj.scale = it->scale;
         newObj.meshPath = it->meshPath;
         newObj.meshId = it->meshId;
+        newObj.material = it->material;
+        newObj.materialPath = it->materialPath;
+        newObj.albedoTexturePath = it->albedoTexturePath;
+        newObj.overlayTexturePath = it->overlayTexturePath;
+        newObj.normalMapPath = it->normalMapPath;
+        newObj.useOverlay = it->useOverlay;
+        newObj.light = it->light;
         
         sceneObjects.push_back(newObj);
         selectedObjectId = id;

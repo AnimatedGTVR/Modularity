@@ -11,6 +11,7 @@ enum class FileCategory {
     Folder,
     Scene,
     Model,
+    Material,
     Texture,
     Shader,
     Script,

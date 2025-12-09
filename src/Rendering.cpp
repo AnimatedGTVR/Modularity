@@ -1,5 +1,7 @@
 #include "Rendering.h"
 #include "Camera.h"
+#include "ModelLoader.h"
+#include <unordered_map>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../include/ThirdParty/tiny_obj_loader.h"
@@ -409,6 +411,20 @@ Renderer::~Renderer() {
     if (rbo) glDeleteRenderbuffers(1, &rbo);
 }
 
+Texture* Renderer::getTexture(const std::string& path) {
+    if (path.empty()) return nullptr;
+    auto it = textureCache.find(path);
+    if (it != textureCache.end()) return it->second.get();
+
+    auto tex = std::make_unique<Texture>(path);
+    if (!tex->GetID()) {
+        return nullptr;
+    }
+    Texture* raw = tex.get();
+    textureCache[path] = std::move(tex);
+    return raw;
+}
+
 void Renderer::initialize() {
     shader = new Shader("Resources/Shaders/vert.glsl", "Resources/Shaders/frag.glsl");
     if (shader->ID == 0) {
@@ -475,7 +491,7 @@ void Renderer::resize(int w, int h) {
     }
 }
 
-void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj) {
+void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos) {
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glViewport(0, 0, currentWidth, currentHeight);
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
@@ -484,10 +500,12 @@ void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj) {
     shader->use();
     shader->setMat4("view", view);
     shader->setMat4("projection", proj);
+    shader->setVec3("viewPos", cameraPos);
     texture1->Bind(GL_TEXTURE0);
     texture2->Bind(GL_TEXTURE1);
     shader->setInt("texture1", 0);
-    shader->setInt("texture2", 1);
+    shader->setInt("overlayTex", 1);
+    shader->setInt("normalMap", 2);
 }
 
 void Renderer::renderSkybox(const glm::mat4& view, const glm::mat4& proj) {
@@ -511,6 +529,38 @@ void Renderer::renderObject(const SceneObject& obj) {
     model = glm::scale(model, obj.scale);
 
     shader->setMat4("model", model);
+    shader->setVec3("materialColor", obj.material.color);
+    shader->setFloat("ambientStrength", obj.material.ambientStrength);
+    shader->setFloat("specularStrength", obj.material.specularStrength);
+    shader->setFloat("shininess", obj.material.shininess);
+    shader->setFloat("mixAmount", obj.material.textureMix);
+
+    Texture* baseTex = texture1;
+    if (!obj.albedoTexturePath.empty()) {
+        if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+    }
+    if (baseTex) baseTex->Bind(GL_TEXTURE0);
+
+    bool overlayUsed = false;
+    if (obj.useOverlay && !obj.overlayTexturePath.empty()) {
+        if (auto* t = getTexture(obj.overlayTexturePath)) {
+            t->Bind(GL_TEXTURE1);
+            overlayUsed = true;
+        }
+    }
+    if (!overlayUsed && texture2) {
+        texture2->Bind(GL_TEXTURE1);
+    }
+    shader->setBool("hasOverlay", overlayUsed);
+
+    bool normalUsed = false;
+    if (!obj.normalMapPath.empty()) {
+        if (auto* t = getTexture(obj.normalMapPath)) {
+            t->Bind(GL_TEXTURE2);
+            normalUsed = true;
+        }
+    }
+    shader->setBool("hasNormalMap", normalUsed);
 
     switch (obj.type) {
         case ObjectType::Cube:
@@ -530,24 +580,136 @@ void Renderer::renderObject(const SceneObject& obj) {
                 }
             }
             break;
+        case ObjectType::Model:
+            if (obj.meshId >= 0) {
+                Mesh* modelMesh = getModelLoader().getMesh(obj.meshId);
+                if (modelMesh) {
+                    modelMesh->draw();
+                }
+            }
+            break;
+        case ObjectType::PointLight:
+        case ObjectType::SpotLight:
+        case ObjectType::AreaLight:
+            // Lights are not rendered as geometry
+            break;
+        case ObjectType::DirectionalLight:
+            // Not rendered as geometry
+            break;
     }
 }
 
 void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects) {
+    if (!shader) return;
     shader->use();
     shader->setMat4("view", camera.getViewMatrix());
     shader->setMat4("projection", glm::perspective(glm::radians(FOV), (float)currentWidth / (float)currentHeight, NEAR_PLANE, FAR_PLANE));
-    shader->setVec3("lightPos", glm::vec3(4.0f, 6.0f, 4.0f));
-    shader->setVec3("lightColor", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader->setVec3("viewPos", camera.position);
     shader->setFloat("ambientStrength", 0.25f);
     shader->setFloat("specularStrength", 0.8f);
     shader->setFloat("shininess", 64.0f);
     shader->setFloat("mixAmount", 0.3f);
 
-    texture1->Bind(0);
-    texture2->Bind(1);
+    // Collect up to 10 lights
+    struct LightUniform {
+        int type = 0; // 0 dir,1 point,2 spot
+        glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f);
+        glm::vec3 pos = glm::vec3(0.0f);
+        glm::vec3 color = glm::vec3(1.0f);
+        float intensity = 1.0f;
+        float range = 10.0f;
+        float inner = glm::cos(glm::radians(15.0f));
+        float outer = glm::cos(glm::radians(25.0f));
+    };
+    auto forwardFromRotation = [](const SceneObject& obj) {
+        glm::vec3 f = glm::normalize(glm::vec3(
+            glm::sin(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x)),
+            glm::sin(glm::radians(obj.rotation.x)),
+            glm::cos(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x))
+        ));
+        if (glm::length(f) < 1e-3f ||
+            !std::isfinite(f.x) || !std::isfinite(f.y) || !std::isfinite(f.z)) {
+            f = glm::vec3(0.0f, -1.0f, 0.0f);
+        }
+        return f;
+    };
+
+    std::vector<LightUniform> lights;
+    lights.reserve(10);
+
+    // Add directionals first, then spots, then points
+    for (const auto& obj : sceneObjects) {
+        if (obj.light.enabled && obj.type == ObjectType::DirectionalLight) {
+            LightUniform l;
+            l.type = 0;
+            l.dir = forwardFromRotation(obj);
+            l.color = obj.light.color;
+            l.intensity = obj.light.intensity;
+            lights.push_back(l);
+            if (lights.size() >= 10) break;
+        }
+    }
+    if (lights.size() < 10) {
+        for (const auto& obj : sceneObjects) {
+            if (obj.light.enabled && obj.type == ObjectType::SpotLight) {
+                LightUniform l;
+                l.type = 2;
+                l.pos = obj.position;
+                l.dir = forwardFromRotation(obj);
+                l.color = obj.light.color;
+                l.intensity = obj.light.intensity;
+                l.range = obj.light.range;
+                l.inner = glm::cos(glm::radians(obj.light.innerAngle));
+                l.outer = glm::cos(glm::radians(obj.light.outerAngle));
+                lights.push_back(l);
+                if (lights.size() >= 10) break;
+            }
+        }
+    }
+    if (lights.size() < 10) {
+        for (const auto& obj : sceneObjects) {
+            if (obj.light.enabled && obj.type == ObjectType::PointLight) {
+                LightUniform l;
+                l.type = 1;
+                l.pos = obj.position;
+                l.color = obj.light.color;
+                l.intensity = obj.light.intensity;
+                l.range = obj.light.range;
+                lights.push_back(l);
+                if (lights.size() >= 10) break;
+            }
+        }
+    }
+    int count = static_cast<int>(lights.size());
+    shader->setInt("lightCount", count);
+    for (int i = 0; i < count; ++i) {
+        const auto& l = lights[i];
+        std::string idx = "[" + std::to_string(i) + "]";
+        shader->setInt("lightTypeArr" + idx, l.type);
+        shader->setVec3("lightDirArr" + idx, l.dir);
+        shader->setVec3("lightPosArr" + idx, l.pos);
+        shader->setVec3("lightColorArr" + idx, l.color);
+        shader->setFloat("lightIntensityArr" + idx, l.intensity);
+        shader->setFloat("lightRangeArr" + idx, l.range);
+        shader->setFloat("lightInnerCosArr" + idx, l.inner);
+        shader->setFloat("lightOuterCosArr" + idx, l.outer);
+    }
+
+    // Bind base textures once per frame (used by objects)
+    if (texture1) texture1->Bind(0);
+    else glBindTexture(GL_TEXTURE_2D, 0);
+    if (texture2) texture2->Bind(1);
+    else glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (texture1) texture1->Bind(0);
+    if (texture2) texture2->Bind(1);
 
     for (const auto& obj : sceneObjects) {
+        // Skip light types in the main render pass (they are handled as gizmos)
+        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
+            continue;
+        }
+
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, obj.position);
         model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
@@ -556,6 +718,38 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         model = glm::scale(model, obj.scale);
 
         shader->setMat4("model", model);
+        shader->setVec3("materialColor", obj.material.color);
+        shader->setFloat("ambientStrength", obj.material.ambientStrength);
+        shader->setFloat("specularStrength", obj.material.specularStrength);
+        shader->setFloat("shininess", obj.material.shininess);
+        shader->setFloat("mixAmount", obj.material.textureMix);
+
+        Texture* baseTex = texture1;
+        if (!obj.albedoTexturePath.empty()) {
+            if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+        }
+        if (baseTex) baseTex->Bind(GL_TEXTURE0);
+
+        bool overlayUsed = false;
+        if (obj.useOverlay && !obj.overlayTexturePath.empty()) {
+            if (auto* t = getTexture(obj.overlayTexturePath)) {
+                t->Bind(GL_TEXTURE1);
+                overlayUsed = true;
+            }
+        }
+        if (!overlayUsed && texture2) {
+            texture2->Bind(GL_TEXTURE1);
+        }
+        shader->setBool("hasOverlay", overlayUsed);
+
+        bool normalUsed = false;
+        if (!obj.normalMapPath.empty()) {
+            if (auto* t = getTexture(obj.normalMapPath)) {
+                t->Bind(GL_TEXTURE2);
+                normalUsed = true;
+            }
+        }
+        shader->setBool("hasNormalMap", normalUsed);
 
         Mesh* meshToDraw = nullptr;
         if (obj.type == ObjectType::Cube) meshToDraw = cubeMesh;
@@ -563,6 +757,8 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         else if (obj.type == ObjectType::Capsule) meshToDraw = capsuleMesh;
         else if (obj.type == ObjectType::OBJMesh && obj.meshId != -1) {
             meshToDraw = g_objLoader.getMesh(obj.meshId);
+        } else if (obj.type == ObjectType::Model && obj.meshId != -1) {
+            meshToDraw = getModelLoader().getMesh(obj.meshId);
         }
 
         if (meshToDraw) {

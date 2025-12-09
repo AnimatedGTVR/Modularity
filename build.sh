@@ -9,9 +9,11 @@ finish() {
     local duration=$((end_time - start_time))
 
     if [ $exit_code -eq 0 ]; then
+        echo -e "================================\n   Modularity - Native Linux Build Complete\n================================"
         echo -e "[Complete]: Your Modularity Build Completed in ${duration}s!\nThe build should be located under Modularity within another folder called 'Build'"
     else
-        echo "[!]: Your Modularity Build Failed after ${duration}s (exit code ${exit_code})."
+        echo -e "================================\n   Modularity - Native Linux Build Failed\n================================"
+        echo "[Failed]: Your Modularity Build Failed after ${duration}s (exit code ${exit_code})."
     fi
 
     exit $exit_code

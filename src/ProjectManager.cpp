@@ -1,5 +1,6 @@
 #include "ProjectManager.h"
 #include "Rendering.h"
+#include "ModelLoader.h"
 
 // Project implementation
 Project::Project(const std::string& projectName, const fs::path& basePath)
@@ -249,8 +250,25 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "position=" << obj.position.x << "," << obj.position.y << "," << obj.position.z << "\n";
             file << "rotation=" << obj.rotation.x << "," << obj.rotation.y << "," << obj.rotation.z << "\n";
             file << "scale=" << obj.scale.x << "," << obj.scale.y << "," << obj.scale.z << "\n";
+            file << "materialColor=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
+            file << "materialAmbient=" << obj.material.ambientStrength << "\n";
+            file << "materialSpecular=" << obj.material.specularStrength << "\n";
+            file << "materialShininess=" << obj.material.shininess << "\n";
+            file << "materialTextureMix=" << obj.material.textureMix << "\n";
+            file << "materialPath=" << obj.materialPath << "\n";
+            file << "albedoTex=" << obj.albedoTexturePath << "\n";
+            file << "overlayTex=" << obj.overlayTexturePath << "\n";
+            file << "normalMap=" << obj.normalMapPath << "\n";
+            file << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
+            file << "lightColor=" << obj.light.color.r << "," << obj.light.color.g << "," << obj.light.color.b << "\n";
+            file << "lightIntensity=" << obj.light.intensity << "\n";
+            file << "lightRange=" << obj.light.range << "\n";
+            file << "lightInner=" << obj.light.innerAngle << "\n";
+            file << "lightOuter=" << obj.light.outerAngle << "\n";
+            file << "lightSize=" << obj.light.size.x << "," << obj.light.size.y << "\n";
+            file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
             
-            if (obj.type == ObjectType::OBJMesh && !obj.meshPath.empty()) {
+            if ((obj.type == ObjectType::OBJMesh || obj.type == ObjectType::Model) && !obj.meshPath.empty()) {
                 file << "meshPath=" << obj.meshPath << "\n";
             }
 
@@ -308,6 +326,10 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->name = value;
                 } else if (key == "type") {
                     currentObj->type = static_cast<ObjectType>(std::stoi(value));
+                    if (currentObj->type == ObjectType::DirectionalLight) currentObj->light.type = LightType::Directional;
+                    else if (currentObj->type == ObjectType::PointLight) currentObj->light.type = LightType::Point;
+                    else if (currentObj->type == ObjectType::SpotLight) currentObj->light.type = LightType::Spot;
+                    else if (currentObj->type == ObjectType::AreaLight) currentObj->light.type = LightType::Area;
                 } else if (key == "parentId") {
                     currentObj->parentId = std::stoi(value);
                 } else if (key == "position") {
@@ -325,11 +347,61 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                            &currentObj->scale.x,
                            &currentObj->scale.y,
                            &currentObj->scale.z);
+                } else if (key == "materialColor") {
+                    sscanf(value.c_str(), "%f,%f,%f",
+                           &currentObj->material.color.r,
+                           &currentObj->material.color.g,
+                           &currentObj->material.color.b);
+                } else if (key == "materialAmbient") {
+                    currentObj->material.ambientStrength = std::stof(value);
+                } else if (key == "materialSpecular") {
+                    currentObj->material.specularStrength = std::stof(value);
+                } else if (key == "materialShininess") {
+                    currentObj->material.shininess = std::stof(value);
+                } else if (key == "materialTextureMix") {
+                    currentObj->material.textureMix = std::stof(value);
+                } else if (key == "materialPath") {
+                    currentObj->materialPath = value;
+                } else if (key == "albedoTex") {
+                    currentObj->albedoTexturePath = value;
+                } else if (key == "overlayTex") {
+                    currentObj->overlayTexturePath = value;
+                } else if (key == "normalMap") {
+                    currentObj->normalMapPath = value;
+                } else if (key == "useOverlay") {
+                    currentObj->useOverlay = (std::stoi(value) != 0);
+                } else if (key == "lightColor") {
+                    sscanf(value.c_str(), "%f,%f,%f",
+                           &currentObj->light.color.r,
+                           &currentObj->light.color.g,
+                           &currentObj->light.color.b);
+                } else if (key == "lightIntensity") {
+                    currentObj->light.intensity = std::stof(value);
+                } else if (key == "lightRange") {
+                    currentObj->light.range = std::stof(value);
+                } else if (key == "lightInner") {
+                    currentObj->light.innerAngle = std::stof(value);
+                } else if (key == "lightOuter") {
+                    currentObj->light.outerAngle = std::stof(value);
+                } else if (key == "lightSize") {
+                    sscanf(value.c_str(), "%f,%f",
+                           &currentObj->light.size.x,
+                           &currentObj->light.size.y);
+                } else if (key == "lightEnabled") {
+                    currentObj->light.enabled = (std::stoi(value) != 0);
                 } else if (key == "meshPath") {
                     currentObj->meshPath = value;
                     if (!value.empty() && currentObj->type == ObjectType::OBJMesh) {
                         std::string err;
                         currentObj->meshId = g_objLoader.loadOBJ(value, err);
+                    } else if (!value.empty() && currentObj->type == ObjectType::Model) {
+                        ModelLoadResult result = getModelLoader().loadModel(value);
+                        if (result.success) {
+                            currentObj->meshId = result.meshIndex;
+                        } else {
+                            std::cerr << "Failed to load model from scene: " << result.errorMessage << std::endl;
+                            currentObj->meshId = -1;
+                        }
                     }
                 } else if (key == "children" && !value.empty()) {
                     std::stringstream ss(value);

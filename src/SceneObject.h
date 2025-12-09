@@ -7,7 +7,39 @@ enum class ObjectType {
     Sphere,
     Capsule,
     OBJMesh,
-    Model  // New type for Assimp-loaded models (FBX, GLTF, etc.)
+    Model,       // New type for Assimp-loaded models (FBX, GLTF, etc.)
+    DirectionalLight,
+    PointLight,
+    SpotLight,
+    AreaLight
+};
+
+struct MaterialProperties {
+    glm::vec3 color = glm::vec3(1.0f);
+    float ambientStrength = 0.2f;
+    float specularStrength = 0.5f;
+    float shininess = 32.0f;
+    float textureMix = 0.3f;  // Blend factor between albedo and overlay
+};
+
+enum class LightType {
+    Directional = 0,
+    Point = 1,
+    Spot = 2,
+    Area = 3
+};
+
+struct LightComponent {
+    LightType type = LightType::Point;
+    glm::vec3 color = glm::vec3(1.0f);
+    float intensity = 1.0f;
+    float range = 10.0f;
+    // Spot
+    float innerAngle = 15.0f;
+    float outerAngle = 25.0f;
+    // Area (rect) size in world units
+    glm::vec2 size = glm::vec2(1.0f, 1.0f);
+    bool enabled = true;
 };
 
 enum class ConsoleMessageType {
@@ -28,8 +60,15 @@ public:
     int parentId = -1;
     std::vector<int> childIds;
     bool isExpanded = true;
-    std::string meshPath;  // Path to OBJ file (for OBJMesh type)
-    int meshId = -1;       // Index into loaded meshes cache
+    std::string meshPath;  // Path to imported model file
+    int meshId = -1;       // Index into loaded mesh caches (OBJLoader / ModelLoader)
+    MaterialProperties material;
+    std::string materialPath;       // Optional external material asset
+    std::string albedoTexturePath;
+    std::string overlayTexturePath;
+    std::string normalMapPath;
+    bool useOverlay = false;
+    LightComponent light;  // Only used when type is a light
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}
