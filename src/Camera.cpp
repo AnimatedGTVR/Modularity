@@ -94,7 +94,13 @@ glm::mat4 Camera::getViewMatrix() const {
 }
 
 // ViewportController implementation
-void ViewportController::updateFocusFromImGui(bool windowFocused) {
+void ViewportController::updateFocusFromImGui(bool windowFocused, bool cursorLocked) {
+    if (cursorLocked) {
+        viewportFocused = true;
+        manualUnfocus = false;
+        return;
+    }
+
     if (!windowFocused && viewportFocused && !manualUnfocus) {
         viewportFocused = false;
     }

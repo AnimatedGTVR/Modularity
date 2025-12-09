@@ -2162,6 +2162,9 @@ void Engine::renderViewport() {
             glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             camera.firstMouse = true;
         }
+        if (cursorLocked) {
+            viewportController.setFocused(true);
+        }
     }
 
     // Overlay hint
@@ -2180,7 +2183,7 @@ void Engine::renderViewport() {
     }
 
     bool windowFocused = ImGui::IsWindowFocused();
-    viewportController.updateFocusFromImGui(windowFocused);
+    viewportController.updateFocusFromImGui(windowFocused, cursorLocked);
 
     ImGui::End();
 }

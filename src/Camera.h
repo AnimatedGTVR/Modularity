@@ -26,7 +26,7 @@ private:
     bool manualUnfocus = false;
 
 public:
-    void updateFocusFromImGui(bool windowFocused);
+    void updateFocusFromImGui(bool windowFocused, bool cursorLocked);
     void setFocused(bool focused);
     bool isViewportFocused() const;
     void clearManualUnfocus();
