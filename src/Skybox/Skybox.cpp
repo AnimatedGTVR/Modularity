@@ -2,6 +2,7 @@
 #include "../../include/Shaders/Shader.h"
 #include <glad/glad.h>
 #include <iostream>
+#include <string>
 #include "../../src/ThirdParty/glm/glm.hpp"
 #include "../../src/ThirdParty/glm/gtc/type_ptr.hpp"
 
@@ -52,12 +53,12 @@ float skyboxVertices[] = {
 };
 
 Skybox::Skybox() {
-    skyboxShader = new Shader("Resources/Shaders/skybox_vert.glsl", "Resources/Shaders/skybox_frag.glsl");
+    skyboxShader = new Shader(vertPath.c_str(), fragPath.c_str());
     setupMesh();
 }
 
 Skybox::~Skybox() {
-    delete skyboxShader;
+    if (skyboxShader) delete skyboxShader;
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
 }
@@ -78,6 +79,26 @@ void Skybox::setupMesh() {
 
 void Skybox::setTimeOfDay(float time) {
     timeOfDay = time;
+}
+
+bool Skybox::reloadShader() {
+    if (skyboxShader) {
+        delete skyboxShader;
+        skyboxShader = nullptr;
+    }
+    skyboxShader = new Shader(vertPath.c_str(), fragPath.c_str());
+    return skyboxShader && skyboxShader->ID != 0;
+}
+
+void Skybox::setShaderPaths(const std::string& vert, const std::string& frag) {
+    if (!vert.empty()) vertPath = vert;
+    if (!frag.empty()) fragPath = frag;
+    if (!reloadShader()) {
+        std::cerr << "Failed to reload skybox shader, reverting to defaults\n";
+        vertPath = "Resources/Shaders/skybox_vert.glsl";
+        fragPath = "Resources/Shaders/skybox_frag.glsl";
+        reloadShader();
+    }
 }
 
 void Skybox::draw(const float* view, const float* projection) {

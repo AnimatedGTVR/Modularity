@@ -60,9 +60,22 @@ private:
     unsigned int framebuffer = 0, viewportTexture = 0, rbo = 0;
     int currentWidth = 800, currentHeight = 600;
     Shader* shader = nullptr;
+    Shader* defaultShader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
+    struct ShaderEntry {
+        std::unique_ptr<Shader> shader;
+        fs::file_time_type vertTime;
+        fs::file_time_type fragTime;
+        std::string vertPath;
+        std::string fragPath;
+    };
+    std::unordered_map<std::string, ShaderEntry> shaderCache;
+    std::string defaultVertPath = "Resources/Shaders/vert.glsl";
+    std::string defaultFragPath = "Resources/Shaders/frag.glsl";
+    bool autoReloadShaders = true;
+    glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
@@ -76,6 +89,10 @@ public:
 
     void initialize();
     Texture* getTexture(const std::string& path);
+    Shader* getShader(const std::string& vert, const std::string& frag);
+    bool forceReloadShader(const std::string& vert, const std::string& frag);
+    void setAmbientColor(const glm::vec3& color) { ambientColor = color; }
+    glm::vec3 getAmbientColor() const { return ambientColor; }
     void resize(int w, int h);
     int getWidth() const { return currentWidth; }
     int getHeight() const { return currentHeight; }

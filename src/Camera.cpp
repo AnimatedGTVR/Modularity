@@ -29,13 +29,9 @@ void Camera::processMouse(double xpos, double ypos) {
 }
 
 void Camera::processKeyboard(float deltaTime, GLFWwindow* window) {
-    const float CAMERA_SPEED = 5.0f;
-    const float SPRINT_SPEED = 10.0f;
-    const float ACCELERATION = 15.0f;
-
-    float currentSpeed = CAMERA_SPEED;
+    float currentSpeed = moveSpeed;
     if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
-        currentSpeed = SPRINT_SPEED;
+        currentSpeed = sprintSpeed;
     }
 
     glm::vec3 desiredDir(0.0f);
@@ -72,21 +68,29 @@ void Camera::processKeyboard(float deltaTime, GLFWwindow* window) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 
-    glm::vec3 targetVelocity(0.0f);
-    if (isMoving) {
-        float length = glm::length(desiredDir);
-        if (length > 0.0001f) {
-            desiredDir = desiredDir / length;
-            targetVelocity = desiredDir * currentSpeed;
-        } else {
-            targetVelocity = glm::vec3(0.0f);
+    if (smoothMovement) {
+        glm::vec3 targetVelocity(0.0f);
+        if (isMoving) {
+            float length = glm::length(desiredDir);
+            if (length > 0.0001f) {
+                desiredDir = desiredDir / length;
+                targetVelocity = desiredDir * currentSpeed;
+            }
+        }
+
+        float smoothFactor = 1.0f - std::exp(-acceleration * deltaTime);
+        velocity = glm::mix(velocity, targetVelocity, smoothFactor);
+        position += velocity * deltaTime;
+    } else {
+        velocity = glm::vec3(0.0f);
+        if (isMoving) {
+            float length = glm::length(desiredDir);
+            if (length > 0.0001f) {
+                desiredDir /= length;
+                position += desiredDir * currentSpeed * deltaTime;
+            }
         }
     }
-
-    float smoothFactor = 1.0f - std::exp(-ACCELERATION * deltaTime);
-    velocity = glm::mix(velocity, targetVelocity, smoothFactor);
-
-    position += velocity * deltaTime;
 }
 
 glm::mat4 Camera::getViewMatrix() const {

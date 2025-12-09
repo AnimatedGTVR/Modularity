@@ -22,14 +22,24 @@ private:
     bool cursorLocked = false; // true only while holding right mouse for freelook
     int viewportWidth = 800;
     int viewportHeight = 600;
+    bool gizmoHistoryCaptured = false;
     // Standalone material inspection cache
     std::string inspectedMaterialPath;
     MaterialProperties inspectedMaterial;
     std::string inspectedAlbedo;
     std::string inspectedOverlay;
     std::string inspectedNormal;
+    std::string inspectedVertShader;
+    std::string inspectedFragShader;
     bool inspectedUseOverlay = false;
     bool inspectedMaterialValid = false;
+    struct SceneSnapshot {
+        std::vector<SceneObject> objects;
+        int selectedId = -1;
+        int nextId = 0;
+    };
+    std::vector<SceneSnapshot> undoStack;
+    std::vector<SceneSnapshot> redoStack;
 
     std::vector<SceneObject> sceneObjects;
     int selectedObjectId = -1;
@@ -70,6 +80,8 @@ private:
     
     char fileBrowserSearch[256] = "";
     float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
+    bool showEnvironmentWindow = true;
+    bool showCameraWindow = true;
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -85,6 +97,8 @@ private:
     void renderNewProjectDialog();
     void renderOpenProjectDialog();
     void renderMainMenuBar();
+    void renderEnvironmentWindow();
+    void renderCameraWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter);
     void renderFileBrowserPanel();
@@ -117,6 +131,9 @@ private:
     void setParent(int childId, int parentId);
     void loadMaterialFromFile(SceneObject& obj);
     void saveMaterialToFile(const SceneObject& obj);
+    void recordState(const char* reason = "");
+    void undo();
+    void redo();
     
     // Console/logging
     void addConsoleMessage(const std::string& message, ConsoleMessageType type);
@@ -125,10 +142,14 @@ private:
     // Material helpers
     bool loadMaterialData(const std::string& path, MaterialProperties& props,
                           std::string& albedo, std::string& overlay,
-                          std::string& normal, bool& useOverlay);
+                          std::string& normal, bool& useOverlay,
+                          std::string* vertexShaderOut = nullptr,
+                          std::string* fragmentShaderOut = nullptr);
     bool saveMaterialData(const std::string& path, const MaterialProperties& props,
                           const std::string& albedo, const std::string& overlay,
-                          const std::string& normal, bool useOverlay);
+                          const std::string& normal, bool useOverlay,
+                          const std::string& vertexShader,
+                          const std::string& fragmentShader);
     
     // ImGui setup
     void setupImGui();

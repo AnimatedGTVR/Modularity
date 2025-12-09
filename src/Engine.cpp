@@ -10,6 +10,8 @@ struct MaterialFileData {
     std::string overlay;
     std::string normal;
     bool useOverlay = false;
+    std::string vertexShader;
+    std::string fragmentShader;
 };
 
 bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
@@ -44,6 +46,10 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
             outData.normal = val;
         } else if (key == "useOverlay") {
             outData.useOverlay = std::stoi(val) != 0;
+        } else if (key == "vertexShader") {
+            outData.vertexShader = val;
+        } else if (key == "fragmentShader") {
+            outData.fragmentShader = val;
         }
     }
     return true;
@@ -64,6 +70,8 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     f << "albedo=" << data.albedo << "\n";
     f << "overlay=" << data.overlay << "\n";
     f << "normal=" << data.normal << "\n";
+    f << "vertexShader=" << data.vertexShader << "\n";
+    f << "fragmentShader=" << data.fragmentShader << "\n";
     return true;
 }
 } // namespace
@@ -91,6 +99,55 @@ void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3&
     if (scale.z != 0.0f) rotMat[2] /= scale.z;
 
     rot = glm::eulerAngles(glm::quat_cast(rotMat));
+}
+
+void Engine::recordState(const char* /*reason*/) {
+    SceneSnapshot snap;
+    snap.objects = sceneObjects;
+    snap.selectedId = selectedObjectId;
+    snap.nextId = nextObjectId;
+
+    undoStack.push_back(std::move(snap));
+    if (undoStack.size() > 64) {
+        undoStack.erase(undoStack.begin());
+    }
+    redoStack.clear();
+}
+
+void Engine::undo() {
+    if (undoStack.empty()) return;
+
+    SceneSnapshot current;
+    current.objects = sceneObjects;
+    current.selectedId = selectedObjectId;
+    current.nextId = nextObjectId;
+
+    SceneSnapshot snap = undoStack.back();
+    undoStack.pop_back();
+
+    redoStack.push_back(std::move(current));
+    sceneObjects = std::move(snap.objects);
+    selectedObjectId = snap.selectedId;
+    nextObjectId = snap.nextId;
+    projectManager.currentProject.hasUnsavedChanges = true;
+}
+
+void Engine::redo() {
+    if (redoStack.empty()) return;
+
+    SceneSnapshot current;
+    current.objects = sceneObjects;
+    current.selectedId = selectedObjectId;
+    current.nextId = nextObjectId;
+
+    SceneSnapshot snap = redoStack.back();
+    redoStack.pop_back();
+
+    undoStack.push_back(std::move(current));
+    sceneObjects = std::move(snap.objects);
+    selectedObjectId = snap.selectedId;
+    nextObjectId = snap.nextId;
+    projectManager.currentProject.hasUnsavedChanges = true;
 }
 
 bool Engine::init() {
@@ -207,6 +264,8 @@ void Engine::run() {
                 if (showInspector) renderInspectorPanel();
                 if (showFileBrowser) renderFileBrowserPanel();
                 if (showConsole) renderConsolePanel();
+                if (showEnvironmentWindow) renderEnvironmentWindow();
+                if (showCameraWindow) renderCameraWindow();
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
@@ -258,6 +317,7 @@ void Engine::shutdown() {
 }
 
 void Engine::importOBJToScene(const std::string& filepath, const std::string& objectName) {
+    recordState("importOBJ");
     std::string errorMsg;
     int meshId = g_objLoader.loadOBJ(filepath, errorMsg);
     
@@ -292,6 +352,7 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
 }
 
 void Engine::importModelToScene(const std::string& filepath, const std::string& objectName) {
+    recordState("importModel");
     auto& modelLoader = getModelLoader();
     ModelLoadResult result = modelLoader.loadModel(filepath);
 
@@ -336,6 +397,8 @@ void Engine::loadMaterialFromFile(SceneObject& obj) {
         obj.overlayTexturePath = data.overlay;
         obj.normalMapPath = data.normal;
         obj.useOverlay = data.useOverlay;
+        obj.vertexShaderPath = data.vertexShader;
+        obj.fragmentShaderPath = data.fragmentShader;
         addConsoleMessage("Applied material: " + obj.materialPath, ConsoleMessageType::Success);
         projectManager.currentProject.hasUnsavedChanges = true;
     } catch (...) {
@@ -345,7 +408,9 @@ void Engine::loadMaterialFromFile(SceneObject& obj) {
 
 bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props,
                               std::string& albedo, std::string& overlay,
-                              std::string& normal, bool& useOverlay)
+                              std::string& normal, bool& useOverlay,
+                              std::string* vertexShaderOut,
+                              std::string* fragmentShaderOut)
 {
     MaterialFileData data;
     if (!readMaterialFile(path, data)) {
@@ -356,12 +421,16 @@ bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props
     overlay = data.overlay;
     normal = data.normal;
     useOverlay = data.useOverlay;
+    if (vertexShaderOut) *vertexShaderOut = data.vertexShader;
+    if (fragmentShaderOut) *fragmentShaderOut = data.fragmentShader;
     return true;
 }
 
 bool Engine::saveMaterialData(const std::string& path, const MaterialProperties& props,
                               const std::string& albedo, const std::string& overlay,
-                              const std::string& normal, bool useOverlay)
+                              const std::string& normal, bool useOverlay,
+                              const std::string& vertexShader,
+                              const std::string& fragmentShader)
 {
     MaterialFileData data;
     data.props = props;
@@ -369,6 +438,8 @@ bool Engine::saveMaterialData(const std::string& path, const MaterialProperties&
     data.overlay = overlay;
     data.normal = normal;
     data.useOverlay = useOverlay;
+    data.vertexShader = vertexShader;
+    data.fragmentShader = fragmentShader;
     return writeMaterialFile(data, path);
 }
 
@@ -384,6 +455,8 @@ void Engine::saveMaterialToFile(const SceneObject& obj) {
         data.overlay = obj.overlayTexturePath;
         data.normal = obj.normalMapPath;
         data.useOverlay = obj.useOverlay;
+        data.vertexShader = obj.vertexShaderPath;
+        data.fragmentShader = obj.fragmentShaderPath;
 
         if (!writeMaterialFile(data, obj.materialPath)) {
             addConsoleMessage("Failed to open material for writing: " + obj.materialPath, ConsoleMessageType::Error);
@@ -431,16 +504,43 @@ void Engine::handleKeyboardShortcuts() {
         ctrlNPressed = false;
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Q)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-    if (ImGui::IsKeyPressed(ImGuiKey_W)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
-    if (ImGui::IsKeyPressed(ImGuiKey_E)) mCurrentGizmoOperation = ImGuizmo::SCALE;
-    if (ImGui::IsKeyPressed(ImGuiKey_R)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
+    if (!cursorLocked) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Q)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+        if (ImGui::IsKeyPressed(ImGuiKey_W)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
+        if (ImGui::IsKeyPressed(ImGuiKey_E)) mCurrentGizmoOperation = ImGuizmo::SCALE;
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Z)) {
-        mCurrentGizmoMode = (mCurrentGizmoMode == ImGuizmo::LOCAL) ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+        if (ImGui::IsKeyPressed(ImGuiKey_Z)) {
+            mCurrentGizmoMode = (mCurrentGizmoMode == ImGuizmo::LOCAL) ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+        }
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_LeftCtrl)) useSnap = !useSnap;
+    static bool snapPressed = false;
+    if (ImGui::IsKeyPressed(ImGuiKey_X) && !snapPressed) {
+        useSnap = !useSnap;
+        snapPressed = true;
+    }
+    if (ImGui::IsKeyReleased(ImGuiKey_X)) {
+        snapPressed = false;
+    }
+
+    static bool undoPressed = false;
+    if (ctrlDown && glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_PRESS && !undoPressed) {
+        undo();
+        undoPressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_RELEASE) {
+        undoPressed = false;
+    }
+
+    static bool redoPressed = false;
+    if (ctrlDown && glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_PRESS && !redoPressed) {
+        redo();
+        redoPressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_RELEASE) {
+        redoPressed = false;
+    }
 }
 
 void Engine::OpenProjectPath(const std::string& path) {
@@ -497,6 +597,8 @@ void Engine::loadRecentScenes() {
     sceneObjects.clear();
     selectedObjectId = -1;
     nextObjectId = 0;
+    undoStack.clear();
+    redoStack.clear();
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
     if (fs::exists(scenePath)) {
@@ -510,6 +612,7 @@ void Engine::loadRecentScenes() {
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
         addObject(ObjectType::Cube, "Cube");
     }
+    recordState("sceneLoaded");
 
     fileBrowser.currentPath = projectManager.currentProject.assetsPath;
     fileBrowser.needsRefresh = true;
@@ -537,6 +640,8 @@ void Engine::loadScene(const std::string& sceneName) {
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId)) {
+        undoStack.clear();
+        redoStack.clear();
         projectManager.currentProject.currentSceneName = sceneName;
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
@@ -547,6 +652,7 @@ void Engine::loadScene(const std::string& sceneName) {
         if (!hasDirLight) {
             addObject(ObjectType::DirectionalLight, "Directional Light");
         }
+        recordState("sceneLoaded");
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
     } else {
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
@@ -563,6 +669,8 @@ void Engine::createNewScene(const std::string& sceneName) {
     sceneObjects.clear();
     selectedObjectId = -1;
     nextObjectId = 0;
+    undoStack.clear();
+    redoStack.clear();
 
     projectManager.currentProject.currentSceneName = sceneName;
     projectManager.currentProject.hasUnsavedChanges = true;
@@ -570,11 +678,13 @@ void Engine::createNewScene(const std::string& sceneName) {
     addObject(ObjectType::Cube, "Cube");
     addObject(ObjectType::DirectionalLight, "Directional Light");
     saveCurrentScene();
+    recordState("newScene");
 
     addConsoleMessage("Created new scene: " + sceneName, ConsoleMessageType::Success);
 }
 
 void Engine::addObject(ObjectType type, const std::string& baseName) {
+    recordState("addObject");
     int id = nextObjectId++;
     std::string name = baseName + " " + std::to_string(id);
     sceneObjects.push_back(SceneObject(name, type, id));
@@ -605,6 +715,7 @@ void Engine::duplicateSelected() {
         [this](const SceneObject& obj) { return obj.id == selectedObjectId; });
 
     if (it != sceneObjects.end()) {
+        recordState("duplicate");
         int id = nextObjectId++;
         SceneObject newObj(it->name + " (Copy)", it->type, id);
         newObj.position = it->position + glm::vec3(1.0f, 0.0f, 0.0f);
@@ -617,6 +728,8 @@ void Engine::duplicateSelected() {
         newObj.albedoTexturePath = it->albedoTexturePath;
         newObj.overlayTexturePath = it->overlayTexturePath;
         newObj.normalMapPath = it->normalMapPath;
+        newObj.vertexShaderPath = it->vertexShaderPath;
+        newObj.fragmentShaderPath = it->fragmentShaderPath;
         newObj.useOverlay = it->useOverlay;
         newObj.light = it->light;
         
@@ -630,6 +743,7 @@ void Engine::duplicateSelected() {
 }
 
 void Engine::deleteSelected() {
+    recordState("delete");
     auto it = std::remove_if(sceneObjects.begin(), sceneObjects.end(),
         [this](const SceneObject& obj) { return obj.id == selectedObjectId; });
 
@@ -644,6 +758,7 @@ void Engine::deleteSelected() {
 }
 
 void Engine::setParent(int childId, int parentId) {
+    recordState("reparent");
     auto childIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
         [childId](const SceneObject& obj) { return obj.id == childId; });
 

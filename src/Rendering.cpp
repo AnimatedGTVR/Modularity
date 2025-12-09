@@ -411,7 +411,9 @@ const OBJLoader::LoadedMesh* OBJLoader::getMeshInfo(int index) const {
 
 // Renderer implementation
 Renderer::~Renderer() {
-    delete shader;
+    shaderCache.clear();
+    shader = nullptr;
+    defaultShader = nullptr;
     delete texture1;
     delete texture2;
     delete cubeMesh;
@@ -438,13 +440,21 @@ Texture* Renderer::getTexture(const std::string& path) {
 }
 
 void Renderer::initialize() {
-    shader = new Shader("Resources/Shaders/vert.glsl", "Resources/Shaders/frag.glsl");
+    shader = new Shader(defaultVertPath.c_str(), defaultFragPath.c_str());
+    defaultShader = shader;
     if (shader->ID == 0) {
         std::cerr << "Shader compilation failed!\n";
         delete shader;
         shader = nullptr;
         throw std::runtime_error("Shader error");
     }
+    ShaderEntry entry;
+    entry.shader.reset(defaultShader);
+    entry.vertPath = defaultVertPath;
+    entry.fragPath = defaultFragPath;
+    if (fs::exists(defaultVertPath)) entry.vertTime = fs::last_write_time(defaultVertPath);
+    if (fs::exists(defaultFragPath)) entry.fragTime = fs::last_write_time(defaultFragPath);
+    shaderCache[defaultVertPath + "|" + defaultFragPath] = std::move(entry);
 
     texture1 = new Texture("Resources/Textures/container.jpg");
     texture2 = new Texture("Resources/Textures/awesomeface.png");
@@ -461,6 +471,86 @@ void Renderer::initialize() {
 
     setupFBO();
     glEnable(GL_DEPTH_TEST);
+}
+
+Shader* Renderer::getShader(const std::string& vert, const std::string& frag) {
+    std::string vPath = vert.empty() ? defaultVertPath : vert;
+    std::string fPath = frag.empty() ? defaultFragPath : frag;
+    std::string key = vPath + "|" + fPath;
+
+    auto reloadEntry = [&](ShaderEntry& e) -> Shader* {
+        std::unique_ptr<Shader> newShader = std::make_unique<Shader>(vPath.c_str(), fPath.c_str());
+        if (!newShader || newShader->ID == 0) {
+            std::cerr << "Shader reload failed for " << key << ", falling back to default\n";
+            return defaultShader;
+        }
+        e.shader = std::move(newShader);
+        e.vertPath = vPath;
+        e.fragPath = fPath;
+        if (fs::exists(vPath)) e.vertTime = fs::last_write_time(vPath);
+        if (fs::exists(fPath)) e.fragTime = fs::last_write_time(fPath);
+        return e.shader.get();
+    };
+
+    auto it = shaderCache.find(key);
+    if (it != shaderCache.end()) {
+        ShaderEntry& entry = it->second;
+        if (autoReloadShaders) {
+            bool changed = false;
+            if (fs::exists(vPath)) {
+                auto t = fs::last_write_time(vPath);
+                if (t != entry.vertTime) { changed = true; entry.vertTime = t; }
+            }
+            if (fs::exists(fPath)) {
+                auto t = fs::last_write_time(fPath);
+                if (t != entry.fragTime) { changed = true; entry.fragTime = t; }
+            }
+            if (changed) {
+                return reloadEntry(entry);
+            }
+        }
+        return entry.shader ? entry.shader.get() : defaultShader;
+    }
+
+    ShaderEntry entry;
+    entry.vertPath = vPath;
+    entry.fragPath = fPath;
+    if (fs::exists(vPath)) entry.vertTime = fs::last_write_time(vPath);
+    if (fs::exists(fPath)) entry.fragTime = fs::last_write_time(fPath);
+    entry.shader = std::make_unique<Shader>(vPath.c_str(), fPath.c_str());
+    if (!entry.shader || entry.shader->ID == 0) {
+        std::cerr << "Shader compile failed for " << key << ", using default\n";
+        shaderCache[key] = std::move(entry);
+        return defaultShader;
+    }
+    Shader* ptr = entry.shader.get();
+    shaderCache[key] = std::move(entry);
+    return ptr;
+}
+
+bool Renderer::forceReloadShader(const std::string& vert, const std::string& frag) {
+    std::string vPath = vert.empty() ? defaultVertPath : vert;
+    std::string fPath = frag.empty() ? defaultFragPath : frag;
+    std::string key = vPath + "|" + fPath;
+    auto it = shaderCache.find(key);
+    if (it != shaderCache.end()) {
+        shaderCache.erase(it);
+    }
+    ShaderEntry entry;
+    entry.vertPath = vPath;
+    entry.fragPath = fPath;
+    if (fs::exists(vPath)) entry.vertTime = fs::last_write_time(vPath);
+    if (fs::exists(fPath)) entry.fragTime = fs::last_write_time(fPath);
+    entry.shader = std::make_unique<Shader>(vPath.c_str(), fPath.c_str());
+    if (!entry.shader || entry.shader->ID == 0) {
+        std::cerr << "Shader force reload failed for " << key << "\n";
+        return false;
+    }
+    if (vPath == defaultVertPath && fPath == defaultFragPath) {
+        defaultShader = entry.shader.get();
+    }
+    shaderCache[key] = std::move(entry);
+    return true;
 }
 
 void Renderer::setupFBO() {
@@ -612,17 +702,8 @@ void Renderer::renderObject(const SceneObject& obj) {
 }
 
 void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects) {
-    if (!shader) return;
-    shader->use();
-    shader->setMat4("view", camera.getViewMatrix());
-    shader->setMat4("projection", glm::perspective(glm::radians(FOV), (float)currentWidth / (float)currentHeight, NEAR_PLANE, FAR_PLANE));
-    shader->setVec3("viewPos", camera.position);
-    shader->setFloat("ambientStrength", 0.25f);
-    shader->setFloat("specularStrength", 0.8f);
-    shader->setFloat("shininess", 64.0f);
-    shader->setFloat("mixAmount", 0.3f);
+    if (!defaultShader) return;
 
-    // Collect up to 10 lights
     struct LightUniform {
         int type = 0; // 0 dir,1 point,2 spot
         glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f);
@@ -649,7 +730,6 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     std::vector<LightUniform> lights;
     lights.reserve(10);
 
-    // Add directionals first, then spots, then points
     for (const auto& obj : sceneObjects) {
         if (obj.light.enabled && obj.type == ObjectType::DirectionalLight) {
             LightUniform l;
@@ -692,34 +772,36 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
             }
         }
     }
-    int count = static_cast<int>(lights.size());
-    shader->setInt("lightCount", count);
-    for (int i = 0; i < count; ++i) {
-        const auto& l = lights[i];
-        std::string idx = "[" + std::to_string(i) + "]";
-        shader->setInt("lightTypeArr" + idx, l.type);
-        shader->setVec3("lightDirArr" + idx, l.dir);
-        shader->setVec3("lightPosArr" + idx, l.pos);
-        shader->setVec3("lightColorArr" + idx, l.color);
-        shader->setFloat("lightIntensityArr" + idx, l.intensity);
-        shader->setFloat("lightRangeArr" + idx, l.range);
-        shader->setFloat("lightInnerCosArr" + idx, l.inner);
-        shader->setFloat("lightOuterCosArr" + idx, l.outer);
-    }
-
-    // Bind base textures once per frame (used by objects)
-    if (texture1) texture1->Bind(0);
-    else glBindTexture(GL_TEXTURE_2D, 0);
-    if (texture2) texture2->Bind(1);
-    else glBindTexture(GL_TEXTURE_2D, 0);
-
-    if (texture1) texture1->Bind(0);
-    if (texture2) texture2->Bind(1);
 
     for (const auto& obj : sceneObjects) {
-        // Skip light types in the main render pass (they are handled as gizmos)
+        // Skip light gizmo-only types
         if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
             continue;
+        }
+
+        Shader* active = getShader(obj.vertexShaderPath, obj.fragmentShaderPath);
+        if (!active) continue;
+        shader = active;
+        shader->use();
+
+        shader->setMat4("view", camera.getViewMatrix());
+        shader->setMat4("projection", glm::perspective(glm::radians(FOV), (float)currentWidth / (float)currentHeight, NEAR_PLANE, FAR_PLANE));
+        shader->setVec3("viewPos", camera.position);
+        shader->setVec3("ambientColor", ambientColor);
+        shader->setVec3("ambientColor", ambientColor);
+
+        shader->setInt("lightCount", static_cast<int>(lights.size()));
+        for (size_t i = 0; i < lights.size() && i < 10; ++i) {
+            const auto& l = lights[i];
+            std::string idx = "[" + std::to_string(i) + "]";
+            shader->setInt("lightTypeArr" + idx, l.type);
+            shader->setVec3("lightDirArr" + idx, l.dir);
+            shader->setVec3("lightPosArr" + idx, l.pos);
+            shader->setVec3("lightColorArr" + idx, l.color);
+            shader->setFloat("lightIntensityArr" + idx, l.intensity);
+            shader->setFloat("lightRangeArr" + idx, l.range);
+            shader->setFloat("lightInnerCosArr" + idx, l.inner);
+            shader->setFloat("lightOuterCosArr" + idx, l.outer);
         }
 
         glm::mat4 model = glm::mat4(1.0f);

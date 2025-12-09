@@ -9,6 +9,10 @@ public:
     glm::vec3 front = glm::vec3(0.0f, 0.0f, -1.0f);
     glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
     glm::vec3 velocity = glm::vec3(0.0f);
+    float moveSpeed = 5.0f;
+    float sprintSpeed = 10.0f;
+    float acceleration = 15.0f;
+    bool smoothMovement = true;
     float yaw = -90.0f;
     float pitch = 0.0f;
     float speed = CAMERA_SPEED;

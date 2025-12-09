@@ -67,6 +67,8 @@ public:
     std::string albedoTexturePath;
     std::string overlayTexturePath;
     std::string normalMapPath;
+    std::string vertexShaderPath;
+    std::string fragmentShaderPath;
     bool useOverlay = false;
     LightComponent light;  // Only used when type is a light
 

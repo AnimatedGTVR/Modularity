@@ -16,6 +16,7 @@ uniform vec3 viewPos;
 uniform vec3 materialColor = vec3(1.0);
 
 uniform float ambientStrength = 0.2;
+uniform vec3 ambientColor = vec3(1.0);
 uniform float specularStrength = 0.5;
 uniform float shininess = 32.0;
 const int MAX_LIGHTS = 10;
@@ -62,7 +63,7 @@ void main()
         norm = normalize(TBN * mapN);
     }
 
-    vec3 ambient = ambientStrength * baseColor;
+    vec3 ambient = ambientStrength * ambientColor * baseColor;
     vec3 lighting = ambient;
 
     int count = min(lightCount, MAX_LIGHTS);

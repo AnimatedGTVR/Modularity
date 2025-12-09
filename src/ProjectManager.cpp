@@ -259,6 +259,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "albedoTex=" << obj.albedoTexturePath << "\n";
             file << "overlayTex=" << obj.overlayTexturePath << "\n";
             file << "normalMap=" << obj.normalMapPath << "\n";
+            file << "vertexShader=" << obj.vertexShaderPath << "\n";
+            file << "fragmentShader=" << obj.fragmentShaderPath << "\n";
             file << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
             file << "lightColor=" << obj.light.color.r << "," << obj.light.color.g << "," << obj.light.color.b << "\n";
             file << "lightIntensity=" << obj.light.intensity << "\n";
@@ -368,6 +370,10 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->overlayTexturePath = value;
                 } else if (key == "normalMap") {
                     currentObj->normalMapPath = value;
+                } else if (key == "vertexShader") {
+                    currentObj->vertexShaderPath = value;
+                } else if (key == "fragmentShader") {
+                    currentObj->fragmentShaderPath = value;
                 } else if (key == "useOverlay") {
                     currentObj->useOverlay = (std::stoi(value) != 0);
                 } else if (key == "lightColor") {

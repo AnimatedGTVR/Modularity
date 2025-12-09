@@ -1110,6 +1110,8 @@ void Engine::renderMainMenuBar() {
             ImGui::MenuItem("File Browser", nullptr, &showFileBrowser);
             ImGui::MenuItem("Console", nullptr, &showConsole);
             ImGui::MenuItem("Project", nullptr, &showProjectBrowser);
+            ImGui::MenuItem("Environment", nullptr, &showEnvironmentWindow);
+            ImGui::MenuItem("Camera", nullptr, &showCameraWindow);
             ImGui::Separator();
             if (ImGui::MenuItem("Fullscreen Viewport", "F11", viewportFullscreen)) {
                 viewportFullscreen = !viewportFullscreen;
@@ -1271,22 +1273,6 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
 void Engine::renderInspectorPanel() {
     ImGui::Begin("Inspector", &showInspector);
 
-    // Environment controls
-    if (Skybox* skybox = renderer.getSkybox()) {
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.45f, 0.55f, 1.0f));
-        if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
-            float tod = skybox->getTimeOfDay();
-            ImGui::TextDisabled("Day/Night Cycle");
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderFloat("##DayNight", &tod, 0.0f, 1.0f, "%.2f")) {
-                skybox->setTimeOfDay(tod);
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-        }
-        ImGui::PopStyleColor();
-        ImGui::Spacing();
-    }
-
     fs::path selectedMaterialPath;
     bool browserHasMaterial = false;
     if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
@@ -1301,7 +1287,9 @@ void Engine::renderInspectorPanel() {
                     inspectedAlbedo,
                     inspectedOverlay,
                     inspectedNormal,
-                    inspectedUseOverlay
+                    inspectedUseOverlay,
+                    &inspectedVertShader,
+                    &inspectedFragShader
                 );
                 inspectedMaterialPath = selectedMaterialPath.string();
             }
@@ -1388,6 +1376,48 @@ void Engine::renderInspectorPanel() {
                 matChanged |= textureField("Normal Map", "PreviewNormal", inspectedNormal);
 
                 ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "Shader");
+                auto shaderField = [&](const char* label, const char* idSuffix, std::string& path) {
+                    bool changed = false;
+                    ImGui::PushID(idSuffix);
+                    ImGui::TextUnformatted(label);
+                    ImGui::SetNextItemWidth(-140);
+                    char buf[512] = {};
+                    std::snprintf(buf, sizeof(buf), "%s", path.c_str());
+                    if (ImGui::InputText("##Path", buf, sizeof(buf))) {
+                        path = buf;
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Clear")) {
+                        path.clear();
+                        changed = true;
+                    }
+                    bool selectionIsShader = false;
+                    if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+                        selectionIsShader = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == FileCategory::Shader;
+                    }
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(!selectionIsShader);
+                    std::string btn = std::string("Use Selection##") + idSuffix;
+                    if (ImGui::SmallButton(btn.c_str())) {
+                        path = fileBrowser.selectedFile.string();
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    return changed;
+                };
+                matChanged |= shaderField("Vertex Shader", "PreviewVert", inspectedVertShader);
+                matChanged |= shaderField("Fragment Shader", "PreviewFrag", inspectedFragShader);
+
+                ImGui::BeginDisabled(inspectedVertShader.empty() && inspectedFragShader.empty());
+                if (ImGui::Button("Reload Shader")) {
+                    renderer.forceReloadShader(inspectedVertShader, inspectedFragShader);
+                }
+                ImGui::EndDisabled();
+
+                ImGui::Spacing();
                 if (ImGui::Button("Reload")) {
                     inspectedMaterialValid = loadMaterialData(
                         selectedMaterialPath.string(),
@@ -1395,7 +1425,9 @@ void Engine::renderInspectorPanel() {
                         inspectedAlbedo,
                         inspectedOverlay,
                         inspectedNormal,
-                        inspectedUseOverlay
+                        inspectedUseOverlay,
+                        &inspectedVertShader,
+                        &inspectedFragShader
                     );
                 }
                 ImGui::SameLine();
@@ -1406,7 +1438,9 @@ void Engine::renderInspectorPanel() {
                             inspectedAlbedo,
                             inspectedOverlay,
                             inspectedNormal,
-                            inspectedUseOverlay))
+                            inspectedUseOverlay,
+                            inspectedVertShader,
+                            inspectedFragShader))
                     {
                         addConsoleMessage("Saved material: " + selectedMaterialPath.string(), ConsoleMessageType::Success);
                     } else {
@@ -1427,6 +1461,8 @@ void Engine::renderInspectorPanel() {
                             target->normalMapPath = inspectedNormal;
                             target->useOverlay = inspectedUseOverlay;
                             target->materialPath = selectedMaterialPath.string();
+                            target->vertexShaderPath = inspectedVertShader;
+                            target->fragmentShaderPath = inspectedFragShader;
                             projectManager.currentProject.hasUnsavedChanges = true;
                             addConsoleMessage("Applied material to " + target->name, ConsoleMessageType::Success);
                         }
@@ -1621,6 +1657,48 @@ void Engine::renderInspectorPanel() {
             }
             materialChanged |= textureField("Detail Map", "ObjOverlay", obj.overlayTexturePath);
             materialChanged |= textureField("Normal Map", "ObjNormal", obj.normalMapPath);
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "Shader");
+            auto shaderField = [&](const char* label, const char* idSuffix, std::string& path) {
+                bool changed = false;
+                ImGui::PushID(idSuffix);
+                ImGui::TextUnformatted(label);
+                ImGui::SetNextItemWidth(-160);
+                char buf[512] = {};
+                std::snprintf(buf, sizeof(buf), "%s", path.c_str());
+                if (ImGui::InputText("##Path", buf, sizeof(buf))) {
+                    path = buf;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) {
+                    path.clear();
+                    changed = true;
+                }
+                bool selectionIsShader = false;
+                if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+                    selectionIsShader = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == FileCategory::Shader;
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!selectionIsShader);
+                std::string btn = std::string("Use Selection##") + idSuffix;
+                if (ImGui::SmallButton(btn.c_str())) {
+                    path = fileBrowser.selectedFile.string();
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                return changed;
+            };
+            materialChanged |= shaderField("Vertex Shader", "ObjVert", obj.vertexShaderPath);
+            materialChanged |= shaderField("Fragment Shader", "ObjFrag", obj.fragmentShaderPath);
+
+            ImGui::BeginDisabled(obj.vertexShaderPath.empty() && obj.fragmentShaderPath.empty());
+            if (ImGui::Button("Reload Shader")) {
+                renderer.forceReloadShader(obj.vertexShaderPath, obj.fragmentShaderPath);
+            }
+            ImGui::EndDisabled();
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -1977,6 +2055,10 @@ void Engine::renderViewport() {
             );
 
             if (ImGuizmo::IsUsing()) {
+                if (!gizmoHistoryCaptured) {
+                    recordState("gizmo");
+                    gizmoHistoryCaptured = true;
+                }
                 float t[3], r[3], s[3];
                 ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(modelMatrix), t, r, s);
 
@@ -1985,6 +2067,8 @@ void Engine::renderViewport() {
                 selectedObj->scale    = glm::vec3(s[0], s[1], s[2]);
 
                 projectManager.currentProject.hasUnsavedChanges = true;
+            } else {
+                gizmoHistoryCaptured = false;
             }
         }
 
@@ -2461,6 +2545,85 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
     }
+
+    ImGui::End();
+}
+
+void Engine::renderEnvironmentWindow() {
+    if (!showEnvironmentWindow) return;
+    ImGui::Begin("Environment", &showEnvironmentWindow);
+
+    Skybox* skybox = renderer.getSkybox();
+    if (skybox) {
+        float tod = skybox->getTimeOfDay();
+        ImGui::TextDisabled("Day / Night Cycle");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##EnvDayNight", &tod, 0.0f, 1.0f, "%.2f")) {
+            skybox->setTimeOfDay(tod);
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+
+        static char skyVertBuf[256] = {};
+        static char skyFragBuf[256] = {};
+        if (skyVertBuf[0] == '\0') std::snprintf(skyVertBuf, sizeof(skyVertBuf), "%s", skybox->getVertPath().c_str());
+        if (skyFragBuf[0] == '\0') std::snprintf(skyFragBuf, sizeof(skyFragBuf), "%s", skybox->getFragPath().c_str());
+
+        ImGui::Separator();
+        ImGui::Text("Skybox Shader");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##SkyVert", skyVertBuf, sizeof(skyVertBuf))) {}
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##SkyFrag", skyFragBuf, sizeof(skyFragBuf))) {}
+
+        bool selectionIsShader = false;
+        if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+            selectionIsShader = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == FileCategory::Shader;
+        }
+        ImGui::BeginDisabled(!selectionIsShader);
+        if (ImGui::Button("Use Selection as Vert")) {
+            std::snprintf(skyVertBuf, sizeof(skyVertBuf), "%s", fileBrowser.selectedFile.string().c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Use Selection as Frag")) {
+            std::snprintf(skyFragBuf, sizeof(skyFragBuf), "%s", fileBrowser.selectedFile.string().c_str());
+        }
+        ImGui::EndDisabled();
+        if (ImGui::Button("Reload Skybox Shader")) {
+            skybox->setShaderPaths(skyVertBuf, skyFragBuf);
+        }
+    } else {
+        ImGui::TextDisabled("Skybox not available");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Global Ambient");
+    glm::vec3 ambient = renderer.getAmbientColor();
+    if (ImGui::ColorEdit3("##AmbientColor", &ambient.x, ImGuiColorEditFlags_DisplayRGB)) {
+        renderer.setAmbientColor(ambient);
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+
+    ImGui::End();
+}
+
+void Engine::renderCameraWindow() {
+    if (!showCameraWindow) return;
+    ImGui::Begin("Camera", &showCameraWindow);
+
+    ImGui::TextDisabled("Movement");
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::DragFloat("Base Speed", &camera.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
+        camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::DragFloat("Sprint Speed", &camera.sprintSpeed, 0.1f, 0.1f, 200.0f, "%.2f")) {
+        camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+    }
+    ImGui::Checkbox("Smooth Movement", &camera.smoothMovement);
+    ImGui::BeginDisabled(!camera.smoothMovement);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::DragFloat("Acceleration", &camera.acceleration, 0.1f, 0.1f, 100.0f, "%.2f");
+    ImGui::EndDisabled();
 
     ImGui::End();
 }
