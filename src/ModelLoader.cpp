@@ -117,6 +117,9 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
         return result;
     }
     
+    glm::vec3 boundsMin(FLT_MAX);
+    glm::vec3 boundsMax(-FLT_MAX);
+
     // Process all meshes in the scene
     std::vector<float> vertices;
     result.meshCount = scene->mNumMeshes;
@@ -125,7 +128,7 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     result.hasTangents = false;
     
     // Process the root node recursively
-    processNode(scene->mRootNode, scene, vertices);
+    processNode(scene->mRootNode, scene, vertices, boundsMin, boundsMax);
     
     // Check mesh properties
     for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
@@ -152,6 +155,9 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     loaded.hasNormals = result.hasNormals;
     loaded.hasTexCoords = result.hasTexCoords;
     
+    loaded.boundsMin = boundsMin;
+    loaded.boundsMax = boundsMax;
+
     loadedMeshes.push_back(std::move(loaded));
     
     result.success = true;
@@ -165,20 +171,20 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     return result;
 }
 
-void ModelLoader::processNode(aiNode* node, const aiScene* scene, std::vector<float>& vertices) {
+void ModelLoader::processNode(aiNode* node, const aiScene* scene, std::vector<float>& vertices, glm::vec3& boundsMin, glm::vec3& boundsMax) {
     // Process all meshes in this node
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        processMesh(mesh, scene, vertices);
+        processMesh(mesh, scene, vertices, boundsMin, boundsMax);
     }
     
     // Process children nodes
     for (unsigned int i = 0; i < node->mNumChildren; i++) {
-        processNode(node->mChildren[i], scene, vertices);
+        processNode(node->mChildren[i], scene, vertices, boundsMin, boundsMax);
     }
 }
 
-void ModelLoader::processMesh(aiMesh* mesh, const aiScene* scene, std::vector<float>& vertices) {
+void ModelLoader::processMesh(aiMesh* mesh, const aiScene* scene, std::vector<float>& vertices, glm::vec3& boundsMin, glm::vec3& boundsMax) {
     // Process each face
     for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
         aiFace face = mesh->mFaces[i];
@@ -191,6 +197,13 @@ void ModelLoader::processMesh(aiMesh* mesh, const aiScene* scene, std::vector<fl
             vertices.push_back(mesh->mVertices[index].x);
             vertices.push_back(mesh->mVertices[index].y);
             vertices.push_back(mesh->mVertices[index].z);
+
+            boundsMin.x = std::min(boundsMin.x, mesh->mVertices[index].x);
+            boundsMin.y = std::min(boundsMin.y, mesh->mVertices[index].y);
+            boundsMin.z = std::min(boundsMin.z, mesh->mVertices[index].z);
+            boundsMax.x = std::max(boundsMax.x, mesh->mVertices[index].x);
+            boundsMax.y = std::max(boundsMax.y, mesh->mVertices[index].y);
+            boundsMax.z = std::max(boundsMax.z, mesh->mVertices[index].z);
             
             // Normal
             if (mesh->mNormals) {

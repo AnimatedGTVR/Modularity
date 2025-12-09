@@ -19,9 +19,17 @@ private:
     ViewportController viewportController;
     float deltaTime = 0.0f;
     float lastFrame = 0.0f;
-    bool cursorLocked = false;
+    bool cursorLocked = false; // true only while holding right mouse for freelook
     int viewportWidth = 800;
     int viewportHeight = 600;
+    // Standalone material inspection cache
+    std::string inspectedMaterialPath;
+    MaterialProperties inspectedMaterial;
+    std::string inspectedAlbedo;
+    std::string inspectedOverlay;
+    std::string inspectedNormal;
+    bool inspectedUseOverlay = false;
+    bool inspectedMaterialValid = false;
 
     std::vector<SceneObject> sceneObjects;
     int selectedObjectId = -1;
@@ -113,6 +121,14 @@ private:
     // Console/logging
     void addConsoleMessage(const std::string& message, ConsoleMessageType type);
     void logToConsole(const std::string& message);
+
+    // Material helpers
+    bool loadMaterialData(const std::string& path, MaterialProperties& props,
+                          std::string& albedo, std::string& overlay,
+                          std::string& normal, bool& useOverlay);
+    bool saveMaterialData(const std::string& path, const MaterialProperties& props,
+                          const std::string& albedo, const std::string& overlay,
+                          const std::string& normal, bool useOverlay);
     
     // ImGui setup
     void setupImGui();

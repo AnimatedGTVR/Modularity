@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cfloat>
 #include <string>
 #include <vector>
 #include <memory>

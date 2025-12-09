@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "ModelLoader.h"
 #include <algorithm>
+#include <cfloat>
 
 #ifdef _WIN32
 #include <shlobj.h>
@@ -376,9 +377,11 @@ void Engine::renderFileBrowserPanel() {
     
     for (size_t i = 0; i < pathParts.size(); i++) {
         std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
+        ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton(name.c_str())) {
             fileBrowser.navigateTo(pathParts[i]);
         }
+        ImGui::PopID();
         if (i < pathParts.size() - 1) {
             ImGui::SameLine(0, 2);
             ImGui::TextDisabled("/");
@@ -1284,8 +1287,168 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
     }
 
+    fs::path selectedMaterialPath;
+    bool browserHasMaterial = false;
+    if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+        fs::directory_entry entry(fileBrowser.selectedFile);
+        if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+            selectedMaterialPath = entry.path();
+            browserHasMaterial = true;
+            if (inspectedMaterialPath != selectedMaterialPath.string()) {
+                inspectedMaterialValid = loadMaterialData(
+                    selectedMaterialPath.string(),
+                    inspectedMaterial,
+                    inspectedAlbedo,
+                    inspectedOverlay,
+                    inspectedNormal,
+                    inspectedUseOverlay
+                );
+                inspectedMaterialPath = selectedMaterialPath.string();
+            }
+        } else {
+            inspectedMaterialPath.clear();
+            inspectedMaterialValid = false;
+        }
+    } else {
+        inspectedMaterialPath.clear();
+        inspectedMaterialValid = false;
+    }
+
+    auto renderMaterialAssetPanel = [&](const char* headerTitle, bool allowApply) {
+        if (!browserHasMaterial) return;
+
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
+        if (ImGui::CollapsingHeader(headerTitle, ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(8.0f);
+            if (!inspectedMaterialValid) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to read material file.");
+            } else {
+                auto textureField = [&](const char* label, const char* idSuffix, std::string& path) {
+                    bool changed = false;
+                    ImGui::PushID(idSuffix);
+                    ImGui::TextUnformatted(label);
+                    ImGui::SetNextItemWidth(-140);
+                    char buf[512] = {};
+                    std::snprintf(buf, sizeof(buf), "%s", path.c_str());
+                    if (ImGui::InputText("##Path", buf, sizeof(buf))) {
+                        path = buf;
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Clear")) {
+                        path.clear();
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    bool canUseTex = !fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) &&
+                                     fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile));
+                    ImGui::BeginDisabled(!canUseTex);
+                    std::string btnLabel = std::string("Use Selection##") + idSuffix;
+                    if (ImGui::SmallButton(btnLabel.c_str())) {
+                        path = fileBrowser.selectedFile.string();
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    return changed;
+                };
+
+                ImGui::TextDisabled("%s", selectedMaterialPath.filename().string().c_str());
+                ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "%s", selectedMaterialPath.string().c_str());
+                ImGui::Spacing();
+
+                bool matChanged = false;
+                if (ImGui::ColorEdit3("Base Color", &inspectedMaterial.color.x)) {
+                    matChanged = true;
+                }
+                float metallic = inspectedMaterial.specularStrength;
+                if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
+                    inspectedMaterial.specularStrength = metallic;
+                    matChanged = true;
+                }
+                float smoothness = inspectedMaterial.shininess / 256.0f;
+                if (ImGui::SliderFloat("Smoothness", &smoothness, 0.0f, 1.0f)) {
+                    smoothness = std::clamp(smoothness, 0.0f, 1.0f);
+                    inspectedMaterial.shininess = smoothness * 256.0f;
+                    matChanged = true;
+                }
+                if (ImGui::SliderFloat("Ambient Light", &inspectedMaterial.ambientStrength, 0.0f, 1.0f)) {
+                    matChanged = true;
+                }
+                if (ImGui::SliderFloat("Detail Mix", &inspectedMaterial.textureMix, 0.0f, 1.0f)) {
+                    matChanged = true;
+                }
+
+                ImGui::Spacing();
+                matChanged |= textureField("Base Map", "PreviewAlbedo", inspectedAlbedo);
+                if (ImGui::Checkbox("Use Detail Map", &inspectedUseOverlay)) {
+                    matChanged = true;
+                }
+                matChanged |= textureField("Detail Map", "PreviewOverlay", inspectedOverlay);
+                matChanged |= textureField("Normal Map", "PreviewNormal", inspectedNormal);
+
+                ImGui::Spacing();
+                if (ImGui::Button("Reload")) {
+                    inspectedMaterialValid = loadMaterialData(
+                        selectedMaterialPath.string(),
+                        inspectedMaterial,
+                        inspectedAlbedo,
+                        inspectedOverlay,
+                        inspectedNormal,
+                        inspectedUseOverlay
+                    );
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Save")) {
+                    if (saveMaterialData(
+                            selectedMaterialPath.string(),
+                            inspectedMaterial,
+                            inspectedAlbedo,
+                            inspectedOverlay,
+                            inspectedNormal,
+                            inspectedUseOverlay))
+                    {
+                        addConsoleMessage("Saved material: " + selectedMaterialPath.string(), ConsoleMessageType::Success);
+                    } else {
+                        addConsoleMessage("Failed to save material: " + selectedMaterialPath.string(), ConsoleMessageType::Error);
+                    }
+                }
+
+                if (allowApply) {
+                    ImGui::SameLine();
+                    SceneObject* target = getSelectedObject();
+                    bool canApply = target != nullptr;
+                    ImGui::BeginDisabled(!canApply);
+                    if (ImGui::Button("Apply to Selection")) {
+                        if (target) {
+                            target->material = inspectedMaterial;
+                            target->albedoTexturePath = inspectedAlbedo;
+                            target->overlayTexturePath = inspectedOverlay;
+                            target->normalMapPath = inspectedNormal;
+                            target->useOverlay = inspectedUseOverlay;
+                            target->materialPath = selectedMaterialPath.string();
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                            addConsoleMessage("Applied material to " + target->name, ConsoleMessageType::Success);
+                        }
+                    }
+                    ImGui::EndDisabled();
+                }
+
+                if (matChanged) {
+                    inspectedMaterialValid = true;
+                }
+            }
+            ImGui::Unindent(8.0f);
+        }
+        ImGui::PopStyleColor();
+    };
+
     if (selectedObjectId == -1) {
-        ImGui::TextDisabled("No object selected");
+        if (browserHasMaterial) {
+            renderMaterialAssetPanel("Material Asset", true);
+        } else {
+            ImGui::TextDisabled("No object selected");
+        }
         ImGui::End();
         return;
     }
@@ -1393,88 +1556,106 @@ void Engine::renderInspectorPanel() {
         if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Indent(10.0f);
 
-            if (ImGui::ColorEdit3("Color", &obj.material.color.x)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-
-            if (ImGui::SliderFloat("Ambient", &obj.material.ambientStrength, 0.0f, 1.0f)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (ImGui::SliderFloat("Specular", &obj.material.specularStrength, 0.0f, 2.0f)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (ImGui::SliderFloat("Shininess", &obj.material.shininess, 1.0f, 256.0f)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (ImGui::SliderFloat("Texture Mix", &obj.material.textureMix, 0.0f, 1.0f)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-
-            ImGui::Separator();
-            ImGui::Text("Textures");
-            char albedoBuf[512] = {};
-            std::snprintf(albedoBuf, sizeof(albedoBuf), "%s", obj.albedoTexturePath.c_str());
-            if (ImGui::InputText("Albedo##Tex", albedoBuf, sizeof(albedoBuf))) {
-                obj.albedoTexturePath = albedoBuf;
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
-                if (ImGui::Button("Use Selected##Albedo")) {
-                    obj.albedoTexturePath = fileBrowser.selectedFile.string();
-                    projectManager.currentProject.hasUnsavedChanges = true;
+            auto textureField = [&](const char* label, const char* idSuffix, std::string& path) {
+                bool changed = false;
+                ImGui::PushID(idSuffix);
+                ImGui::TextUnformatted(label);
+                ImGui::SetNextItemWidth(-160);
+                char buf[512] = {};
+                std::snprintf(buf, sizeof(buf), "%s", path.c_str());
+                if (ImGui::InputText("##Path", buf, sizeof(buf))) {
+                    path = buf;
+                    changed = true;
                 }
-            } else {
-                ImGui::Button("Use Selected##Albedo");
-            }
-
-            ImGui::Checkbox("Use Overlay", &obj.useOverlay);
-            char overlayBuf[512] = {};
-            std::snprintf(overlayBuf, sizeof(overlayBuf), "%s", obj.overlayTexturePath.c_str());
-            if (ImGui::InputText("Overlay##Tex", overlayBuf, sizeof(overlayBuf))) {
-                obj.overlayTexturePath = overlayBuf;
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
-                if (ImGui::Button("Use Selected##Overlay")) {
-                    obj.overlayTexturePath = fileBrowser.selectedFile.string();
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear")) {
+                    path.clear();
+                    changed = true;
                 }
-            } else {
-                ImGui::Button("Use Selected##Overlay");
-            }
-
-            char normalBuf[512] = {};
-            std::snprintf(normalBuf, sizeof(normalBuf), "%s", obj.normalMapPath.c_str());
-            if (ImGui::InputText("Normal Map##Tex", normalBuf, sizeof(normalBuf))) {
-                obj.normalMapPath = normalBuf;
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) && fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile))) {
-                if (ImGui::Button("Use Selected##Normal")) {
-                    obj.normalMapPath = fileBrowser.selectedFile.string();
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                ImGui::SameLine();
+                bool canUseTex = !fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) &&
+                                 fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile));
+                ImGui::BeginDisabled(!canUseTex);
+                std::string btnLabel = std::string("Use Selection##") + idSuffix;
+                if (ImGui::SmallButton(btnLabel.c_str())) {
+                    path = fileBrowser.selectedFile.string();
+                    changed = true;
                 }
-            } else {
-                ImGui::Button("Use Selected##Normal");
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                return changed;
+            };
+
+            bool materialChanged = false;
+
+            ImGui::TextColored(ImVec4(0.8f, 0.7f, 1.0f, 1.0f), "Surface Inputs");
+            if (ImGui::ColorEdit3("Base Color", &obj.material.color.x)) {
+                materialChanged = true;
             }
 
+            float metallic = obj.material.specularStrength;
+            if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
+                obj.material.specularStrength = metallic;
+                materialChanged = true;
+            }
+
+            float smoothness = obj.material.shininess / 256.0f;
+            if (ImGui::SliderFloat("Smoothness", &smoothness, 0.0f, 1.0f)) {
+                smoothness = std::clamp(smoothness, 0.0f, 1.0f);
+                obj.material.shininess = smoothness * 256.0f;
+                materialChanged = true;
+            }
+
+            if (ImGui::SliderFloat("Ambient Light", &obj.material.ambientStrength, 0.0f, 1.0f)) {
+                materialChanged = true;
+            }
+            if (ImGui::SliderFloat("Detail Mix", &obj.material.textureMix, 0.0f, 1.0f)) {
+                materialChanged = true;
+            }
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Maps");
+            materialChanged |= textureField("Base Map", "ObjAlbedo", obj.albedoTexturePath);
+            if (ImGui::Checkbox("Use Detail Map", &obj.useOverlay)) {
+                materialChanged = true;
+            }
+            materialChanged |= textureField("Detail Map", "ObjOverlay", obj.overlayTexturePath);
+            materialChanged |= textureField("Normal Map", "ObjNormal", obj.normalMapPath);
+
+            ImGui::Spacing();
             ImGui::Separator();
             ImGui::Text("Material Asset");
-            static char matPathBuf[512] = {};
-            if (!obj.materialPath.empty()) {
-                std::snprintf(matPathBuf, sizeof(matPathBuf), "%s", obj.materialPath.c_str());
-            }
-            if (ImGui::InputText("Path##Mat", matPathBuf, sizeof(matPathBuf))) {
-                // Defer applying until user hits button
-            }
-            if (ImGui::Button("Apply Material")) {
+
+            char matPathBuf[512] = {};
+            std::snprintf(matPathBuf, sizeof(matPathBuf), "%s", obj.materialPath.c_str());
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##MaterialPath", matPathBuf, sizeof(matPathBuf))) {
                 obj.materialPath = matPathBuf;
-                loadMaterialFromFile(obj);
+                materialChanged = true;
+            }
+
+            bool hasMatPath = obj.materialPath.size() > 0;
+            ImGui::BeginDisabled(!hasMatPath);
+            if (ImGui::Button("Save Material")) {
+                saveMaterialToFile(obj);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Save Material")) {
-                obj.materialPath = matPathBuf;
-                saveMaterialToFile(obj);
+            if (ImGui::Button("Reload Material")) {
+                loadMaterialFromFile(obj);
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!browserHasMaterial);
+            if (ImGui::Button("Load Selected")) {
+                obj.materialPath = selectedMaterialPath.string();
+                loadMaterialFromFile(obj);
+                materialChanged = true;
+            }
+            ImGui::EndDisabled();
+
+            if (materialChanged) {
+                projectManager.currentProject.hasUnsavedChanges = true;
             }
 
             ImGui::Unindent(10.0f);
@@ -1659,6 +1840,11 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
+    if (browserHasMaterial) {
+        ImGui::Spacing();
+        renderMaterialAssetPanel("Material Asset (File Browser)", true);
+    }
+
     ImGui::End();
 }
 
@@ -1835,13 +2021,145 @@ void Engine::renderViewport() {
             }
         }
 
+        // Left-click picking inside viewport
         if (mouseOverViewportImage &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
             !ImGuizmo::IsUsing() && !ImGuizmo::IsOver())
         {
+            glm::mat4 invViewProj = glm::inverse(proj * view);
+            ImVec2 mousePos = ImGui::GetMousePos();
+
+            auto makeRay = [&](const ImVec2& pos) {
+                float x = (pos.x - imageMin.x) / (imageMax.x - imageMin.x);
+                float y = (pos.y - imageMin.y) / (imageMax.y - imageMin.y);
+                x = x * 2.0f - 1.0f;
+                y = 1.0f - y * 2.0f;
+
+                glm::vec4 nearPt = invViewProj * glm::vec4(x, y, -1.0f, 1.0f);
+                glm::vec4 farPt  = invViewProj * glm::vec4(x, y,  1.0f, 1.0f);
+                nearPt /= nearPt.w;
+                farPt  /= farPt.w;
+
+                glm::vec3 origin = glm::vec3(nearPt);
+                glm::vec3 dir = glm::normalize(glm::vec3(farPt - nearPt));
+                return std::make_pair(origin, dir);
+            };
+
+            auto rayAabb = [](const glm::vec3& orig, const glm::vec3& dir, const glm::vec3& bmin, const glm::vec3& bmax, float& tHit) {
+                float tmin = -FLT_MAX;
+                float tmax = FLT_MAX;
+                for (int i = 0; i < 3; ++i) {
+                    if (std::abs(dir[i]) < 1e-6f) {
+                        if (orig[i] < bmin[i] || orig[i] > bmax[i]) return false;
+                        continue;
+                    }
+                    float invD = 1.0f / dir[i];
+                    float t1 = (bmin[i] - orig[i]) * invD;
+                    float t2 = (bmax[i] - orig[i]) * invD;
+                    if (t1 > t2) std::swap(t1, t2);
+                    tmin = std::max(tmin, t1);
+                    tmax = std::min(tmax, t2);
+                    if (tmin > tmax) return false;
+                }
+                tHit = (tmin >= 0.0f) ? tmin : tmax;
+                return tmax >= 0.0f;
+            };
+
+            auto raySphere = [](const glm::vec3& orig, const glm::vec3& dir, float radius, float& tHit) {
+                float b = glm::dot(dir, orig);
+                float c = glm::dot(orig, orig) - radius * radius;
+                float disc = b * b - c;
+                if (disc < 0.0f) return false;
+                float sqrtDisc = sqrtf(disc);
+                float t0 = -b - sqrtDisc;
+                float t1 = -b + sqrtDisc;
+                float t = (t0 >= 0.0f) ? t0 : t1;
+                if (t < 0.0f) return false;
+                tHit = t;
+                return true;
+            };
+
+            auto ray = makeRay(mousePos);
+            float closest = FLT_MAX;
+            int hitId = -1;
+
+            for (const auto& obj : sceneObjects) {
+                glm::vec3 aabbMin(-0.5f);
+                glm::vec3 aabbMax(0.5f);
+
+                glm::mat4 model(1.0f);
+                model = glm::translate(model, obj.position);
+                model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1, 0, 0));
+                model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0, 1, 0));
+                model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0, 0, 1));
+                model = glm::scale(model, obj.scale);
+
+                glm::mat4 invModel = glm::inverse(model);
+                glm::vec3 localOrigin = glm::vec3(invModel * glm::vec4(ray.first, 1.0f));
+                glm::vec3 localDir = glm::normalize(glm::vec3(invModel * glm::vec4(ray.second, 0.0f)));
+
+                float hitT = 0.0f;
+                bool hit = false;
+                switch (obj.type) {
+                    case ObjectType::Cube:
+                        hit = rayAabb(localOrigin, localDir, glm::vec3(-0.5f), glm::vec3(0.5f), hitT);
+                        break;
+                    case ObjectType::Sphere:
+                        hit = raySphere(localOrigin, localDir, 0.5f, hitT);
+                        break;
+                    case ObjectType::Capsule:
+                        hit = rayAabb(localOrigin, localDir, glm::vec3(-0.35f, -0.9f, -0.35f), glm::vec3(0.35f, 0.9f, 0.35f), hitT);
+                        break;
+                    case ObjectType::OBJMesh: {
+                        const auto* info = g_objLoader.getMeshInfo(obj.meshId);
+                        if (info && info->boundsMin.x < info->boundsMax.x) {
+                            aabbMin = info->boundsMin;
+                            aabbMax = info->boundsMax;
+                        }
+                        hit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        break;
+                    }
+                    case ObjectType::Model: {
+                        const auto* info = getModelLoader().getMeshInfo(obj.meshId);
+                        if (info && info->boundsMin.x < info->boundsMax.x) {
+                            aabbMin = info->boundsMin;
+                            aabbMax = info->boundsMax;
+                        }
+                        hit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        break;
+                    }
+                    case ObjectType::DirectionalLight:
+                    case ObjectType::PointLight:
+                    case ObjectType::SpotLight:
+                    case ObjectType::AreaLight:
+                        hit = raySphere(localOrigin, localDir, 0.3f, hitT);
+                        break;
+                }
+
+                if (hit && hitT < closest && hitT >= 0.0f) {
+                    closest = hitT;
+                    hitId = obj.id;
+                }
+            }
+
+            viewportController.setFocused(true);
+            if (hitId != -1) {
+                selectedObjectId = hitId;
+            } else {
+                selectedObjectId = -1;
+            }
+        }
+
+        if (mouseOverViewportImage && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             viewportController.setFocused(true);
             cursorLocked = true;
             glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            camera.firstMouse = true;
+        }
+
+        if (cursorLocked && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+            cursorLocked = false;
+            glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             camera.firstMouse = true;
         }
     }
@@ -1850,12 +2168,15 @@ void Engine::renderViewport() {
     ImGui::SetCursorPos(ImVec2(10, 30));
     ImGui::TextColored(
         ImVec4(1, 1, 1, 0.3f),
-        "WASD: Move | QE: Up/Down | Shift: Sprint | ESC: Release | F11: Fullscreen"
+        "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move | ESC: Release | F11: Fullscreen"
     );
 
-    if (viewportController.isViewportFocused()) {
+    if (cursorLocked) {
         ImGui::SetCursorPos(ImVec2(10, 50));
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Camera Active");
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Freelook Active");
+    } else if (viewportController.isViewportFocused()) {
+        ImGui::SetCursorPos(ImVec2(10, 50));
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Viewport Focused");
     }
 
     bool windowFocused = ImGui::IsWindowFocused();

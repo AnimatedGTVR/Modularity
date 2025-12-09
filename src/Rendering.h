@@ -37,6 +37,8 @@ public:
         int faceCount = 0;
         bool hasNormals = false;
         bool hasTexCoords = false;
+        glm::vec3 boundsMin = glm::vec3(FLT_MAX);
+        glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
     };
     
 private:

@@ -296,6 +296,9 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
         faceCount += static_cast<int>(shape.mesh.num_face_vertices.size());
     }
 
+    glm::vec3 boundsMin(FLT_MAX);
+    glm::vec3 boundsMax(-FLT_MAX);
+
     for (const auto& shape : shapes) {
         size_t indexOffset = 0;
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
@@ -316,6 +319,13 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
                 tv.pos.x = attrib.vertices[3 * size_t(idx.vertex_index) + 0];
                 tv.pos.y = attrib.vertices[3 * size_t(idx.vertex_index) + 1];
                 tv.pos.z = attrib.vertices[3 * size_t(idx.vertex_index) + 2];
+
+                boundsMin.x = std::min(boundsMin.x, tv.pos.x);
+                boundsMin.y = std::min(boundsMin.y, tv.pos.y);
+                boundsMin.z = std::min(boundsMin.z, tv.pos.z);
+                boundsMax.x = std::max(boundsMax.x, tv.pos.x);
+                boundsMax.y = std::max(boundsMax.y, tv.pos.y);
+                boundsMax.z = std::max(boundsMax.z, tv.pos.z);
 
                 if (idx.texcoord_index >= 0 && !attrib.texcoords.empty()) {
                     tv.uv.x = attrib.texcoords[2 * size_t(idx.texcoord_index) + 0];
@@ -378,6 +388,8 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
     loaded.faceCount = faceCount;
     loaded.hasNormals = hasNormalsInFile;
     loaded.hasTexCoords = !attrib.texcoords.empty();
+    loaded.boundsMin = boundsMin;
+    loaded.boundsMax = boundsMax;
 
     loadedMeshes.push_back(std::move(loaded));
     return static_cast<int>(loadedMeshes.size() - 1);

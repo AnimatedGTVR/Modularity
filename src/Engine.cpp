@@ -3,6 +3,71 @@
 #include <iostream>
 #include <fstream>
 
+namespace {
+struct MaterialFileData {
+    MaterialProperties props;
+    std::string albedo;
+    std::string overlay;
+    std::string normal;
+    bool useOverlay = false;
+};
+
+bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    while (std::getline(f, line)) {
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        if (line.empty() || line[0] == '#') continue;
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        std::string key = line.substr(0, pos);
+        std::string val = line.substr(pos + 1);
+        if (key == "color") {
+            sscanf(val.c_str(), "%f,%f,%f", &outData.props.color.r, &outData.props.color.g, &outData.props.color.b);
+        } else if (key == "ambient") {
+            outData.props.ambientStrength = std::stof(val);
+        } else if (key == "specular") {
+            outData.props.specularStrength = std::stof(val);
+        } else if (key == "shininess") {
+            outData.props.shininess = std::stof(val);
+        } else if (key == "textureMix") {
+            outData.props.textureMix = std::stof(val);
+        } else if (key == "albedo") {
+            outData.albedo = val;
+        } else if (key == "overlay") {
+            outData.overlay = val;
+        } else if (key == "normal") {
+            outData.normal = val;
+        } else if (key == "useOverlay") {
+            outData.useOverlay = std::stoi(val) != 0;
+        }
+    }
+    return true;
+}
+
+bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
+    std::ofstream f(path);
+    if (!f.is_open()) {
+        return false;
+    }
+    f << "# Material\n";
+    f << "color=" << data.props.color.r << "," << data.props.color.g << "," << data.props.color.b << "\n";
+    f << "ambient=" << data.props.ambientStrength << "\n";
+    f << "specular=" << data.props.specularStrength << "\n";
+    f << "shininess=" << data.props.shininess << "\n";
+    f << "textureMix=" << data.props.textureMix << "\n";
+    f << "useOverlay=" << (data.useOverlay ? 1 : 0) << "\n";
+    f << "albedo=" << data.albedo << "\n";
+    f << "overlay=" << data.overlay << "\n";
+    f << "normal=" << data.normal << "\n";
+    return true;
+}
+} // namespace
+
 void window_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
@@ -261,44 +326,50 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
 void Engine::loadMaterialFromFile(SceneObject& obj) {
     if (obj.materialPath.empty()) return;
     try {
-        std::ifstream f(obj.materialPath);
-        if (!f.is_open()) {
+        MaterialFileData data;
+        if (!readMaterialFile(obj.materialPath, data)) {
             addConsoleMessage("Failed to open material: " + obj.materialPath, ConsoleMessageType::Error);
             return;
         }
-        std::string line;
-        while (std::getline(f, line)) {
-            line.erase(0, line.find_first_not_of(" \t\r\n"));
-            if (line.empty() || line[0] == '#') continue;
-            auto pos = line.find('=');
-            if (pos == std::string::npos) continue;
-            std::string key = line.substr(0, pos);
-            std::string val = line.substr(pos + 1);
-            if (key == "color") {
-                sscanf(val.c_str(), "%f,%f,%f", &obj.material.color.r, &obj.material.color.g, &obj.material.color.b);
-            } else if (key == "ambient") {
-                obj.material.ambientStrength = std::stof(val);
-            } else if (key == "specular") {
-                obj.material.specularStrength = std::stof(val);
-            } else if (key == "shininess") {
-                obj.material.shininess = std::stof(val);
-            } else if (key == "textureMix") {
-                obj.material.textureMix = std::stof(val);
-            } else if (key == "albedo") {
-                obj.albedoTexturePath = val;
-            } else if (key == "overlay") {
-                obj.overlayTexturePath = val;
-            } else if (key == "normal") {
-                obj.normalMapPath = val;
-            } else if (key == "useOverlay") {
-                obj.useOverlay = std::stoi(val) != 0;
-            }
-        }
+        obj.material = data.props;
+        obj.albedoTexturePath = data.albedo;
+        obj.overlayTexturePath = data.overlay;
+        obj.normalMapPath = data.normal;
+        obj.useOverlay = data.useOverlay;
         addConsoleMessage("Applied material: " + obj.materialPath, ConsoleMessageType::Success);
         projectManager.currentProject.hasUnsavedChanges = true;
     } catch (...) {
         addConsoleMessage("Failed to read material: " + obj.materialPath, ConsoleMessageType::Error);
     }
+}
+
+bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props,
+                              std::string& albedo, std::string& overlay,
+                              std::string& normal, bool& useOverlay)
+{
+    MaterialFileData data;
+    if (!readMaterialFile(path, data)) {
+        return false;
+    }
+    props = data.props;
+    albedo = data.albedo;
+    overlay = data.overlay;
+    normal = data.normal;
+    useOverlay = data.useOverlay;
+    return true;
+}
+
+bool Engine::saveMaterialData(const std::string& path, const MaterialProperties& props,
+                              const std::string& albedo, const std::string& overlay,
+                              const std::string& normal, bool useOverlay)
+{
+    MaterialFileData data;
+    data.props = props;
+    data.albedo = albedo;
+    data.overlay = overlay;
+    data.normal = normal;
+    data.useOverlay = useOverlay;
+    return writeMaterialFile(data, path);
 }
 
 void Engine::saveMaterialToFile(const SceneObject& obj) {
@@ -307,21 +378,17 @@ void Engine::saveMaterialToFile(const SceneObject& obj) {
         return;
     }
     try {
-        std::ofstream f(obj.materialPath);
-        if (!f.is_open()) {
+        MaterialFileData data;
+        data.props = obj.material;
+        data.albedo = obj.albedoTexturePath;
+        data.overlay = obj.overlayTexturePath;
+        data.normal = obj.normalMapPath;
+        data.useOverlay = obj.useOverlay;
+
+        if (!writeMaterialFile(data, obj.materialPath)) {
             addConsoleMessage("Failed to open material for writing: " + obj.materialPath, ConsoleMessageType::Error);
             return;
         }
-        f << "# Material\n";
-        f << "color=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
-        f << "ambient=" << obj.material.ambientStrength << "\n";
-        f << "specular=" << obj.material.specularStrength << "\n";
-        f << "shininess=" << obj.material.shininess << "\n";
-        f << "textureMix=" << obj.material.textureMix << "\n";
-        f << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
-        f << "albedo=" << obj.albedoTexturePath << "\n";
-        f << "overlay=" << obj.overlayTexturePath << "\n";
-        f << "normal=" << obj.normalMapPath << "\n";
         addConsoleMessage("Saved material: " + obj.materialPath, ConsoleMessageType::Success);
     } catch (...) {
         addConsoleMessage("Failed to save material: " + obj.materialPath, ConsoleMessageType::Error);
