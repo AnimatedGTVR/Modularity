@@ -3101,6 +3101,105 @@ void Engine::renderViewport() {
             }
         }
 
+        // Light visualization overlays
+        auto drawLightOverlays = [&](const SceneObject& lightObj) {
+            if (!lightObj.light.enabled) return;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.9f, 0.4f, 0.7f));
+            ImU32 faint = ImGui::GetColorU32(ImVec4(1.0f, 0.9f, 0.4f, 0.25f));
+            auto forwardFromRotation = [](const SceneObject& obj) {
+                glm::vec3 f = glm::normalize(glm::vec3(
+                    glm::sin(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x)),
+                    glm::sin(glm::radians(obj.rotation.x)),
+                    glm::cos(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x))
+                ));
+                if (glm::length(f) < 1e-3f || !std::isfinite(f.x)) f = glm::vec3(0.0f, -1.0f, 0.0f);
+                return f;
+            };
+
+            if (lightObj.type == ObjectType::PointLight) {
+                auto center = projectToScreen(lightObj.position);
+                glm::vec3 offset = lightObj.position + glm::vec3(lightObj.light.range, 0.0f, 0.0f);
+                auto edge = projectToScreen(offset);
+                if (center && edge) {
+                    float r = std::sqrt((center->x - edge->x)*(center->x - edge->x) + (center->y - edge->y)*(center->y - edge->y));
+                    dl->AddCircle(*center, r, faint, 48, 2.0f);
+                }
+            } else if (lightObj.type == ObjectType::SpotLight) {
+                glm::vec3 dir = forwardFromRotation(lightObj);
+                glm::vec3 tip = lightObj.position;
+                glm::vec3 end = tip + dir * lightObj.light.range;
+                float innerRad = glm::tan(glm::radians(lightObj.light.innerAngle)) * lightObj.light.range;
+                float outerRad = glm::tan(glm::radians(lightObj.light.outerAngle)) * lightObj.light.range;
+
+                // Build basis
+                glm::vec3 up = glm::abs(dir.y) > 0.9f ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+                glm::vec3 right = glm::normalize(glm::cross(dir, up));
+                up = glm::normalize(glm::cross(right, dir));
+
+                auto drawConeRing = [&](float radius, ImU32 color) {
+                    const int segments = 24;
+                    ImVec2 prev;
+                    bool first = true;
+                    for (int i = 0; i <= segments; ++i) {
+                        float a = (float)i / segments * 2.0f * PI;
+                        glm::vec3 p = end + right * std::cos(a) * radius + up * std::sin(a) * radius;
+                        auto sp = projectToScreen(p);
+                        if (!sp) continue;
+                        if (first) { prev = *sp; first = false; continue; }
+                        dl->AddLine(prev, *sp, color, 1.5f);
+                        prev = *sp;
+                    }
+                };
+
+                auto sTip = projectToScreen(tip);
+                auto sEnd = projectToScreen(end);
+                if (sTip && sEnd) {
+                    dl->AddLine(*sTip, *sEnd, col, 2.0f);
+                    drawConeRing(innerRad, col);
+                    drawConeRing(outerRad, faint);
+                }
+            } else if (lightObj.type == ObjectType::AreaLight) {
+                glm::vec3 n = forwardFromRotation(lightObj);
+                glm::vec3 up = glm::abs(n.y) > 0.9f ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+                glm::vec3 tangent = glm::normalize(glm::cross(up, n));
+                glm::vec3 bitangent = glm::cross(n, tangent);
+                glm::vec2 half = lightObj.light.size * 0.5f;
+                glm::vec3 c = lightObj.position;
+                glm::vec3 corners[4] = {
+                    c + tangent * half.x + bitangent * half.y,
+                    c - tangent * half.x + bitangent * half.y,
+                    c - tangent * half.x - bitangent * half.y,
+                    c + tangent * half.x - bitangent * half.y
+                };
+                ImVec2 projected[4];
+                bool ok = true;
+                for (int i = 0; i < 4; ++i) {
+                    auto p = projectToScreen(corners[i]);
+                    if (!p) { ok = false; break; }
+                    projected[i] = *p;
+                }
+                if (ok) {
+                    for (int i = 0; i < 4; ++i) {
+                        dl->AddLine(projected[i], projected[(i+1)%4], col, 2.0f);
+                    }
+                    // normal indicator
+                    auto cproj = projectToScreen(c);
+                    auto nproj = projectToScreen(c + n * glm::max(lightObj.light.range, 0.5f));
+                    if (cproj && nproj) {
+                        dl->AddLine(*cproj, *nproj, col, 2.0f);
+                        dl->AddCircleFilled(*nproj, 4.0f, col);
+                    }
+                }
+            }
+        };
+
+        for (const auto& obj : sceneObjects) {
+            if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
+                drawLightOverlays(obj);
+            }
+        }
+
         // Toolbar
         const float toolbarPadding = 6.0f;
         const float toolbarSpacing = 5.0f;

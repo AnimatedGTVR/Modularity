@@ -864,7 +864,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     if (!defaultShader || width <= 0 || height <= 0) return;
 
     struct LightUniform {
-        int type = 0; // 0 dir,1 point,2 spot
+        int type = 0; // 0 dir,1 point,2 spot,3 area
         glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f);
         glm::vec3 pos = glm::vec3(0.0f);
         glm::vec3 color = glm::vec3(1.0f);
@@ -872,6 +872,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         float range = 10.0f;
         float inner = glm::cos(glm::radians(15.0f));
         float outer = glm::cos(glm::radians(25.0f));
+        glm::vec2 areaSize = glm::vec2(1.0f); // width/height for area lights
     };
     auto forwardFromRotation = [](const SceneObject& obj) {
         glm::vec3 f = glm::normalize(glm::vec3(
@@ -931,6 +932,23 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             }
         }
     }
+    if (lights.size() < 10) {
+        for (const auto& obj : sceneObjects) {
+            if (obj.light.enabled && obj.type == ObjectType::AreaLight) {
+                LightUniform l;
+                l.type = 3; // area
+                l.pos = obj.position;
+                l.dir = forwardFromRotation(obj); // plane normal
+                l.color = obj.light.color;
+                l.intensity = obj.light.intensity;
+                float sizeHint = glm::max(obj.light.size.x, obj.light.size.y);
+                l.range = (obj.light.range > 0.0f) ? obj.light.range : glm::max(sizeHint * 2.0f, 1.0f);
+                l.areaSize = obj.light.size;
+                lights.push_back(l);
+                if (lights.size() >= 10) break;
+            }
+        }
+    }
 
     for (const auto& obj : sceneObjects) {
         // Skip light gizmo-only types and camera helpers
@@ -958,10 +976,11 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setVec3("lightPosArr" + idx, l.pos);
             shader->setVec3("lightColorArr" + idx, l.color);
             shader->setFloat("lightIntensityArr" + idx, l.intensity);
-            shader->setFloat("lightRangeArr" + idx, l.range);
-            shader->setFloat("lightInnerCosArr" + idx, l.inner);
-            shader->setFloat("lightOuterCosArr" + idx, l.outer);
-        }
+        shader->setFloat("lightRangeArr" + idx, l.range);
+        shader->setFloat("lightInnerCosArr" + idx, l.inner);
+        shader->setFloat("lightOuterCosArr" + idx, l.outer);
+        shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
+    }
 
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, obj.position);
