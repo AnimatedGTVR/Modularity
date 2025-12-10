@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "Rendering.h"
+#include <cstdint>
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -28,6 +29,18 @@ struct ModelLoadResult {
     std::vector<std::string> meshNames;
 };
 
+// Raw mesh asset for editable geometry (.rmesh)
+struct RawMeshAsset {
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;
+    std::vector<glm::vec2> uvs;
+    std::vector<glm::u32vec3> faces;
+    glm::vec3 boundsMin = glm::vec3(FLT_MAX);
+    glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
+    bool hasNormals = false;
+    bool hasUVs = false;
+};
+
 class ModelLoader {
 public:
     // Singleton access
@@ -47,6 +60,18 @@ public:
     
     // Check if file extension is supported
     bool isSupported(const std::string& filepath) const;
+    
+    // Export a model file into a raw editable mesh asset (.rmesh)
+    bool exportRawMesh(const std::string& inputFile, const std::string& outputFile, std::string& errorMsg);
+
+    // Load a raw mesh asset from disk
+    bool loadRawMesh(const std::string& filepath, RawMeshAsset& out, std::string& errorMsg);
+
+    // Save a raw mesh asset to disk
+    bool saveRawMesh(const RawMeshAsset& asset, const std::string& filepath, std::string& errorMsg);
+
+    // Update an already-loaded raw mesh in GPU memory
+    bool updateRawMesh(int meshIndex, const RawMeshAsset& asset, std::string& errorMsg);
     
     // Get list of supported formats
     static std::vector<ModelFormat> getSupportedFormats();

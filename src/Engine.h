@@ -6,6 +6,7 @@
 #include "Rendering.h"
 #include "ProjectManager.h"
 #include "EditorUI.h"
+#include "MeshBuilder.h"
 #include "../include/Window/Window.h"
 
 void window_size_callback(GLFWwindow* window, int width, int height);
@@ -35,14 +36,15 @@ private:
     bool inspectedMaterialValid = false;
     struct SceneSnapshot {
         std::vector<SceneObject> objects;
-        int selectedId = -1;
+        std::vector<int> selectedIds;
         int nextId = 0;
     };
     std::vector<SceneSnapshot> undoStack;
     std::vector<SceneSnapshot> redoStack;
 
     std::vector<SceneObject> sceneObjects;
-    int selectedObjectId = -1;
+    int selectedObjectId = -1; // primary selection (last)
+    std::vector<int> selectedObjectIds; // multi-select
     int nextObjectId = 0;
 
     // Gizmo state
@@ -59,6 +61,7 @@ private:
     bool showFileBrowser = true;
     bool showConsole = true;
     bool showProjectBrowser = true;  // Now merged into file browser
+    bool showMeshBuilder = false;
     bool firstFrame = true;
     std::vector<std::string> consoleLog;
     int draggedObjectId = -1;
@@ -86,13 +89,31 @@ private:
     bool isPaused = false;
     bool showViewOutput = true;
     int previewCameraId = -1;
+    MeshBuilder meshBuilder;
+    char meshBuilderPath[260] = "";
+    char meshBuilderFaceInput[128] = "";
+    bool meshEditMode = false;
+    bool meshEditLoaded = false;
+    std::string meshEditPath;
+    RawMeshAsset meshEditAsset;
+    std::vector<int> meshEditSelectedVertices;
+    std::vector<int> meshEditSelectedEdges; // indices into generated edge list
+    std::vector<int> meshEditSelectedFaces; // indices into mesh faces
+    enum class MeshEditSelectionMode { Vertex = 0, Edge = 1, Face = 2 };
+    MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Vertex;
 
     // Private methods
     SceneObject* getSelectedObject();
+    glm::vec3 getSelectionCenterWorld(bool worldSpace) const;
+    void setPrimarySelection(int id, bool additive = false);
+    void clearSelection();
     static void DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale);
     
     void importOBJToScene(const std::string& filepath, const std::string& objectName);
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
+    void convertModelToRawMesh(const std::string& filepath);
+    bool ensureMeshEditTarget(SceneObject* obj);
+    bool syncMeshEditToGPU(SceneObject* obj);
     void handleKeyboardShortcuts();
     void OpenProjectPath(const std::string& path);
     
@@ -106,6 +127,7 @@ private:
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter);
     void renderFileBrowserPanel();
+    void renderMeshBuilderPanel();
     void renderInspectorPanel();
     void renderConsolePanel();
     void renderViewport();

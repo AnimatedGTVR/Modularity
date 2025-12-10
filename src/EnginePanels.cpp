@@ -2,8 +2,11 @@
 #include "ModelLoader.h"
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <cfloat>
 #include <cmath>
+#include <sstream>
+#include <unordered_set>
 #include <optional>
 
 #ifdef _WIN32
@@ -167,8 +170,6 @@ namespace FileIcons {
     
     // Draw an audio icon (speaker/waveform)
     void DrawAudioIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float padding = size * 0.15f;
-        
         // Speaker body
         float spkW = size * 0.25f;
         float spkH = size * 0.3f;
@@ -298,7 +299,6 @@ namespace FileIcons {
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
     ImGuiStyle& style = ImGui::GetStyle();
-    ImVec4 accent = style.Colors[ImGuiCol_CheckMark];
     ImVec4 toolbarBg = style.Colors[ImGuiCol_MenuBarBg];
     toolbarBg.x = std::min(toolbarBg.x + 0.02f, 1.0f);
     toolbarBg.y = std::min(toolbarBg.y + 0.02f, 1.0f);
@@ -606,6 +606,9 @@ void Engine::renderFileBrowserPanel() {
                                 importModelToScene(entry.path().string(), "");
                             }
                         }
+                        if (ImGui::MenuItem("Convert to Raw Mesh")) {
+                            convertModelToRawMesh(entry.path().string());
+                        }
                     }
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
                         if (ImGui::MenuItem("Apply to Selected")) {
@@ -689,6 +692,9 @@ void Engine::renderFileBrowserPanel() {
                 }
                 if (fileBrowser.isModelFile(entry)) {
                     bool isObj = fileBrowser.isOBJFile(entry);
+                    std::string ext = entry.path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                    bool isRaw = ext == ".rmesh";
                     if (ImGui::MenuItem("Import to Scene")) {
                         std::string defaultName = entry.path().stem().string();
                         if (isObj) {
@@ -707,6 +713,9 @@ void Engine::renderFileBrowserPanel() {
                         } else {
                             importModelToScene(entry.path().string(), "");
                         }
+                    }
+                    if (!isRaw && ImGui::MenuItem("Convert to Raw Mesh")) {
+                        convertModelToRawMesh(entry.path().string());
                     }
                 }
                 if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
@@ -761,6 +770,146 @@ void Engine::renderFileBrowserPanel() {
     ImGui::End();
 }
 
+void Engine::renderMeshBuilderPanel() {
+    ImGui::Begin("Mesh Builder", &showMeshBuilder);
+
+    auto recalcBounds = [this]() {
+        if (!meshBuilder.hasMesh || meshBuilder.mesh.positions.empty()) return;
+        meshBuilder.mesh.boundsMin = glm::vec3(FLT_MAX);
+        meshBuilder.mesh.boundsMax = glm::vec3(-FLT_MAX);
+        for (const auto& p : meshBuilder.mesh.positions) {
+            meshBuilder.mesh.boundsMin.x = std::min(meshBuilder.mesh.boundsMin.x, p.x);
+            meshBuilder.mesh.boundsMin.y = std::min(meshBuilder.mesh.boundsMin.y, p.y);
+            meshBuilder.mesh.boundsMin.z = std::min(meshBuilder.mesh.boundsMin.z, p.z);
+            meshBuilder.mesh.boundsMax.x = std::max(meshBuilder.mesh.boundsMax.x, p.x);
+            meshBuilder.mesh.boundsMax.y = std::max(meshBuilder.mesh.boundsMax.y, p.y);
+            meshBuilder.mesh.boundsMax.z = std::max(meshBuilder.mesh.boundsMax.z, p.z);
+        }
+    };
+
+    ImGui::InputText("Mesh Path", meshBuilderPath, sizeof(meshBuilderPath));
+    ImGui::SameLine();
+    if (ImGui::Button("Load")) {
+        std::string err;
+        if (!meshBuilder.load(meshBuilderPath, err)) {
+            addConsoleMessage("MeshBuilder load failed: " + err, ConsoleMessageType::Error);
+        } else {
+            addConsoleMessage("Loaded raw mesh: " + meshBuilder.loadedPath, ConsoleMessageType::Success);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        std::string err;
+        std::string path = strlen(meshBuilderPath) ? meshBuilderPath : meshBuilder.loadedPath;
+        if (!meshBuilder.save(path, err)) {
+            addConsoleMessage("MeshBuilder save failed: " + err, ConsoleMessageType::Error);
+        } else {
+            addConsoleMessage("Saved raw mesh: " + meshBuilder.loadedPath, ConsoleMessageType::Success);
+            strncpy(meshBuilderPath, meshBuilder.loadedPath.c_str(), sizeof(meshBuilderPath) - 1);
+            meshBuilderPath[sizeof(meshBuilderPath) - 1] = '\0';
+        }
+    }
+
+    if (ImGui::Button("Load Selected File")) {
+        if (!fileBrowser.selectedFile.empty() && fs::path(fileBrowser.selectedFile).extension() == ".rmesh") {
+            strncpy(meshBuilderPath, fileBrowser.selectedFile.string().c_str(), sizeof(meshBuilderPath) - 1);
+            meshBuilderPath[sizeof(meshBuilderPath) - 1] = '\0';
+            std::string err;
+            if (!meshBuilder.load(meshBuilderPath, err)) {
+                addConsoleMessage("MeshBuilder load failed: " + err, ConsoleMessageType::Error);
+            } else {
+                addConsoleMessage("Loaded raw mesh: " + meshBuilder.loadedPath, ConsoleMessageType::Success);
+            }
+        } else {
+            addConsoleMessage("Select a .rmesh file in the browser to load", ConsoleMessageType::Warning);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Recompute Normals")) {
+        meshBuilder.recomputeNormals();
+    }
+
+    ImGui::Separator();
+
+    if (!meshBuilder.hasMesh) {
+        ImGui::TextDisabled("No mesh loaded.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Vertices: %zu", meshBuilder.mesh.positions.size());
+    ImGui::Text("Faces: %zu", meshBuilder.mesh.faces.size());
+    ImGui::Text("Bounds Min: (%.3f, %.3f, %.3f)", meshBuilder.mesh.boundsMin.x, meshBuilder.mesh.boundsMin.y, meshBuilder.mesh.boundsMin.z);
+    ImGui::Text("Bounds Max: (%.3f, %.3f, %.3f)", meshBuilder.mesh.boundsMax.x, meshBuilder.mesh.boundsMax.y, meshBuilder.mesh.boundsMax.z);
+    if (meshBuilder.dirty) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1,0.7f,0.2f,1),"*modified");
+    }
+
+    ImGui::SeparatorText("Vertices");
+    ImGui::SetNextItemWidth(100);
+    ImGui::InputInt("Selected", &meshBuilder.selectedVertex);
+    if (meshBuilder.selectedVertex < 0 || meshBuilder.selectedVertex >= (int)meshBuilder.mesh.positions.size()) {
+        meshBuilder.selectedVertex = meshBuilder.mesh.positions.empty() ? -1 : 0;
+    }
+
+    if (meshBuilder.selectedVertex >= 0 && meshBuilder.selectedVertex < (int)meshBuilder.mesh.positions.size()) {
+        glm::vec3& pos = meshBuilder.mesh.positions[meshBuilder.selectedVertex];
+        float edit[3] = { pos.x, pos.y, pos.z };
+        if (ImGui::InputFloat3("Position", edit, "%.4f")) {
+            pos = glm::vec3(edit[0], edit[1], edit[2]);
+            recalcBounds();
+            meshBuilder.recomputeNormals();
+            meshBuilder.dirty = true;
+        }
+        if (meshBuilder.mesh.hasUVs && meshBuilder.selectedVertex < (int)meshBuilder.mesh.uvs.size()) {
+            glm::vec2& uv = meshBuilder.mesh.uvs[meshBuilder.selectedVertex];
+            float uvEdit[2] = { uv.x, uv.y };
+            if (ImGui::InputFloat2("UV", uvEdit, "%.4f")) {
+                uv = glm::vec2(uvEdit[0], uvEdit[1]);
+                meshBuilder.dirty = true;
+            }
+        }
+    }
+
+    ImGui::SeparatorText("Add Face / Fill");
+    ImGui::InputTextWithHint("Indices", "e.g. 0,1,2 or 0 1 2 3", meshBuilderFaceInput, sizeof(meshBuilderFaceInput));
+    ImGui::SameLine();
+    if (ImGui::Button("Add Face")) {
+        std::vector<uint32_t> indices;
+        std::string token;
+        std::stringstream ss(meshBuilderFaceInput);
+        while (std::getline(ss, token, ',')) {
+            std::stringstream inner(token);
+            std::string sub;
+            while (inner >> sub) {
+                try {
+                    uint32_t idx = static_cast<uint32_t>(std::stoul(sub));
+                    indices.push_back(idx);
+                } catch (...) {}
+            }
+        }
+        if (indices.empty()) {
+            addConsoleMessage("Enter vertex indices separated by commas or spaces", ConsoleMessageType::Warning);
+        } else {
+            std::string err;
+            if (!meshBuilder.addFace(indices, err)) {
+                addConsoleMessage("Add face failed: " + err, ConsoleMessageType::Error);
+            } else {
+                addConsoleMessage("Added face with " + std::to_string(indices.size()) + " verts", ConsoleMessageType::Success);
+            }
+        }
+    }
+
+    ImGui::SeparatorText("Faces (first 16)");
+    int maxFaces = std::min<int>(16, meshBuilder.mesh.faces.size());
+    for (int i = 0; i < maxFaces; i++) {
+        const auto& f = meshBuilder.mesh.faces[i];
+        ImGui::Text("%d: %u, %u, %u", i, f.x, f.y, f.z);
+    }
+
+    ImGui::End();
+}
 
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
@@ -1109,7 +1258,7 @@ void Engine::renderMainMenuBar() {
                 }
                 projectManager.currentProject = Project();
                 sceneObjects.clear();
-                selectedObjectId = -1;
+                clearSelection();
                 showLauncher = true;
             }
             ImGui::Separator();
@@ -1131,6 +1280,7 @@ void Engine::renderMainMenuBar() {
             ImGui::MenuItem("File Browser", nullptr, &showFileBrowser);
             ImGui::MenuItem("Console", nullptr, &showConsole);
             ImGui::MenuItem("Project Manager", nullptr, &showProjectBrowser);
+            ImGui::MenuItem("Mesh Builder", nullptr, &showMeshBuilder);
             ImGui::MenuItem("Environment", nullptr, &showEnvironmentWindow);
             ImGui::MenuItem("Camera", nullptr, &showCameraWindow);
             ImGui::MenuItem("View Output", nullptr, &showViewOutput);
@@ -1219,7 +1369,6 @@ void Engine::renderHierarchyPanel() {
     headerBg.x = std::min(headerBg.x + 0.02f, 1.0f);
     headerBg.y = std::min(headerBg.y + 0.02f, 1.0f);
     headerBg.z = std::min(headerBg.z + 0.02f, 1.0f);
-    ImVec4 headerText = style.Colors[ImGuiCol_CheckMark];
     ImVec4 listBg = style.Colors[ImGuiCol_WindowBg];
     listBg.x = std::min(listBg.x + 0.01f, 1.0f);
     listBg.y = std::min(listBg.y + 0.01f, 1.0f);
@@ -1311,7 +1460,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
     }
 
     bool hasChildren = !obj.childIds.empty();
-    bool isSelected = (selectedObjectId == obj.id);
+    bool isSelected = std::find(selectedObjectIds.begin(), selectedObjectIds.end(), obj.id) != selectedObjectIds.end();
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
@@ -1335,7 +1484,8 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
     bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s %s", icon, obj.name.c_str());
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        selectedObjectId = obj.id;
+        bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+        setPrimarySelection(obj.id, additive);
     }
 
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -1356,11 +1506,11 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
 
     if (ImGui::BeginPopupContextItem()) {
         if (ImGui::MenuItem("Duplicate")) {
-            selectedObjectId = obj.id;
+            setPrimarySelection(obj.id);
             duplicateSelected();
         }
         if (ImGui::MenuItem("Delete")) {
-            selectedObjectId = obj.id;
+            setPrimarySelection(obj.id);
             deleteSelected();
         }
         ImGui::Separator();
@@ -1591,7 +1741,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     };
 
-    if (selectedObjectId == -1) {
+    if (selectedObjectIds.empty()) {
         if (browserHasMaterial) {
             renderMaterialAssetPanel("Material Asset", true);
         } else {
@@ -1601,8 +1751,9 @@ void Engine::renderInspectorPanel() {
         return;
     }
 
+    int primaryId = selectedObjectId;
     auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-        [this](const SceneObject& obj) { return obj.id == selectedObjectId; });
+        [primaryId](const SceneObject& obj) { return obj.id == primaryId; });
 
     if (it == sceneObjects.end()) {
         ImGui::TextDisabled("Object not found");
@@ -1611,6 +1762,11 @@ void Engine::renderInspectorPanel() {
     }
 
     SceneObject& obj = *it;
+
+    if (selectedObjectIds.size() > 1) {
+        ImGui::Text("Multiple objects selected: %zu", selectedObjectIds.size());
+        ImGui::Separator();
+    }
 
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.4f, 0.6f, 1.0f));
 
@@ -2474,7 +2630,6 @@ void Engine::renderViewport() {
             ImGuizmo::Enable(true);
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-
             ImGuizmo::SetRect(
                 imageMin.x,
                 imageMin.y,
@@ -2482,141 +2637,429 @@ void Engine::renderViewport() {
                 imageMax.y - imageMin.y
             );
 
+            auto compose = [](const SceneObject& o) {
+                glm::mat4 m(1.0f);
+                m = glm::translate(m, o.position);
+                m = glm::rotate(m, glm::radians(o.rotation.x), glm::vec3(1, 0, 0));
+                m = glm::rotate(m, glm::radians(o.rotation.y), glm::vec3(0, 1, 0));
+                m = glm::rotate(m, glm::radians(o.rotation.z), glm::vec3(0, 0, 1));
+                m = glm::scale(m, o.scale);
+                return m;
+            };
+
+            bool meshModeActive = meshEditMode && ensureMeshEditTarget(selectedObj);
+
+            glm::vec3 pivotPos = selectedObj->position;
+            if (!meshModeActive && selectedObjectIds.size() > 1 && mCurrentGizmoMode == ImGuizmo::WORLD) {
+                pivotPos = getSelectionCenterWorld(true);
+            }
+
             glm::mat4 modelMatrix(1.0f);
-            modelMatrix = glm::translate(modelMatrix, selectedObj->position);
+            modelMatrix = glm::translate(modelMatrix, pivotPos);
             modelMatrix = glm::rotate(modelMatrix, glm::radians(selectedObj->rotation.x), glm::vec3(1, 0, 0));
             modelMatrix = glm::rotate(modelMatrix, glm::radians(selectedObj->rotation.y), glm::vec3(0, 1, 0));
             modelMatrix = glm::rotate(modelMatrix, glm::radians(selectedObj->rotation.z), glm::vec3(0, 0, 1));
             modelMatrix = glm::scale(modelMatrix, selectedObj->scale);
+            glm::mat4 originalModel = modelMatrix;
 
-            float* snapPtr = nullptr;
-            float snapRot[3] = { rotationSnapValue, rotationSnapValue, rotationSnapValue };
-
-            if (useSnap) {
-                if (mCurrentGizmoOperation == ImGuizmo::ROTATE) {
-                    snapPtr = snapRot;
-                } else {
-                    snapPtr = snapValue;
-                }
-            }
-
-            glm::vec3 gizmoBoundsMin(-0.5f);
-            glm::vec3 gizmoBoundsMax(0.5f);
-
-            switch (selectedObj->type) {
-                case ObjectType::Cube:
-                    gizmoBoundsMin = glm::vec3(-0.5f);
-                    gizmoBoundsMax = glm::vec3(0.5f);
-                    break;
-                case ObjectType::Sphere:
-                    gizmoBoundsMin = glm::vec3(-0.5f);
-                    gizmoBoundsMax = glm::vec3(0.5f);
-                    break;
-                case ObjectType::Capsule:
-                    gizmoBoundsMin = glm::vec3(-0.35f, -0.9f, -0.35f);
-                    gizmoBoundsMax = glm::vec3(0.35f, 0.9f, 0.35f);
-                    break;
-                case ObjectType::OBJMesh: {
-                    const auto* info = g_objLoader.getMeshInfo(selectedObj->meshId);
-                    if (info && info->boundsMin.x < info->boundsMax.x) {
-                        gizmoBoundsMin = info->boundsMin;
-                        gizmoBoundsMax = info->boundsMax;
-                    }
-                    break;
-                }
-                case ObjectType::Model: {
-                    const auto* info = getModelLoader().getMeshInfo(selectedObj->meshId);
-                    if (info && info->boundsMin.x < info->boundsMax.x) {
-                        gizmoBoundsMin = info->boundsMin;
-                        gizmoBoundsMax = info->boundsMax;
-                    }
-                    break;
-                }
-                case ObjectType::Camera:
-                    gizmoBoundsMin = glm::vec3(-0.3f);
-                    gizmoBoundsMax = glm::vec3(0.3f);
-                    break;
-                case ObjectType::DirectionalLight:
-                case ObjectType::PointLight:
-                case ObjectType::SpotLight:
-                case ObjectType::AreaLight:
-                    gizmoBoundsMin = glm::vec3(-0.3f);
-                    gizmoBoundsMax = glm::vec3(0.3f);
-                    break;
-                case ObjectType::PostFXNode:
-                    gizmoBoundsMin = glm::vec3(-0.25f);
-                    gizmoBoundsMax = glm::vec3(0.25f);
-                    break;
-            }
-
-            float bounds[6] = {
-                gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z,
-                gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z
-            };
-            float boundsSnap[3] = { snapValue[0], snapValue[1], snapValue[2] };
-            const float* boundsPtr = (mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? bounds : nullptr;
-            const float* boundsSnapPtr = (useSnap && mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? boundsSnap : nullptr;
-
-            ImGuizmo::Manipulate(
-                glm::value_ptr(view),
-                glm::value_ptr(proj),
-                mCurrentGizmoOperation,
-                mCurrentGizmoMode,
-                glm::value_ptr(modelMatrix),
-                nullptr,
-                snapPtr,
-                boundsPtr,
-                boundsSnapPtr
-            );
-
-            std::array<glm::vec3, 8> corners = {
-                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
-                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
-                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
-                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
-                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
-                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
-                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
-                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
-            };
-
-            std::array<ImVec2, 8> projected{};
-            bool allProjected = true;
-            for (size_t i = 0; i < corners.size(); ++i) {
-                glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(corners[i], 1.0f));
-                auto p = projectToScreen(world);
-                if (!p.has_value()) { allProjected = false; break; }
-                projected[i] = *p;
-            }
-
-            if (allProjected) {
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.35f, 0.45f));
-                const int edges[12][2] = {
-                    {0,1},{1,2},{2,3},{3,0},
-                    {4,5},{5,6},{6,7},{7,4},
-                    {0,4},{1,5},{2,6},{3,7}
+            if (meshModeActive && !meshEditAsset.positions.empty()) {
+                // Build helper edge list (dedup) for edge/face modes
+                std::vector<glm::u32vec2> edges;
+                edges.reserve(meshEditAsset.faces.size() * 3);
+                std::unordered_set<uint64_t> edgeSet;
+                auto edgeKey = [](uint32_t a, uint32_t b) {
+                    return (static_cast<uint64_t>(std::min(a,b)) << 32) | static_cast<uint64_t>(std::max(a,b));
                 };
-                for (auto& e : edges) {
-                    dl->AddLine(projected[e[0]], projected[e[1]], col, 2.0f);
+                for (size_t fi = 0; fi < meshEditAsset.faces.size(); ++fi) {
+                    const auto& f = meshEditAsset.faces[fi];
+                    uint32_t tri[3] = { f.x, f.y, f.z };
+                    for (int e = 0; e < 3; ++e) {
+                        uint32_t a = tri[e];
+                        uint32_t b = tri[(e+1)%3];
+                        uint64_t key = edgeKey(a,b);
+                        if (edgeSet.insert(key).second) {
+                            edges.push_back(glm::u32vec2(std::min(a,b), std::max(a,b)));
+                        }
+                    }
                 }
-            }
 
-            if (ImGuizmo::IsUsing()) {
-                if (!gizmoHistoryCaptured) {
-                    recordState("gizmo");
-                    gizmoHistoryCaptured = true;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 vertCol = ImGui::GetColorU32(ImVec4(0.35f, 0.75f, 1.0f, 0.9f));
+                ImU32 selCol  = ImGui::GetColorU32(ImVec4(1.0f, 0.6f, 0.2f, 1.0f));
+                ImU32 edgeCol = ImGui::GetColorU32(ImVec4(0.6f, 0.9f, 1.0f, 0.6f));
+                ImU32 faceCol = ImGui::GetColorU32(ImVec4(1.0f, 0.8f, 0.4f, 0.7f));
+
+                float selectRadius = 10.0f;
+                ImVec2 mouse = ImGui::GetIO().MousePos;
+                bool clicked = mouseOverViewportImage && ImGui::IsMouseClicked(0);
+                bool additiveClick = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+                float bestDist = selectRadius;
+                int clickedIndex = -1;
+
+                glm::mat4 invModel = glm::inverse(modelMatrix);
+
+                if (meshEditSelectionMode == MeshEditSelectionMode::Vertex) {
+                    const size_t maxDraw = std::min<size_t>(meshEditAsset.positions.size(), 2000);
+                    for (size_t i = 0; i < maxDraw; ++i) {
+                        glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[i], 1.0f));
+                        auto screen = projectToScreen(world);
+                        if (!screen) continue;
+                        bool sel = std::find(meshEditSelectedVertices.begin(), meshEditSelectedVertices.end(), (int)i) != meshEditSelectedVertices.end();
+                        float radius = sel ? 6.5f : 5.0f;
+                        dl->AddCircleFilled(*screen, radius, sel ? selCol : vertCol);
+
+                        if (clicked) {
+                            float dx = screen->x - mouse.x;
+                            float dy = screen->y - mouse.y;
+                            float dist = std::sqrt(dx*dx + dy*dy);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                clickedIndex = static_cast<int>(i);
+                            }
+                        }
+                    }
+
+                    if (clickedIndex >= 0) {
+                        if (additiveClick) {
+                            auto itSel = std::find(meshEditSelectedVertices.begin(), meshEditSelectedVertices.end(), clickedIndex);
+                            if (itSel == meshEditSelectedVertices.end()) {
+                                meshEditSelectedVertices.push_back(clickedIndex);
+                            } else {
+                                meshEditSelectedVertices.erase(itSel);
+                            }
+                        } else {
+                            meshEditSelectedVertices.clear();
+                            meshEditSelectedVertices.push_back(clickedIndex);
+                        }
+                        meshEditSelectedEdges.clear();
+                        meshEditSelectedFaces.clear();
+                    }
+
+                    if (meshEditSelectedVertices.empty()) {
+                        meshEditSelectedVertices.push_back(0);
+                    }
+                } else if (meshEditSelectionMode == MeshEditSelectionMode::Edge) {
+                    for (size_t ei = 0; ei < edges.size(); ++ei) {
+                        const auto& e = edges[ei];
+                        glm::vec3 a = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[e.x], 1.0f));
+                        glm::vec3 b = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[e.y], 1.0f));
+                        auto sa = projectToScreen(a);
+                        auto sb = projectToScreen(b);
+                        if (!sa || !sb) continue;
+                        ImVec2 mid = ImVec2((sa->x + sb->x) * 0.5f, (sa->y + sb->y) * 0.5f);
+                        bool sel = std::find(meshEditSelectedEdges.begin(), meshEditSelectedEdges.end(), (int)ei) != meshEditSelectedEdges.end();
+                        dl->AddLine(*sa, *sb, edgeCol, sel ? 3.0f : 2.0f);
+                        dl->AddCircleFilled(mid, sel ? 6.0f : 4.0f, sel ? selCol : edgeCol);
+
+                        if (clicked) {
+                            float dx = mid.x - mouse.x;
+                            float dy = mid.y - mouse.y;
+                            float dist = std::sqrt(dx*dx + dy*dy);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                clickedIndex = static_cast<int>(ei);
+                            }
+                        }
+                    }
+                    if (clickedIndex >= 0) {
+                        if (additiveClick) {
+                            auto itSel = std::find(meshEditSelectedEdges.begin(), meshEditSelectedEdges.end(), clickedIndex);
+                            if (itSel == meshEditSelectedEdges.end()) {
+                                meshEditSelectedEdges.push_back(clickedIndex);
+                            } else {
+                                meshEditSelectedEdges.erase(itSel);
+                            }
+                        } else {
+                            meshEditSelectedEdges.clear();
+                            meshEditSelectedEdges.push_back(clickedIndex);
+                        }
+                        meshEditSelectedVertices.clear();
+                        meshEditSelectedFaces.clear();
+                    }
+                    if (meshEditSelectedEdges.empty() && !edges.empty()) {
+                        meshEditSelectedEdges.push_back(0);
+                    }
+                } else if (meshEditSelectionMode == MeshEditSelectionMode::Face) {
+                    for (size_t fi = 0; fi < meshEditAsset.faces.size(); ++fi) {
+                        const auto& f = meshEditAsset.faces[fi];
+                        glm::vec3 a = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[f.x], 1.0f));
+                        glm::vec3 b = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[f.y], 1.0f));
+                        glm::vec3 c = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[f.z], 1.0f));
+                        glm::vec3 centroid = (a + b + c) / 3.0f;
+                        auto sc = projectToScreen(centroid);
+                        if (!sc) continue;
+                        bool sel = std::find(meshEditSelectedFaces.begin(), meshEditSelectedFaces.end(), (int)fi) != meshEditSelectedFaces.end();
+                        dl->AddCircleFilled(*sc, sel ? 7.0f : 5.0f, sel ? selCol : faceCol);
+
+                        if (clicked) {
+                            float dx = sc->x - mouse.x;
+                            float dy = sc->y - mouse.y;
+                            float dist = std::sqrt(dx*dx + dy*dy);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                clickedIndex = static_cast<int>(fi);
+                            }
+                        }
+                    }
+                    if (clickedIndex >= 0) {
+                        if (additiveClick) {
+                            auto itSel = std::find(meshEditSelectedFaces.begin(), meshEditSelectedFaces.end(), clickedIndex);
+                            if (itSel == meshEditSelectedFaces.end()) {
+                                meshEditSelectedFaces.push_back(clickedIndex);
+                            } else {
+                                meshEditSelectedFaces.erase(itSel);
+                            }
+                        } else {
+                            meshEditSelectedFaces.clear();
+                            meshEditSelectedFaces.push_back(clickedIndex);
+                        }
+                        meshEditSelectedVertices.clear();
+                        meshEditSelectedEdges.clear();
+                    }
+                    if (meshEditSelectedFaces.empty() && !meshEditAsset.faces.empty()) {
+                        meshEditSelectedFaces.push_back(0);
+                    }
                 }
-                float t[3], r[3], s[3];
-                ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(modelMatrix), t, r, s);
 
-                selectedObj->position = glm::vec3(t[0], t[1], t[2]);
-                selectedObj->rotation = glm::vec3(r[0], r[1], r[2]);
-                selectedObj->scale    = glm::vec3(s[0], s[1], s[2]);
+                // Compute affected vertices from selection
+                std::vector<int> affectedVerts = meshEditSelectedVertices;
+                auto pushUnique = [&](int idx) {
+                    if (idx < 0) return;
+                    if (std::find(affectedVerts.begin(), affectedVerts.end(), idx) == affectedVerts.end()) {
+                        affectedVerts.push_back(idx);
+                    }
+                };
+                if (meshEditSelectionMode == MeshEditSelectionMode::Edge) {
+                    for (int ei : meshEditSelectedEdges) {
+                        if (ei < 0 || ei >= (int)edges.size()) continue;
+                        pushUnique(edges[ei].x);
+                        pushUnique(edges[ei].y);
+                    }
+                } else if (meshEditSelectionMode == MeshEditSelectionMode::Face) {
+                    for (int fi : meshEditSelectedFaces) {
+                        if (fi < 0 || fi >= (int)meshEditAsset.faces.size()) continue;
+                        const auto& f = meshEditAsset.faces[fi];
+                        pushUnique(f.x);
+                        pushUnique(f.y);
+                        pushUnique(f.z);
+                    }
+                }
+                if (affectedVerts.empty() && !meshEditAsset.positions.empty()) {
+                    affectedVerts.push_back(0);
+                }
 
-                projectManager.currentProject.hasUnsavedChanges = true;
+                glm::vec3 pivotWorld(0.0f);
+                for (int idx : affectedVerts) {
+                    glm::vec3 wp = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[idx], 1.0f));
+                    pivotWorld += wp;
+                }
+                pivotWorld /= (float)affectedVerts.size();
+
+                glm::mat4 gizmoMat = glm::translate(glm::mat4(1.0f), pivotWorld);
+
+                ImGuizmo::Manipulate(
+                    glm::value_ptr(view),
+                    glm::value_ptr(proj),
+                    ImGuizmo::TRANSLATE,
+                    ImGuizmo::WORLD,
+                    glm::value_ptr(gizmoMat)
+                );
+
+                static bool meshEditHistoryCaptured = false;
+                if (ImGuizmo::IsUsing()) {
+                    if (!meshEditHistoryCaptured) {
+                        recordState("meshEdit");
+                        meshEditHistoryCaptured = true;
+                    }
+                    glm::vec3 deltaWorld = glm::vec3(gizmoMat[3]) - pivotWorld;
+                    for (int idx : affectedVerts) {
+                        glm::vec3 wp = glm::vec3(modelMatrix * glm::vec4(meshEditAsset.positions[idx], 1.0f));
+                        wp += deltaWorld;
+                        glm::vec3 newLocal = glm::vec3(invModel * glm::vec4(wp, 1.0f));
+                        meshEditAsset.positions[idx] = newLocal;
+                    }
+
+                    // Recompute bounds
+                    meshEditAsset.boundsMin = glm::vec3(FLT_MAX);
+                    meshEditAsset.boundsMax = glm::vec3(-FLT_MAX);
+                    for (const auto& p : meshEditAsset.positions) {
+                        meshEditAsset.boundsMin.x = std::min(meshEditAsset.boundsMin.x, p.x);
+                        meshEditAsset.boundsMin.y = std::min(meshEditAsset.boundsMin.y, p.y);
+                        meshEditAsset.boundsMin.z = std::min(meshEditAsset.boundsMin.z, p.z);
+                        meshEditAsset.boundsMax.x = std::max(meshEditAsset.boundsMax.x, p.x);
+                        meshEditAsset.boundsMax.y = std::max(meshEditAsset.boundsMax.y, p.y);
+                        meshEditAsset.boundsMax.z = std::max(meshEditAsset.boundsMax.z, p.z);
+                    }
+
+                    // Recompute normals
+                    meshEditAsset.normals.assign(meshEditAsset.positions.size(), glm::vec3(0.0f));
+                    for (const auto& f : meshEditAsset.faces) {
+                        if (f.x >= meshEditAsset.positions.size() || f.y >= meshEditAsset.positions.size() || f.z >= meshEditAsset.positions.size()) continue;
+                        const glm::vec3& a = meshEditAsset.positions[f.x];
+                        const glm::vec3& b = meshEditAsset.positions[f.y];
+                        const glm::vec3& c = meshEditAsset.positions[f.z];
+                        glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+                        meshEditAsset.normals[f.x] += n;
+                        meshEditAsset.normals[f.y] += n;
+                        meshEditAsset.normals[f.z] += n;
+                    }
+                    for (auto& n : meshEditAsset.normals) {
+                        if (glm::length(n) > 1e-6f) n = glm::normalize(n);
+                    }
+                    meshEditAsset.hasNormals = true;
+
+                    syncMeshEditToGPU(selectedObj);
+                } else {
+                    meshEditHistoryCaptured = false;
+                }
             } else {
-                gizmoHistoryCaptured = false;
+                // Object transform mode
+                float* snapPtr = nullptr;
+                float snapRot[3] = { rotationSnapValue, rotationSnapValue, rotationSnapValue };
+
+                if (useSnap) {
+                    if (mCurrentGizmoOperation == ImGuizmo::ROTATE) {
+                        snapPtr = snapRot;
+                    } else {
+                        snapPtr = snapValue;
+                    }
+                }
+
+                glm::vec3 gizmoBoundsMin(-0.5f);
+                glm::vec3 gizmoBoundsMax(0.5f);
+
+                switch (selectedObj->type) {
+                    case ObjectType::Cube:
+                        gizmoBoundsMin = glm::vec3(-0.5f);
+                        gizmoBoundsMax = glm::vec3(0.5f);
+                        break;
+                    case ObjectType::Sphere:
+                        gizmoBoundsMin = glm::vec3(-0.5f);
+                        gizmoBoundsMax = glm::vec3(0.5f);
+                        break;
+                    case ObjectType::Capsule:
+                        gizmoBoundsMin = glm::vec3(-0.35f, -0.9f, -0.35f);
+                        gizmoBoundsMax = glm::vec3(0.35f, 0.9f, 0.35f);
+                        break;
+                    case ObjectType::OBJMesh: {
+                        const auto* info = g_objLoader.getMeshInfo(selectedObj->meshId);
+                        if (info && info->boundsMin.x < info->boundsMax.x) {
+                            gizmoBoundsMin = info->boundsMin;
+                            gizmoBoundsMax = info->boundsMax;
+                        }
+                        break;
+                    }
+                    case ObjectType::Model: {
+                        const auto* info = getModelLoader().getMeshInfo(selectedObj->meshId);
+                        if (info && info->boundsMin.x < info->boundsMax.x) {
+                            gizmoBoundsMin = info->boundsMin;
+                            gizmoBoundsMax = info->boundsMax;
+                        }
+                        break;
+                    }
+                    case ObjectType::Camera:
+                        gizmoBoundsMin = glm::vec3(-0.3f);
+                        gizmoBoundsMax = glm::vec3(0.3f);
+                        break;
+                    case ObjectType::DirectionalLight:
+                    case ObjectType::PointLight:
+                    case ObjectType::SpotLight:
+                    case ObjectType::AreaLight:
+                        gizmoBoundsMin = glm::vec3(-0.3f);
+                        gizmoBoundsMax = glm::vec3(0.3f);
+                        break;
+                    case ObjectType::PostFXNode:
+                        gizmoBoundsMin = glm::vec3(-0.25f);
+                        gizmoBoundsMax = glm::vec3(0.25f);
+                        break;
+                }
+
+                float bounds[6] = {
+                    gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z,
+                    gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z
+                };
+                float boundsSnap[3] = { snapValue[0], snapValue[1], snapValue[2] };
+                const float* boundsPtr = (mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? bounds : nullptr;
+                const float* boundsSnapPtr = (useSnap && mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? boundsSnap : nullptr;
+
+                ImGuizmo::Manipulate(
+                    glm::value_ptr(view),
+                    glm::value_ptr(proj),
+                    mCurrentGizmoOperation,
+                    mCurrentGizmoMode,
+                    glm::value_ptr(modelMatrix),
+                    nullptr,
+                    snapPtr,
+                    boundsPtr,
+                    boundsSnapPtr
+                );
+
+                std::array<glm::vec3, 8> corners = {
+                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
+                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
+                };
+
+                std::array<ImVec2, 8> projected{};
+                bool allProjected = true;
+                for (size_t i = 0; i < corners.size(); ++i) {
+                    glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(corners[i], 1.0f));
+                    auto p = projectToScreen(world);
+                    if (!p.has_value()) { allProjected = false; break; }
+                    projected[i] = *p;
+                }
+
+                if (allProjected) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.35f, 0.45f));
+                    const int edges[12][2] = {
+                        {0,1},{1,2},{2,3},{3,0},
+                        {4,5},{5,6},{6,7},{7,4},
+                        {0,4},{1,5},{2,6},{3,7}
+                    };
+                    for (auto& e : edges) {
+                        dl->AddLine(projected[e[0]], projected[e[1]], col, 2.0f);
+                    }
+                }
+
+                if (ImGuizmo::IsUsing()) {
+                    if (!gizmoHistoryCaptured) {
+                        recordState("gizmo");
+                        gizmoHistoryCaptured = true;
+                    }
+                    glm::mat4 delta = modelMatrix * glm::inverse(originalModel);
+
+                    auto applyDelta = [&](SceneObject& o) {
+                        glm::mat4 m = compose(o);
+                        glm::mat4 newM = delta * m;
+                        glm::vec3 t, r, s;
+                        DecomposeMatrix(newM, t, r, s);
+                        o.position = t;
+                        o.rotation = glm::degrees(r);
+                        o.scale = s;
+                    };
+
+                    if (selectedObjectIds.size() <= 1) {
+                        applyDelta(*selectedObj);
+                    } else {
+                        for (int id : selectedObjectIds) {
+                            auto itObj = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                                [id](const SceneObject& o){ return o.id == id; });
+                            if (itObj != sceneObjects.end()) {
+                                applyDelta(*itObj);
+                            }
+                        }
+                    }
+
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                } else {
+                    gizmoHistoryCaptured = false;
+                }
             }
         }
 
@@ -2726,6 +3169,40 @@ void Engine::renderViewport() {
         gizmoButton("Rotate", ImGuizmo::ROTATE, "Rotate");
         ImGui::SameLine(0.0f, toolbarSpacing);
         gizmoButton("Scale", ImGuizmo::SCALE, "Scale");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        bool canMeshEdit = false;
+        if (selectedObj) {
+            std::string ext = fs::path(selectedObj->meshPath).extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            canMeshEdit = ext == ".rmesh";
+        }
+        ImGui::BeginDisabled(!canMeshEdit);
+        if (GizmoToolbar::ModeButton("Mesh Edit", meshEditMode, gizmoButtonSize, baseCol, accentCol, textCol)) {
+            meshEditMode = !meshEditMode;
+            if (!meshEditMode) {
+                meshEditLoaded = false;
+                meshEditPath.clear();
+                meshEditSelectedVertices.clear();
+                meshEditSelectedEdges.clear();
+                meshEditSelectedFaces.clear();
+            }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle mesh vertex edit mode");
+        ImGui::EndDisabled();
+        if (meshEditMode) {
+            ImGui::SameLine(0.0f, toolbarSpacing);
+            if (GizmoToolbar::ModeButton("Verts", meshEditSelectionMode == MeshEditSelectionMode::Vertex, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                meshEditSelectionMode = MeshEditSelectionMode::Vertex;
+            }
+            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
+            if (GizmoToolbar::ModeButton("Edges", meshEditSelectionMode == MeshEditSelectionMode::Edge, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                meshEditSelectionMode = MeshEditSelectionMode::Edge;
+            }
+            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
+            if (GizmoToolbar::ModeButton("Faces", meshEditSelectionMode == MeshEditSelectionMode::Face, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                meshEditSelectionMode = MeshEditSelectionMode::Face;
+            }
+        }
         ImGui::SameLine(0.0f, toolbarSpacing);
         gizmoButton("Rect", ImGuizmo::BOUNDS, "Rect scale");
         ImGui::SameLine(0.0f, toolbarSpacing);
@@ -2952,9 +3429,10 @@ void Engine::renderViewport() {
 
             viewportController.setFocused(true);
             if (hitId != -1) {
-                selectedObjectId = hitId;
+                bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+                setPrimarySelection(hitId, additive);
             } else {
-                selectedObjectId = -1;
+                clearSelection();
             }
         }
 

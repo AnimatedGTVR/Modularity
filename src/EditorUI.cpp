@@ -97,7 +97,7 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
     // Model files
     if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" || 
         ext == ".dae" || ext == ".blend" || ext == ".3ds" || ext == ".ply" ||
-        ext == ".stl" || ext == ".x" || ext == ".md5mesh") {
+        ext == ".stl" || ext == ".x" || ext == ".md5mesh" || ext == ".rmesh") {
         return FileCategory::Model;
     }
     

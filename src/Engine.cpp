@@ -87,6 +87,42 @@ SceneObject* Engine::getSelectedObject() {
     return (it != sceneObjects.end()) ? &(*it) : nullptr;
 }
 
+glm::vec3 Engine::getSelectionCenterWorld(bool worldSpace) const {
+    if (selectedObjectIds.empty()) return glm::vec3(0.0f);
+    glm::vec3 acc(0.0f);
+    int count = 0;
+    auto findObj = [&](int id) -> const SceneObject* {
+        auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [id](const SceneObject& o){ return o.id == id; });
+        return it == sceneObjects.end() ? nullptr : &(*it);
+    };
+    for (int id : selectedObjectIds) {
+        const SceneObject* o = findObj(id);
+        if (!o) continue;
+        acc += worldSpace ? o->position : glm::vec3(0.0f);
+        count++;
+    }
+    if (count == 0) return glm::vec3(0.0f);
+    return acc / (float)count;
+}
+
+void Engine::setPrimarySelection(int id, bool additive) {
+    if (!additive) {
+        selectedObjectIds.clear();
+    }
+    if (id >= 0) {
+        selectedObjectIds.push_back(id);
+        selectedObjectId = id;
+    } else {
+        selectedObjectIds.clear();
+        selectedObjectId = -1;
+    }
+}
+
+void Engine::clearSelection() {
+    selectedObjectIds.clear();
+    selectedObjectId = -1;
+}
+
 Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     Camera cam;
     cam.position = obj.position;
@@ -120,7 +156,7 @@ void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3&
 void Engine::recordState(const char* /*reason*/) {
     SceneSnapshot snap;
     snap.objects = sceneObjects;
-    snap.selectedId = selectedObjectId;
+    snap.selectedIds = selectedObjectIds;
     snap.nextId = nextObjectId;
 
     undoStack.push_back(std::move(snap));
@@ -135,7 +171,7 @@ void Engine::undo() {
 
     SceneSnapshot current;
     current.objects = sceneObjects;
-    current.selectedId = selectedObjectId;
+    current.selectedIds = selectedObjectIds;
     current.nextId = nextObjectId;
 
     SceneSnapshot snap = undoStack.back();
@@ -143,7 +179,8 @@ void Engine::undo() {
 
     redoStack.push_back(std::move(current));
     sceneObjects = std::move(snap.objects);
-    selectedObjectId = snap.selectedId;
+    selectedObjectIds = snap.selectedIds;
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
     nextObjectId = snap.nextId;
     projectManager.currentProject.hasUnsavedChanges = true;
 }
@@ -153,7 +190,7 @@ void Engine::redo() {
 
     SceneSnapshot current;
     current.objects = sceneObjects;
-    current.selectedId = selectedObjectId;
+    current.selectedIds = selectedObjectIds;
     current.nextId = nextObjectId;
 
     SceneSnapshot snap = redoStack.back();
@@ -161,7 +198,8 @@ void Engine::redo() {
 
     undoStack.push_back(std::move(current));
     sceneObjects = std::move(snap.objects);
-    selectedObjectId = snap.selectedId;
+    selectedObjectIds = snap.selectedIds;
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
     nextObjectId = snap.nextId;
     projectManager.currentProject.hasUnsavedChanges = true;
 }
@@ -301,6 +339,7 @@ void Engine::run() {
                 if (showHierarchy) renderHierarchyPanel();
                 if (showInspector) renderInspectorPanel();
                 if (showFileBrowser) renderFileBrowserPanel();
+                if (showMeshBuilder) renderMeshBuilderPanel();
                 if (showConsole) renderConsolePanel();
                 if (showEnvironmentWindow) renderEnvironmentWindow();
                 if (showCameraWindow) renderCameraWindow();
@@ -372,7 +411,7 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
     obj.meshId = meshId;
     
     sceneObjects.push_back(obj);
-    selectedObjectId = id;
+    setPrimarySelection(id);
     
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -407,7 +446,7 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
     obj.meshId = result.meshIndex;
 
     sceneObjects.push_back(obj);
-    selectedObjectId = id;
+    setPrimarySelection(id);
 
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -420,6 +459,61 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
         std::to_string(result.meshCount) + " meshes)",
         ConsoleMessageType::Success
     );
+}
+
+void Engine::convertModelToRawMesh(const std::string& filepath) {
+    auto& modelLoader = getModelLoader();
+    fs::path inPath(filepath);
+    fs::path outPath = inPath;
+    outPath.replace_extension(".rmesh");
+
+    std::string error;
+    if (modelLoader.exportRawMesh(filepath, outPath.string(), error)) {
+        addConsoleMessage("Converted to raw mesh: " + outPath.string(), ConsoleMessageType::Success);
+        fileBrowser.needsRefresh = true;
+    } else {
+        addConsoleMessage("Raw mesh export failed: " + error, ConsoleMessageType::Error);
+    }
+}
+
+bool Engine::ensureMeshEditTarget(SceneObject* obj) {
+    if (!obj) return false;
+    fs::path ext = fs::path(obj->meshPath).extension();
+    std::string extLower = ext.string();
+    std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
+    if (extLower != ".rmesh") return false;
+
+    if (meshEditLoaded && meshEditPath == obj->meshPath) {
+        if (meshEditSelectedVertices.empty() && !meshEditAsset.positions.empty()) {
+            meshEditSelectedVertices.push_back(0);
+        }
+        return true;
+    }
+
+    std::string err;
+    if (!getModelLoader().loadRawMesh(obj->meshPath, meshEditAsset, err)) {
+        addConsoleMessage("Mesh edit load failed: " + err, ConsoleMessageType::Error);
+        meshEditLoaded = false;
+        return false;
+    }
+    meshEditLoaded = true;
+    meshEditPath = obj->meshPath;
+    meshEditSelectedVertices.clear();
+    meshEditSelectedEdges.clear();
+    meshEditSelectedFaces.clear();
+    if (!meshEditAsset.positions.empty()) meshEditSelectedVertices.push_back(0);
+    return true;
+}
+
+bool Engine::syncMeshEditToGPU(SceneObject* obj) {
+    if (!obj || !meshEditLoaded) return false;
+    std::string err;
+    if (!getModelLoader().updateRawMesh(obj->meshId, meshEditAsset, err)) {
+        addConsoleMessage("Mesh GPU sync failed: " + err, ConsoleMessageType::Error);
+        return false;
+    }
+    projectManager.currentProject.hasUnsavedChanges = true;
+    return true;
 }
 
 void Engine::loadMaterialFromFile(SceneObject& obj) {
@@ -648,7 +742,7 @@ void Engine::createNewProject(const char* name, const char* location) {
         }
 
         sceneObjects.clear();
-        selectedObjectId = -1;
+        clearSelection();
         nextObjectId = 0;
 
         addObject(ObjectType::Cube, "Cube");
@@ -671,7 +765,7 @@ void Engine::createNewProject(const char* name, const char* location) {
 
 void Engine::loadRecentScenes() {
     sceneObjects.clear();
-    selectedObjectId = -1;
+    clearSelection();
     nextObjectId = 0;
     undoStack.clear();
     redoStack.clear();
@@ -722,7 +816,7 @@ void Engine::loadScene(const std::string& sceneName) {
         projectManager.currentProject.currentSceneName = sceneName;
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
-        selectedObjectId = -1;
+        clearSelection();
         bool hasDirLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
             return o.type == ObjectType::DirectionalLight;
         });
@@ -744,7 +838,7 @@ void Engine::createNewScene(const std::string& sceneName) {
     }
 
     sceneObjects.clear();
-    selectedObjectId = -1;
+    clearSelection();
     nextObjectId = 0;
     undoStack.clear();
     redoStack.clear();
@@ -787,7 +881,7 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
         sceneObjects.back().camera.type = SceneCameraType::Player;
         sceneObjects.back().camera.fov = 60.0f;
     }
-    selectedObjectId = id;
+    setPrimarySelection(id);
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
@@ -820,7 +914,7 @@ void Engine::duplicateSelected() {
         newObj.postFx = it->postFx;
         
         sceneObjects.push_back(newObj);
-        selectedObjectId = id;
+        setPrimarySelection(id);
         if (projectManager.currentProject.isLoaded) {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
@@ -836,7 +930,7 @@ void Engine::deleteSelected() {
     if (it != sceneObjects.end()) {
         logToConsole("Deleted object");
         sceneObjects.erase(it, sceneObjects.end());
-        selectedObjectId = -1;
+        clearSelection();
         if (projectManager.currentProject.isLoaded) {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
