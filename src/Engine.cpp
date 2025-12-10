@@ -87,6 +87,22 @@ SceneObject* Engine::getSelectedObject() {
     return (it != sceneObjects.end()) ? &(*it) : nullptr;
 }
 
+Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
+    Camera cam;
+    cam.position = obj.position;
+    glm::quat q = glm::quat(glm::radians(obj.rotation));
+    glm::mat3 rot = glm::mat3_cast(q);
+    cam.front = glm::normalize(rot * glm::vec3(0.0f, 0.0f, -1.0f));
+    cam.up = glm::normalize(rot * glm::vec3(0.0f, 1.0f, 0.0f));
+    if (!std::isfinite(cam.front.x) || glm::length(cam.front) < 1e-3f) {
+        cam.front = glm::vec3(0.0f, 0.0f, -1.0f);
+    }
+    if (!std::isfinite(cam.up.x) || glm::length(cam.up) < 1e-3f) {
+        cam.up = glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    return cam;
+}
+
 void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale) {
     pos = glm::vec3(matrix[3]);
     scale.x = glm::length(glm::vec3(matrix[0]));
@@ -204,6 +220,17 @@ void Engine::run() {
             continue;
         }
 
+        // Enforce cursor lock state every frame to avoid backends restoring it.
+        int desiredMode = cursorLocked ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL;
+        if (glfwGetInputMode(editorWindow, GLFW_CURSOR) != desiredMode) {
+            glfwSetInputMode(editorWindow, GLFW_CURSOR, desiredMode);
+            if (cursorLocked && glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            } else if (!cursorLocked && glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+            }
+        }
+
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
@@ -223,6 +250,17 @@ void Engine::run() {
             camera.firstMouse = true;
         }
 
+        // Scroll-wheel speed adjustment while freelook is active
+        if (viewportController.isViewportFocused() && cursorLocked) {
+            float wheel = ImGui::GetIO().MouseWheel;
+            if (std::abs(wheel) > 0.0001f) {
+                float factor = std::pow(1.12f, wheel);
+                float ratio = (camera.moveSpeed > 0.001f) ? (camera.sprintSpeed / camera.moveSpeed) : 2.0f;
+                camera.moveSpeed = std::clamp(camera.moveSpeed * factor, 0.5f, 100.0f);
+                camera.sprintSpeed = std::clamp(camera.moveSpeed * ratio, 0.5f, 200.0f);
+            }
+        }
+
         if (viewportController.isViewportFocused() && cursorLocked) {
             camera.processKeyboard(deltaTime, editorWindow);
         }
@@ -234,7 +272,7 @@ void Engine::run() {
             glm::mat4 proj = glm::perspective(glm::radians(FOV), aspect, NEAR_PLANE, FAR_PLANE);
 
             renderer.beginRender(view, proj, camera.position);
-            renderer.renderScene(camera, sceneObjects);
+            renderer.renderScene(camera, sceneObjects, selectedObjectId);
             renderer.endRender();
         }
 
@@ -504,23 +542,39 @@ void Engine::handleKeyboardShortcuts() {
         ctrlNPressed = false;
     }
 
-    if (!cursorLocked) {
+    bool cameraActive = cursorLocked || viewportController.isViewportFocused() && cursorLocked;
+    if (!cameraActive) {
         if (ImGui::IsKeyPressed(ImGuiKey_Q)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
         if (ImGui::IsKeyPressed(ImGuiKey_W)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
         if (ImGui::IsKeyPressed(ImGuiKey_E)) mCurrentGizmoOperation = ImGuizmo::SCALE;
-        if (ImGui::IsKeyPressed(ImGuiKey_R)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) mCurrentGizmoOperation = ImGuizmo::BOUNDS;
+        if (ImGui::IsKeyPressed(ImGuiKey_T)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_Z)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_U)) {
             mCurrentGizmoMode = (mCurrentGizmoMode == ImGuizmo::LOCAL) ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
         }
     }
 
     static bool snapPressed = false;
-    if (ImGui::IsKeyPressed(ImGuiKey_X) && !snapPressed) {
-        useSnap = !useSnap;
-        snapPressed = true;
+    static bool snapHeldByCtrl = false;
+    static bool snapStateBeforeCtrl = false;
+
+    if (!snapHeldByCtrl && ctrlDown) {
+        snapStateBeforeCtrl = useSnap;
+        snapHeldByCtrl = true;
+        useSnap = true;
+    } else if (snapHeldByCtrl && !ctrlDown) {
+        useSnap = snapStateBeforeCtrl;
+        snapHeldByCtrl = false;
     }
-    if (ImGui::IsKeyReleased(ImGuiKey_X)) {
+
+    if (!cameraActive) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Y) && !snapPressed) {
+            useSnap = !useSnap;
+            snapPressed = true;
+        }
+    }
+    if (ImGui::IsKeyReleased(ImGuiKey_Y)) {
         snapPressed = false;
     }
 
@@ -544,16 +598,37 @@ void Engine::handleKeyboardShortcuts() {
 }
 
 void Engine::OpenProjectPath(const std::string& path) {
-    if (projectManager.loadProject(path)) {
-        if (!initRenderer()) {
-            addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
-        } else {
-            showLauncher = false;
+    try {
+        if (projectManager.loadProject(path)) {
+            // Make sure project folders exist even for older/minimal projects
+            if (!fs::exists(projectManager.currentProject.assetsPath)) {
+                fs::create_directories(projectManager.currentProject.assetsPath);
+            }
+            if (!fs::exists(projectManager.currentProject.scenesPath)) {
+                fs::create_directories(projectManager.currentProject.scenesPath);
+            }
+
+            if (!initRenderer()) {
+                addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
+                showLauncher = true;
+                return;
+            }
+
             loadRecentScenes();
+            fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
+            fileBrowser.currentPath = projectManager.currentProject.assetsPath;
+            fileBrowser.needsRefresh = true;
+            showLauncher = false;
             addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
+        } else {
+            addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
         }
-    } else {
-        addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
+    } catch (const std::exception& e) {
+        addConsoleMessage(std::string("Exception opening project: ") + e.what(), ConsoleMessageType::Error);
+        showLauncher = true;
+    } catch (...) {
+        addConsoleMessage("Unknown exception opening project", ConsoleMessageType::Error);
+        showLauncher = true;
     }
 }
 
@@ -578,6 +653,7 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         addObject(ObjectType::Cube, "Cube");
 
+        fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
         fileBrowser.currentPath = projectManager.currentProject.assetsPath;
         fileBrowser.needsRefresh = true;
 
@@ -614,6 +690,7 @@ void Engine::loadRecentScenes() {
     }
     recordState("sceneLoaded");
 
+    fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
     fileBrowser.currentPath = projectManager.currentProject.assetsPath;
     fileBrowser.needsRefresh = true;
 }
@@ -702,6 +779,13 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
         sceneObjects.back().light.range = 10.0f;
         sceneObjects.back().light.intensity = 3.0f;
         sceneObjects.back().light.size = glm::vec2(2.0f, 2.0f);
+    } else if (type == ObjectType::PostFXNode) {
+        sceneObjects.back().postFx.enabled = true;
+        sceneObjects.back().postFx.bloomEnabled = true;
+        sceneObjects.back().postFx.colorAdjustEnabled = true;
+    } else if (type == ObjectType::Camera) {
+        sceneObjects.back().camera.type = SceneCameraType::Player;
+        sceneObjects.back().camera.fov = 60.0f;
     }
     selectedObjectId = id;
     if (projectManager.currentProject.isLoaded) {
@@ -732,6 +816,8 @@ void Engine::duplicateSelected() {
         newObj.fragmentShaderPath = it->fragmentShaderPath;
         newObj.useOverlay = it->useOverlay;
         newObj.light = it->light;
+        newObj.camera = it->camera;
+        newObj.postFx = it->postFx;
         
         sceneObjects.push_back(newObj);
         selectedObjectId = id;

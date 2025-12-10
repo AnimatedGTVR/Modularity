@@ -298,6 +298,7 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
 
     glm::vec3 boundsMin(FLT_MAX);
     glm::vec3 boundsMax(-FLT_MAX);
+    std::vector<glm::vec3> triPositions;
 
     for (const auto& shape : shapes) {
         size_t indexOffset = 0;
@@ -360,6 +361,7 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
                 const TempVertex* tri[3] = { &faceVerts[0], &faceVerts[v], &faceVerts[v+1] };
 
                 for (int i = 0; i < 3; i++) {
+                    triPositions.push_back(tri[i]->pos);
                     vertices.push_back(tri[i]->pos.x);
                     vertices.push_back(tri[i]->pos.y);
                     vertices.push_back(tri[i]->pos.z);
@@ -390,6 +392,7 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
     loaded.hasTexCoords = !attrib.texcoords.empty();
     loaded.boundsMin = boundsMin;
     loaded.boundsMax = boundsMax;
+    loaded.triangleVertices = std::move(triPositions);
 
     loadedMeshes.push_back(std::move(loaded));
     return static_cast<int>(loadedMeshes.size() - 1);
@@ -420,9 +423,29 @@ Renderer::~Renderer() {
     delete sphereMesh;
     delete capsuleMesh;
     delete skybox;
+    delete postShader;
+    delete brightShader;
+    delete blurShader;
+    if (previewTarget.fbo) glDeleteFramebuffers(1, &previewTarget.fbo);
+    if (previewTarget.texture) glDeleteTextures(1, &previewTarget.texture);
+    if (previewTarget.rbo) glDeleteRenderbuffers(1, &previewTarget.rbo);
+    if (postTarget.fbo) glDeleteFramebuffers(1, &postTarget.fbo);
+    if (postTarget.texture) glDeleteTextures(1, &postTarget.texture);
+    if (postTarget.rbo) glDeleteRenderbuffers(1, &postTarget.rbo);
+    if (historyTarget.fbo) glDeleteFramebuffers(1, &historyTarget.fbo);
+    if (historyTarget.texture) glDeleteTextures(1, &historyTarget.texture);
+    if (historyTarget.rbo) glDeleteRenderbuffers(1, &historyTarget.rbo);
+    if (bloomTargetA.fbo) glDeleteFramebuffers(1, &bloomTargetA.fbo);
+    if (bloomTargetA.texture) glDeleteTextures(1, &bloomTargetA.texture);
+    if (bloomTargetA.rbo) glDeleteRenderbuffers(1, &bloomTargetA.rbo);
+    if (bloomTargetB.fbo) glDeleteFramebuffers(1, &bloomTargetB.fbo);
+    if (bloomTargetB.texture) glDeleteTextures(1, &bloomTargetB.texture);
+    if (bloomTargetB.rbo) glDeleteRenderbuffers(1, &bloomTargetB.rbo);
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (viewportTexture) glDeleteTextures(1, &viewportTexture);
     if (rbo) glDeleteRenderbuffers(1, &rbo);
+    if (quadVBO) glDeleteBuffers(1, &quadVBO);
+    if (quadVAO) glDeleteVertexArrays(1, &quadVAO);
 }
 
 Texture* Renderer::getTexture(const std::string& path) {
@@ -448,6 +471,36 @@ void Renderer::initialize() {
         shader = nullptr;
         throw std::runtime_error("Shader error");
     }
+    postShader = new Shader(postVertPath.c_str(), postFragPath.c_str());
+    if (!postShader || postShader->ID == 0) {
+        std::cerr << "PostFX shader compilation failed!\n";
+        delete postShader;
+        postShader = nullptr;
+    } else {
+        postShader->use();
+        postShader->setInt("sceneTex", 0);
+        postShader->setInt("bloomTex", 1);
+        postShader->setInt("historyTex", 2);
+    }
+    brightShader = new Shader(postVertPath.c_str(), postBrightFragPath.c_str());
+    if (!brightShader || brightShader->ID == 0) {
+        std::cerr << "Bright-pass shader compilation failed!\n";
+        delete brightShader;
+        brightShader = nullptr;
+    } else {
+        brightShader->use();
+        brightShader->setInt("sceneTex", 0);
+    }
+
+    blurShader = new Shader(postVertPath.c_str(), postBlurFragPath.c_str());
+    if (!blurShader || blurShader->ID == 0) {
+        std::cerr << "Blur shader compilation failed!\n";
+        delete blurShader;
+        blurShader = nullptr;
+    } else {
+        blurShader->use();
+        blurShader->setInt("image", 0);
+    }
     ShaderEntry entry;
     entry.shader.reset(defaultShader);
     entry.vertPath = defaultVertPath;
@@ -470,6 +523,12 @@ void Renderer::initialize() {
     skybox = new Skybox();
 
     setupFBO();
+    ensureRenderTarget(postTarget, currentWidth, currentHeight);
+    ensureRenderTarget(historyTarget, currentWidth, currentHeight);
+    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight);
+    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight);
+    ensureQuad();
+    clearHistory();
     glEnable(GL_DEPTH_TEST);
 }
 
@@ -573,6 +632,93 @@ void Renderer::setupFBO() {
         std::cerr << "Framebuffer setup failed!\n";
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    displayTexture = viewportTexture;
+}
+
+void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+
+    if (target.fbo == 0) {
+        glGenFramebuffers(1, &target.fbo);
+        glGenTextures(1, &target.texture);
+        glGenRenderbuffers(1, &target.rbo);
+    }
+
+    if (target.width == w && target.height == h) return;
+
+    target.width = w;
+    target.height = h;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+
+    glBindTexture(GL_TEXTURE_2D, target.texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, target.width, target.height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.texture, 0);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, target.rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, target.width, target.height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.rbo);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Preview framebuffer setup failed!\n";
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void Renderer::ensureQuad() {
+    if (quadVAO != 0) return;
+
+    float quadVertices[] = {
+        // positions   // texcoords
+        -1.0f,  1.0f, 0.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+         1.0f,  1.0f, 1.0f, 1.0f
+    };
+
+    glGenVertexArrays(1, &quadVAO);
+    glGenBuffers(1, &quadVBO);
+    glBindVertexArray(quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+void Renderer::drawFullscreenQuad() {
+    if (quadVAO == 0) ensureQuad();
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
+void Renderer::clearHistory() {
+    historyValid = false;
+    if (historyTarget.fbo != 0 && historyTarget.width > 0 && historyTarget.height > 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, historyTarget.fbo);
+        glViewport(0, 0, historyTarget.width, historyTarget.height);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+}
+
+void Renderer::clearTarget(RenderTarget& target) {
+    if (target.fbo == 0 || target.width <= 0 || target.height <= 0) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+    glViewport(0, 0, target.width, target.height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Renderer::resize(int w, int h) {
@@ -591,6 +737,13 @@ void Renderer::resize(int w, int h) {
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         std::cerr << "Framebuffer incomplete after resize!\n";
     }
+
+    ensureRenderTarget(postTarget, currentWidth, currentHeight);
+    ensureRenderTarget(historyTarget, currentWidth, currentHeight);
+    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight);
+    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight);
+    clearHistory();
+    displayTexture = viewportTexture;
 }
 
 void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos) {
@@ -598,6 +751,7 @@ void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const g
     glViewport(0, 0, currentWidth, currentHeight);
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    displayTexture = viewportTexture;
 
     shader->use();
     shader->setMat4("view", view);
@@ -698,11 +852,16 @@ void Renderer::renderObject(const SceneObject& obj) {
         case ObjectType::DirectionalLight:
             // Not rendered as geometry
             break;
+        case ObjectType::Camera:
+            // Cameras are editor helpers only
+            break;
+        case ObjectType::PostFXNode:
+            break;
     }
 }
 
-void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects) {
-    if (!defaultShader) return;
+void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane) {
+    if (!defaultShader || width <= 0 || height <= 0) return;
 
     struct LightUniform {
         int type = 0; // 0 dir,1 point,2 spot
@@ -774,8 +933,8 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     }
 
     for (const auto& obj : sceneObjects) {
-        // Skip light gizmo-only types
-        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
+        // Skip light gizmo-only types and camera helpers
+        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode) {
             continue;
         }
 
@@ -785,7 +944,7 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         shader->use();
 
         shader->setMat4("view", camera.getViewMatrix());
-        shader->setMat4("projection", glm::perspective(glm::radians(FOV), (float)currentWidth / (float)currentHeight, NEAR_PLANE, FAR_PLANE));
+        shader->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane));
         shader->setVec3("viewPos", camera.position);
         shader->setVec3("ambientColor", ambientColor);
         shader->setVec3("ambientColor", ambientColor);
@@ -862,14 +1021,153 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
 
     if (skybox) {
         glm::mat4 view = camera.getViewMatrix();
-        glm::mat4 proj = glm::perspective(glm::radians(FOV), 
-                                        (float)currentWidth / currentHeight, 
-                                        NEAR_PLANE, FAR_PLANE);
+        glm::mat4 proj = glm::perspective(glm::radians(fovDeg), 
+                                        (float)width / height, 
+                                        nearPlane, farPlane);
 
         skybox->draw(glm::value_ptr(view), glm::value_ptr(proj));
     }
 
+    if (unbindFramebuffer) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+}
+
+PostFXSettings Renderer::gatherPostFX(const std::vector<SceneObject>& sceneObjects) const {
+    PostFXSettings combined;
+    combined.enabled = false;
+    for (const auto& obj : sceneObjects) {
+        if (obj.type != ObjectType::PostFXNode) continue;
+        if (!obj.postFx.enabled) continue;
+        combined = obj.postFx; // Last enabled node wins for now
+        combined.enabled = true;
+    }
+    return combined;
+}
+
+void Renderer::applyPostProcessing(const std::vector<SceneObject>& sceneObjects) {
+    PostFXSettings settings = gatherPostFX(sceneObjects);
+    bool wantsEffects = settings.enabled && (settings.bloomEnabled || settings.colorAdjustEnabled || settings.motionBlurEnabled);
+
+    if (!wantsEffects || !postShader || currentWidth <= 0 || currentHeight <= 0) {
+        displayTexture = viewportTexture;
+        clearHistory();
+        return;
+    }
+
+    ensureRenderTarget(postTarget, currentWidth, currentHeight);
+    ensureRenderTarget(historyTarget, currentWidth, currentHeight);
+    if (postTarget.fbo == 0 || postTarget.texture == 0) {
+        displayTexture = viewportTexture;
+        clearHistory();
+        return;
+    }
+
+    // --- Bloom using bright pass + separable blur (inspired by ProcessingPostFX) ---
+    unsigned int bloomTex = 0;
+    if (settings.bloomEnabled && brightShader && blurShader) {
+        // Bright pass
+        glDisable(GL_DEPTH_TEST);
+        brightShader->use();
+        brightShader->setFloat("threshold", settings.bloomThreshold);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, viewportTexture);
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomTargetA.fbo);
+        glViewport(0, 0, currentWidth, currentHeight);
+        glClear(GL_COLOR_BUFFER_BIT);
+        drawFullscreenQuad();
+
+        // Blur ping-pong
+        blurShader->use();
+        float sigma = glm::max(settings.bloomRadius * 2.5f, 0.1f);
+        int radius = static_cast<int>(glm::clamp(settings.bloomRadius * 4.0f, 2.0f, 12.0f));
+        blurShader->setFloat("sigma", sigma);
+        blurShader->setInt("radius", radius);
+
+        bool horizontal = true;
+        unsigned int pingTex = bloomTargetA.texture;
+        RenderTarget* writeTarget = &bloomTargetB;
+        for (int i = 0; i < 4; ++i) {
+            blurShader->setBool("horizontal", horizontal);
+            blurShader->setVec2("texelSize", glm::vec2(1.0f / currentWidth, 1.0f / currentHeight));
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, pingTex);
+            glBindFramebuffer(GL_FRAMEBUFFER, writeTarget->fbo);
+            glViewport(0, 0, currentWidth, currentHeight);
+            glClear(GL_COLOR_BUFFER_BIT);
+            drawFullscreenQuad();
+
+            // swap
+            pingTex = writeTarget->texture;
+            writeTarget = (writeTarget == &bloomTargetA) ? &bloomTargetB : &bloomTargetA;
+            horizontal = !horizontal;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glEnable(GL_DEPTH_TEST);
+        bloomTex = pingTex;
+    } else {
+        bloomTex = 0;
+        clearTarget(bloomTargetA);
+        clearTarget(bloomTargetB);
+    }
+
+    glDisable(GL_DEPTH_TEST);
+    postShader->use();
+    postShader->setBool("enableBloom", settings.bloomEnabled && bloomTex != 0);
+    postShader->setFloat("bloomIntensity", settings.bloomIntensity);
+    postShader->setBool("enableColorAdjust", settings.colorAdjustEnabled);
+    postShader->setFloat("exposure", settings.exposure);
+    postShader->setFloat("contrast", settings.contrast);
+    postShader->setFloat("saturation", settings.saturation);
+    postShader->setVec3("colorFilter", settings.colorFilter);
+    postShader->setBool("enableMotionBlur", settings.motionBlurEnabled);
+    postShader->setFloat("motionBlurStrength", settings.motionBlurStrength);
+    postShader->setBool("hasHistory", historyValid);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, viewportTexture);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloomTex ? bloomTex : viewportTexture);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, historyTarget.texture);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, postTarget.fbo);
+    glViewport(0, 0, currentWidth, currentHeight);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    drawFullscreenQuad();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glEnable(GL_DEPTH_TEST);
+
+    displayTexture = postTarget.texture;
+
+    if (settings.motionBlurEnabled && historyTarget.fbo != 0) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, postTarget.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, historyTarget.fbo);
+        glBlitFramebuffer(0, 0, currentWidth, currentHeight, 0, 0, currentWidth, currentHeight, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        historyValid = true;
+    } else {
+        clearHistory();
+    }
+}
+
+void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int /*selectedId*/, float fovDeg, float nearPlane, float farPlane) {
+    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane);
+    applyPostProcessing(sceneObjects);
+}
+
+unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
+    ensureRenderTarget(previewTarget, width, height);
+    if (previewTarget.fbo == 0) return 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, previewTarget.fbo);
+    glViewport(0, 0, width, height);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane);
+    return previewTarget.texture;
 }
 
 void Renderer::endRender() {

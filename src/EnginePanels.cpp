@@ -1,7 +1,10 @@
 #include "Engine.h"
 #include "ModelLoader.h"
 #include <algorithm>
+#include <array>
 #include <cfloat>
+#include <cmath>
+#include <optional>
 
 #ifdef _WIN32
 #include <shlobj.h>
@@ -294,6 +297,12 @@ namespace FileIcons {
 
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4 accent = style.Colors[ImGuiCol_CheckMark];
+    ImVec4 toolbarBg = style.Colors[ImGuiCol_MenuBarBg];
+    toolbarBg.x = std::min(toolbarBg.x + 0.02f, 1.0f);
+    toolbarBg.y = std::min(toolbarBg.y + 0.02f, 1.0f);
+    toolbarBg.z = std::min(toolbarBg.z + 0.02f, 1.0f);
 
     if (fileBrowser.needsRefresh) {
         fileBrowser.refresh();
@@ -314,59 +323,56 @@ void Engine::renderFileBrowserPanel() {
             default:                    return IM_COL32(150, 150, 150, 255);  // Dark gray
         }
     };
-    
-    // === TOOLBAR ===
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
-    
-    // Navigation buttons
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, toolbarBg);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0f, 3.0f));
+    ImGui::BeginChild("ProjectToolbar", ImVec2(0, 44), true, ImGuiWindowFlags_NoScrollbar);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 3.0f));
     bool canGoBack = fileBrowser.historyIndex > 0;
     bool canGoForward = fileBrowser.historyIndex < (int)fileBrowser.pathHistory.size() - 1;
-    bool canGoUp = fileBrowser.currentPath != fileBrowser.projectRoot && 
+    bool canGoUp = fileBrowser.currentPath != fileBrowser.projectRoot &&
                    fileBrowser.currentPath.has_parent_path();
-    
+
     ImGui::BeginDisabled(!canGoBack);
-    if (ImGui::Button("<##Back", ImVec2(24, 0))) {
-        fileBrowser.navigateBack();
-    }
+    ImGui::Button("<##Back", ImVec2(26, 0));
+    if (ImGui::IsItemActivated()) fileBrowser.navigateBack();
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Back");
-    }
-    
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Back");
+
     ImGui::SameLine();
-    
     ImGui::BeginDisabled(!canGoForward);
-    if (ImGui::Button(">##Forward", ImVec2(24, 0))) {
-        fileBrowser.navigateForward();
-    }
+    ImGui::Button(">##Forward", ImVec2(26, 0));
+    if (ImGui::IsItemActivated()) fileBrowser.navigateForward();
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Forward");
-    }
-    
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Forward");
+
     ImGui::SameLine();
-    
     ImGui::BeginDisabled(!canGoUp);
-    if (ImGui::Button("^##Up", ImVec2(24, 0))) {
-        fileBrowser.navigateUp();
-    }
+    ImGui::Button("^##Up", ImVec2(26, 0));
+    if (ImGui::IsItemActivated()) fileBrowser.navigateUp();
     ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("Up one folder");
-    }
-    
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Up one folder");
+    ImGui::PopStyleVar();
+
     ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    
-    // Breadcrumb path
+
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-    
-    fs::path relativePath = fs::relative(fileBrowser.currentPath, fileBrowser.projectRoot);
+
+    fs::path relativePath;
+    if (fileBrowser.projectRoot.empty()) {
+        relativePath = fileBrowser.currentPath.filename();
+    } else {
+        try {
+            relativePath = fs::relative(fileBrowser.currentPath, fileBrowser.projectRoot);
+        } catch (...) {
+            relativePath = fileBrowser.currentPath.filename();
+        }
+    }
     std::vector<fs::path> pathParts;
     fs::path accumulated = fileBrowser.projectRoot;
-    
+
     pathParts.push_back(fileBrowser.projectRoot);
     for (const auto& part : relativePath) {
         if (part != ".") {
@@ -374,68 +380,68 @@ void Engine::renderFileBrowserPanel() {
             pathParts.push_back(accumulated);
         }
     }
-    
-    for (size_t i = 0; i < pathParts.size(); i++) {
-        std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
+
+    struct Breadcrumb {
+        std::string label;
+        fs::path target;
+    };
+    std::vector<Breadcrumb> crumbs;
+    if (pathParts.size() <= 4) {
+        for (size_t i = 0; i < pathParts.size(); ++i) {
+            std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
+            crumbs.push_back({name, pathParts[i]});
+        }
+    } else {
+        crumbs.push_back({"Project", pathParts.front()});
+        crumbs.push_back({"..", pathParts[pathParts.size() - 3]});
+        crumbs.push_back({pathParts[pathParts.size() - 2].filename().string(), pathParts[pathParts.size() - 2]});
+        crumbs.push_back({pathParts.back().filename().string(), pathParts.back()});
+    }
+
+    for (size_t i = 0; i < crumbs.size(); i++) {
         ImGui::PushID(static_cast<int>(i));
-        if (ImGui::SmallButton(name.c_str())) {
-            fileBrowser.navigateTo(pathParts[i]);
+        if (ImGui::SmallButton(crumbs[i].label.c_str())) {
+            fileBrowser.navigateTo(crumbs[i].target);
         }
         ImGui::PopID();
-        if (i < pathParts.size() - 1) {
+        if (i < crumbs.size() - 1) {
             ImGui::SameLine(0, 2);
             ImGui::TextDisabled("/");
             ImGui::SameLine(0, 2);
         }
     }
-    
+
     ImGui::PopStyleColor(2);
-    
-    ImGui::PopStyleVar();
-    
-    // === SECOND ROW: Search, Scale Slider, View Mode ===
-    ImGui::Spacing();
-    
-    // Search box
-    ImGui::SetNextItemWidth(150);
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140);
     if (ImGui::InputTextWithHint("##Search", "Search...", fileBrowserSearch, sizeof(fileBrowserSearch))) {
         fileBrowser.searchFilter = fileBrowserSearch;
         fileBrowser.needsRefresh = true;
     }
-    
+
     ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    
     bool isGridMode = fileBrowser.viewMode == FileBrowserViewMode::Grid;
     if (isGridMode) {
-        ImGui::Text("Size:");
+        ImGui::TextDisabled("Size");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.5f, 2.0f, "%.1fx");
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Icon Size: %.1fx", fileBrowserIconScale);
-        }
-        ImGui::SameLine();
-        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+        ImGui::SetNextItemWidth(90);
+        ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.6f, 2.0f, "%.1fx");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Icon Size: %.1fx", fileBrowserIconScale);
         ImGui::SameLine();
     }
-    
-    // View mode toggle
-    if (ImGui::Button(isGridMode ? "Grid" : "List", ImVec2(50, 0))) {
+
+    if (ImGui::Button(isGridMode ? "Grid" : "List", ImVec2(54, 0))) {
         fileBrowser.viewMode = isGridMode ? FileBrowserViewMode::List : FileBrowserViewMode::Grid;
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
-    }
-    
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
+
     ImGui::SameLine();
-    
-    if (ImGui::Button("Refresh", ImVec2(60, 0))) {
+    if (ImGui::Button("Refresh", ImVec2(68, 0))) {
         fileBrowser.needsRefresh = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("New Mat", ImVec2(70, 0))) {
+    if (ImGui::Button("New Mat", ImVec2(78, 0))) {
         fs::path target = fileBrowser.currentPath / "NewMaterial.mat";
         int counter = 1;
         while (fs::exists(target)) {
@@ -446,11 +452,20 @@ void Engine::renderFileBrowserPanel() {
         saveMaterialToFile(temp);
         fileBrowser.needsRefresh = true;
     }
-    
-    ImGui::Separator();
-    
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+
     // === FILE CONTENT AREA ===
-    ImGui::BeginChild("FileContent", ImVec2(0, 0), false);
+    ImVec4 contentBg = style.Colors[ImGuiCol_WindowBg];
+    contentBg.x = std::min(contentBg.x + 0.01f, 1.0f);
+    contentBg.y = std::min(contentBg.y + 0.01f, 1.0f);
+    contentBg.z = std::min(contentBg.z + 0.01f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, contentBg);
+    ImGui::BeginChild("FileContent", ImVec2(0, 0), true);
     
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     
@@ -742,6 +757,7 @@ void Engine::renderFileBrowserPanel() {
     }
     
     ImGui::EndChild();
+    ImGui::PopStyleColor();
     ImGui::End();
 }
 
@@ -1068,6 +1084,11 @@ void Engine::renderOpenProjectDialog() {
 
 void Engine::renderMainMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14.0f, 8.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 6.0f));
+        ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+        ImVec4 subtle = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
                 showNewSceneDialog = true;
@@ -1109,9 +1130,10 @@ void Engine::renderMainMenuBar() {
             ImGui::MenuItem("Inspector", nullptr, &showInspector);
             ImGui::MenuItem("File Browser", nullptr, &showFileBrowser);
             ImGui::MenuItem("Console", nullptr, &showConsole);
-            ImGui::MenuItem("Project", nullptr, &showProjectBrowser);
+            ImGui::MenuItem("Project Manager", nullptr, &showProjectBrowser);
             ImGui::MenuItem("Environment", nullptr, &showEnvironmentWindow);
             ImGui::MenuItem("Camera", nullptr, &showCameraWindow);
+            ImGui::MenuItem("View Output", nullptr, &showViewOutput);
             ImGui::Separator();
             if (ImGui::MenuItem("Fullscreen Viewport", "F11", viewportFullscreen)) {
                 viewportFullscreen = !viewportFullscreen;
@@ -1123,10 +1145,12 @@ void Engine::renderMainMenuBar() {
             if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
             if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");
             if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+            if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
             if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
             if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
             if (ImGui::MenuItem("Spot Light")) addObject(ObjectType::SpotLight, "Spot Light");
             if (ImGui::MenuItem("Area Light")) addObject(ObjectType::AreaLight, "Area Light");
+            if (ImGui::MenuItem("Post FX Node")) addObject(ObjectType::PostFXNode, "Post FX");
             ImGui::EndMenu();
         }
 
@@ -1137,6 +1161,51 @@ void Engine::renderMainMenuBar() {
             ImGui::EndMenu();
         }
 
+        ImGui::Separator();
+        ImGui::TextColored(subtle, "Project");
+        ImGui::SameLine();
+        std::string projectLabel = projectManager.currentProject.name.empty() ?
+            "New Project" : projectManager.currentProject.name;
+        ImGui::TextColored(accent, "%s", projectLabel.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(subtle, "|");
+        ImGui::SameLine();
+        std::string sceneLabel = projectManager.currentProject.currentSceneName.empty() ?
+            "No Scene Loaded" : projectManager.currentProject.currentSceneName;
+        ImGui::TextUnformatted(sceneLabel.c_str());
+
+        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(14.0f, 0.0f));
+        ImGui::SameLine();
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+        bool playPressed = ImGui::Button(isPlaying ? "Stop" : "Play");
+        ImGui::SameLine(0.0f, 6.0f);
+        bool pausePressed = ImGui::Button(isPaused ? "Resume" : "Pause");
+        ImGui::PopStyleVar();
+
+        if (playPressed) {
+            isPlaying = !isPlaying;
+            if (!isPlaying) {
+                isPaused = false;
+            }
+        }
+        if (pausePressed) {
+            isPaused = !isPaused;
+            if (isPaused) isPlaying = true; // placeholder: pausing implies we’re in play mode
+        }
+
+        float rightX = ImGui::GetWindowWidth() - 220.0f;
+        if (rightX > ImGui::GetCursorPosX()) {
+            ImGui::SameLine(rightX);
+        } else {
+            ImGui::SameLine();
+        }
+        ImGui::TextColored(subtle, "Viewport");
+        ImGui::SameLine();
+        ImGui::TextColored(accent, viewportFullscreen ? "Fullscreen" : "Docked");
+
+        ImGui::PopStyleVar(2);
         ImGui::EndMainMenuBar();
     }
 }
@@ -1145,10 +1214,26 @@ void Engine::renderHierarchyPanel() {
     ImGui::Begin("Hierarchy", &showHierarchy);
 
     static char searchBuffer[128] = "";
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4 headerBg = style.Colors[ImGuiCol_MenuBarBg];
+    headerBg.x = std::min(headerBg.x + 0.02f, 1.0f);
+    headerBg.y = std::min(headerBg.y + 0.02f, 1.0f);
+    headerBg.z = std::min(headerBg.z + 0.02f, 1.0f);
+    ImVec4 headerText = style.Colors[ImGuiCol_CheckMark];
+    ImVec4 listBg = style.Colors[ImGuiCol_WindowBg];
+    listBg.x = std::min(listBg.x + 0.01f, 1.0f);
+    listBg.y = std::min(listBg.y + 0.01f, 1.0f);
+    listBg.z = std::min(listBg.z + 0.01f, 1.0f);
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, headerBg);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    ImGui::BeginChild("HierarchyHeader", ImVec2(0, 50), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##Search", "Search...", searchBuffer, sizeof(searchBuffer));
-
-    ImGui::Separator();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
 
     std::string filter = searchBuffer;
     std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
@@ -1161,7 +1246,10 @@ void Engine::renderHierarchyPanel() {
         ImGui::EndDragDropTarget();
     }
 
-    ImGui::BeginChild("HierarchyList", ImVec2(0, 0), false);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, listBg);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 2.0f));
+    ImGui::BeginChild("HierarchyList", ImVec2(0, 0), true);
 
     for (size_t i = 0; i < sceneObjects.size(); i++) {
         if (sceneObjects[i].parentId != -1)
@@ -1174,20 +1262,42 @@ void Engine::renderHierarchyPanel() {
             ImGuiPopupFlags_MouseButtonRight |
             ImGuiPopupFlags_NoOpenOverItems))
     {
-        if (ImGui::BeginMenu("Create")) {
-            if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
-            if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
-            if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
-            if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
-            if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
-            if (ImGui::MenuItem("Spot Light")) addObject(ObjectType::SpotLight, "Spot Light");
-            if (ImGui::MenuItem("Area Light")) addObject(ObjectType::AreaLight, "Area Light");
+        if (ImGui::BeginMenu("Create"))
+        {
+            // ── Primitives ─────────────────────────────
+            if (ImGui::BeginMenu("Primitives"))
+            {
+                if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
+                if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
+                if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+                ImGui::EndMenu();
+            }
+
+            // ── Lights ────────────────────────────────
+            if (ImGui::BeginMenu("Lights"))
+            {
+                if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
+                if (ImGui::MenuItem("Point Light"))       addObject(ObjectType::PointLight, "Point Light");
+                if (ImGui::MenuItem("Spot Light"))        addObject(ObjectType::SpotLight, "Spot Light");
+                if (ImGui::MenuItem("Area Light"))        addObject(ObjectType::AreaLight, "Area Light");
+                ImGui::EndMenu();
+            }
+
+            // ── Other / Effects ───────────────────────
+            if (ImGui::BeginMenu("Effects"))
+            {
+                if (ImGui::MenuItem("Post FX Node")) addObject(ObjectType::PostFXNode, "Post FX");
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMenu();
         }
         ImGui::EndPopup();
     }
 
     ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
 
     ImGui::End();
 }
@@ -1214,10 +1324,12 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
         case ObjectType::Capsule: icon = "[|]"; break;
         case ObjectType::OBJMesh: icon = "[M]"; break;
         case ObjectType::Model: icon = "[A]"; break;
+        case ObjectType::Camera: icon = "(C)"; break;
         case ObjectType::DirectionalLight: icon = "(D)"; break;
         case ObjectType::PointLight: icon = "(P)"; break;
         case ObjectType::SpotLight: icon = "(S)"; break;
         case ObjectType::AreaLight: icon = "(L)"; break;
+        case ObjectType::PostFXNode: icon = "(FX)"; break;
     }
 
     bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s %s", icon, obj.name.c_str());
@@ -1524,10 +1636,12 @@ void Engine::renderInspectorPanel() {
             case ObjectType::Capsule:    typeLabel = "Capsule"; break;
             case ObjectType::OBJMesh:    typeLabel = "OBJ Mesh"; break;
             case ObjectType::Model:      typeLabel = "Model"; break;
+        case ObjectType::Camera: typeLabel = "Camera"; break;
         case ObjectType::DirectionalLight: typeLabel = "Directional Light"; break;
         case ObjectType::PointLight: typeLabel = "Point Light"; break;
         case ObjectType::SpotLight:  typeLabel = "Spot Light"; break;
         case ObjectType::AreaLight:  typeLabel = "Area Light"; break;
+        case ObjectType::PostFXNode: typeLabel = "Post FX Node"; break;
         }
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
 
@@ -1544,6 +1658,10 @@ void Engine::renderInspectorPanel() {
 
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent(10.0f);
+
+        if (obj.type == ObjectType::PostFXNode) {
+            ImGui::TextDisabled("Transform is ignored for post-processing nodes.");
+        }
 
         ImGui::Text("Position");
         ImGui::PushItemWidth(-1);
@@ -1584,8 +1702,104 @@ void Engine::renderInspectorPanel() {
 
     ImGui::PopStyleColor();
 
+    if (obj.type == ObjectType::Camera) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.35f, 0.65f, 1.0f));
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+            const char* cameraTypes[] = { "Scene", "Player" };
+            int camType = static_cast<int>(obj.camera.type);
+            if (ImGui::Combo("Type", &camType, cameraTypes, IM_ARRAYSIZE(cameraTypes))) {
+                obj.camera.type = static_cast<SceneCameraType>(camType);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            if (ImGui::SliderFloat("FOV", &obj.camera.fov, 20.0f, 120.0f, "%.0f deg")) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::DragFloat("Near Clip", &obj.camera.nearClip, 0.01f, 0.01f, obj.camera.farClip - 0.01f, "%.3f")) {
+                obj.camera.nearClip = std::max(0.01f, std::min(obj.camera.nearClip, obj.camera.farClip - 0.01f));
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::DragFloat("Far Clip", &obj.camera.farClip, 0.1f, obj.camera.nearClip + 0.05f, 1000.0f, "%.1f")) {
+                obj.camera.farClip = std::max(obj.camera.nearClip + 0.05f, obj.camera.farClip);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.type == ObjectType::PostFXNode) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
+        if (ImGui::CollapsingHeader("Post Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+            bool changed = false;
+
+            if (ImGui::Checkbox("Enable Node", &obj.postFx.enabled)) {
+                changed = true;
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Bloom");
+            if (ImGui::Checkbox("Bloom Enabled", &obj.postFx.bloomEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.bloomEnabled);
+            if (ImGui::SliderFloat("Threshold", &obj.postFx.bloomThreshold, 0.0f, 3.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Intensity", &obj.postFx.bloomIntensity, 0.0f, 3.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Spread", &obj.postFx.bloomRadius, 0.5f, 3.5f, "%.2f")) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Color Adjustments");
+            if (ImGui::Checkbox("Enable Color Adjust", &obj.postFx.colorAdjustEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.colorAdjustEnabled);
+            if (ImGui::SliderFloat("Exposure (EV)", &obj.postFx.exposure, -5.0f, 5.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Contrast", &obj.postFx.contrast, 0.0f, 2.5f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Saturation", &obj.postFx.saturation, 0.0f, 2.5f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::ColorEdit3("Color Filter", &obj.postFx.colorFilter.x)) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Motion Blur");
+            if (ImGui::Checkbox("Enable Motion Blur", &obj.postFx.motionBlurEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.motionBlurEnabled);
+            if (ImGui::SliderFloat("Strength", &obj.postFx.motionBlurStrength, 0.0f, 0.95f, "%.2f")) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            if (changed) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::TextDisabled("Nodes stack in hierarchy order; latest node overrides previous settings.");
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
     // Material section (skip for pure light objects)
-    if (obj.type != ObjectType::DirectionalLight && obj.type != ObjectType::PointLight && obj.type != ObjectType::SpotLight && obj.type != ObjectType::AreaLight) {
+    if (obj.type != ObjectType::DirectionalLight && obj.type != ObjectType::PointLight && obj.type != ObjectType::SpotLight && obj.type != ObjectType::AreaLight && obj.type != ObjectType::Camera && obj.type != ObjectType::PostFXNode) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
 
@@ -1962,6 +2176,238 @@ void Engine::renderConsolePanel() {
     ImGui::End();
 }
 
+namespace GizmoToolbar {
+    enum class Icon {
+        Translate,
+        Rotate,
+        Scale,
+        Bounds,
+        Universal
+    };
+
+    static ImVec4 ScaleColor(const ImVec4& c, float s) {
+        return ImVec4(
+            std::clamp(c.x * s, 0.0f, 1.0f),
+            std::clamp(c.y * s, 0.0f, 1.0f),
+            std::clamp(c.z * s, 0.0f, 1.0f),
+            c.w
+        );
+    }
+    
+    static bool TextButton(const char* label, bool active, const ImVec2& size, ImU32 base, ImU32 hover, ImU32 activeCol, ImU32 accent, ImU32 textColor) {
+        ImGui::PushStyleColor(ImGuiCol_Button, active ? accent : base);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? accent : hover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? accent : activeCol);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(textColor));
+        bool pressed = ImGui::Button(label, size);
+        ImGui::PopStyleColor(4);
+        return pressed;
+    }
+
+    static void DrawTranslateIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        ImVec2 center = ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+        float len = (max.x - min.x) * 0.3f;
+        float head = len * 0.5f;
+
+        drawList->AddLine(ImVec2(center.x - len, center.y), ImVec2(center.x + len, center.y), lineColor, 2.4f);
+        drawList->AddLine(ImVec2(center.x, center.y - len), ImVec2(center.x, center.y + len), lineColor, 2.4f);
+
+        drawList->AddTriangleFilled(ImVec2(center.x + len, center.y),
+                                    ImVec2(center.x + len - head, center.y - head * 0.6f),
+                                    ImVec2(center.x + len - head, center.y + head * 0.6f),
+                                    accentColor);
+        drawList->AddTriangleFilled(ImVec2(center.x - len, center.y),
+                                    ImVec2(center.x - len + head, center.y - head * 0.6f),
+                                    ImVec2(center.x - len + head, center.y + head * 0.6f),
+                                    accentColor);
+        drawList->AddTriangleFilled(ImVec2(center.x, center.y - len),
+                                    ImVec2(center.x - head * 0.6f, center.y - len + head),
+                                    ImVec2(center.x + head * 0.6f, center.y - len + head),
+                                    accentColor);
+        drawList->AddTriangleFilled(ImVec2(center.x, center.y + len),
+                                    ImVec2(center.x - head * 0.6f, center.y + len - head),
+                                    ImVec2(center.x + head * 0.6f, center.y + len - head),
+                                    accentColor);
+
+        drawList->AddCircleFilled(center, head * 0.35f, lineColor, 16);
+    }
+
+    static void DrawRotateIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        ImVec2 center = ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+        float radius = (max.x - min.x) * 0.28f;
+        float start = -IM_PI * 0.25f;
+        float end = IM_PI * 1.1f;
+
+        drawList->PathArcTo(center, radius, start, end, 32);
+        drawList->PathStroke(lineColor, false, 2.4f);
+
+        ImVec2 arrow = ImVec2(center.x + cosf(end) * radius, center.y + sinf(end) * radius);
+        ImVec2 dir = ImVec2(cosf(end), sinf(end));
+        ImVec2 ortho = ImVec2(-dir.y, dir.x);
+        float head = radius * 0.5f;
+
+        ImVec2 a = ImVec2(arrow.x - dir.x * head + ortho.x * head * 0.55f, arrow.y - dir.y * head + ortho.y * head * 0.55f);
+        ImVec2 b = ImVec2(arrow.x - dir.x * head - ortho.x * head * 0.55f, arrow.y - dir.y * head - ortho.y * head * 0.55f);
+        drawList->AddTriangleFilled(arrow, a, b, accentColor);
+    }
+
+    static void DrawScaleIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        ImVec2 pad = ImVec2((max.x - min.x) * 0.2f, (max.y - min.y) * 0.2f);
+        ImVec2 rMin = ImVec2(min.x + pad.x, min.y + pad.y);
+        ImVec2 rMax = ImVec2(max.x - pad.x, max.y - pad.y);
+
+        drawList->AddRect(rMin, rMax, lineColor, 3.0f, 0, 2.1f);
+
+        ImVec2 center = ImVec2((rMin.x + rMax.x) * 0.5f, (rMin.y + rMax.y) * 0.5f);
+        ImVec2 offsets[] = {
+            ImVec2(-1, -1),
+            ImVec2(1, -1),
+            ImVec2(1, 1),
+            ImVec2(-1, 1)
+        };
+        float arrowLen = pad.x * 0.65f;
+        float head = arrowLen * 0.5f;
+        for (const ImVec2& off : offsets) {
+            ImVec2 dir = ImVec2(off.x * 0.7f, off.y * 0.7f);
+            ImVec2 tip = ImVec2(center.x + dir.x * arrowLen, center.y + dir.y * arrowLen);
+            ImVec2 base = ImVec2(center.x + dir.x * (arrowLen * 0.45f), center.y + dir.y * (arrowLen * 0.45f));
+            ImVec2 ortho = ImVec2(-dir.y, dir.x);
+            ImVec2 a = ImVec2(base.x + ortho.x * head * 0.35f, base.y + ortho.y * head * 0.35f);
+            ImVec2 b = ImVec2(base.x - ortho.x * head * 0.35f, base.y - ortho.y * head * 0.35f);
+            drawList->AddTriangleFilled(tip, a, b, accentColor);
+            drawList->AddLine(center, tip, lineColor, 2.0f);
+        }
+    }
+
+    static void DrawBoundsIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        ImVec2 pad = ImVec2((max.x - min.x) * 0.2f, (max.y - min.y) * 0.22f);
+        ImVec2 rMin = ImVec2(min.x + pad.x, min.y + pad.y);
+        ImVec2 rMax = ImVec2(max.x - pad.x, max.y - pad.y);
+
+        drawList->AddRect(rMin, rMax, lineColor, 4.0f, 0, 2.0f);
+
+        float handle = pad.x * 0.6f;
+        ImVec2 handles[] = {
+            rMin,
+            ImVec2((rMin.x + rMax.x) * 0.5f, rMin.y),
+            ImVec2(rMax.x, rMin.y),
+            ImVec2(rMax.x, (rMin.y + rMax.y) * 0.5f),
+            rMax,
+            ImVec2((rMin.x + rMax.x) * 0.5f, rMax.y),
+            ImVec2(rMin.x, rMax.y),
+            ImVec2(rMin.x, (rMin.y + rMax.y) * 0.5f)
+        };
+
+        for (const ImVec2& h : handles) {
+            drawList->AddRectFilled(
+                ImVec2(h.x - handle * 0.32f, h.y - handle * 0.32f),
+                ImVec2(h.x + handle * 0.32f, h.y + handle * 0.32f),
+                accentColor,
+                4.0f
+            );
+        }
+    }
+
+    static void DrawUniversalIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        ImVec2 center = ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+        float radius = (max.x - min.x) * 0.28f;
+
+        drawList->AddCircle(center, radius, lineColor, 20, 2.0f);
+
+        float len = radius * 0.95f;
+        ImVec2 axes[] = {
+            ImVec2(1, 0), ImVec2(-1, 0), ImVec2(0, 1), ImVec2(0, -1)
+        };
+        float head = radius * 0.45f;
+        for (const ImVec2& dir : axes) {
+            ImVec2 tip = ImVec2(center.x + dir.x * len, center.y + dir.y * len);
+            drawList->AddLine(center, tip, accentColor, 2.0f);
+            ImVec2 ortho = ImVec2(-dir.y, dir.x);
+            ImVec2 a = ImVec2(tip.x - dir.x * head + ortho.x * head * 0.35f, tip.y - dir.y * head + ortho.y * head * 0.35f);
+            ImVec2 b = ImVec2(tip.x - dir.x * head - ortho.x * head * 0.35f, tip.y - dir.y * head - ortho.y * head * 0.35f);
+            drawList->AddTriangleFilled(tip, a, b, accentColor);
+        }
+
+        drawList->AddCircleFilled(center, radius * 0.24f, lineColor, 16);
+    }
+
+    static void DrawIcon(Icon icon, ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        switch (icon) {
+            case Icon::Translate: DrawTranslateIcon(drawList, min, max, lineColor, accentColor); break;
+            case Icon::Rotate:    DrawRotateIcon(drawList, min, max, lineColor, accentColor);    break;
+            case Icon::Scale:     DrawScaleIcon(drawList, min, max, lineColor, accentColor);     break;
+            case Icon::Bounds:    DrawBoundsIcon(drawList, min, max, lineColor, accentColor);    break;
+            case Icon::Universal: DrawUniversalIcon(drawList, min, max, lineColor, accentColor); break;
+        }
+    }
+
+    static bool IconButton(const char* id, Icon icon, bool active, const ImVec2& size,
+                           ImU32 baseColor, ImU32 hoverColor, ImU32 activeColor,
+                           ImU32 accentColor, ImU32 iconColor) {
+        ImGui::PushID(id);
+        ImGui::InvisibleButton("##btn", size);
+        bool hovered = ImGui::IsItemHovered();
+        bool pressed = ImGui::IsItemClicked();
+        ImVec2 min = ImGui::GetItemRectMin();
+        ImVec2 max = ImGui::GetItemRectMax();
+        float rounding = 9.0f;
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        ImU32 bg = active ? activeColor : (hovered ? hoverColor : baseColor);
+
+        ImVec4 bgCol = ImGui::ColorConvertU32ToFloat4(bg);
+        ImU32 top = ImGui::GetColorU32(ScaleColor(bgCol, 1.07f));
+        ImU32 bottom = ImGui::GetColorU32(ScaleColor(bgCol, 0.93f));
+        drawList->AddRectFilledMultiColor(min, max, top, top, bottom, bottom);
+        drawList->AddRect(min, max, ImGui::GetColorU32(ImVec4(1, 1, 1, active ? 0.35f : 0.18f)), rounding);
+
+        DrawIcon(icon, drawList, min, max, iconColor, accentColor);
+
+        ImGui::PopID();
+        return pressed;
+    }
+
+    static bool TextButton(const char* id, const char* label, bool active, const ImVec2& size,
+                           ImU32 baseColor, ImU32 hoverColor, ImU32 activeColor, ImU32 borderColor, ImVec4 textColor) {
+        ImGui::PushID(id);
+        ImGui::InvisibleButton("##btn", size);
+        bool hovered = ImGui::IsItemHovered();
+        bool pressed = ImGui::IsItemClicked();
+        ImVec2 min = ImGui::GetItemRectMin();
+        ImVec2 max = ImGui::GetItemRectMax();
+        float rounding = 8.0f;
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        ImU32 bg = active ? activeColor : (hovered ? hoverColor : baseColor);
+
+        ImVec4 bgCol = ImGui::ColorConvertU32ToFloat4(bg);
+        ImU32 top = ImGui::GetColorU32(ScaleColor(bgCol, 1.06f));
+        ImU32 bottom = ImGui::GetColorU32(ScaleColor(bgCol, 0.94f));
+        drawList->AddRectFilledMultiColor(min, max, top, top, bottom, bottom);
+        drawList->AddRect(min, max, borderColor, rounding);
+
+        ImVec2 textSize = ImGui::CalcTextSize(label);
+        ImVec2 textPos = ImVec2(
+            min.x + (size.x - textSize.x) * 0.5f,
+            min.y + (size.y - textSize.y) * 0.5f - 1.0f
+        );
+        drawList->AddText(textPos, ImGui::GetColorU32(textColor), label);
+
+        ImGui::PopID();
+        return pressed;
+    }
+
+    static bool ModeButton(const char* label, bool active, const ImVec2& size, ImVec4 baseColor, ImVec4 activeColor, ImVec4 textColor) {
+        ImGui::PushStyleColor(ImGuiCol_Button, active ? activeColor : baseColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? activeColor : baseColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? activeColor : baseColor);
+        ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+        bool pressed = ImGui::Button(label, size);
+        ImGui::PopStyleColor(4);
+        return pressed;
+    }
+}
+
 void Engine::renderViewport() {
     ImGuiWindowFlags viewportFlags = ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
 
@@ -1979,7 +2425,7 @@ void Engine::renderViewport() {
 
     ImVec2 fullAvail = ImGui::GetContentRegionAvail();
 
-    const float toolbarHeight = 32.0f;
+    const float toolbarHeight = 0.0f;
     ImVec2 imageSize = fullAvail;
     imageSize.y = ImMax(1.0f, imageSize.y - toolbarHeight);
 
@@ -2003,7 +2449,7 @@ void Engine::renderViewport() {
         glm::mat4 view = camera.getViewMatrix();
 
         renderer.beginRender(view, proj, camera.position);
-        renderer.renderScene(camera, sceneObjects);
+        renderer.renderScene(camera, sceneObjects, selectedObjectId);
         unsigned int tex = renderer.getViewportTexture();
 
         ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
@@ -2012,8 +2458,18 @@ void Engine::renderViewport() {
         ImVec2 imageMax = ImGui::GetItemRectMax();
         mouseOverViewportImage = ImGui::IsItemHovered();
 
+        auto projectToScreen = [&](const glm::vec3& p) -> std::optional<ImVec2> {
+            glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);
+            if (clip.w <= 0.0f) return std::nullopt;
+            glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            ImVec2 screen;
+            screen.x = imageMin.x + (ndc.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x);
+            screen.y = imageMin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y);
+            return screen;
+        };
+
         SceneObject* selectedObj = getSelectedObject();
-        if (selectedObj) {
+        if (selectedObj && selectedObj->type != ObjectType::PostFXNode) {
             ImGuizmo::BeginFrame();
             ImGuizmo::Enable(true);
             ImGuizmo::SetOrthographic(false);
@@ -2044,6 +2500,63 @@ void Engine::renderViewport() {
                 }
             }
 
+            glm::vec3 gizmoBoundsMin(-0.5f);
+            glm::vec3 gizmoBoundsMax(0.5f);
+
+            switch (selectedObj->type) {
+                case ObjectType::Cube:
+                    gizmoBoundsMin = glm::vec3(-0.5f);
+                    gizmoBoundsMax = glm::vec3(0.5f);
+                    break;
+                case ObjectType::Sphere:
+                    gizmoBoundsMin = glm::vec3(-0.5f);
+                    gizmoBoundsMax = glm::vec3(0.5f);
+                    break;
+                case ObjectType::Capsule:
+                    gizmoBoundsMin = glm::vec3(-0.35f, -0.9f, -0.35f);
+                    gizmoBoundsMax = glm::vec3(0.35f, 0.9f, 0.35f);
+                    break;
+                case ObjectType::OBJMesh: {
+                    const auto* info = g_objLoader.getMeshInfo(selectedObj->meshId);
+                    if (info && info->boundsMin.x < info->boundsMax.x) {
+                        gizmoBoundsMin = info->boundsMin;
+                        gizmoBoundsMax = info->boundsMax;
+                    }
+                    break;
+                }
+                case ObjectType::Model: {
+                    const auto* info = getModelLoader().getMeshInfo(selectedObj->meshId);
+                    if (info && info->boundsMin.x < info->boundsMax.x) {
+                        gizmoBoundsMin = info->boundsMin;
+                        gizmoBoundsMax = info->boundsMax;
+                    }
+                    break;
+                }
+                case ObjectType::Camera:
+                    gizmoBoundsMin = glm::vec3(-0.3f);
+                    gizmoBoundsMax = glm::vec3(0.3f);
+                    break;
+                case ObjectType::DirectionalLight:
+                case ObjectType::PointLight:
+                case ObjectType::SpotLight:
+                case ObjectType::AreaLight:
+                    gizmoBoundsMin = glm::vec3(-0.3f);
+                    gizmoBoundsMax = glm::vec3(0.3f);
+                    break;
+                case ObjectType::PostFXNode:
+                    gizmoBoundsMin = glm::vec3(-0.25f);
+                    gizmoBoundsMax = glm::vec3(0.25f);
+                    break;
+            }
+
+            float bounds[6] = {
+                gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z,
+                gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z
+            };
+            float boundsSnap[3] = { snapValue[0], snapValue[1], snapValue[2] };
+            const float* boundsPtr = (mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? bounds : nullptr;
+            const float* boundsSnapPtr = (useSnap && mCurrentGizmoOperation == ImGuizmo::BOUNDS) ? boundsSnap : nullptr;
+
             ImGuizmo::Manipulate(
                 glm::value_ptr(view),
                 glm::value_ptr(proj),
@@ -2051,8 +2564,43 @@ void Engine::renderViewport() {
                 mCurrentGizmoMode,
                 glm::value_ptr(modelMatrix),
                 nullptr,
-                snapPtr
+                snapPtr,
+                boundsPtr,
+                boundsSnapPtr
             );
+
+            std::array<glm::vec3, 8> corners = {
+                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
+                glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
+            };
+
+            std::array<ImVec2, 8> projected{};
+            bool allProjected = true;
+            for (size_t i = 0; i < corners.size(); ++i) {
+                glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(corners[i], 1.0f));
+                auto p = projectToScreen(world);
+                if (!p.has_value()) { allProjected = false; break; }
+                projected[i] = *p;
+            }
+
+            if (allProjected) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.35f, 0.45f));
+                const int edges[12][2] = {
+                    {0,1},{1,2},{2,3},{3,0},
+                    {4,5},{5,6},{6,7},{7,4},
+                    {0,4},{1,5},{2,6},{3,7}
+                };
+                for (auto& e : edges) {
+                    dl->AddLine(projected[e[0]], projected[e[1]], col, 2.0f);
+                }
+            }
 
             if (ImGuizmo::IsUsing()) {
                 if (!gizmoHistoryCaptured) {
@@ -2072,26 +2620,128 @@ void Engine::renderViewport() {
             }
         }
 
+        auto drawCameraDirection = [&](const SceneObject& camObj) {
+            glm::quat q = glm::quat(glm::radians(camObj.rotation));
+            glm::mat3 rot = glm::mat3_cast(q);
+            glm::vec3 forward = glm::normalize(rot * glm::vec3(0.0f, 0.0f, -1.0f));
+            glm::vec3 upDir = glm::normalize(rot * glm::vec3(0.0f, 1.0f, 0.0f));
+            if (!std::isfinite(forward.x) || glm::length(forward) < 1e-3f) return;
+
+            auto start = projectToScreen(camObj.position);
+            auto end = projectToScreen(camObj.position + forward * 1.4f);
+            auto upTip = projectToScreen(camObj.position + upDir * 0.6f);
+            if (start && end) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 lineCol = ImGui::GetColorU32(ImVec4(0.3f, 0.8f, 1.0f, 0.9f));
+                ImU32 headCol = ImGui::GetColorU32(ImVec4(0.9f, 1.0f, 1.0f, 0.95f));
+                dl->AddLine(*start, *end, lineCol, 2.5f);
+                ImVec2 dir = ImVec2(end->x - start->x, end->y - start->y);
+                float len = sqrtf(dir.x * dir.x + dir.y * dir.y);
+                if (len > 1.0f) {
+                    ImVec2 normDir = ImVec2(dir.x / len, dir.y / len);
+                    ImVec2 left = ImVec2(-normDir.y, normDir.x);
+                    float head = 10.0f;
+                    ImVec2 tip = *end;
+                    ImVec2 p1 = ImVec2(tip.x - normDir.x * head + left.x * head * 0.6f, tip.y - normDir.y * head + left.y * head * 0.6f);
+                    ImVec2 p2 = ImVec2(tip.x - normDir.x * head - left.x * head * 0.6f, tip.y - normDir.y * head - left.y * head * 0.6f);
+                    dl->AddTriangleFilled(tip, p1, p2, headCol);
+                }
+                if (upTip) {
+                    dl->AddCircleFilled(*upTip, 3.0f, ImGui::GetColorU32(ImVec4(0.8f, 1.0f, 0.6f, 0.8f)));
+                }
+            }
+        };
+
+        for (const auto& obj : sceneObjects) {
+            if (obj.type == ObjectType::Camera) {
+                drawCameraDirection(obj);
+            }
+        }
+
         // Toolbar
-        ImGui::SetCursorPos(ImVec2(10, imageSize.y + 6));
+        const float toolbarPadding = 6.0f;
+        const float toolbarSpacing = 5.0f;
+        const ImVec2 gizmoButtonSize(60.0f, 24.0f);
+        const float toolbarWidthEstimate = 520.0f;
+        const float toolbarHeightEstimate = 42.0f; // rough height to keep toolbar on-screen when anchoring bottom
+        ImVec2 desiredBottomLeft = ImVec2(imageMin.x + 12.0f, imageMax.y - 12.0f);
 
-        if (ImGui::RadioButton("Move",   mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE))    mCurrentGizmoOperation = ImGuizmo::ROTATE;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Scale",  mCurrentGizmoOperation == ImGuizmo::SCALE))     mCurrentGizmoOperation = ImGuizmo::SCALE;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Uni",    mCurrentGizmoOperation == ImGuizmo::UNIVERSAL)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
+        float minX = imageMin.x + 12.0f;
+        float maxX = imageMax.x - 12.0f;
+        float toolbarLeft = desiredBottomLeft.x;
+        if (toolbarLeft + toolbarWidthEstimate > maxX) toolbarLeft = maxX - toolbarWidthEstimate;
+        if (toolbarLeft < minX) toolbarLeft = minX;
 
-        ImGui::SameLine();
-        ImGui::Text("|");
-        ImGui::SameLine();
+        float minY = imageMin.y + 12.0f;
+        float toolbarTop = desiredBottomLeft.y - toolbarHeightEstimate;
+        if (toolbarTop < minY) toolbarTop = minY;
 
-        if (ImGui::RadioButton("Local",  mCurrentGizmoMode == ImGuizmo::LOCAL))  mCurrentGizmoMode = ImGuizmo::LOCAL;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("World",  mCurrentGizmoMode == ImGuizmo::WORLD)) mCurrentGizmoMode = ImGuizmo::WORLD;
+        ImVec2 toolbarPos = ImVec2(toolbarLeft, toolbarTop);
 
-        ImGui::SameLine();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        ImVec4 bgCol = style.Colors[ImGuiCol_PopupBg];
+        bgCol.w = 0.78f;
+        ImVec4 baseCol = style.Colors[ImGuiCol_FrameBg];
+        baseCol.w = 0.85f;
+        ImVec4 hoverCol = style.Colors[ImGuiCol_ButtonHovered];
+        hoverCol.w = 0.95f;
+        ImVec4 activeCol = style.Colors[ImGuiCol_ButtonActive];
+        activeCol.w = 1.0f;
+        ImVec4 accentCol = style.Colors[ImGuiCol_HeaderActive];
+        accentCol.w = 1.0f;
+        ImVec4 textCol = style.Colors[ImGuiCol_Text];
+
+        ImU32 baseBtn = ImGui::GetColorU32(baseCol);
+        ImU32 hoverBtn = ImGui::GetColorU32(GizmoToolbar::ScaleColor(hoverCol, 1.05f));
+        ImU32 activeBtn = ImGui::GetColorU32(GizmoToolbar::ScaleColor(activeCol, 1.08f));
+        ImU32 accent = ImGui::GetColorU32(accentCol);
+        ImU32 iconColor = ImGui::GetColorU32(ImVec4(0.95f, 0.98f, 1.0f, 0.95f));
+        ImU32 toolbarBg = ImGui::GetColorU32(bgCol);
+        ImU32 toolbarOutline = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.0f));
+
+        ImDrawList* toolbarDrawList = ImGui::GetWindowDrawList();
+        ImDrawListSplitter splitter;
+        splitter.Split(toolbarDrawList, 2);
+        splitter.SetCurrentChannel(toolbarDrawList, 1);
+
+        ImVec2 contentStart = ImVec2(toolbarPos.x + toolbarPadding, toolbarPos.y + toolbarPadding);
+        ImVec2 windowPos = ImGui::GetWindowPos();
+        ImVec2 contentStartLocal = ImVec2(contentStart.x - windowPos.x, contentStart.y - windowPos.y);
+        ImGui::SetCursorPos(contentStartLocal);
+        ImVec2 contentStartScreen = ImGui::GetCursorScreenPos();
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(toolbarSpacing, toolbarSpacing));
+        ImGui::BeginGroup();
+
+        auto gizmoButton = [&](const char* label, ImGuizmo::OPERATION op, const char* tooltip) {
+            if (GizmoToolbar::TextButton(label, mCurrentGizmoOperation == op, gizmoButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                mCurrentGizmoOperation = op;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", tooltip);
+            }
+        };
+
+        gizmoButton("Move", ImGuizmo::TRANSLATE, "Translate");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("Rotate", ImGuizmo::ROTATE, "Rotate");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("Scale", ImGuizmo::SCALE, "Scale");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("Rect", ImGuizmo::BOUNDS, "Rect scale");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("Uni", ImGuizmo::UNIVERSAL, "Universal");
+
+        ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
+        ImVec2 modeSize(56.0f, 24.0f);
+        if (GizmoToolbar::ModeButton("Local", mCurrentGizmoMode == ImGuizmo::LOCAL, modeSize, baseCol, accentCol, textCol)) {
+            mCurrentGizmoMode = ImGuizmo::LOCAL;
+        }
+        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+        if (GizmoToolbar::ModeButton("World", mCurrentGizmoMode == ImGuizmo::WORLD, modeSize, baseCol, accentCol, textCol)) {
+            mCurrentGizmoMode = ImGuizmo::WORLD;
+        }
+
+        ImGui::SameLine(0.0f, toolbarSpacing);
         ImGui::Checkbox("Snap", &useSnap);
 
         if (useSnap) {
@@ -2104,6 +2754,20 @@ void Engine::renderViewport() {
                 snapValue[1] = snapValue[2] = snapValue[0];
             }
         }
+
+        ImGui::EndGroup();
+        ImGui::PopStyleVar();
+
+        ImVec2 groupMax = ImGui::GetItemRectMax();
+
+        splitter.SetCurrentChannel(toolbarDrawList, 0);
+        float rounding = 10.0f;
+        ImVec2 bgMin = ImVec2(contentStartScreen.x - toolbarPadding, contentStartScreen.y - toolbarPadding);
+        ImVec2 bgMax = ImVec2(groupMax.x + toolbarPadding, groupMax.y + toolbarPadding);
+        toolbarDrawList->AddRectFilled(bgMin, bgMax, toolbarBg, rounding, ImDrawFlags_RoundCornersAll);
+        toolbarDrawList->AddRect(bgMin, bgMax, toolbarOutline, rounding, ImDrawFlags_RoundCornersAll, 1.5f);
+
+        splitter.Merge(toolbarDrawList);
 
         // Left-click picking inside viewport
         if (mouseOverViewportImage &&
@@ -2163,6 +2827,26 @@ void Engine::renderViewport() {
                 return true;
             };
 
+            auto rayTriangle = [](const glm::vec3& orig, const glm::vec3& dir, const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& tHit) {
+                const float EPSILON = 1e-6f;
+                glm::vec3 e1 = v1 - v0;
+                glm::vec3 e2 = v2 - v0;
+                glm::vec3 pvec = glm::cross(dir, e2);
+                float det = glm::dot(e1, pvec);
+                if (fabs(det) < EPSILON) return false;
+                float invDet = 1.0f / det;
+                glm::vec3 tvec = orig - v0;
+                float u = glm::dot(tvec, pvec) * invDet;
+                if (u < 0.0f || u > 1.0f) return false;
+                glm::vec3 qvec = glm::cross(tvec, e1);
+                float v = glm::dot(dir, qvec) * invDet;
+                if (v < 0.0f || u + v > 1.0f) return false;
+                float t = glm::dot(e2, qvec) * invDet;
+                if (t < 0.0f) return false;
+                tHit = t;
+                return true;
+            };
+
             auto ray = makeRay(mousePos);
             float closest = FLT_MAX;
             int hitId = -1;
@@ -2200,7 +2884,24 @@ void Engine::renderViewport() {
                             aabbMin = info->boundsMin;
                             aabbMax = info->boundsMax;
                         }
-                        hit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        bool aabbHit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        if (aabbHit && info && !info->triangleVertices.empty()) {
+                            float triBest = FLT_MAX;
+                            for (size_t i = 0; i + 2 < info->triangleVertices.size(); i += 3) {
+                                float triT = 0.0f;
+                                if (rayTriangle(localOrigin, localDir, info->triangleVertices[i], info->triangleVertices[i + 1], info->triangleVertices[i + 2], triT)) {
+                                    if (triT < triBest && triT >= 0.0f) triBest = triT;
+                                }
+                            }
+                            if (triBest < FLT_MAX) {
+                                hit = true;
+                                hitT = triBest;
+                            } else {
+                                hit = false;
+                            }
+                        } else {
+                            hit = aabbHit;
+                        }
                         break;
                     }
                     case ObjectType::Model: {
@@ -2209,14 +2910,37 @@ void Engine::renderViewport() {
                             aabbMin = info->boundsMin;
                             aabbMax = info->boundsMax;
                         }
-                        hit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        bool aabbHit = rayAabb(localOrigin, localDir, aabbMin, aabbMax, hitT);
+                        if (aabbHit && info && !info->triangleVertices.empty()) {
+                            float triBest = FLT_MAX;
+                            for (size_t i = 0; i + 2 < info->triangleVertices.size(); i += 3) {
+                                float triT = 0.0f;
+                                if (rayTriangle(localOrigin, localDir, info->triangleVertices[i], info->triangleVertices[i + 1], info->triangleVertices[i + 2], triT)) {
+                                    if (triT < triBest && triT >= 0.0f) triBest = triT;
+                                }
+                            }
+                            if (triBest < FLT_MAX) {
+                                hit = true;
+                                hitT = triBest;
+                            } else {
+                                hit = false;
+                            }
+                        } else {
+                            hit = aabbHit;
+                        }
                         break;
                     }
+                    case ObjectType::Camera:
+                        hit = raySphere(localOrigin, localDir, 0.3f, hitT);
+                        break;
                     case ObjectType::DirectionalLight:
                     case ObjectType::PointLight:
                     case ObjectType::SpotLight:
                     case ObjectType::AreaLight:
                         hit = raySphere(localOrigin, localDir, 0.3f, hitT);
+                        break;
+                    case ObjectType::PostFXNode:
+                        hit = false;
                         break;
                 }
 
@@ -2238,16 +2962,84 @@ void Engine::renderViewport() {
             viewportController.setFocused(true);
             cursorLocked = true;
             glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            if (glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            }
             camera.firstMouse = true;
         }
 
         if (cursorLocked && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
             cursorLocked = false;
             glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            if (glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+            }
             camera.firstMouse = true;
         }
         if (cursorLocked) {
             viewportController.setFocused(true);
+        }
+
+        if (isPlaying && showViewOutput) {
+            std::vector<const SceneObject*> playerCams;
+            for (const auto& obj : sceneObjects) {
+                if (obj.type == ObjectType::Camera && obj.camera.type == SceneCameraType::Player) {
+                    playerCams.push_back(&obj);
+                }
+            }
+
+            if (playerCams.empty()) {
+                previewCameraId = -1;
+            } else {
+                auto findCamById = [&](int id) -> const SceneObject* {
+                    auto it = std::find_if(playerCams.begin(), playerCams.end(), [id](const SceneObject* o) { return o->id == id; });
+                    return (it != playerCams.end()) ? *it : nullptr;
+                };
+                const SceneObject* previewCam = findCamById(previewCameraId);
+                if (!previewCam) {
+                    previewCam = playerCams.front();
+                    previewCameraId = previewCam->id;
+                }
+
+                int previewWidth = static_cast<int>(imageSize.x * 0.28f);
+                previewWidth = std::clamp(previewWidth, 180, 420);
+                int previewHeight = static_cast<int>(previewWidth / 16.0f * 9.0f);
+                unsigned int previewTex = renderer.renderScenePreview(
+                    makeCameraFromObject(*previewCam),
+                    sceneObjects,
+                    previewWidth,
+                    previewHeight,
+                    previewCam->camera.fov,
+                    previewCam->camera.nearClip,
+                    previewCam->camera.farClip
+                );
+
+                if (previewTex != 0) {
+                    ImVec2 overlaySize(previewWidth + 20.0f, previewHeight + 64.0f);
+                    ImVec2 overlayPos = ImVec2(imageMax.x - overlaySize.x - 12.0f, imageMax.y - overlaySize.y - 12.0f);
+                    ImVec2 winPos = ImGui::GetWindowPos();
+                    ImVec2 localPos = ImVec2(overlayPos.x - winPos.x, overlayPos.y - winPos.y);
+                    ImGui::SetCursorPos(localPos);
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+                    ImGui::BeginChild("ViewOutputOverlay", overlaySize, true, ImGuiWindowFlags_NoScrollbar);
+                    ImGui::TextDisabled("View Output");
+                    if (ImGui::BeginCombo("##ViewOutputCamera", previewCam->name.c_str())) {
+                        for (const auto* cam : playerCams) {
+                            bool selected = cam->id == previewCameraId;
+                            if (ImGui::Selectable(cam->name.c_str(), selected)) {
+                                previewCameraId = cam->id;
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::Image((void*)(intptr_t)previewTex, ImVec2((float)previewWidth, (float)previewHeight), ImVec2(0, 1), ImVec2(1, 0));
+                    ImGui::EndChild();
+                    ImGui::PopStyleVar();
+                }
+            }
+        } else {
+            previewCameraId = -1;
         }
     }
 
@@ -2432,11 +3224,21 @@ void Engine::renderDialogs() {
 }
 
 void Engine::renderProjectBrowserPanel() {
-    ImGui::Begin("Project", &showProjectBrowser);
+    ImVec4 headerCol = ImVec4(0.20f, 0.27f, 0.36f, 1.0f);
+    ImVec4 headerColActive = ImVec4(0.24f, 0.34f, 0.46f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Header, headerCol);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, headerColActive);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, headerColActive);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+
+    ImGui::Begin("Project Manager", &showProjectBrowser);
 
     if (!projectManager.currentProject.isLoaded) {
         ImGui::TextDisabled("No project loaded");
         ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(3);
         return;
     }
 
@@ -2547,6 +3349,8 @@ void Engine::renderProjectBrowserPanel() {
     }
 
     ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
 }
 
 void Engine::renderEnvironmentWindow() {

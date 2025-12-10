@@ -82,6 +82,10 @@ private:
     float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
+    bool isPlaying = false;
+    bool isPaused = false;
+    bool showViewOutput = true;
+    int previewCameraId = -1;
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -107,6 +111,7 @@ private:
     void renderViewport();
     void renderDialogs();
     void renderProjectBrowserPanel();
+    Camera makeCameraFromObject(const SceneObject& obj) const;
     
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();

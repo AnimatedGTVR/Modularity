@@ -236,7 +236,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=2\n";
+        file << "version=4\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
@@ -269,6 +269,24 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "lightOuter=" << obj.light.outerAngle << "\n";
             file << "lightSize=" << obj.light.size.x << "," << obj.light.size.y << "\n";
             file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
+            file << "cameraType=" << static_cast<int>(obj.camera.type) << "\n";
+            file << "cameraFov=" << obj.camera.fov << "\n";
+            file << "cameraNear=" << obj.camera.nearClip << "\n";
+            file << "cameraFar=" << obj.camera.farClip << "\n";
+            if (obj.type == ObjectType::PostFXNode) {
+                file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
+                file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
+                file << "postBloomThreshold=" << obj.postFx.bloomThreshold << "\n";
+                file << "postBloomIntensity=" << obj.postFx.bloomIntensity << "\n";
+                file << "postBloomRadius=" << obj.postFx.bloomRadius << "\n";
+                file << "postColorAdjustEnabled=" << (obj.postFx.colorAdjustEnabled ? 1 : 0) << "\n";
+                file << "postExposure=" << obj.postFx.exposure << "\n";
+                file << "postContrast=" << obj.postFx.contrast << "\n";
+                file << "postSaturation=" << obj.postFx.saturation << "\n";
+                file << "postColorFilter=" << obj.postFx.colorFilter.r << "," << obj.postFx.colorFilter.g << "," << obj.postFx.colorFilter.b << "\n";
+                file << "postMotionBlurEnabled=" << (obj.postFx.motionBlurEnabled ? 1 : 0) << "\n";
+                file << "postMotionBlurStrength=" << obj.postFx.motionBlurStrength << "\n";
+            }
             
             if ((obj.type == ObjectType::OBJMesh || obj.type == ObjectType::Model) && !obj.meshPath.empty()) {
                 file << "meshPath=" << obj.meshPath << "\n";
@@ -332,6 +350,9 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     else if (currentObj->type == ObjectType::PointLight) currentObj->light.type = LightType::Point;
                     else if (currentObj->type == ObjectType::SpotLight) currentObj->light.type = LightType::Spot;
                     else if (currentObj->type == ObjectType::AreaLight) currentObj->light.type = LightType::Area;
+                    else if (currentObj->type == ObjectType::Camera) {
+                        currentObj->camera.type = SceneCameraType::Scene;
+                    }
                 } else if (key == "parentId") {
                     currentObj->parentId = std::stoi(value);
                 } else if (key == "position") {
@@ -395,6 +416,41 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                            &currentObj->light.size.y);
                 } else if (key == "lightEnabled") {
                     currentObj->light.enabled = (std::stoi(value) != 0);
+                } else if (key == "cameraType") {
+                    currentObj->camera.type = static_cast<SceneCameraType>(std::stoi(value));
+                } else if (key == "cameraFov") {
+                    currentObj->camera.fov = std::stof(value);
+                } else if (key == "cameraNear") {
+                    currentObj->camera.nearClip = std::stof(value);
+                } else if (key == "cameraFar") {
+                    currentObj->camera.farClip = std::stof(value);
+                } else if (key == "postEnabled") {
+                    currentObj->postFx.enabled = (std::stoi(value) != 0);
+                } else if (key == "postBloomEnabled") {
+                    currentObj->postFx.bloomEnabled = (std::stoi(value) != 0);
+                } else if (key == "postBloomThreshold") {
+                    currentObj->postFx.bloomThreshold = std::stof(value);
+                } else if (key == "postBloomIntensity") {
+                    currentObj->postFx.bloomIntensity = std::stof(value);
+                } else if (key == "postBloomRadius") {
+                    currentObj->postFx.bloomRadius = std::stof(value);
+                } else if (key == "postColorAdjustEnabled") {
+                    currentObj->postFx.colorAdjustEnabled = (std::stoi(value) != 0);
+                } else if (key == "postExposure") {
+                    currentObj->postFx.exposure = std::stof(value);
+                } else if (key == "postContrast") {
+                    currentObj->postFx.contrast = std::stof(value);
+                } else if (key == "postSaturation") {
+                    currentObj->postFx.saturation = std::stof(value);
+                } else if (key == "postColorFilter") {
+                    sscanf(value.c_str(), "%f,%f,%f",
+                           &currentObj->postFx.colorFilter.r,
+                           &currentObj->postFx.colorFilter.g,
+                           &currentObj->postFx.colorFilter.b);
+                } else if (key == "postMotionBlurEnabled") {
+                    currentObj->postFx.motionBlurEnabled = (std::stoi(value) != 0);
+                } else if (key == "postMotionBlurStrength") {
+                    currentObj->postFx.motionBlurStrength = std::stof(value);
                 } else if (key == "meshPath") {
                     currentObj->meshPath = value;
                     if (!value.empty() && currentObj->type == ObjectType::OBJMesh) {

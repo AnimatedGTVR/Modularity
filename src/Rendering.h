@@ -39,6 +39,7 @@ public:
         bool hasTexCoords = false;
         glm::vec3 boundsMin = glm::vec3(FLT_MAX);
         glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
+        std::vector<glm::vec3> triangleVertices; // positions duplicated per-triangle for picking
     };
     
 private:
@@ -59,8 +60,23 @@ class Renderer {
 private:
     unsigned int framebuffer = 0, viewportTexture = 0, rbo = 0;
     int currentWidth = 800, currentHeight = 600;
+    struct RenderTarget {
+        unsigned int fbo = 0;
+        unsigned int texture = 0;
+        unsigned int rbo = 0;
+        int width = 0;
+        int height = 0;
+    };
+    RenderTarget previewTarget;
+    RenderTarget postTarget;
+    RenderTarget historyTarget;
+    RenderTarget bloomTargetA;
+    RenderTarget bloomTargetB;
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
+    Shader* postShader = nullptr;
+    Shader* brightShader = nullptr;
+    Shader* blurShader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
@@ -74,14 +90,30 @@ private:
     std::unordered_map<std::string, ShaderEntry> shaderCache;
     std::string defaultVertPath = "Resources/Shaders/vert.glsl";
     std::string defaultFragPath = "Resources/Shaders/frag.glsl";
+    std::string postVertPath = "Resources/Shaders/postfx_vert.glsl";
+    std::string postFragPath = "Resources/Shaders/postfx_frag.glsl";
+    std::string postBrightFragPath = "Resources/Shaders/postfx_bright_frag.glsl";
+    std::string postBlurFragPath = "Resources/Shaders/postfx_blur_frag.glsl";
     bool autoReloadShaders = true;
     glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
     Skybox* skybox = nullptr;
+    unsigned int quadVAO = 0;
+    unsigned int quadVBO = 0;
+    unsigned int displayTexture = 0;
+    bool historyValid = false;
 
     void setupFBO();
+    void ensureRenderTarget(RenderTarget& target, int w, int h);
+    void ensureQuad();
+    void drawFullscreenQuad();
+    void clearHistory();
+    void clearTarget(RenderTarget& target);
+    void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane);
+    void applyPostProcessing(const std::vector<SceneObject>& sceneObjects);
+    PostFXSettings gatherPostFX(const std::vector<SceneObject>& sceneObjects) const;
 
 public:
     Renderer() = default;
@@ -100,9 +132,10 @@ public:
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
-    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects);
+    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE);
+    unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void endRender();
 
     Skybox* getSkybox() { return skybox; }
-    unsigned int getViewportTexture() const { return viewportTexture; }
+    unsigned int getViewportTexture() const { return displayTexture ? displayTexture : viewportTexture; }
 };

@@ -11,7 +11,9 @@ enum class ObjectType {
     DirectionalLight,
     PointLight,
     SpotLight,
-    AreaLight
+    AreaLight,
+    Camera,
+    PostFXNode
 };
 
 struct MaterialProperties {
@@ -40,6 +42,33 @@ struct LightComponent {
     // Area (rect) size in world units
     glm::vec2 size = glm::vec2(1.0f, 1.0f);
     bool enabled = true;
+};
+
+enum class SceneCameraType {
+    Scene = 0,
+    Player = 1
+};
+
+struct CameraComponent {
+    SceneCameraType type = SceneCameraType::Scene;
+    float fov = FOV;
+    float nearClip = NEAR_PLANE;
+    float farClip = FAR_PLANE;
+};
+
+struct PostFXSettings {
+    bool enabled = true;
+    bool bloomEnabled = true;
+    float bloomThreshold = 1.1f;
+    float bloomIntensity = 0.8f;
+    float bloomRadius = 1.5f;
+    bool colorAdjustEnabled = false;
+    float exposure = 0.0f;      // in EV stops
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    glm::vec3 colorFilter = glm::vec3(1.0f);
+    bool motionBlurEnabled = false;
+    float motionBlurStrength = 0.15f; // 0..1 blend with previous frame
 };
 
 enum class ConsoleMessageType {
@@ -71,6 +100,8 @@ public:
     std::string fragmentShaderPath;
     bool useOverlay = false;
     LightComponent light;  // Only used when type is a light
+    CameraComponent camera; // Only used when type is camera
+    PostFXSettings postFx;  // Only used when type is PostFXNode
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}
