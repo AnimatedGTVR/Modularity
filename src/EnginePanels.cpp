@@ -1438,6 +1438,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Post FX Node")) addObject(ObjectType::PostFXNode, "Post FX");
                 ImGui::EndMenu();
             }
+            if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
 
             ImGui::EndMenu();
         }
