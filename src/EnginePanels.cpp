@@ -1120,6 +1120,11 @@ void Engine::renderNewProjectDialog() {
 
         ImGui::Spacing();
 
+        if (ImGui::Button("Choose Pipeline Mode")) {
+        }
+
+        ImGui::Spacing();
+
         ImGui::Text("Location:");
         ImGui::SetNextItemWidth(-70);
         ImGui::InputText("##Location", projectManager.newProjectLocation,
