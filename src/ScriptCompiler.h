@@ -17,6 +17,8 @@ struct ScriptBuildCommands {
     std::string link;
     fs::path objectPath;
     fs::path binaryPath;
+    fs::path wrapperPath;
+    bool usedWrapper = false;
 };
 
 struct ScriptCompileOutput {

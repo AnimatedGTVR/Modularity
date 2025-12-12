@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <regex>
 #if defined(_WIN32)
     #include <windows.h>
 #endif
@@ -184,6 +185,118 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     binaryPath /= baseName + ".so";
 #endif
 
+    // Build a lightweight wrapper that exposes expected entry points with C linkage and optional deltaTime.
+    auto readFileToString = [](const fs::path& path, std::string& contents) -> bool {
+        std::ifstream f(path);
+        if (!f.is_open()) return false;
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        contents = ss.str();
+        return true;
+    };
+
+    struct FunctionSpec {
+        bool present = false;
+        bool takesDelta = false;
+        bool takesContext = false;
+    };
+
+    auto detectFunction = [](const std::string& source, const std::string& name) -> FunctionSpec {
+        FunctionSpec spec;
+        try {
+            std::regex ctxDeltaPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
+            std::regex ctxOnlyPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^\\)]*\\)");
+            std::regex deltaPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*(float|double)[^\\)]*\\)");
+            std::regex basicPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*\\)");
+
+            if (std::regex_search(source, ctxDeltaPattern)) {
+                spec.present = true;
+                spec.takesDelta = true;
+                spec.takesContext = true;
+                return spec;
+            }
+            if (std::regex_search(source, ctxOnlyPattern)) {
+                spec.present = true;
+                spec.takesContext = true;
+                return spec;
+            }
+            if (std::regex_search(source, deltaPattern)) {
+                spec.present = true;
+                spec.takesDelta = true;
+                return spec;
+            }
+            if (std::regex_search(source, basicPattern)) {
+                spec.present = true;
+            }
+        } catch (...) {
+            // If regex throws for any reason, fall through and treat as not present.
+        }
+        return spec;
+    };
+
+    std::string scriptSource;
+    if (!readFileToString(scriptAbs, scriptSource)) {
+        error = "Unable to read script file: " + scriptAbs.string();
+        return false;
+    }
+
+    FunctionSpec beginSpec = detectFunction(scriptSource, "Begin");
+    FunctionSpec specSpec = detectFunction(scriptSource, "Spec");
+    FunctionSpec testEditorSpec = detectFunction(scriptSource, "TestEditor");
+    FunctionSpec updateSpec = detectFunction(scriptSource, "Update");
+    FunctionSpec tickUpdateSpec = detectFunction(scriptSource, "TickUpdate");
+
+    fs::path wrapperPath;
+    bool useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present
+                      || updateSpec.present || tickUpdateSpec.present;
+    fs::path sourceToCompile = scriptAbs;
+
+    if (useWrapper) {
+        wrapperPath = config.outDir / relativeParent / (baseName + ".wrap.cpp");
+        std::error_code createErr;
+        fs::create_directories(wrapperPath.parent_path(), createErr);
+
+        std::ofstream wrapper(wrapperPath);
+        if (!wrapper.is_open()) {
+            error = "Unable to write wrapper file: " + wrapperPath.string();
+            return false;
+        }
+
+        std::string includePath = scriptAbs.lexically_normal().generic_string();
+        wrapper << "#include \"ScriptRuntime.h\"\n";
+        wrapper << "#include \"" << includePath << "\"\n\n";
+        wrapper << "extern \"C\" {\n";
+
+        auto emitWrapper = [&](const char* exportedName, const char* implName,
+                               const FunctionSpec& spec) {
+            if (!spec.present) return;
+            wrapper << "void " << exportedName << "(ScriptContext& ctx, float deltaTime) {\n";
+            if (spec.takesContext && spec.takesDelta) {
+                wrapper << "    " << implName << "(ctx, deltaTime);\n";
+            } else if (spec.takesContext) {
+                wrapper << "    (void)deltaTime;\n";
+                wrapper << "    " << implName << "(ctx);\n";
+            } else if (spec.takesDelta) {
+                wrapper << "    (void)ctx;\n";
+                wrapper << "    " << implName << "(deltaTime);\n";
+            } else {
+                wrapper << "    (void)ctx;\n";
+                wrapper << "    (void)deltaTime;\n";
+                wrapper << "    " << implName << "();\n";
+            }
+            wrapper << "}\n\n";
+        };
+
+        emitWrapper("Script_Begin", "Begin", beginSpec);
+        emitWrapper("Script_Spec", "Spec", specSpec);
+        emitWrapper("Script_TestEditor", "TestEditor", testEditorSpec);
+        emitWrapper("Script_Update", "Update", updateSpec);
+        emitWrapper("Script_TickUpdate", "TickUpdate", tickUpdateSpec);
+
+        wrapper << "}\n";
+        sourceToCompile = wrapperPath;
+    }
+
     std::ostringstream compileCmd;
 #ifdef _WIN32
     compileCmd << "cl /nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
@@ -193,7 +306,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     for (const auto& def : config.defines) {
         compileCmd << " /D" << escapeDefine(def);
     }
-    compileCmd << " /c \"" << scriptAbs.string() << "\" /Fo\"" << objectPath.string() << "\"";
+    compileCmd << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
 #else
     compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
     for (const auto& inc : config.includeDirs) {
@@ -212,7 +325,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     for (const auto& def : config.defines) {
         compileCmd << formatDefine(def);
     }
-    compileCmd << " -c \"" << scriptAbs.string() << "\" -o \"" << objectPath.string() << "\"";
+    compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
 #endif
 
     std::ostringstream linkCmd;
@@ -233,6 +346,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.link = linkCmd.str();
     outCommands.objectPath = objectPath;
     outCommands.binaryPath = binaryPath;
+    outCommands.wrapperPath = wrapperPath;
+    outCommands.usedWrapper = useWrapper;
     return true;
 }
 

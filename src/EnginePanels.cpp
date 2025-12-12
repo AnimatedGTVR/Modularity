@@ -1306,6 +1306,12 @@ void Engine::renderMainMenuBar() {
             ImGui::EndMenu();
         }
 
+        if (ImGui::BeginMenu("Scripts")) {
+            ImGui::MenuItem("Spec Mode (run Script_Spec)", nullptr, &specMode);
+            ImGui::MenuItem("Test Mode (run Script_TestEditor)", nullptr, &testMode);
+            ImGui::EndMenu();
+        }
+
         if (ImGui::BeginMenu("Create")) {
             if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
             if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");

@@ -109,6 +109,8 @@ private:
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
     std::string lastCompileLog;
+    bool specMode = false;
+    bool testMode = false;
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -143,6 +145,7 @@ private:
     void renderProjectBrowserPanel();
     Camera makeCameraFromObject(const SceneObject& obj) const;
     void compileScriptFile(const fs::path& scriptPath);
+    void updateScripts(float delta);
     
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();
@@ -200,4 +203,5 @@ public:
     SceneObject* findObjectByName(const std::string& name);
     SceneObject* findObjectById(int id);
     fs::path resolveScriptBinary(const fs::path& sourcePath);
+    void markProjectDirty();
 };

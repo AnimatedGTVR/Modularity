@@ -303,6 +303,11 @@ void Engine::run() {
             camera.processKeyboard(deltaTime, editorWindow);
         }
 
+        // Run script tick/update even when the object is not selected.
+        if (projectManager.currentProject.isLoaded) {
+            updateScripts(deltaTime);
+        }
+
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
             float aspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
@@ -691,6 +696,24 @@ void Engine::handleKeyboardShortcuts() {
     }
 }
 
+void Engine::updateScripts(float delta) {
+    if (sceneObjects.empty()) return;
+
+    for (auto& obj : sceneObjects) {
+        for (auto& sc : obj.scripts) {
+            if (sc.path.empty()) continue;
+            fs::path binary = resolveScriptBinary(sc.path);
+            if (binary.empty() || !fs::exists(binary)) continue;
+            ScriptContext ctx;
+            ctx.engine = this;
+            ctx.object = &obj;
+            ctx.script = &sc;
+
+            scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+        }
+    }
+}
+
 void Engine::OpenProjectPath(const std::string& path) {
     try {
         if (projectManager.loadProject(path)) {
@@ -1023,6 +1046,10 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
         return {};
     }
     return cmds.binaryPath;
+}
+
+void Engine::markProjectDirty() {
+    projectManager.currentProject.hasUnsavedChanges = true;
 }
 
 void Engine::compileScriptFile(const fs::path& scriptPath) {

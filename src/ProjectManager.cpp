@@ -361,8 +361,17 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         SceneObject* currentObj = nullptr;
 
         while (std::getline(file, line)) {
-            line.erase(0, line.find_first_not_of(" \t\r\n"));
-            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            size_t first = line.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos) {
+                continue;
+            }
+            line.erase(0, first);
+            size_t last = line.find_last_not_of(" \t\r\n");
+            if (last != std::string::npos) {
+                line.erase(last + 1);
+            } else {
+                continue;
+            }
 
             if (line.empty() || line[0] == '#') continue;
 
@@ -450,18 +459,21 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             ScriptComponent& sc = currentObj->scripts[idx];
                             if (sub == "path") {
                                 sc.path = value;
-                            } else if (sub == "settings") {
+                            } else if (sub == "settings" || sub == "settingCount") {
                                 int cnt = std::stoi(value);
                                 sc.settings.resize(std::max(0, cnt));
                             } else if (sub.rfind("setting", 0) == 0) {
-                                int sIdx = std::stoi(sub.substr(7));
-                                if (sIdx >= 0 && sIdx < (int)sc.settings.size()) {
-                                    size_t sep = value.find(':');
-                                    if (sep != std::string::npos) {
-                                        sc.settings[sIdx].key = value.substr(0, sep);
-                                        sc.settings[sIdx].value = value.substr(sep + 1);
-                                    } else {
-                                        sc.settings[sIdx].value = value;
+                                std::string idxStr = sub.substr(7);
+                                if (!idxStr.empty() && std::all_of(idxStr.begin(), idxStr.end(), ::isdigit)) {
+                                    int sIdx = std::stoi(idxStr);
+                                    if (sIdx >= 0 && sIdx < (int)sc.settings.size()) {
+                                        size_t sep = value.find(':');
+                                        if (sep != std::string::npos) {
+                                            sc.settings[sIdx].key = value.substr(0, sep);
+                                            sc.settings[sIdx].value = value.substr(sep + 1);
+                                        } else {
+                                            sc.settings[sIdx].value = value;
+                                        }
                                     }
                                 }
                             }
