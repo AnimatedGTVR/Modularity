@@ -7,6 +7,8 @@
 #include "ProjectManager.h"
 #include "EditorUI.h"
 #include "MeshBuilder.h"
+#include "ScriptCompiler.h"
+#include "ScriptRuntime.h"
 #include "../include/Window/Window.h"
 
 void window_size_callback(GLFWwindow* window, int width, int height);
@@ -101,6 +103,12 @@ private:
     std::vector<int> meshEditSelectedFaces; // indices into mesh faces
     enum class MeshEditSelectionMode { Vertex = 0, Edge = 1, Face = 2 };
     MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Vertex;
+    ScriptCompiler scriptCompiler;
+    ScriptRuntime scriptRuntime;
+    bool showCompilePopup = false;
+    bool lastCompileSuccess = false;
+    std::string lastCompileStatus;
+    std::string lastCompileLog;
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -134,6 +142,7 @@ private:
     void renderDialogs();
     void renderProjectBrowserPanel();
     Camera makeCameraFromObject(const SceneObject& obj) const;
+    void compileScriptFile(const fs::path& scriptPath);
     
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();
@@ -188,4 +197,7 @@ public:
     bool init();
     void run();
     void shutdown();
+    SceneObject* findObjectByName(const std::string& name);
+    SceneObject* findObjectById(int id);
+    fs::path resolveScriptBinary(const fs::path& sourcePath);
 };

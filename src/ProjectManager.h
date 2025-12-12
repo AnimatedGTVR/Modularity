@@ -16,6 +16,7 @@ public:
     fs::path scenesPath;
     fs::path assetsPath;
     fs::path scriptsPath;
+    fs::path scriptsConfigPath;
     std::string currentSceneName;
     bool isLoaded = false;
     bool hasUnsavedChanges = false;

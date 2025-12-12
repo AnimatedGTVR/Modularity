@@ -709,8 +709,8 @@ void Engine::OpenProjectPath(const std::string& path) {
             }
 
             loadRecentScenes();
-            fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
-            fileBrowser.currentPath = projectManager.currentProject.assetsPath;
+            fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
+            fileBrowser.currentPath = projectManager.currentProject.projectPath;
             fileBrowser.needsRefresh = true;
             showLauncher = false;
             addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
@@ -747,8 +747,8 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         addObject(ObjectType::Cube, "Cube");
 
-        fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
-        fileBrowser.currentPath = projectManager.currentProject.assetsPath;
+        fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
+        fileBrowser.currentPath = projectManager.currentProject.projectPath;
         fileBrowser.needsRefresh = true;
 
         showLauncher = false;
@@ -784,8 +784,8 @@ void Engine::loadRecentScenes() {
     }
     recordState("sceneLoaded");
 
-    fileBrowser.setProjectRoot(projectManager.currentProject.assetsPath);
-    fileBrowser.currentPath = projectManager.currentProject.assetsPath;
+    fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
+    fileBrowser.currentPath = projectManager.currentProject.projectPath;
     fileBrowser.needsRefresh = true;
 }
 
@@ -991,6 +991,91 @@ void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType ty
 
 void Engine::logToConsole(const std::string& message) {
     addConsoleMessage(message, ConsoleMessageType::Info);
+}
+
+SceneObject* Engine::findObjectByName(const std::string& name) {
+    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [&](const SceneObject& o) {
+        return o.name == name;
+    });
+    if (it != sceneObjects.end()) return &(*it);
+    return nullptr;
+}
+
+SceneObject* Engine::findObjectById(int id) {
+    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [&](const SceneObject& o) {
+        return o.id == id;
+    });
+    if (it != sceneObjects.end()) return &(*it);
+    return nullptr;
+}
+
+fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
+    ScriptBuildConfig config;
+    std::string error;
+    fs::path cfg = projectManager.currentProject.scriptsConfigPath.empty()
+        ? projectManager.currentProject.projectPath / "Scripts.modu"
+        : projectManager.currentProject.scriptsConfigPath;
+    if (!scriptCompiler.loadConfig(cfg, config, error)) {
+        return {};
+    }
+    ScriptBuildCommands cmds;
+    if (!scriptCompiler.makeCommands(config, sourcePath, cmds, error)) {
+        return {};
+    }
+    return cmds.binaryPath;
+}
+
+void Engine::compileScriptFile(const fs::path& scriptPath) {
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("No project is loaded", ConsoleMessageType::Warning);
+        return;
+    }
+
+    showCompilePopup = true;
+    lastCompileLog.clear();
+    lastCompileStatus = "Compiling " + scriptPath.filename().string();
+
+    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
+    if (configPath.empty()) {
+        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
+    }
+
+    ScriptBuildConfig config;
+    std::string error;
+    if (!scriptCompiler.loadConfig(configPath, config, error)) {
+        lastCompileSuccess = false;
+        lastCompileLog = error;
+        addConsoleMessage("Script config error: " + error, ConsoleMessageType::Error);
+        return;
+    }
+
+    ScriptBuildCommands commands;
+    if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {
+        lastCompileSuccess = false;
+        lastCompileLog = error;
+        addConsoleMessage("Script build error: " + error, ConsoleMessageType::Error);
+        return;
+    }
+
+    ScriptCompileOutput output;
+    if (!scriptCompiler.compile(commands, output, error)) {
+        lastCompileSuccess = false;
+        lastCompileStatus = "Compile failed";
+        lastCompileLog = output.compileLog + output.linkLog + error;
+        addConsoleMessage("Compile failed: " + error, ConsoleMessageType::Error);
+        if (!output.compileLog.empty()) addConsoleMessage(output.compileLog, ConsoleMessageType::Info);
+        if (!output.linkLog.empty()) addConsoleMessage(output.linkLog, ConsoleMessageType::Info);
+        return;
+    }
+
+    scriptRuntime.unloadAll();
+
+    lastCompileSuccess = true;
+    lastCompileStatus = "Reloading EngineRoot";
+    lastCompileLog = output.compileLog + output.linkLog;
+    addConsoleMessage("Compiled script -> " + commands.binaryPath.string(), ConsoleMessageType::Success);
+    if (!output.compileLog.empty()) addConsoleMessage(output.compileLog, ConsoleMessageType::Info);
+    if (!output.linkLog.empty()) addConsoleMessage(output.linkLog, ConsoleMessageType::Info);
 }
 
 void Engine::setupImGui() {

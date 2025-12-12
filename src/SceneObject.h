@@ -78,6 +78,17 @@ enum class ConsoleMessageType {
     Success
 };
 
+struct ScriptSetting {
+    std::string key;
+    std::string value;
+};
+
+struct ScriptComponent {
+    std::string path;
+    std::vector<ScriptSetting> settings;
+    std::string lastBinaryPath;
+};
+
 class SceneObject {
 public:
     std::string name;
@@ -102,6 +113,7 @@ public:
     LightComponent light;  // Only used when type is a light
     CameraComponent camera; // Only used when type is camera
     PostFXSettings postFx;  // Only used when type is PostFXNode
+    std::vector<ScriptComponent> scripts;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}

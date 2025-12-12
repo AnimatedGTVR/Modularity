@@ -9,6 +9,7 @@ Project::Project(const std::string& projectName, const fs::path& basePath)
     scenesPath = projectPath / "Scenes";
     assetsPath = projectPath / "Assets";
     scriptsPath = projectPath / "Scripts";
+    scriptsConfigPath = projectPath / "Scripts.modu";
 }
 
 bool Project::create() {
@@ -20,8 +21,28 @@ bool Project::create() {
         fs::create_directories(assetsPath / "Models");
         fs::create_directories(assetsPath / "Shaders");
         fs::create_directories(scriptsPath);
+        fs::create_directories(projectPath / "Cache" / "ScriptBin");
 
         saveProjectFile();
+
+        // Initialize a default scripting build file
+        fs::path engineRoot = fs::current_path();
+        std::ofstream scriptCfg(scriptsConfigPath);
+        scriptCfg << "# Scripts.modu\n";
+        scriptCfg << "cppStandard=c++20\n";
+        scriptCfg << "scriptsDir=Scripts\n";
+        scriptCfg << "outDir=Cache/ScriptBin\n";
+        scriptCfg << "includeDir=" << (engineRoot / "src").string() << "\n";
+        scriptCfg << "includeDir=" << (engineRoot / "include").string() << "\n";
+        scriptCfg << "includeDir=" << (engineRoot / "src/ThirdParty").string() << "\n";
+        scriptCfg << "includeDir=" << (engineRoot / "src/ThirdParty/glm").string() << "\n";
+        scriptCfg << "define=MODU_SCRIPTING=1\n";
+        scriptCfg << "define=MODU_PROJECT_NAME=\"" << name << "\"\n";
+        scriptCfg << "linux.linkLib=pthread\n";
+        scriptCfg << "linux.linkLib=dl\n";
+        scriptCfg << "win.linkLib=User32.lib\n";
+        scriptCfg << "win.linkLib=Advapi32.lib\n";
+        scriptCfg.close();
 
         currentSceneName = "Main";
         isLoaded = true;
@@ -38,6 +59,7 @@ bool Project::load(const fs::path& projectFilePath) {
         scenesPath = projectPath / "Scenes";
         assetsPath = projectPath / "Assets";
         scriptsPath = projectPath / "Scripts";
+        scriptsConfigPath = projectPath / "Scripts.modu";
 
         std::ifstream file(projectFilePath);
         if (!file.is_open()) return false;
@@ -262,6 +284,15 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "vertexShader=" << obj.vertexShaderPath << "\n";
             file << "fragmentShader=" << obj.fragmentShaderPath << "\n";
             file << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
+            file << "scripts=" << obj.scripts.size() << "\n";
+            for (size_t si = 0; si < obj.scripts.size(); ++si) {
+                const auto& sc = obj.scripts[si];
+                file << "script" << si << "_path=" << sc.path << "\n";
+                file << "script" << si << "_settings=" << sc.settings.size() << "\n";
+                for (size_t k = 0; k < sc.settings.size(); ++k) {
+                    file << "script" << si << "_setting" << k << "=" << sc.settings[k].key << ":" << sc.settings[k].value << "\n";
+                }
+            }
             file << "lightColor=" << obj.light.color.r << "," << obj.light.color.g << "," << obj.light.color.b << "\n";
             file << "lightIntensity=" << obj.light.intensity << "\n";
             file << "lightRange=" << obj.light.range << "\n";
@@ -286,6 +317,16 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "postColorFilter=" << obj.postFx.colorFilter.r << "," << obj.postFx.colorFilter.g << "," << obj.postFx.colorFilter.b << "\n";
                 file << "postMotionBlurEnabled=" << (obj.postFx.motionBlurEnabled ? 1 : 0) << "\n";
                 file << "postMotionBlurStrength=" << obj.postFx.motionBlurStrength << "\n";
+            }
+
+            file << "scriptCount=" << obj.scripts.size() << "\n";
+            for (size_t s = 0; s < obj.scripts.size(); ++s) {
+                const auto& sc = obj.scripts[s];
+                file << "script" << s << "_path=" << sc.path << "\n";
+                file << "script" << s << "_settingCount=" << sc.settings.size() << "\n";
+                for (size_t si = 0; si < sc.settings.size(); ++si) {
+                    file << "script" << s << "_setting" << si << "=" << sc.settings[si].key << ":" << sc.settings[si].value << "\n";
+                }
             }
             
             if ((obj.type == ObjectType::OBJMesh || obj.type == ObjectType::Model) && !obj.meshPath.empty()) {
@@ -397,6 +438,35 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->fragmentShaderPath = value;
                 } else if (key == "useOverlay") {
                     currentObj->useOverlay = (std::stoi(value) != 0);
+                } else if (key == "scripts") {
+                    int count = std::stoi(value);
+                    currentObj->scripts.resize(std::max(0, count));
+                } else if (key.rfind("script", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 6) {
+                        int idx = std::stoi(key.substr(6, underscore - 6));
+                        if (idx >= 0 && idx < (int)currentObj->scripts.size()) {
+                            std::string sub = key.substr(underscore + 1);
+                            ScriptComponent& sc = currentObj->scripts[idx];
+                            if (sub == "path") {
+                                sc.path = value;
+                            } else if (sub == "settings") {
+                                int cnt = std::stoi(value);
+                                sc.settings.resize(std::max(0, cnt));
+                            } else if (sub.rfind("setting", 0) == 0) {
+                                int sIdx = std::stoi(sub.substr(7));
+                                if (sIdx >= 0 && sIdx < (int)sc.settings.size()) {
+                                    size_t sep = value.find(':');
+                                    if (sep != std::string::npos) {
+                                        sc.settings[sIdx].key = value.substr(0, sep);
+                                        sc.settings[sIdx].value = value.substr(sep + 1);
+                                    } else {
+                                        sc.settings[sIdx].value = value;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if (key == "lightColor") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->light.color.r,
@@ -451,6 +521,36 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->postFx.motionBlurEnabled = (std::stoi(value) != 0);
                 } else if (key == "postMotionBlurStrength") {
                     currentObj->postFx.motionBlurStrength = std::stof(value);
+                } else if (key == "scriptCount") {
+                    int count = std::stoi(value);
+                    currentObj->scripts.resize(std::max(0, count));
+                } else if (key.rfind("script", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 6) {
+                        int idx = std::stoi(key.substr(6, underscore - 6));
+                        if (idx >= 0 && idx < (int)currentObj->scripts.size()) {
+                            std::string subKey = key.substr(underscore + 1);
+                            ScriptComponent& sc = currentObj->scripts[idx];
+                            if (subKey == "path") {
+                                sc.path = value;
+                            } else if (subKey == "settingCount") {
+                                int cnt = std::stoi(value);
+                                sc.settings.resize(std::max(0, cnt));
+                            } else if (subKey.rfind("setting", 0) == 0) {
+                                int sIdx = std::stoi(subKey.substr(7));
+                                if (sIdx >= 0 && sIdx < (int)sc.settings.size()) {
+                                    size_t sep = value.find(':');
+                                    if (sep != std::string::npos) {
+                                        sc.settings[sIdx].key = value.substr(0, sep);
+                                        sc.settings[sIdx].value = value.substr(sep + 1);
+                                    } else {
+                                        sc.settings[sIdx].key.clear();
+                                        sc.settings[sIdx].value = value;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else if (key == "meshPath") {
                     currentObj->meshPath = value;
                     if (!value.empty() && currentObj->type == ObjectType::OBJMesh) {

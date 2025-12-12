@@ -111,6 +111,8 @@ if(NOT WIN32)
         Xinerama
         Xcursor
     )
+    # Export symbols so runtime-loaded scripts can resolve ImGui/engine symbols.
+    target_link_options(Modularity PRIVATE "-rdynamic")
 else()
     target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
 endif()

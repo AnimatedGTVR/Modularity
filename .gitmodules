@@ -11,6 +11,3 @@
 [submodule "src/ThirdParty/assimp"]
 	path = src/ThirdParty/assimp
 	url = https://github.com/assimp/assimp.git
-[submodule "src/ThirdParty/gl3d"]
-	path = src/ThirdParty/gl3d
-	url = https://github.com/meemknight/gl3d.git

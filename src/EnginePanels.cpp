@@ -618,6 +618,11 @@ void Engine::renderFileBrowserPanel() {
                             }
                         }
                     }
+                    if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+                        if (ImGui::MenuItem("Compile Script")) {
+                            compileScriptFile(entry.path());
+                        }
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Show in Explorer")) {
                         #ifdef _WIN32
@@ -724,6 +729,11 @@ void Engine::renderFileBrowserPanel() {
                             sel->materialPath = entry.path().string();
                             loadMaterialFromFile(*sel);
                         }
+                    }
+                }
+                if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+                    if (ImGui::MenuItem("Compile Script")) {
+                        compileScriptFile(entry.path());
                     }
                 }
                 ImGui::Separator();
@@ -2294,6 +2304,120 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.35f, 0.55f, 1.0f));
+    if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent(10.0f);
+
+        bool changed = false;
+        if (ImGui::Button("Add Script", ImVec2(-1, 0))) {
+            obj.scripts.push_back(ScriptComponent{});
+            changed = true;
+        }
+
+        for (size_t i = 0; i < obj.scripts.size(); ++i) {
+            ImGui::Separator();
+            ImGui::PushID(static_cast<int>(i));
+            ScriptComponent& sc = obj.scripts[i];
+
+            char pathBuf[512] = {};
+            std::snprintf(pathBuf, sizeof(pathBuf), "%s", sc.path.c_str());
+            ImGui::Text("Script %zu", i + 1);
+            ImGui::SetNextItemWidth(-140);
+            if (ImGui::InputText("##ScriptPath", pathBuf, sizeof(pathBuf))) {
+                sc.path = pathBuf;
+                changed = true;
+            }
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Use Selection")) {
+                if (!fileBrowser.selectedFile.empty()) {
+                    fs::directory_entry entry(fileBrowser.selectedFile);
+                    if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+                        sc.path = entry.path().string();
+                        changed = true;
+                    }
+                }
+            }
+
+            ImGui::SameLine();
+            ImGui::BeginDisabled(sc.path.empty());
+            if (ImGui::SmallButton("Compile")) {
+                compileScriptFile(sc.path);
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) {
+                obj.scripts.erase(obj.scripts.begin() + static_cast<long>(i));
+                changed = true;
+                ImGui::PopID();
+                break;
+            }
+
+            if (!sc.path.empty()) {
+                fs::path binary = resolveScriptBinary(sc.path);
+                sc.lastBinaryPath = binary.string();
+                ScriptRuntime::InspectorFn inspector = scriptRuntime.getInspector(binary);
+                if (inspector) {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Inspector (from script)");
+                    ScriptContext ctx;
+                    ctx.engine = this;
+                    ctx.object = &obj;
+                    inspector(ctx);
+                } else if (!scriptRuntime.getLastError().empty()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "Inspector load failed");
+                    ImGui::TextWrapped("%s", scriptRuntime.getLastError().c_str());
+                } else {
+                    ImGui::TextDisabled("No inspector exported (Script_OnInspector)");
+                }
+            }
+
+            ImGui::TextDisabled("Settings");
+            for (size_t s = 0; s < sc.settings.size(); ++s) {
+                ImGui::PushID(static_cast<int>(s));
+                char keyBuf[128] = {};
+                char valBuf[256] = {};
+                std::snprintf(keyBuf, sizeof(keyBuf), "%s", sc.settings[s].key.c_str());
+                std::snprintf(valBuf, sizeof(valBuf), "%s", sc.settings[s].value.c_str());
+                ImGui::SetNextItemWidth(140);
+                if (ImGui::InputText("##Key", keyBuf, sizeof(keyBuf))) {
+                    sc.settings[s].key = keyBuf;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-100);
+                if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
+                    sc.settings[s].value = valBuf;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("X")) {
+                    sc.settings.erase(sc.settings.begin() + static_cast<long>(s));
+                    changed = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+
+            if (ImGui::SmallButton("Add Setting")) {
+                sc.settings.push_back(ScriptSetting{"", ""});
+                changed = true;
+            }
+
+            ImGui::PopID();
+        }
+
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+
+        ImGui::Unindent(10.0f);
+    }
+    ImGui::PopStyleColor();
+
     if (browserHasMaterial) {
         ImGui::Spacing();
         renderMaterialAssetPanel("Material Asset (File Browser)", true);
@@ -3677,6 +3801,26 @@ void Engine::renderDialogs() {
                     showNewSceneDialog = false;
                     memset(newSceneName, 0, sizeof(newSceneName));
                 }
+            }
+        }
+        ImGui::End();
+    }
+
+    if (showCompilePopup) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(520, 240), ImGuiCond_FirstUseEver);
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+        if (ImGui::Begin("Script Compile", &showCompilePopup, flags)) {
+            ImGui::TextWrapped("%s", lastCompileStatus.c_str());
+            ImGui::Separator();
+            ImGui::BeginChild("CompileLog", ImVec2(0, -40), true);
+            ImGui::TextUnformatted(lastCompileLog.c_str());
+            ImGui::EndChild();
+            ImGui::Spacing();
+            if (ImGui::Button("Close", ImVec2(80, 0))) {
+                showCompilePopup = false;
             }
         }
         ImGui::End();
