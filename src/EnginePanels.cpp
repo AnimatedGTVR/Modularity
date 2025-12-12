@@ -1098,7 +1098,7 @@ void Engine::renderLauncher() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::TextDisabled("Modularity Engine - Version 1.0.1");
+        ImGui::TextDisabled("Modularity Engine - Version 0.6.4");
 
         ImGui::EndChild();
     }
@@ -1327,7 +1327,7 @@ void Engine::renderMainMenuBar() {
 
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About")) {
-                logToConsole("Modularity Engine v0.1");
+                logToConsole("Modularity Engine v0.6.4");
             }
             ImGui::EndMenu();
         }
