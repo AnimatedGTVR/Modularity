@@ -139,6 +139,20 @@ Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     return cam;
 }
 
+namespace {
+// Equivalent to glm::extractEulerAngleXYZ without depending on the experimental header.
+glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
+    float T1 = std::atan2(m[2][1], m[2][2]);
+    float C2 = std::sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+    float T2 = std::atan2(-m[2][0], C2);
+    float S1 = std::sin(T1);
+    float C1 = std::cos(T1);
+    float T3 = std::atan2(S1 * m[0][2] - C1 * m[0][1], C1 * m[1][1] - S1 * m[1][2]);
+    // GLM's extractEulerAngleXYZ returns (-T1, -T2, -T3)
+    return glm::vec3(-T1, -T2, -T3);
+}
+}
+
 void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale) {
     pos = glm::vec3(matrix[3]);
     scale.x = glm::length(glm::vec3(matrix[0]));
@@ -150,7 +164,8 @@ void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3&
     if (scale.y != 0.0f) rotMat[1] /= scale.y;
     if (scale.z != 0.0f) rotMat[2] /= scale.z;
 
-    rot = glm::eulerAngles(glm::quat_cast(rotMat));
+    // Use explicit XYZ extraction so yaw isn't clamped to [-90, 90] like glm::yaw/pitch/roll.
+    rot = ExtractEulerXYZ(rotMat);
 }
 
 void Engine::recordState(const char* /*reason*/) {
