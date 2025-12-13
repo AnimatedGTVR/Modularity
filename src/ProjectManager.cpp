@@ -415,6 +415,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                            &currentObj->rotation.x,
                            &currentObj->rotation.y,
                            &currentObj->rotation.z);
+                    currentObj->rotation = NormalizeEulerDegrees(currentObj->rotation);
                 } else if (key == "scale") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->scale.x,

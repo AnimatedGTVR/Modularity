@@ -1031,6 +1031,10 @@ void Engine::logToConsole(const std::string& message) {
     addConsoleMessage(message, ConsoleMessageType::Info);
 }
 
+void Engine::addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type) {
+    addConsoleMessage(message, type);
+}
+
 SceneObject* Engine::findObjectByName(const std::string& name) {
     auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [&](const SceneObject& o) {
         return o.name == name;

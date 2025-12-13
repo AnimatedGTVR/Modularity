@@ -204,4 +204,6 @@ public:
     SceneObject* findObjectById(int id);
     fs::path resolveScriptBinary(const fs::path& sourcePath);
     void markProjectDirty();
+    // Script-accessible logging wrapper
+    void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
 };

@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <type_traits>
 
 #include <glad/glad.h>
 #include "ThirdParty/imgui/imgui.h"
@@ -40,6 +41,15 @@ constexpr float FOV = 45.0f;
 constexpr float NEAR_PLANE = 0.1f;
 constexpr float FAR_PLANE = 100.0f;
 constexpr float PI = 3.14159265359f;
+
+inline glm::vec3 NormalizeEulerDegrees(const glm::vec3& deg) {
+    auto wrap = [](float a) {
+        float r = std::fmod(a, 360.0f);
+        if (r < 0.0f) r += 360.0f;
+        return r;
+    };
+    return glm::vec3(wrap(deg.x), wrap(deg.y), wrap(deg.z));
+}
 
 // Forward declarations
 class Mesh;

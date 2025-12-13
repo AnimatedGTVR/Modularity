@@ -204,10 +204,11 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     auto detectFunction = [](const std::string& source, const std::string& name) -> FunctionSpec {
         FunctionSpec spec;
         try {
-            std::regex ctxDeltaPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
-            std::regex ctxOnlyPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^\\)]*\\)");
-            std::regex deltaPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*(float|double)[^\\)]*\\)");
-            std::regex basicPattern("\\bvoid\\s+" + name + "\\s*\\(\\s*\\)");
+            const std::string prefix = "\\bvoid\\s+(?:IEnum\\s+)?";
+            std::regex ctxDeltaPattern(prefix + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
+            std::regex ctxOnlyPattern(prefix + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^\\)]*\\)");
+            std::regex deltaPattern(prefix + name + "\\s*\\(\\s*(float|double)[^\\)]*\\)");
+            std::regex basicPattern(prefix + name + "\\s*\\(\\s*\\)");
 
             if (std::regex_search(source, ctxDeltaPattern)) {
                 spec.present = true;

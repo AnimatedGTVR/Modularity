@@ -1853,6 +1853,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("Rotation");
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f)) {
+            obj.rotation = NormalizeEulerDegrees(obj.rotation);
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -3176,7 +3177,7 @@ void Engine::renderViewport() {
                         glm::vec3 t, r, s;
                         DecomposeMatrix(newM, t, r, s);
                         o.position = t;
-                        o.rotation = glm::degrees(r);
+                        o.rotation = NormalizeEulerDegrees(glm::degrees(r));
                         o.scale = s;
                     };
 

@@ -10,6 +10,17 @@ struct ScriptContext {
     Engine* engine = nullptr;
     SceneObject* object = nullptr;
     ScriptComponent* script = nullptr;
+    enum class AutoSettingType { Bool, Vec3, StringBuf };
+    struct AutoSettingEntry {
+        AutoSettingType type;
+        std::string key;
+        void* ptr = nullptr;
+        size_t bufSize = 0;
+        bool initialBool = false;
+        glm::vec3 initialVec3 = glm::vec3(0.0f);
+        std::string initialString;
+    };
+    std::vector<AutoSettingEntry> autoSettings;
 
     // Convenience helpers for scripts
     SceneObject* FindObjectByName(const std::string& name);
@@ -17,6 +28,26 @@ struct ScriptContext {
     void SetPosition(const glm::vec3& pos);
     void SetRotation(const glm::vec3& rot);
     void SetScale(const glm::vec3& scl);
+    // Settings helpers (auto-mark dirty)
+    std::string GetSetting(const std::string& key, const std::string& fallback = "") const;
+    void SetSetting(const std::string& key, const std::string& value);
+    bool GetSettingBool(const std::string& key, bool fallback = false) const;
+    void SetSettingBool(const std::string& key, bool value);
+    glm::vec3 GetSettingVec3(const std::string& key, const glm::vec3& fallback = glm::vec3(0.0f)) const;
+    void SetSettingVec3(const std::string& key, const glm::vec3& value);
+    // Console helper
+    void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
+    // Auto-binding helpers: bind once per call, optionally load stored value, then SaveAutoSettings() writes back on change.
+    void AutoSetting(const std::string& key, bool& value);
+    void AutoSetting(const std::string& key, glm::vec3& value);
+    void AutoSetting(const std::string& key, char* buffer, size_t bufferSize);
+    void SaveAutoSettings();
+    // IEnum helpers
+    void StartIEnum(void(*fn)(ScriptContext&, float));
+    void StopIEnum(void(*fn)(ScriptContext&, float));
+    void EnsureIEnum(void(*fn)(ScriptContext&, float));
+    bool IsIEnumRunning(void(*fn)(ScriptContext&, float)) const;
+    void StopAllIEnums();
     void MarkDirty();
 };
 
@@ -28,6 +59,7 @@ public:
     using UpdateFn = void(*)(ScriptContext&, float);
     using TickUpdateFn = void(*)(ScriptContext&, float);
     using InspectorFn = void(*)(ScriptContext&);
+    using IEnumFn = void(*)(ScriptContext&, float);
 
     InspectorFn getInspector(const fs::path& binaryPath);
     void tickModule(const fs::path& binaryPath, ScriptContext& ctx, float deltaTime,
@@ -50,3 +82,18 @@ private:
     std::unordered_map<std::string, Module> loaded;
     std::string lastError;
 };
+
+// Lightweight coroutine-style helpers (opt-in and no-ops unless used by scripts).
+#ifndef IEnum
+#define IEnum
+#endif
+
+#ifndef IEnum_Start
+#define IEnum_Start(fn) ctx.StartIEnum(fn)
+#endif
+#ifndef IEnum_Stop
+#define IEnum_Stop(fn) ctx.StopIEnum(fn)
+#endif
+#ifndef IEnum_Ensure
+#define IEnum_Ensure(fn) ctx.EnsureIEnum(fn)
+#endif

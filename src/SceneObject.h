@@ -87,6 +87,7 @@ struct ScriptComponent {
     std::string path;
     std::vector<ScriptSetting> settings;
     std::string lastBinaryPath;
+    std::vector<void*> activeIEnums; // function pointers registered via IEnum_Start
 };
 
 class SceneObject {
