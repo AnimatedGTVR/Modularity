@@ -1784,6 +1784,7 @@ void Engine::renderInspectorPanel() {
     }
 
     SceneObject& obj = *it;
+    bool addComponentButtonShown = false;
 
     if (selectedObjectIds.size() > 1) {
         ImGui::Text("Multiple objects selected: %zu", selectedObjectIds.size());
@@ -1968,10 +1969,50 @@ void Engine::renderInspectorPanel() {
             }
             ImGui::EndDisabled();
 
+            ImGui::Separator();
+            ImGui::TextDisabled("Vignette");
+            if (ImGui::Checkbox("Enable Vignette", &obj.postFx.vignetteEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
+            if (ImGui::SliderFloat("Intensity", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Smoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Ambient Occlusion");
+            if (ImGui::Checkbox("Enable AO", &obj.postFx.ambientOcclusionEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.ambientOcclusionEnabled);
+            if (ImGui::SliderFloat("AO Radius", &obj.postFx.aoRadius, 0.0005f, 0.01f, "%.4f")) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("AO Strength", &obj.postFx.aoStrength, 0.0f, 2.0f, "%.2f")) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Chromatic Aberration");
+            if (ImGui::Checkbox("Enable Chromatic", &obj.postFx.chromaticAberrationEnabled)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!obj.postFx.chromaticAberrationEnabled);
+            if (ImGui::SliderFloat("Fringe Amount", &obj.postFx.chromaticAmount, 0.0f, 0.01f, "%.4f")) {
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
             if (changed) {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::TextDisabled("Nodes stack in hierarchy order; latest node overrides previous settings.");
+            ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
             ImGui::Unindent(10.0f);
         }
         ImGui::PopStyleColor();
@@ -2095,6 +2136,22 @@ void Engine::renderInspectorPanel() {
 
             ImGui::Spacing();
             ImGui::Separator();
+            ImGui::Text("Material");
+            ImGui::SameLine();
+            ImVec4 previewColor(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
+            ImVec2 sphereStart = ImGui::GetCursorScreenPos();
+            float sphereRadius = 12.0f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImU32 shadowCol = ImGui::ColorConvertFloat4ToU32(ImVec4(previewColor.x * 0.3f, previewColor.y * 0.3f, previewColor.z * 0.3f, 1.0f));
+            ImU32 baseCol = ImGui::ColorConvertFloat4ToU32(previewColor);
+            ImU32 highlightCol = ImGui::ColorConvertFloat4ToU32(ImVec4(std::min(1.0f, previewColor.x + 0.25f), std::min(1.0f, previewColor.y + 0.25f), std::min(1.0f, previewColor.z + 0.25f), 1.0f));
+            ImVec2 center = ImVec2(sphereStart.x + sphereRadius, sphereStart.y + sphereRadius);
+            dl->AddCircleFilled(center, sphereRadius, shadowCol);
+            dl->AddCircleFilled(ImVec2(center.x, center.y - 1.5f), sphereRadius - 1.5f, baseCol);
+            dl->AddCircleFilled(ImVec2(center.x - sphereRadius * 0.35f, center.y - sphereRadius * 0.5f), sphereRadius * 0.35f, highlightCol);
+            ImGui::Dummy(ImVec2(sphereRadius * 2.0f, sphereRadius * 2.0f));
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", obj.materialPath.empty() ? "Unsaved Material" : fs::path(obj.materialPath).filename().string().c_str());
             ImGui::Text("Material Asset");
 
             char matPathBuf[512] = {};
@@ -2124,6 +2181,63 @@ void Engine::renderInspectorPanel() {
                 materialChanged = true;
             }
             ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Material Slots");
+            for (size_t slot = 0; slot < obj.additionalMaterialPaths.size(); ++slot) {
+                ImGui::PushID(static_cast<int>(slot));
+                char slotBuf[512] = {};
+                std::snprintf(slotBuf, sizeof(slotBuf), "%s", obj.additionalMaterialPaths[slot].c_str());
+                ImGui::SetNextItemWidth(-140);
+                if (ImGui::InputText("##AdditionalMat", slotBuf, sizeof(slotBuf))) {
+                    obj.additionalMaterialPaths[slot] = slotBuf;
+                    materialChanged = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Use Selection / Blender")) {
+                    if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+                        fs::directory_entry entry(fileBrowser.selectedFile);
+                        if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                            obj.additionalMaterialPaths[slot] = entry.path().string();
+                            materialChanged = true;
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    obj.additionalMaterialPaths.erase(obj.additionalMaterialPaths.begin() + static_cast<long>(slot));
+                    materialChanged = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Add Material Slot")) {
+                obj.additionalMaterialPaths.push_back("");
+                materialChanged = true;
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Preview");
+            ImVec4 previewColorBar(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
+            ImGui::ColorButton("##MaterialPreview", previewColorBar, ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetContentRegionAvail().x, 32.0f));
+
+            ImGui::Spacing();
+            addComponentButtonShown = true;
+            ImGui::PushID("MaterialAddComponent");
+            if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
+                ImGui::OpenPopup("AddComponentPopup");
+            }
+            if (ImGui::BeginPopup("AddComponentPopup")) {
+                if (ImGui::MenuItem("Script")) {
+                    obj.scripts.push_back(ScriptComponent{});
+                    materialChanged = true;
+                    addComponentButtonShown = true;
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
 
             if (materialChanged) {
                 projectManager.currentProject.hasUnsavedChanges = true;
@@ -2311,29 +2425,72 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.35f, 0.55f, 1.0f));
-    if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Indent(10.0f);
+    if (!addComponentButtonShown) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Components");
+        addComponentButtonShown = true;
+        ImGui::PushID("FallbackAddComponent");
+        if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
+            ImGui::OpenPopup("AddComponentPopup");
+        }
+        if (ImGui::BeginPopup("AddComponentPopup")) {
+            if (ImGui::MenuItem("Script")) {
+                obj.scripts.push_back(ScriptComponent{});
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
 
-        bool changed = false;
-        if (ImGui::Button("Add Script", ImVec2(-1, 0))) {
-            obj.scripts.push_back(ScriptComponent{});
-            changed = true;
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.9f, 1.0f), "Scripts");
+
+    bool scriptsChanged = false;
+    int scriptToRemove = -1;
+
+    for (size_t i = 0; i < obj.scripts.size(); ++i) {
+        ImGui::Separator();
+        ImGui::PushID(static_cast<int>(i));
+        ScriptComponent& sc = obj.scripts[i];
+
+        std::string headerLabel = sc.path.empty() ? "Script" : fs::path(sc.path).filename().string();
+        std::string headerId = headerLabel + "##ScriptHeader" + std::to_string(i);
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
+        bool open = ImGui::CollapsingHeader(headerId.c_str(), flags);
+
+        ImVec2 headerMin = ImGui::GetItemRectMin();
+        ImVec2 headerMax = ImGui::GetItemRectMax();
+        float menuWidth = ImGui::GetFrameHeight();
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(headerMax.x - menuWidth - ImGui::GetStyle().ItemSpacing.x, headerMin.y + (headerMax.y - headerMin.y - menuWidth) * 0.5f));
+        if (ImGui::SmallButton("...")) {
+            ImGui::OpenPopup("ScriptComponentMenu");
+        }
+        if (ImGui::BeginPopup("ScriptComponentMenu")) {
+            if (ImGui::MenuItem("Compile", nullptr, false, !sc.path.empty())) {
+                compileScriptFile(sc.path);
+            }
+            if (ImGui::MenuItem("Remove")) {
+                scriptToRemove = static_cast<int>(i);
+            }
+            ImGui::EndPopup();
         }
 
-        for (size_t i = 0; i < obj.scripts.size(); ++i) {
-            ImGui::Separator();
-            ImGui::PushID(static_cast<int>(i));
-            ScriptComponent& sc = obj.scripts[i];
+        if (scriptToRemove == static_cast<int>(i)) {
+            ImGui::PopID();
+            continue;
+        }
 
+        if (open) {
             char pathBuf[512] = {};
             std::snprintf(pathBuf, sizeof(pathBuf), "%s", sc.path.c_str());
-            ImGui::Text("Script %zu", i + 1);
+            ImGui::TextDisabled("Path");
             ImGui::SetNextItemWidth(-140);
             if (ImGui::InputText("##ScriptPath", pathBuf, sizeof(pathBuf))) {
                 sc.path = pathBuf;
-                changed = true;
+                scriptsChanged = true;
             }
 
             ImGui::SameLine();
@@ -2342,7 +2499,7 @@ void Engine::renderInspectorPanel() {
                     fs::directory_entry entry(fileBrowser.selectedFile);
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
                         sc.path = entry.path().string();
-                        changed = true;
+                        scriptsChanged = true;
                     }
                 }
             }
@@ -2353,14 +2510,6 @@ void Engine::renderInspectorPanel() {
                 compileScriptFile(sc.path);
             }
             ImGui::EndDisabled();
-
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Remove")) {
-                obj.scripts.erase(obj.scripts.begin() + static_cast<long>(i));
-                changed = true;
-                ImGui::PopID();
-                break;
-            }
 
             if (!sc.path.empty()) {
                 fs::path binary = resolveScriptBinary(sc.path);
@@ -2391,18 +2540,18 @@ void Engine::renderInspectorPanel() {
                 ImGui::SetNextItemWidth(140);
                 if (ImGui::InputText("##Key", keyBuf, sizeof(keyBuf))) {
                     sc.settings[s].key = keyBuf;
-                    changed = true;
+                    scriptsChanged = true;
                 }
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(-100);
                 if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
                     sc.settings[s].value = valBuf;
-                    changed = true;
+                    scriptsChanged = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("X")) {
                     sc.settings.erase(sc.settings.begin() + static_cast<long>(s));
-                    changed = true;
+                    scriptsChanged = true;
                     ImGui::PopID();
                     break;
                 }
@@ -2411,19 +2560,21 @@ void Engine::renderInspectorPanel() {
 
             if (ImGui::SmallButton("Add Setting")) {
                 sc.settings.push_back(ScriptSetting{"", ""});
-                changed = true;
+                scriptsChanged = true;
             }
-
-            ImGui::PopID();
         }
 
-        if (changed) {
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
-
-        ImGui::Unindent(10.0f);
+        ImGui::PopID();
     }
-    ImGui::PopStyleColor();
+
+    if (scriptToRemove >= 0 && scriptToRemove < static_cast<int>(obj.scripts.size())) {
+        obj.scripts.erase(obj.scripts.begin() + scriptToRemove);
+        scriptsChanged = true;
+    }
+
+    if (scriptsChanged) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
 
     if (browserHasMaterial) {
         ImGui::Spacing();
@@ -2750,6 +2901,99 @@ void Engine::renderViewport() {
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
         mouseOverViewportImage = ImGui::IsItemHovered();
+        ImDrawList* viewportDrawList = ImGui::GetWindowDrawList();
+
+        auto setCameraFacing = [&](const glm::vec3& dir) {
+            glm::vec3 worldUp = glm::vec3(0, 1, 0);
+            glm::vec3 n = glm::normalize(dir);
+            glm::vec3 up = worldUp;
+            if (std::abs(glm::dot(n, worldUp)) > 0.98f) {
+                up = glm::vec3(0, 0, 1);
+            }
+            glm::vec3 right = glm::normalize(glm::cross(up, n));
+            if (glm::length(right) < 1e-4f) {
+                right = glm::vec3(1, 0, 0);
+            }
+            up = glm::normalize(glm::cross(n, right));
+
+            camera.front = n;
+            camera.up = up;
+            camera.pitch = glm::degrees(std::asin(glm::clamp(n.y, -1.0f, 1.0f)));
+            camera.pitch = glm::clamp(camera.pitch, -89.0f, 89.0f);
+            camera.yaw = glm::degrees(std::atan2(n.z, n.x));
+            camera.firstMouse = true;
+        };
+
+        // Draw small axis widget in top-right of viewport
+        {
+            const float widgetSize = 94.0f;
+            const float padding = 12.0f;
+            ImVec2 center = ImVec2(
+                imageMax.x - padding - widgetSize * 0.5f,
+                imageMin.y + padding + widgetSize * 0.5f
+            );
+            float radius = widgetSize * 0.46f;
+            ImU32 ringCol = ImGui::GetColorU32(ImVec4(0.07f, 0.07f, 0.1f, 0.9f));
+            ImU32 ringBorder = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.18f));
+            viewportDrawList->AddCircleFilled(center, radius + 10.0f, ringCol, 48);
+            viewportDrawList->AddCircle(center, radius + 10.0f, ringBorder, 48);
+            viewportDrawList->AddCircle(center, radius + 3.0f, ImGui::GetColorU32(ImVec4(1,1,1,0.08f)), 32);
+            viewportDrawList->AddCircleFilled(center, 5.5f, ImGui::GetColorU32(ImVec4(1,1,1,0.6f)), 24);
+
+            glm::mat3 viewRot = glm::mat3(view);
+            ImVec2 widgetMin = ImVec2(center.x - widgetSize * 0.5f, center.y - widgetSize * 0.5f);
+            ImVec2 widgetMax = ImVec2(center.x + widgetSize * 0.5f, center.y + widgetSize * 0.5f);
+            bool widgetHover = ImGui::IsMouseHoveringRect(widgetMin, widgetMax);
+            struct AxisArrow {
+                glm::vec3 dir;
+                ImU32 color;
+                const char* label;
+            };
+            AxisArrow arrows[] = {
+                { glm::vec3(1, 0, 0), ImGui::GetColorU32(ImVec4(0.9f, 0.2f, 0.2f, 1.0f)), "X" },
+                { glm::vec3(-1, 0, 0), ImGui::GetColorU32(ImVec4(0.6f, 0.2f, 0.2f, 1.0f)), "-X" },
+                { glm::vec3(0, 1, 0), ImGui::GetColorU32(ImVec4(0.2f, 0.9f, 0.2f, 1.0f)), "Y" },
+                { glm::vec3(0,-1, 0), ImGui::GetColorU32(ImVec4(0.2f, 0.6f, 0.2f, 1.0f)), "-Y" },
+                { glm::vec3(0, 0, 1), ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.9f, 1.0f)), "Z" },
+                { glm::vec3(0, 0,-1), ImGui::GetColorU32(ImVec4(0.2f, 0.3f, 0.6f, 1.0f)), "-Z" },
+            };
+
+            ImVec2 mouse = ImGui::GetIO().MousePos;
+            int clickedIdx = -1;
+            float clickRadius = 12.0f;
+
+            for (int i = 0; i < 6; ++i) {
+                glm::vec3 camSpace = viewRot * arrows[i].dir;
+                glm::vec2 dir2 = glm::normalize(glm::vec2(camSpace.x, -camSpace.y));
+                float depthScale = glm::clamp(0.35f + 0.65f * ((camSpace.z + 1.0f) * 0.5f), 0.25f, 1.0f);
+                float len = radius * depthScale;
+                ImVec2 tip = ImVec2(center.x + dir2.x * len, center.y + dir2.y * len);
+
+                ImVec2 base1 = ImVec2(center.x + dir2.x * (len * 0.55f) + dir2.y * (len * 0.12f),
+                                      center.y + dir2.y * (len * 0.55f) - dir2.x * (len * 0.12f));
+                ImVec2 base2 = ImVec2(center.x + dir2.x * (len * 0.55f) - dir2.y * (len * 0.12f),
+                                      center.y + dir2.y * (len * 0.55f) + dir2.x * (len * 0.12f));
+
+                viewportDrawList->AddTriangleFilled(base1, tip, base2, arrows[i].color);
+                viewportDrawList->AddTriangle(base1, tip, base2, ImGui::GetColorU32(ImVec4(0,0,0,0.35f)));
+
+                ImVec2 labelPos = ImVec2(center.x + dir2.x * (len * 0.78f), center.y + dir2.y * (len * 0.78f));
+                viewportDrawList->AddCircleFilled(labelPos, 6.0f, ImGui::GetColorU32(ImVec4(0,0,0,0.5f)), 12);
+                viewportDrawList->AddText(ImVec2(labelPos.x - 4.0f, labelPos.y - 7.0f), ImGui::GetColorU32(ImVec4(1,1,1,0.95f)), arrows[i].label);
+
+                if (widgetHover) {
+                    float dx = mouse.x - tip.x;
+                    float dy = mouse.y - tip.y;
+                    if (std::sqrt(dx*dx + dy*dy) <= clickRadius && ImGui::IsMouseReleased(0)) {
+                        clickedIdx = i;
+                    }
+                }
+            }
+
+            if (clickedIdx >= 0) {
+                setCameraFacing(arrows[clickedIdx].dir);
+            }
+        }
 
         auto projectToScreen = [&](const glm::vec3& p) -> std::optional<ImVec2> {
             glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);

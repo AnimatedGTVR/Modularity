@@ -1066,7 +1066,19 @@ PostFXSettings Renderer::gatherPostFX(const std::vector<SceneObject>& sceneObjec
 
 void Renderer::applyPostProcessing(const std::vector<SceneObject>& sceneObjects) {
     PostFXSettings settings = gatherPostFX(sceneObjects);
-    bool wantsEffects = settings.enabled && (settings.bloomEnabled || settings.colorAdjustEnabled || settings.motionBlurEnabled);
+    GLint polygonMode[2] = { GL_FILL, GL_FILL };
+#ifdef GL_POLYGON_MODE
+    glGetIntegerv(GL_POLYGON_MODE, polygonMode);
+#endif
+    bool wireframe = (polygonMode[0] == GL_LINE || polygonMode[1] == GL_LINE);
+
+    bool wantsEffects = settings.enabled &&
+        (settings.bloomEnabled || settings.colorAdjustEnabled || settings.motionBlurEnabled ||
+         settings.vignetteEnabled || settings.chromaticAberrationEnabled || settings.ambientOcclusionEnabled);
+
+    if (wireframe) {
+        wantsEffects = false;
+    }
 
     if (!wantsEffects || !postShader || currentWidth <= 0 || currentHeight <= 0) {
         displayTexture = viewportTexture;
@@ -1142,6 +1154,14 @@ void Renderer::applyPostProcessing(const std::vector<SceneObject>& sceneObjects)
     postShader->setBool("enableMotionBlur", settings.motionBlurEnabled);
     postShader->setFloat("motionBlurStrength", settings.motionBlurStrength);
     postShader->setBool("hasHistory", historyValid);
+    postShader->setBool("enableVignette", settings.vignetteEnabled);
+    postShader->setFloat("vignetteIntensity", settings.vignetteIntensity);
+    postShader->setFloat("vignetteSmoothness", settings.vignetteSmoothness);
+    postShader->setBool("enableChromatic", settings.chromaticAberrationEnabled);
+    postShader->setFloat("chromaticAmount", settings.chromaticAmount);
+    postShader->setBool("enableAO", settings.ambientOcclusionEnabled);
+    postShader->setFloat("aoRadius", settings.aoRadius);
+    postShader->setFloat("aoStrength", settings.aoStrength);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, viewportTexture);

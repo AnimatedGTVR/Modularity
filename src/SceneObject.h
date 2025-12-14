@@ -69,6 +69,14 @@ struct PostFXSettings {
     glm::vec3 colorFilter = glm::vec3(1.0f);
     bool motionBlurEnabled = false;
     float motionBlurStrength = 0.15f; // 0..1 blend with previous frame
+    bool vignetteEnabled = false;
+    float vignetteIntensity = 0.35f;
+    float vignetteSmoothness = 0.25f;
+    bool chromaticAberrationEnabled = false;
+    float chromaticAmount = 0.0025f;
+    bool ambientOcclusionEnabled = false;
+    float aoRadius = 0.0035f;
+    float aoStrength = 0.6f;
 };
 
 enum class ConsoleMessageType {
@@ -115,6 +123,7 @@ public:
     CameraComponent camera; // Only used when type is camera
     PostFXSettings postFx;  // Only used when type is PostFXNode
     std::vector<ScriptComponent> scripts;
+    std::vector<std::string> additionalMaterialPaths;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}

@@ -284,6 +284,10 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "vertexShader=" << obj.vertexShaderPath << "\n";
             file << "fragmentShader=" << obj.fragmentShaderPath << "\n";
             file << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
+            file << "additionalMaterialCount=" << obj.additionalMaterialPaths.size() << "\n";
+            for (size_t mi = 0; mi < obj.additionalMaterialPaths.size(); ++mi) {
+                file << "additionalMaterial" << mi << "=" << obj.additionalMaterialPaths[mi] << "\n";
+            }
             file << "scripts=" << obj.scripts.size() << "\n";
             for (size_t si = 0; si < obj.scripts.size(); ++si) {
                 const auto& sc = obj.scripts[si];
@@ -317,6 +321,14 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "postColorFilter=" << obj.postFx.colorFilter.r << "," << obj.postFx.colorFilter.g << "," << obj.postFx.colorFilter.b << "\n";
                 file << "postMotionBlurEnabled=" << (obj.postFx.motionBlurEnabled ? 1 : 0) << "\n";
                 file << "postMotionBlurStrength=" << obj.postFx.motionBlurStrength << "\n";
+                file << "postVignetteEnabled=" << (obj.postFx.vignetteEnabled ? 1 : 0) << "\n";
+                file << "postVignetteIntensity=" << obj.postFx.vignetteIntensity << "\n";
+                file << "postVignetteSmoothness=" << obj.postFx.vignetteSmoothness << "\n";
+                file << "postChromaticEnabled=" << (obj.postFx.chromaticAberrationEnabled ? 1 : 0) << "\n";
+                file << "postChromaticAmount=" << obj.postFx.chromaticAmount << "\n";
+                file << "postAOEnabled=" << (obj.postFx.ambientOcclusionEnabled ? 1 : 0) << "\n";
+                file << "postAORadius=" << obj.postFx.aoRadius << "\n";
+                file << "postAOStrength=" << obj.postFx.aoStrength << "\n";
             }
 
             file << "scriptCount=" << obj.scripts.size() << "\n";
@@ -448,6 +460,14 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->fragmentShaderPath = value;
                 } else if (key == "useOverlay") {
                     currentObj->useOverlay = (std::stoi(value) != 0);
+                } else if (key == "additionalMaterialCount") {
+                    int count = std::stoi(value);
+                    currentObj->additionalMaterialPaths.resize(std::max(0, count));
+                } else if (key.rfind("additionalMaterial", 0) == 0) {
+                    int idx = std::stoi(key.substr(18)); // length of "additionalMaterial"
+                    if (idx >= 0 && idx < (int)currentObj->additionalMaterialPaths.size()) {
+                        currentObj->additionalMaterialPaths[idx] = value;
+                    }
                 } else if (key == "scripts") {
                     int count = std::stoi(value);
                     currentObj->scripts.resize(std::max(0, count));
@@ -534,6 +554,22 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->postFx.motionBlurEnabled = (std::stoi(value) != 0);
                 } else if (key == "postMotionBlurStrength") {
                     currentObj->postFx.motionBlurStrength = std::stof(value);
+                } else if (key == "postVignetteEnabled") {
+                    currentObj->postFx.vignetteEnabled = (std::stoi(value) != 0);
+                } else if (key == "postVignetteIntensity") {
+                    currentObj->postFx.vignetteIntensity = std::stof(value);
+                } else if (key == "postVignetteSmoothness") {
+                    currentObj->postFx.vignetteSmoothness = std::stof(value);
+                } else if (key == "postChromaticEnabled") {
+                    currentObj->postFx.chromaticAberrationEnabled = (std::stoi(value) != 0);
+                } else if (key == "postChromaticAmount") {
+                    currentObj->postFx.chromaticAmount = std::stof(value);
+                } else if (key == "postAOEnabled") {
+                    currentObj->postFx.ambientOcclusionEnabled = (std::stoi(value) != 0);
+                } else if (key == "postAORadius") {
+                    currentObj->postFx.aoRadius = std::stof(value);
+                } else if (key == "postAOStrength") {
+                    currentObj->postFx.aoStrength = std::stof(value);
                 } else if (key == "scriptCount") {
                     int count = std::stoi(value);
                     currentObj->scripts.resize(std::max(0, count));
