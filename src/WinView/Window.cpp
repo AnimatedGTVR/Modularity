@@ -1,34 +1,50 @@
 #include "../../include/Window/Window.h"
+#include "../../include/ThirdParty/stb_image.h"
 
-GLFWwindow* Window::makeWindow() {
-    #if defined(__linux__)
-        setenv("XDG_SESSION_TYPE", "x11", 1);
-    #endif
+int width, height, channels;
 
-    if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW\n";
-        return nullptr;
-    }
+GLFWwindow *Window::makeWindow() {
+  unsigned char *pixels = stbi_load("Resources/Engine-Root/Modu-Logo.png",
+                                    &width, &height, &channels, 4);
+#if defined(__linux__)
+  setenv("XDG_SESSION_TYPE", "x11", 1);
+#endif
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  if (!glfwInit()) {
+    std::cerr << "Failed to initialize GLFW\n";
+    return nullptr;
+  }
 
-    GLFWwindow* window = glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
-    if (!window) {
-        std::cerr << "Failed to create GLFW window\n";
-        glfwTerminate();
-        return nullptr;
-    }
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    glfwMakeContextCurrent(window);
+  GLFWwindow *window =
+      glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
+  if (!window) {
+    std::cerr << "Failed to create GLFW window\n";
+    glfwTerminate();
+    return nullptr;
+  }
 
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize GLAD\n";
-        return nullptr;
-    }
+  glfwMakeContextCurrent(window);
 
-    std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n";
+  if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+    std::cerr << "Failed to initialize GLAD\n";
+    return nullptr;
+  }
 
-    return window;
+  std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n";
+
+  if (pixels) {
+    GLFWimage icon;
+    icon.width = width;
+    icon.height = height;
+    icon.pixels = pixels;
+
+    glfwSetWindowIcon(window, 1, &icon);
+    stbi_image_free(pixels);
+  }
+
+  return window;
 }
