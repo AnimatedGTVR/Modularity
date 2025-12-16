@@ -11,3 +11,6 @@
 [submodule "src/ThirdParty/assimp"]
 	path = src/ThirdParty/assimp
 	url = https://github.com/assimp/assimp.git
+[submodule "src/ThirdParty/PhysX"]
+	path = src/ThirdParty/PhysX
+	url = https://github.com/NVIDIA-Omniverse/PhysX.git
