@@ -5,6 +5,34 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ==================== Compiler cache (ccache / sccache) ====================
+
+option(MODULARITY_USE_COMPILER_CACHE "Enable compiler cache if available" ON)
+
+if(MODULARITY_USE_COMPILER_CACHE)
+    find_program(CCACHE_PROGRAM ccache)
+    find_program(SCCACHE_PROGRAM sccache)
+
+    if(CCACHE_PROGRAM)
+        message(STATUS "Using compiler cache: ccache (${CCACHE_PROGRAM})")
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+
+    elseif(SCCACHE_PROGRAM)
+        message(STATUS "Using compiler cache: sccache (${SCCACHE_PROGRAM})")
+        set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+
+        # Optional (helps some MSVC setups): ensure environment is used consistently
+        # set(ENV{SCCACHE_IDLE_TIMEOUT} "0")
+
+    else()
+        message(STATUS "Compiler cache enabled, but neither ccache nor sccache was found.")
+    endif()
+else()
+    message(STATUS "Compiler cache disabled (MODULARITY_USE_COMPILER_CACHE=OFF).")
+endif()
+
 # ==================== WINDOWS FIXES (only active on Windows) ====================
 if(WIN32)
     add_compile_definitions(
@@ -16,10 +44,13 @@ endif()
 
 # ==================== Compiler flags ====================
 if(MSVC)
-    add_compile_options(/W4 /O2 /permissive- /MP)
+    set(MODULARITY_WARNING_FLAGS /W4 /O2 /permissive- /MP)
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic -O2)
+    set(MODULARITY_WARNING_FLAGS -Wall -Wextra -Wpedantic -O2)
 endif()
+
+# ==================== Optional PhysX ====================
+option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
 
 # ==================== Third-party libraries ====================
 
@@ -73,7 +104,9 @@ file(GLOB_RECURSE ENGINE_HEADERS CONFIGURE_DEPENDS
 )
 
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
+list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 
 add_library(core STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "Disable Assimp warnings as errors" FORCE)
@@ -85,10 +118,23 @@ target_include_directories(core PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core PUBLIC glad glm imgui imguizmo)
+target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
 
+if(MODULARITY_ENABLE_PHYSX)
+    set(PHYSX_ROOT_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/PhysX/physx CACHE PATH "PhysX root directory")
+    set(TARGET_BUILD_PLATFORM "linux" CACHE STRING "PhysX build platform (linux/windows)")
+    # PhysX build system expects output locations when using the GameWorks layout.
+    set(PX_OUTPUT_LIB_DIR ${CMAKE_BINARY_DIR}/physx CACHE PATH "PhysX output lib directory")
+    set(PX_OUTPUT_BIN_DIR ${CMAKE_BINARY_DIR}/physx/bin CACHE PATH "PhysX output bin directory")
+    add_subdirectory(${PHYSX_ROOT_DIR}/compiler/public ${CMAKE_BINARY_DIR}/physx)
+    target_include_directories(core PUBLIC ${PHYSX_ROOT_DIR}/include)
+    target_compile_definitions(core PUBLIC MODULARITY_ENABLE_PHYSX PX_PHYSX_STATIC_LIB)
+    target_link_libraries(core PUBLIC PhysX PhysXCommon PhysXFoundation PhysXExtensions PhysXCooking)
+endif()
 
 # ==================== Executable ====================
 add_executable(Modularity src/main.cpp)
+target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 # Link order matters on Linux
 if(NOT WIN32)

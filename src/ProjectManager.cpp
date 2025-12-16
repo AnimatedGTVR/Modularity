@@ -258,7 +258,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=4\n";
+        file << "version=7\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
@@ -272,6 +272,31 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "position=" << obj.position.x << "," << obj.position.y << "," << obj.position.z << "\n";
             file << "rotation=" << obj.rotation.x << "," << obj.rotation.y << "," << obj.rotation.z << "\n";
             file << "scale=" << obj.scale.x << "," << obj.scale.y << "," << obj.scale.z << "\n";
+            file << "hasRigidbody=" << (obj.hasRigidbody ? 1 : 0) << "\n";
+            if (obj.hasRigidbody) {
+                file << "rbEnabled=" << (obj.rigidbody.enabled ? 1 : 0) << "\n";
+                file << "rbMass=" << obj.rigidbody.mass << "\n";
+                file << "rbUseGravity=" << (obj.rigidbody.useGravity ? 1 : 0) << "\n";
+                file << "rbKinematic=" << (obj.rigidbody.isKinematic ? 1 : 0) << "\n";
+                file << "rbLinearDamping=" << obj.rigidbody.linearDamping << "\n";
+                file << "rbAngularDamping=" << obj.rigidbody.angularDamping << "\n";
+            }
+            file << "hasCollider=" << (obj.hasCollider ? 1 : 0) << "\n";
+            if (obj.hasCollider) {
+                file << "colliderEnabled=" << (obj.collider.enabled ? 1 : 0) << "\n";
+                file << "colliderType=" << static_cast<int>(obj.collider.type) << "\n";
+                file << "colliderBox=" << obj.collider.boxSize.x << "," << obj.collider.boxSize.y << "," << obj.collider.boxSize.z << "\n";
+                file << "colliderConvex=" << (obj.collider.convex ? 1 : 0) << "\n";
+            }
+            file << "hasPlayerController=" << (obj.hasPlayerController ? 1 : 0) << "\n";
+            if (obj.hasPlayerController) {
+                file << "pcEnabled=" << (obj.playerController.enabled ? 1 : 0) << "\n";
+                file << "pcMoveSpeed=" << obj.playerController.moveSpeed << "\n";
+                file << "pcLookSensitivity=" << obj.playerController.lookSensitivity << "\n";
+                file << "pcHeight=" << obj.playerController.height << "\n";
+                file << "pcRadius=" << obj.playerController.radius << "\n";
+                file << "pcJumpStrength=" << obj.playerController.jumpStrength << "\n";
+            }
             file << "materialColor=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
             file << "materialAmbient=" << obj.material.ambientStrength << "\n";
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
@@ -433,6 +458,47 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                            &currentObj->scale.x,
                            &currentObj->scale.y,
                            &currentObj->scale.z);
+                } else if (key == "hasRigidbody") {
+                    currentObj->hasRigidbody = std::stoi(value) != 0;
+                } else if (key == "rbEnabled") {
+                    currentObj->rigidbody.enabled = std::stoi(value) != 0;
+                } else if (key == "rbMass") {
+                    currentObj->rigidbody.mass = std::stof(value);
+                } else if (key == "rbUseGravity") {
+                    currentObj->rigidbody.useGravity = std::stoi(value) != 0;
+                } else if (key == "rbKinematic") {
+                    currentObj->rigidbody.isKinematic = std::stoi(value) != 0;
+                } else if (key == "rbLinearDamping") {
+                    currentObj->rigidbody.linearDamping = std::stof(value);
+                } else if (key == "rbAngularDamping") {
+                    currentObj->rigidbody.angularDamping = std::stof(value);
+                } else if (key == "hasCollider") {
+                    currentObj->hasCollider = std::stoi(value) != 0;
+                } else if (key == "colliderEnabled") {
+                    currentObj->collider.enabled = std::stoi(value) != 0;
+                } else if (key == "colliderType") {
+                    currentObj->collider.type = static_cast<ColliderType>(std::stoi(value));
+                } else if (key == "colliderBox") {
+                    sscanf(value.c_str(), "%f,%f,%f",
+                           &currentObj->collider.boxSize.x,
+                           &currentObj->collider.boxSize.y,
+                           &currentObj->collider.boxSize.z);
+                } else if (key == "colliderConvex") {
+                    currentObj->collider.convex = std::stoi(value) != 0;
+                } else if (key == "hasPlayerController") {
+                    currentObj->hasPlayerController = std::stoi(value) != 0;
+                } else if (key == "pcEnabled") {
+                    currentObj->playerController.enabled = std::stoi(value) != 0;
+                } else if (key == "pcMoveSpeed") {
+                    currentObj->playerController.moveSpeed = std::stof(value);
+                } else if (key == "pcLookSensitivity") {
+                    currentObj->playerController.lookSensitivity = std::stof(value);
+                } else if (key == "pcHeight") {
+                    currentObj->playerController.height = std::stof(value);
+                } else if (key == "pcRadius") {
+                    currentObj->playerController.radius = std::stof(value);
+                } else if (key == "pcJumpStrength") {
+                    currentObj->playerController.jumpStrength = std::stof(value);
                 } else if (key == "materialColor") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->material.color.r,

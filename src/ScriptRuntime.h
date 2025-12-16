@@ -28,6 +28,10 @@ struct ScriptContext {
     void SetPosition(const glm::vec3& pos);
     void SetRotation(const glm::vec3& rot);
     void SetScale(const glm::vec3& scl);
+    bool HasRigidbody() const;
+    bool SetRigidbodyVelocity(const glm::vec3& velocity);
+    bool GetRigidbodyVelocity(glm::vec3& outVelocity) const;
+    bool TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg);
     // Settings helpers (auto-mark dirty)
     std::string GetSetting(const std::string& key, const std::string& fallback = "") const;
     void SetSetting(const std::string& key, const std::string& value);

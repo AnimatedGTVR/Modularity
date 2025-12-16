@@ -296,6 +296,60 @@ namespace FileIcons {
     }
 }
 
+void Engine::renderGameViewportWindow() {
+    gameViewportFocused = false;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+    ImGui::Begin("Game Viewport", &showGameViewport, ImGuiWindowFlags_NoScrollbar);
+
+    bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    int width = std::max(160, (int)avail.x);
+    int height = std::max(120, (int)avail.y);
+
+    const SceneObject* playerCam = nullptr;
+    for (const auto& obj : sceneObjects) {
+        if (obj.type == ObjectType::Camera && obj.camera.type == SceneCameraType::Player) {
+            playerCam = &obj;
+            break;
+        }
+    }
+
+    if (!isPlaying) {
+        gameViewCursorLocked = false;
+    }
+
+        if (playerCam && rendererInitialized) {
+            unsigned int tex = renderer.renderScenePreview(
+                makeCameraFromObject(*playerCam),
+                sceneObjects,
+                width,
+                height,
+            playerCam->camera.fov,
+            playerCam->camera.nearClip,
+            playerCam->camera.farClip
+        );
+
+        ImGui::Image((void*)(intptr_t)tex, ImVec2((float)width, (float)height), ImVec2(0, 1), ImVec2(1, 0));
+        bool hovered = ImGui::IsItemHovered();
+        bool clicked = hovered && isPlaying && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
+        if (clicked && !gameViewCursorLocked) {
+            gameViewCursorLocked = true;
+        }
+        if (gameViewCursorLocked && (!isPlaying || !windowFocused || ImGui::IsKeyPressed(ImGuiKey_Escape))) {
+            gameViewCursorLocked = false;
+        }
+
+        gameViewportFocused = windowFocused && gameViewCursorLocked;
+        ImGui::TextDisabled(gameViewCursorLocked ? "Camera captured (ESC to release)" : "Click to capture");
+    } else {
+        ImGui::TextDisabled("No player camera found (Camera Type: Player).");
+        gameViewportFocused = ImGui::IsWindowFocused();
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1307,7 +1361,23 @@ void Engine::renderMainMenuBar() {
         }
 
         if (ImGui::BeginMenu("Scripts")) {
-            ImGui::MenuItem("Spec Mode (run Script_Spec)", nullptr, &specMode);
+            auto toggleSpec = [&](bool enabled) {
+                if (specMode == enabled) return;
+                if (enabled && !physics.isReady() && !physics.init()) {
+                    addConsoleMessage("PhysX failed to initialize; spec mode disabled", ConsoleMessageType::Warning);
+                    specMode = false;
+                    return;
+                }
+                specMode = enabled;
+                if (!isPlaying) {
+                    if (specMode) physics.onPlayStart(sceneObjects);
+                    else physics.onPlayStop();
+                }
+            };
+            bool specValue = specMode;
+            if (ImGui::MenuItem("Spec Mode (run Script_Spec)", nullptr, &specValue)) {
+                toggleSpec(specValue);
+            }
             ImGui::MenuItem("Test Mode (run Script_TestEditor)", nullptr, &testMode);
             ImGui::EndMenu();
         }
@@ -1353,17 +1423,42 @@ void Engine::renderMainMenuBar() {
         bool playPressed = ImGui::Button(isPlaying ? "Stop" : "Play");
         ImGui::SameLine(0.0f, 6.0f);
         bool pausePressed = ImGui::Button(isPaused ? "Resume" : "Pause");
+        ImGui::SameLine(0.0f, 6.0f);
+        bool specPressed = ImGui::Button(specMode ? "Spec On" : "Spec Mode");
         ImGui::PopStyleVar();
 
         if (playPressed) {
-            isPlaying = !isPlaying;
-            if (!isPlaying) {
+            bool newState = !isPlaying;
+            if (newState) {
+                if (physics.isReady() || physics.init()) {
+                    physics.onPlayStart(sceneObjects);
+                } else {
+                    addConsoleMessage("PhysX failed to initialize; physics disabled for play mode", ConsoleMessageType::Warning);
+                }
+            } else {
+                physics.onPlayStop();
                 isPaused = false;
+                if (specMode && (physics.isReady() || physics.init())) {
+                    physics.onPlayStart(sceneObjects);
+                }
             }
+            isPlaying = newState;
         }
         if (pausePressed) {
             isPaused = !isPaused;
             if (isPaused) isPlaying = true; // placeholder: pausing implies we’re in play mode
+        }
+        if (specPressed) {
+            bool enable = !specMode;
+            if (enable && !physics.isReady() && !physics.init()) {
+                addConsoleMessage("PhysX failed to initialize; spec mode disabled", ConsoleMessageType::Warning);
+                enable = false;
+            }
+            specMode = enable;
+            if (!isPlaying) {
+                if (specMode) physics.onPlayStart(sceneObjects);
+                else physics.onPlayStop();
+            }
         }
 
         float rightX = ImGui::GetWindowWidth() - 220.0f;
@@ -1882,6 +1977,170 @@ void Engine::renderInspectorPanel() {
 
     ImGui::PopStyleColor();
 
+    if (obj.hasCollider) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.35f, 1.0f));
+        if (ImGui::CollapsingHeader("Collider", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+            bool changed = false;
+
+            if (ImGui::Checkbox("Enabled", &obj.collider.enabled)) {
+                changed = true;
+            }
+
+            const char* colliderTypes[] = { "Box", "Mesh", "Convex Mesh", "Capsule" };
+            int colliderType = static_cast<int>(obj.collider.type);
+            if (ImGui::Combo("Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
+                obj.collider.type = static_cast<ColliderType>(colliderType);
+                changed = true;
+            }
+
+            if (obj.collider.type == ColliderType::Box) {
+                if (ImGui::DragFloat3("Box Size", &obj.collider.boxSize.x, 0.01f, 0.01f, 1000.0f, "%.3f")) {
+                    obj.collider.boxSize.x = std::max(0.01f, obj.collider.boxSize.x);
+                    obj.collider.boxSize.y = std::max(0.01f, obj.collider.boxSize.y);
+                    obj.collider.boxSize.z = std::max(0.01f, obj.collider.boxSize.z);
+                    changed = true;
+                }
+                if (ImGui::SmallButton("Match Object Scale")) {
+                    obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+                    changed = true;
+                }
+            } else if (obj.collider.type == ColliderType::Capsule) {
+                float radius = std::max(0.05f, std::max(obj.collider.boxSize.x, obj.collider.boxSize.z) * 0.5f);
+                float height = std::max(0.1f, obj.collider.boxSize.y);
+                if (ImGui::DragFloat("Radius", &radius, 0.01f, 0.05f, 5.0f, "%.3f")) {
+                    obj.collider.boxSize.x = obj.collider.boxSize.z = radius * 2.0f;
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Height", &height, 0.01f, 0.1f, 10.0f, "%.3f")) {
+                    obj.collider.boxSize.y = height;
+                    changed = true;
+                }
+                ImGui::TextDisabled("Capsule aligned to Y axis.");
+            } else {
+                if (ImGui::Checkbox("Use Convex Hull (required for Rigidbody)", &obj.collider.convex)) {
+                    changed = true;
+                }
+                ImGui::TextDisabled("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Remove Collider", ImVec2(-1, 0))) {
+                obj.hasCollider = false;
+                changed = true;
+            }
+
+            if (changed) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasPlayerController) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.7f, 1.0f));
+        if (ImGui::CollapsingHeader("Player Controller", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+            bool changed = false;
+
+            if (ImGui::Checkbox("Enabled", &obj.playerController.enabled)) {
+                changed = true;
+            }
+            if (ImGui::DragFloat("Move Speed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
+                obj.playerController.moveSpeed = std::max(0.1f, obj.playerController.moveSpeed);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Look Sensitivity", &obj.playerController.lookSensitivity, 0.01f, 0.01f, 2.0f, "%.2f")) {
+                obj.playerController.lookSensitivity = std::clamp(obj.playerController.lookSensitivity, 0.01f, 2.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Height", &obj.playerController.height, 0.01f, 0.5f, 3.0f, "%.2f")) {
+                obj.playerController.height = std::clamp(obj.playerController.height, 0.5f, 3.0f);
+                obj.scale.y = obj.playerController.height;
+                obj.collider.boxSize.y = obj.playerController.height;
+                changed = true;
+            }
+            if (ImGui::DragFloat("Radius", &obj.playerController.radius, 0.01f, 0.2f, 1.2f, "%.2f")) {
+                obj.playerController.radius = std::clamp(obj.playerController.radius, 0.2f, 1.2f);
+                obj.scale.x = obj.scale.z = obj.playerController.radius * 2.0f;
+                obj.collider.boxSize.x = obj.collider.boxSize.z = obj.playerController.radius * 2.0f;
+                changed = true;
+            }
+            if (ImGui::DragFloat("Jump Strength", &obj.playerController.jumpStrength, 0.1f, 0.1f, 30.0f, "%.1f")) {
+                obj.playerController.jumpStrength = std::max(0.1f, obj.playerController.jumpStrength);
+                changed = true;
+            }
+
+            if (ImGui::Button("Remove Player Controller", ImVec2(-1, 0))) {
+                obj.hasPlayerController = false;
+                changed = true;
+            }
+
+            if (changed) {
+                obj.hasCollider = true;
+                obj.collider.type = ColliderType::Capsule;
+                obj.collider.convex = true;
+                obj.hasRigidbody = true;
+                obj.rigidbody.enabled = true;
+                obj.rigidbody.useGravity = true;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasRigidbody) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.45f, 0.25f, 1.0f));
+        if (ImGui::CollapsingHeader("Rigidbody", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(10.0f);
+            bool changed = false;
+
+            if (ImGui::Checkbox("Enabled", &obj.rigidbody.enabled)) {
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(true);
+            ImGui::Checkbox("Collider (mesh type)", &obj.rigidbody.enabled); // placeholder label to hint geometry from mesh
+            ImGui::EndDisabled();
+
+            if (ImGui::DragFloat("Mass", &obj.rigidbody.mass, 0.05f, 0.01f, 1000.0f, "%.2f")) {
+                obj.rigidbody.mass = std::max(0.01f, obj.rigidbody.mass);
+                changed = true;
+            }
+            if (ImGui::Checkbox("Use Gravity", &obj.rigidbody.useGravity)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Kinematic", &obj.rigidbody.isKinematic)) {
+                changed = true;
+            }
+            if (ImGui::DragFloat("Linear Damping", &obj.rigidbody.linearDamping, 0.01f, 0.0f, 10.0f)) {
+                obj.rigidbody.linearDamping = std::clamp(obj.rigidbody.linearDamping, 0.0f, 10.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Angular Damping", &obj.rigidbody.angularDamping, 0.01f, 0.0f, 10.0f)) {
+                obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
+                changed = true;
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Remove Rigidbody", ImVec2(-1, 0))) {
+                obj.hasRigidbody = false;
+                changed = true;
+            }
+
+            if (changed) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::Unindent(10.0f);
+        }
+        ImGui::PopStyleColor();
+    }
+
     if (obj.type == ObjectType::Camera) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.35f, 0.65f, 1.0f));
@@ -2230,6 +2489,51 @@ void Engine::renderInspectorPanel() {
                 ImGui::OpenPopup("AddComponentPopup");
             }
             if (ImGui::BeginPopup("AddComponentPopup")) {
+                if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody")) {
+                    obj.hasRigidbody = true;
+                    obj.rigidbody = RigidbodyComponent{};
+                    materialChanged = true;
+                }
+                if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
+                    obj.hasPlayerController = true;
+                    obj.playerController = PlayerControllerComponent{};
+                    obj.hasCollider = true;
+                    obj.collider.type = ColliderType::Capsule;
+                    obj.collider.boxSize = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+                    obj.collider.convex = true;
+                    obj.hasRigidbody = true;
+                    obj.rigidbody.enabled = true;
+                    obj.rigidbody.useGravity = true;
+                    obj.rigidbody.isKinematic = false;
+                    obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+                    materialChanged = true;
+                }
+                if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
+                    if (ImGui::MenuItem("Box Collider")) {
+                        obj.hasCollider = true;
+                        obj.collider = ColliderComponent{};
+                        obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+                        materialChanged = true;
+                        addComponentButtonShown = true;
+                    }
+                    if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
+                        obj.hasCollider = true;
+                        obj.collider = ColliderComponent{};
+                        obj.collider.type = ColliderType::Mesh;
+                        obj.collider.convex = false;
+                        materialChanged = true;
+                        addComponentButtonShown = true;
+                    }
+                    if (ImGui::MenuItem("Mesh Collider (Convex)")) {
+                        obj.hasCollider = true;
+                        obj.collider = ColliderComponent{};
+                        obj.collider.type = ColliderType::ConvexMesh;
+                        obj.collider.convex = true;
+                        materialChanged = true;
+                        addComponentButtonShown = true;
+                    }
+                    ImGui::EndMenu();
+                }
                 if (ImGui::MenuItem("Script")) {
                     obj.scripts.push_back(ScriptComponent{});
                     materialChanged = true;
@@ -2435,6 +2739,52 @@ void Engine::renderInspectorPanel() {
             ImGui::OpenPopup("AddComponentPopup");
         }
         if (ImGui::BeginPopup("AddComponentPopup")) {
+            if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody")) {
+                obj.hasRigidbody = true;
+                obj.rigidbody = RigidbodyComponent{};
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
+                obj.hasPlayerController = true;
+                obj.playerController = PlayerControllerComponent{};
+                obj.hasCollider = true;
+                obj.collider.type = ColliderType::Capsule;
+                obj.collider.boxSize = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+                obj.collider.convex = true;
+                obj.hasRigidbody = true;
+                obj.rigidbody.enabled = true;
+                obj.rigidbody.useGravity = true;
+                obj.rigidbody.isKinematic = false;
+                obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+                projectManager.currentProject.hasUnsavedChanges = true;
+                addComponentButtonShown = true;
+            }
+            if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
+                if (ImGui::MenuItem("Box Collider")) {
+                    obj.hasCollider = true;
+                    obj.collider = ColliderComponent{};
+                    obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    addComponentButtonShown = true;
+                }
+                if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
+                    obj.hasCollider = true;
+                    obj.collider = ColliderComponent{};
+                    obj.collider.type = ColliderType::Mesh;
+                    obj.collider.convex = false;
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    addComponentButtonShown = true;
+                }
+                if (ImGui::MenuItem("Mesh Collider (Convex)")) {
+                    obj.hasCollider = true;
+                    obj.collider = ColliderComponent{};
+                    obj.collider.type = ColliderType::ConvexMesh;
+                    obj.collider.convex = true;
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    addComponentButtonShown = true;
+                }
+                ImGui::EndMenu();
+            }
             if (ImGui::MenuItem("Script")) {
                 obj.scripts.push_back(ScriptComponent{});
                 projectManager.currentProject.hasUnsavedChanges = true;
@@ -3919,19 +4269,11 @@ void Engine::renderViewport() {
         if (mouseOverViewportImage && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             viewportController.setFocused(true);
             cursorLocked = true;
-            glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-            if (glfwRawMouseMotionSupported()) {
-                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
-            }
             camera.firstMouse = true;
         }
 
         if (cursorLocked && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
             cursorLocked = false;
-            glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            if (glfwRawMouseMotionSupported()) {
-                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
-            }
             camera.firstMouse = true;
         }
         if (cursorLocked) {

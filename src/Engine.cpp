@@ -273,17 +273,6 @@ void Engine::run() {
             continue;
         }
 
-        // Enforce cursor lock state every frame to avoid backends restoring it.
-        int desiredMode = cursorLocked ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL;
-        if (glfwGetInputMode(editorWindow, GLFW_CURSOR) != desiredMode) {
-            glfwSetInputMode(editorWindow, GLFW_CURSOR, desiredMode);
-            if (cursorLocked && glfwRawMouseMotionSupported()) {
-                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
-            } else if (!cursorLocked && glfwRawMouseMotionSupported()) {
-                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
-            }
-        }
-
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
@@ -295,12 +284,13 @@ void Engine::run() {
             handleKeyboardShortcuts();
         }
 
-        viewportController.update(editorWindow, cursorLocked);
-
-        if (!viewportController.isViewportFocused() && cursorLocked) {
+        if (gameViewCursorLocked) {
             cursorLocked = false;
-            glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            camera.firstMouse = true;
+            viewportController.setFocused(false);
+        }
+        viewportController.update(editorWindow, cursorLocked);
+        if (!isPlaying) {
+            gameViewCursorLocked = false;
         }
 
         // Scroll-wheel speed adjustment while freelook is active
@@ -318,9 +308,21 @@ void Engine::run() {
             camera.processKeyboard(deltaTime, editorWindow);
         }
 
-        // Run script tick/update even when the object is not selected.
+        // Run scripts only in play/spec/test modes to avoid edit-time side effects (e.g., cursor grabs)
         if (projectManager.currentProject.isLoaded) {
-            updateScripts(deltaTime);
+            bool runScripts = isPlaying || specMode || testMode;
+            if (runScripts) {
+                updateScripts(deltaTime);
+            }
+        }
+
+        bool simulatePhysics = physics.isReady() && ((isPlaying && !isPaused) || (!isPlaying && specMode));
+        if (simulatePhysics) {
+            physics.simulate(deltaTime, sceneObjects);
+        }
+
+        if (isPlaying) {
+            updatePlayerController(deltaTime);
         }
 
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
@@ -329,9 +331,19 @@ void Engine::run() {
             if (aspect <= 0.0f) aspect = 1.0f;
             glm::mat4 proj = glm::perspective(glm::radians(FOV), aspect, NEAR_PLANE, FAR_PLANE);
 
+#ifdef GL_POLYGON_MODE
+            GLint prevPoly[2] = { GL_FILL, GL_FILL };
+            glGetIntegerv(GL_POLYGON_MODE, prevPoly);
+            glPolygonMode(GL_FRONT_AND_BACK, collisionWireframe ? GL_LINE : GL_FILL);
+#endif
+
             renderer.beginRender(view, proj, camera.position);
             renderer.renderScene(camera, sceneObjects, selectedObjectId);
             renderer.endRender();
+
+#ifdef GL_POLYGON_MODE
+            glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
+#endif
         }
 
         if (firstFrame) {
@@ -367,6 +379,7 @@ void Engine::run() {
             }
 
             renderViewport();
+            if (showGameViewport) renderGameViewportWindow();
             renderDialogs();
         }
 
@@ -391,6 +404,18 @@ void Engine::run() {
             glfwMakeContextCurrent(backup_current_context);
         }
 
+        // Enforce cursor lock state at the end of the frame based on latest flags.
+        bool anyLock = cursorLocked || gameViewCursorLocked;
+        int desiredMode = anyLock ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL;
+        if (glfwGetInputMode(editorWindow, GLFW_CURSOR) != desiredMode) {
+            glfwSetInputMode(editorWindow, GLFW_CURSOR, desiredMode);
+            if (anyLock && glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            } else if (!anyLock && glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+            }
+        }
+
         glfwSwapBuffers(editorWindow);
         
         if (firstFrame) {
@@ -406,6 +431,9 @@ void Engine::shutdown() {
     if (projectManager.currentProject.isLoaded && projectManager.currentProject.hasUnsavedChanges) {
         saveCurrentScene();
     }
+
+    physics.onPlayStop();
+    physics.shutdown();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
@@ -656,7 +684,11 @@ void Engine::handleKeyboardShortcuts() {
         ctrlNPressed = false;
     }
 
-    bool cameraActive = cursorLocked || viewportController.isViewportFocused() && cursorLocked;
+    bool cameraActive = cursorLocked || (viewportController.isViewportFocused() && cursorLocked);
+    if (!isPlaying && gameViewCursorLocked) {
+        // Prevent edit-mode freelook from conflicting with game view capture
+        gameViewCursorLocked = false;
+    }
     if (!cameraActive) {
         if (ImGui::IsKeyPressed(ImGuiKey_Q)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
         if (ImGui::IsKeyPressed(ImGuiKey_W)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
@@ -667,6 +699,11 @@ void Engine::handleKeyboardShortcuts() {
         if (ImGui::IsKeyPressed(ImGuiKey_U)) {
             mCurrentGizmoMode = (mCurrentGizmoMode == ImGuizmo::LOCAL) ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
         }
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_3)) {
+        collisionWireframe = !collisionWireframe;
+        addConsoleMessage(std::string("Collision wireframe ") + (collisionWireframe ? "enabled" : "disabled"), ConsoleMessageType::Info);
     }
 
     static bool snapPressed = false;
@@ -709,6 +746,10 @@ void Engine::handleKeyboardShortcuts() {
     if (glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_RELEASE) {
         redoPressed = false;
     }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) && gameViewCursorLocked) {
+        gameViewCursorLocked = false;
+    }
 }
 
 void Engine::updateScripts(float delta) {
@@ -729,6 +770,113 @@ void Engine::updateScripts(float delta) {
     }
 }
 
+void Engine::updatePlayerController(float delta) {
+    if (!isPlaying) return;
+
+    SceneObject* player = nullptr;
+    for (auto& obj : sceneObjects) {
+        if (obj.hasPlayerController && obj.playerController.enabled) {
+            player = &obj;
+            activePlayerId = obj.id;
+            break;
+        }
+    }
+    if (!player) {
+        activePlayerId = -1;
+        return;
+    }
+
+    auto& pc = player->playerController;
+    // Maintain capsule sizing and collider defaults
+    if (pc.pitch == 0.0f && pc.yaw == 0.0f && (glm::length(player->rotation) > 0.01f)) {
+        pc.pitch = player->rotation.x;
+        pc.yaw = player->rotation.y;
+    }
+    player->hasCollider = true;
+    player->collider.type = ColliderType::Capsule;
+    player->collider.convex = true;
+    player->collider.boxSize = glm::vec3(pc.radius * 2.0f, pc.height, pc.radius * 2.0f);
+    player->hasRigidbody = true;
+    player->rigidbody.enabled = true;
+    player->rigidbody.useGravity = true;
+    player->rigidbody.isKinematic = false;
+
+    // Mouse look when game viewport is focused
+    if (gameViewportFocused || gameViewCursorLocked) {
+        ImGuiIO& io = ImGui::GetIO();
+        pc.yaw -= io.MouseDelta.x * 50.0f * pc.lookSensitivity * delta;
+        pc.pitch -= io.MouseDelta.y * 50.0f * pc.lookSensitivity * delta;
+        pc.pitch = std::clamp(pc.pitch, -89.0f, 89.0f);
+    }
+
+    // Movement input aligned to camera facing (-Z forward convention)
+    auto key = [&](int k) { return glfwGetKey(editorWindow, k) == GLFW_PRESS; };
+    glm::quat q = glm::quat(glm::radians(glm::vec3(pc.pitch, pc.yaw, 0.0f)));
+    glm::vec3 forward = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
+    glm::vec3 right = glm::normalize(q * glm::vec3(1.0f, 0.0f, 0.0f));
+    glm::vec3 planarForward = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
+    glm::vec3 planarRight = glm::normalize(glm::vec3(right.x, 0.0f, right.z));
+    if (!std::isfinite(planarForward.x) || glm::length(planarForward) < 1e-3f) {
+        planarForward = glm::vec3(0, 0, -1);
+    }
+    if (!std::isfinite(planarRight.x) || glm::length(planarRight) < 1e-3f) {
+        planarRight = glm::vec3(1, 0, 0);
+    }
+
+    glm::vec3 move(0.0f);
+    if (key(GLFW_KEY_W)) move += planarForward;
+    if (key(GLFW_KEY_S)) move -= planarForward;
+    if (key(GLFW_KEY_D)) move += planarRight;
+    if (key(GLFW_KEY_A)) move -= planarRight;
+    if (glm::length(move) > 0.001f) move = glm::normalize(move);
+
+    float targetSpeed = pc.moveSpeed;
+    glm::vec3 velocity(move * targetSpeed);
+
+    // Simple gravity and jump
+    float capsuleHalf = std::max(0.1f, pc.height * 0.5f);
+    glm::vec3 physVel;
+    bool havePhysVel = physics.getLinearVelocity(player->id, physVel);
+    if (havePhysVel) pc.verticalVelocity = physVel.y;
+
+    // Ground check via PhysX scene query so mesh colliders work, not just the plane
+    glm::vec3 hitPos;
+    glm::vec3 hitNormal;
+    float hitDist = 0.0f;
+    float probeDist = capsuleHalf + 0.4f;
+    glm::vec3 rayStart = player->position + glm::vec3(0.0f, 0.1f, 0.0f);
+    bool hitGround = physics.raycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
+                                            player->id, &hitPos, &hitNormal, &hitDist);
+    bool grounded = hitGround && hitNormal.y > 0.25f && hitDist <= capsuleHalf + 0.2f && pc.verticalVelocity <= 0.35f;
+    if (!hitGround) {
+        // Fallback to simple height check to avoid regressions if queries fail
+        grounded = player->position.y <= capsuleHalf + 0.12f && pc.verticalVelocity <= 0.35f;
+    }
+
+    if (grounded) {
+        pc.verticalVelocity = 0.0f;
+        if (hitGround) {
+            player->position.y = std::max(player->position.y, hitPos.y + capsuleHalf);
+        } else {
+            player->position.y = capsuleHalf;
+        }
+        if (key(GLFW_KEY_SPACE)) {
+            pc.verticalVelocity = pc.jumpStrength;
+        }
+    } else {
+        pc.verticalVelocity += -9.81f * delta;
+    }
+    velocity.y = pc.verticalVelocity;
+    velocity.y = std::clamp(velocity.y, -30.0f, 30.0f);
+
+    // Apply yaw to physics actor and keep collider aligned
+    physics.setActorYaw(player->id, pc.yaw);
+    player->rotation = glm::vec3(pc.pitch, pc.yaw, 0.0f);
+
+    if (!physics.setLinearVelocity(player->id, velocity)) {
+        player->position += velocity * delta;
+    }
+}
 void Engine::OpenProjectPath(const std::string& path) {
     try {
         if (projectManager.loadProject(path)) {
@@ -744,6 +892,10 @@ void Engine::OpenProjectPath(const std::string& path) {
                 addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
                 showLauncher = true;
                 return;
+            }
+
+            if (!physics.isReady() && !physics.init()) {
+                addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
             }
 
             loadRecentScenes();
@@ -777,6 +929,10 @@ void Engine::createNewProject(const char* name, const char* location) {
         if (!initRenderer()) {
             logToConsole("Error: Failed to initialize renderer!");
             return;
+        }
+
+        if (!physics.isReady() && !physics.init()) {
+            addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
         }
 
         sceneObjects.clear();
@@ -950,6 +1106,12 @@ void Engine::duplicateSelected() {
         newObj.light = it->light;
         newObj.camera = it->camera;
         newObj.postFx = it->postFx;
+        newObj.hasRigidbody = it->hasRigidbody;
+        newObj.rigidbody = it->rigidbody;
+        newObj.hasCollider = it->hasCollider;
+        newObj.collider = it->collider;
+        newObj.hasPlayerController = it->hasPlayerController;
+        newObj.playerController = it->playerController;
         
         sceneObjects.push_back(newObj);
         setPrimarySelection(id);
@@ -1069,6 +1231,18 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
 
 void Engine::markProjectDirty() {
     projectManager.currentProject.hasUnsavedChanges = true;
+}
+
+bool Engine::setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity) {
+    return physics.setLinearVelocity(id, velocity);
+}
+
+bool Engine::getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity) {
+    return physics.getLinearVelocity(id, outVelocity);
+}
+
+bool Engine::teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
+    return physics.setActorPose(id, position, rotationDeg);
 }
 
 void Engine::compileScriptFile(const fs::path& scriptPath) {

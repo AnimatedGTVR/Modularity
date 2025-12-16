@@ -39,6 +39,28 @@ void ScriptContext::SetScale(const glm::vec3& scl) {
     }
 }
 
+bool ScriptContext::HasRigidbody() const {
+    return object && object->hasRigidbody && object->rigidbody.enabled;
+}
+
+bool ScriptContext::SetRigidbodyVelocity(const glm::vec3& velocity) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->setRigidbodyVelocityFromScript(object->id, velocity);
+}
+
+bool ScriptContext::GetRigidbodyVelocity(glm::vec3& outVelocity) const {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->getRigidbodyVelocityFromScript(object->id, outVelocity);
+}
+
+bool ScriptContext::TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg) {
+    if (!engine || !object) return false;
+    object->position = pos;
+    object->rotation = NormalizeEulerDegrees(rotDeg);
+    MarkDirty();
+    return engine->teleportPhysicsActorFromScript(object->id, pos, object->rotation);
+}
+
 std::string ScriptContext::GetSetting(const std::string& key, const std::string& fallback) const {
     if (!script) return fallback;
     auto it = std::find_if(script->settings.begin(), script->settings.end(),

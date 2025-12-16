@@ -9,6 +9,7 @@
 #include "MeshBuilder.h"
 #include "ScriptCompiler.h"
 #include "ScriptRuntime.h"
+#include "PhysicsSystem.h"
 #include "../include/Window/Window.h"
 
 void window_size_callback(GLFWwindow* window, int width, int height);
@@ -90,7 +91,11 @@ private:
     bool isPlaying = false;
     bool isPaused = false;
     bool showViewOutput = true;
+    bool showGameViewport = true;
     int previewCameraId = -1;
+    bool gameViewCursorLocked = false;
+    bool gameViewportFocused = false;
+    int activePlayerId = -1;
     MeshBuilder meshBuilder;
     char meshBuilderPath[260] = "";
     char meshBuilderFaceInput[128] = "";
@@ -105,12 +110,14 @@ private:
     MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Vertex;
     ScriptCompiler scriptCompiler;
     ScriptRuntime scriptRuntime;
+    PhysicsSystem physics;
     bool showCompilePopup = false;
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
     std::string lastCompileLog;
     bool specMode = false;
     bool testMode = false;
+    bool collisionWireframe = false;
 
     // Private methods
     SceneObject* getSelectedObject();
@@ -141,11 +148,13 @@ private:
     void renderInspectorPanel();
     void renderConsolePanel();
     void renderViewport();
+    void renderGameViewportWindow();
     void renderDialogs();
     void renderProjectBrowserPanel();
     Camera makeCameraFromObject(const SceneObject& obj) const;
     void compileScriptFile(const fs::path& scriptPath);
     void updateScripts(float delta);
+    void updatePlayerController(float delta);
     
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();
@@ -206,4 +215,8 @@ public:
     void markProjectDirty();
     // Script-accessible logging wrapper
     void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
+    // Script-accessible physics helpers
+    bool setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity);
+    bool getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity);
+    bool teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg);
 };

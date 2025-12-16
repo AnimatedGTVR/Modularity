@@ -127,6 +127,5 @@ void ViewportController::update(GLFWwindow* window, bool& cursorLocked) {
         viewportFocused = false;
         manualUnfocus = true;
         cursorLocked = false;
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     }
 }

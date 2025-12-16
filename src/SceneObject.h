@@ -98,6 +98,41 @@ struct ScriptComponent {
     std::vector<void*> activeIEnums; // function pointers registered via IEnum_Start
 };
 
+struct RigidbodyComponent {
+    bool enabled = true;
+    float mass = 1.0f;
+    bool useGravity = true;
+    bool isKinematic = false;
+    float linearDamping = 0.05f;
+    float angularDamping = 0.05f;
+};
+
+enum class ColliderType {
+    Box = 0,
+    Mesh = 1,
+    ConvexMesh = 2,
+    Capsule = 3
+};
+
+struct ColliderComponent {
+    bool enabled = true;
+    ColliderType type = ColliderType::Box;
+    glm::vec3 boxSize = glm::vec3(1.0f);
+    bool convex = true; // For mesh colliders: true = convex hull, false = triangle mesh (static only)
+};
+
+struct PlayerControllerComponent {
+    bool enabled = true;
+    float moveSpeed = 6.0f;
+    float lookSensitivity = 0.12f;
+    float height = 1.8f;
+    float radius = 0.4f;
+    float jumpStrength = 6.5f;
+    float verticalVelocity = 0.0f;
+    float pitch = 0.0f;
+    float yaw = 0.0f;
+};
+
 class SceneObject {
 public:
     std::string name;
@@ -124,6 +159,12 @@ public:
     PostFXSettings postFx;  // Only used when type is PostFXNode
     std::vector<ScriptComponent> scripts;
     std::vector<std::string> additionalMaterialPaths;
+    bool hasRigidbody = false;
+    RigidbodyComponent rigidbody;
+    bool hasCollider = false;
+    ColliderComponent collider;
+    bool hasPlayerController = false;
+    PlayerControllerComponent playerController;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}
