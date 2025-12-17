@@ -776,6 +776,7 @@ void Engine::updateScripts(float delta) {
     for (auto& obj : sceneObjects) {
         if (!obj.enabled) continue;
         for (auto& sc : obj.scripts) {
+            if (!sc.enabled) continue;
             if (sc.path.empty()) continue;
             fs::path binary = resolveScriptBinary(sc.path);
             if (binary.empty() || !fs::exists(binary)) continue;

@@ -331,6 +331,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             for (size_t si = 0; si < obj.scripts.size(); ++si) {
                 const auto& sc = obj.scripts[si];
                 file << "script" << si << "_path=" << sc.path << "\n";
+                file << "script" << si << "_enabled=" << (sc.enabled ? 1 : 0) << "\n";
                 file << "script" << si << "_settings=" << sc.settings.size() << "\n";
                 for (size_t k = 0; k < sc.settings.size(); ++k) {
                     file << "script" << si << "_setting" << k << "=" << sc.settings[k].key << ":" << sc.settings[k].value << "\n";
@@ -375,6 +376,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             for (size_t s = 0; s < obj.scripts.size(); ++s) {
                 const auto& sc = obj.scripts[s];
                 file << "script" << s << "_path=" << sc.path << "\n";
+                file << "script" << s << "_enabled=" << (sc.enabled ? 1 : 0) << "\n";
                 file << "script" << s << "_settingCount=" << sc.settings.size() << "\n";
                 for (size_t si = 0; si < sc.settings.size(); ++si) {
                     file << "script" << s << "_setting" << si << "=" << sc.settings[si].key << ":" << sc.settings[si].value << "\n";
@@ -585,6 +587,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             ScriptComponent& sc = currentObj->scripts[idx];
                             if (sub == "path") {
                                 sc.path = value;
+                            } else if (sub == "enabled") {
+                                sc.enabled = std::stoi(value) != 0;
                             } else if (sub == "settings" || sub == "settingCount") {
                                 int cnt = std::stoi(value);
                                 sc.settings.resize(std::max(0, cnt));
@@ -689,6 +693,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             ScriptComponent& sc = currentObj->scripts[idx];
                             if (subKey == "path") {
                                 sc.path = value;
+                            } else if (subKey == "enabled") {
+                                sc.enabled = std::stoi(value) != 0;
                             } else if (subKey == "settingCount") {
                                 int cnt = std::stoi(value);
                                 sc.settings.resize(std::max(0, cnt));

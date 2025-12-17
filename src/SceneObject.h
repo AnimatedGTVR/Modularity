@@ -93,6 +93,7 @@ struct ScriptSetting {
 };
 
 struct ScriptComponent {
+    bool enabled = true;
     std::string path;
     std::vector<ScriptSetting> settings;
     std::string lastBinaryPath;

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
+#include <functional>
 #include <sstream>
 #include <unordered_set>
 #include <optional>
@@ -1733,6 +1734,56 @@ void Engine::renderInspectorPanel() {
         }
     };
 
+    struct ComponentHeaderState {
+        bool open = false;
+        bool enabledChanged = false;
+    };
+
+    auto drawComponentHeader = [&](const char* label, const char* id, bool* enabled, bool defaultOpen,
+                                   const std::function<void()>& menuFn) -> ComponentHeaderState {
+        ComponentHeaderState state;
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_Framed;
+        if (defaultOpen) {
+            flags |= ImGuiTreeNodeFlags_DefaultOpen;
+        }
+        std::string headerId = std::string(label) + "##" + id;
+        ImGui::SetNextItemAllowOverlap();
+        state.open = ImGui::CollapsingHeader(headerId.c_str(), flags);
+
+        ImVec2 headerMin = ImGui::GetItemRectMin();
+        ImVec2 headerMax = ImGui::GetItemRectMax();
+        ImVec2 cursorAfter = ImGui::GetCursorScreenPos();
+        float headerHeight = headerMax.y - headerMin.y;
+        float controlSize = ImGui::GetFrameHeight();
+        ImGuiStyle& style = ImGui::GetStyle();
+        float right = headerMax.x - style.FramePadding.x;
+
+        ImGui::PushID(id);
+        if (menuFn) {
+            ImVec2 menuPos(right - controlSize, headerMin.y + (headerHeight - controlSize) * 0.5f);
+            ImGui::SetCursorScreenPos(menuPos);
+            if (ImGui::SmallButton("...")) {
+                ImGui::OpenPopup("ComponentMenu");
+            }
+            if (ImGui::BeginPopup("ComponentMenu")) {
+                menuFn();
+                ImGui::EndPopup();
+            }
+            right = menuPos.x - style.ItemSpacing.x;
+        }
+        if (enabled) {
+            ImVec2 checkPos(right - controlSize, headerMin.y + (headerHeight - controlSize) * 0.5f);
+            ImGui::SetCursorScreenPos(checkPos);
+            if (ImGui::Checkbox("##Enabled", enabled)) {
+                state.enabledChanged = true;
+            }
+        }
+        ImGui::PopID();
+
+        ImGui::SetCursorScreenPos(cursorAfter);
+        return state;
+    };
+
     auto renderMaterialAssetPanel = [&](const char* headerTitle, bool allowApply) {
         if (!browserHasMaterial) return;
 
@@ -1993,7 +2044,6 @@ void Engine::renderInspectorPanel() {
 
     SceneObject& obj = *it;
     ImGui::PushID(obj.id); // Scope per-object widgets to avoid ID collisions
-    bool addComponentButtonShown = false;
 
     if (selectedObjectIds.size() > 1) {
         ImGui::Text("Multiple objects selected: %zu", selectedObjectIds.size());
@@ -2121,14 +2171,19 @@ void Engine::renderInspectorPanel() {
     if (obj.hasCollider) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.35f, 1.0f));
-        if (ImGui::CollapsingHeader("Collider", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool removeCollider = false;
+        bool changed = false;
+        auto header = drawComponentHeader("Collider", "Collider", &obj.collider.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removeCollider = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("Collider");
             ImGui::Indent(10.0f);
-            bool changed = false;
-
-            if (ImGui::Checkbox("Enabled##Collider", &obj.collider.enabled)) {
-                changed = true;
-            }
 
             const char* colliderTypes[] = { "Box", "Mesh", "Convex Mesh", "Capsule" };
             int colliderType = static_cast<int>(obj.collider.type);
@@ -2167,17 +2222,15 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
             }
 
-            ImGui::Spacing();
-            if (ImGui::Button("Remove Collider", ImVec2(-1, 0))) {
-                obj.hasCollider = false;
-                changed = true;
-            }
-
-            if (changed) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (removeCollider) {
+            obj.hasCollider = false;
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -2185,14 +2238,19 @@ void Engine::renderInspectorPanel() {
     if (obj.hasPlayerController) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.7f, 1.0f));
-        if (ImGui::CollapsingHeader("Player Controller", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool removePlayerController = false;
+        bool changed = false;
+        auto header = drawComponentHeader("Player Controller", "PlayerController", &obj.playerController.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removePlayerController = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("PlayerController");
             ImGui::Indent(10.0f);
-            bool changed = false;
-
-            if (ImGui::Checkbox("Enabled##PlayerController", &obj.playerController.enabled)) {
-                changed = true;
-            }
             if (ImGui::DragFloat("Move Speed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
                 obj.playerController.moveSpeed = std::max(0.1f, obj.playerController.moveSpeed);
                 changed = true;
@@ -2218,22 +2276,21 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
 
-            if (ImGui::Button("Remove Player Controller", ImVec2(-1, 0))) {
-                obj.hasPlayerController = false;
-                changed = true;
-            }
-
-            if (changed) {
-                obj.hasCollider = true;
-                obj.collider.type = ColliderType::Capsule;
-                obj.collider.convex = true;
-                obj.hasRigidbody = true;
-                obj.rigidbody.enabled = true;
-                obj.rigidbody.useGravity = true;
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (removePlayerController) {
+            obj.hasPlayerController = false;
+            changed = true;
+        }
+        if (changed) {
+            obj.hasCollider = true;
+            obj.collider.type = ColliderType::Capsule;
+            obj.collider.convex = true;
+            obj.hasRigidbody = true;
+            obj.rigidbody.enabled = true;
+            obj.rigidbody.useGravity = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -2241,18 +2298,20 @@ void Engine::renderInspectorPanel() {
     if (obj.hasRigidbody) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.45f, 0.25f, 1.0f));
-        if (ImGui::CollapsingHeader("Rigidbody", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool removeRigidbody = false;
+        bool changed = false;
+        auto header = drawComponentHeader("Rigidbody", "Rigidbody", &obj.rigidbody.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removeRigidbody = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("Rigidbody");
             ImGui::Indent(10.0f);
-            bool changed = false;
-
-            if (ImGui::Checkbox("Enabled##Rigidbody", &obj.rigidbody.enabled)) {
-                changed = true;
-            }
-            ImGui::SameLine();
-            ImGui::BeginDisabled(true);
-            ImGui::Checkbox("Collider (mesh type)", &obj.rigidbody.enabled); // placeholder label to hint geometry from mesh
-            ImGui::EndDisabled();
+            ImGui::TextDisabled("Collider required for physics.");
 
             if (ImGui::DragFloat("Mass", &obj.rigidbody.mass, 0.05f, 0.01f, 1000.0f, "%.2f")) {
                 obj.rigidbody.mass = std::max(0.01f, obj.rigidbody.mass);
@@ -2272,18 +2331,15 @@ void Engine::renderInspectorPanel() {
                 obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
                 changed = true;
             }
-
-            ImGui::Spacing();
-            if (ImGui::Button("Remove Rigidbody", ImVec2(-1, 0))) {
-                obj.hasRigidbody = false;
-                changed = true;
-            }
-
-            if (changed) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (removeRigidbody) {
+            obj.hasRigidbody = false;
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -2291,15 +2347,20 @@ void Engine::renderInspectorPanel() {
     if (obj.hasAudioSource) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.55f, 0.4f, 0.3f, 1.0f));
-        if (ImGui::CollapsingHeader("Audio Source", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool removeAudioSource = false;
+        bool changed = false;
+        auto header = drawComponentHeader("Audio Source", "AudioSource", &obj.audioSource.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removeAudioSource = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("AudioSource");
             ImGui::Indent(10.0f);
-            bool changed = false;
             auto& src = obj.audioSource;
-
-            if (ImGui::Checkbox("Enabled##AudioSource", &src.enabled)) {
-                changed = true;
-            }
 
             char clipBuf[512] = {};
             std::snprintf(clipBuf, sizeof(clipBuf), "%s", src.clipPath.c_str());
@@ -2386,21 +2447,18 @@ void Engine::renderInspectorPanel() {
                     clipPreview->sampleRate);
             }
 
-            ImGui::Spacing();
-            if (ImGui::Button("Remove Audio Source", ImVec2(-1, 0))) {
-                if (audio.isPreviewing(src.clipPath)) {
-                    audio.stopPreview();
-                }
-                obj.hasAudioSource = false;
-                changed = true;
-            }
-
-            if (changed) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (removeAudioSource) {
+            if (audio.isPreviewing(obj.audioSource.clipPath)) {
+                audio.stopPreview();
+            }
+            obj.hasAudioSource = false;
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -2438,14 +2496,14 @@ void Engine::renderInspectorPanel() {
     if (obj.type == ObjectType::PostFXNode) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
-        if (ImGui::CollapsingHeader("Post Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool changed = false;
+        auto header = drawComponentHeader("Post Processing", "PostFX", &obj.postFx.enabled, true, {});
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("PostFX");
             ImGui::Indent(10.0f);
-            bool changed = false;
-
-            if (ImGui::Checkbox("Enable Node", &obj.postFx.enabled)) {
-                changed = true;
-            }
 
             ImGui::Separator();
             ImGui::TextDisabled("Bloom");
@@ -2534,13 +2592,13 @@ void Engine::renderInspectorPanel() {
             }
             ImGui::EndDisabled();
 
-            if (changed) {
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
             ImGui::TextDisabled("Nodes stack in hierarchy order; latest node overrides previous settings.");
             ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -2751,72 +2809,6 @@ void Engine::renderInspectorPanel() {
             ImVec4 previewColorBar(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
             ImGui::ColorButton("##MaterialPreview", previewColorBar, ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetContentRegionAvail().x, 32.0f));
 
-            ImGui::Spacing();
-            addComponentButtonShown = true;
-            ImGui::PushID("MaterialAddComponent");
-            if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
-                ImGui::OpenPopup("AddComponentPopup");
-            }
-            if (ImGui::BeginPopup("AddComponentPopup")) {
-                if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody")) {
-                    obj.hasRigidbody = true;
-                    obj.rigidbody = RigidbodyComponent{};
-                    materialChanged = true;
-                }
-                if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
-                    obj.hasPlayerController = true;
-                    obj.playerController = PlayerControllerComponent{};
-                    obj.hasCollider = true;
-                    obj.collider.type = ColliderType::Capsule;
-                    obj.collider.boxSize = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
-                    obj.collider.convex = true;
-                    obj.hasRigidbody = true;
-                    obj.rigidbody.enabled = true;
-                    obj.rigidbody.useGravity = true;
-                    obj.rigidbody.isKinematic = false;
-                    obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
-                    materialChanged = true;
-                }
-                if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
-                    obj.hasAudioSource = true;
-                    obj.audioSource = AudioSourceComponent{};
-                    materialChanged = true;
-                }
-                if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
-                    if (ImGui::MenuItem("Box Collider")) {
-                        obj.hasCollider = true;
-                        obj.collider = ColliderComponent{};
-                        obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
-                        materialChanged = true;
-                        addComponentButtonShown = true;
-                    }
-                    if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
-                        obj.hasCollider = true;
-                        obj.collider = ColliderComponent{};
-                        obj.collider.type = ColliderType::Mesh;
-                        obj.collider.convex = false;
-                        materialChanged = true;
-                        addComponentButtonShown = true;
-                    }
-                    if (ImGui::MenuItem("Mesh Collider (Convex)")) {
-                        obj.hasCollider = true;
-                        obj.collider = ColliderComponent{};
-                        obj.collider.type = ColliderType::ConvexMesh;
-                        obj.collider.convex = true;
-                        materialChanged = true;
-                        addComponentButtonShown = true;
-                    }
-                    ImGui::EndMenu();
-                }
-                if (ImGui::MenuItem("Script")) {
-                    obj.scripts.push_back(ScriptComponent{});
-                    materialChanged = true;
-                    addComponentButtonShown = true;
-                }
-                ImGui::EndPopup();
-            }
-            ImGui::PopID();
-
             if (materialChanged) {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
@@ -2831,7 +2823,12 @@ void Engine::renderInspectorPanel() {
     if (obj.type == ObjectType::DirectionalLight || obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.45f, 0.2f, 1.0f));
-        if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool changed = false;
+        auto header = drawComponentHeader("Light", "Light", &obj.light.enabled, true, {});
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
             ImGui::PushID("Light");
             ImGui::Indent(10.0f);
 
@@ -2864,44 +2861,44 @@ void Engine::renderInspectorPanel() {
                     obj.light.size = glm::vec2(2.0f, 2.0f);
                     obj.light.edgeFade = 0.2f;
                 }
-                projectManager.currentProject.hasUnsavedChanges = true;
+                changed = true;
             }
 
             if (ImGui::ColorEdit3("Color", &obj.light.color.x)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
+                changed = true;
             }
             if (ImGui::SliderFloat("Intensity", &obj.light.intensity, 0.0f, 10.0f)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
+                changed = true;
             }
             if (obj.type != ObjectType::DirectionalLight) {
                 if (ImGui::SliderFloat("Range", &obj.light.range, 0.0f, 50.0f)) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                    changed = true;
                 }
-            }
-            if (ImGui::Checkbox("Enabled##Light", &obj.light.enabled)) {
-                projectManager.currentProject.hasUnsavedChanges = true;
             }
 
             if (obj.type == ObjectType::SpotLight) {
                 if (ImGui::SliderFloat("Inner Angle", &obj.light.innerAngle, 1.0f, 90.0f)) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                    changed = true;
                 }
                 if (ImGui::SliderFloat("Outer Angle", &obj.light.outerAngle, obj.light.innerAngle, 120.0f)) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                    changed = true;
                 }
             }
 
             if (obj.type == ObjectType::AreaLight) {
                 if (ImGui::DragFloat2("Size", &obj.light.size.x, 0.05f, 0.1f, 10.0f)) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                    changed = true;
                 }
                 if (ImGui::SliderFloat("Edge Softness", &obj.light.edgeFade, 0.0f, 1.0f, "%.2f")) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
+                    changed = true;
                 }
             }
 
             ImGui::Unindent(10.0f);
             ImGui::PopID();
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
@@ -3014,110 +3011,25 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
-    if (!addComponentButtonShown) {
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::TextDisabled("Components");
-        addComponentButtonShown = true;
-        ImGui::PushID("FallbackAddComponent");
-        if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
-            ImGui::OpenPopup("AddComponentPopup");
-        }
-        if (ImGui::BeginPopup("AddComponentPopup")) {
-            if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody")) {
-                obj.hasRigidbody = true;
-                obj.rigidbody = RigidbodyComponent{};
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
-                obj.hasPlayerController = true;
-                obj.playerController = PlayerControllerComponent{};
-                obj.hasCollider = true;
-                obj.collider.type = ColliderType::Capsule;
-                obj.collider.boxSize = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
-                obj.collider.convex = true;
-                obj.hasRigidbody = true;
-                obj.rigidbody.enabled = true;
-                obj.rigidbody.useGravity = true;
-                obj.rigidbody.isKinematic = false;
-                obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
-                projectManager.currentProject.hasUnsavedChanges = true;
-                addComponentButtonShown = true;
-            }
-            if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
-                obj.hasAudioSource = true;
-                obj.audioSource = AudioSourceComponent{};
-                projectManager.currentProject.hasUnsavedChanges = true;
-                addComponentButtonShown = true;
-            }
-            if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
-                if (ImGui::MenuItem("Box Collider")) {
-                    obj.hasCollider = true;
-                    obj.collider = ColliderComponent{};
-                    obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                    addComponentButtonShown = true;
-                }
-                if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
-                    obj.hasCollider = true;
-                    obj.collider = ColliderComponent{};
-                    obj.collider.type = ColliderType::Mesh;
-                    obj.collider.convex = false;
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                    addComponentButtonShown = true;
-                }
-                if (ImGui::MenuItem("Mesh Collider (Convex)")) {
-                    obj.hasCollider = true;
-                    obj.collider = ColliderComponent{};
-                    obj.collider.type = ColliderType::ConvexMesh;
-                    obj.collider.convex = true;
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                    addComponentButtonShown = true;
-                }
-                ImGui::EndMenu();
-            }
-            if (ImGui::MenuItem("Script")) {
-                obj.scripts.push_back(ScriptComponent{});
-                projectManager.currentProject.hasUnsavedChanges = true;
-            }
-            ImGui::EndPopup();
-        }
-        ImGui::PopID();
-    }
-
-    ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.9f, 1.0f), "Scripts");
-
     bool scriptsChanged = false;
     int scriptToRemove = -1;
 
     for (size_t i = 0; i < obj.scripts.size(); ++i) {
-        ImGui::Separator();
         ImGui::PushID(static_cast<int>(i));
         ScriptComponent& sc = obj.scripts[i];
 
         std::string headerLabel = sc.path.empty() ? "Script" : fs::path(sc.path).filename().string();
-        std::string headerId = headerLabel + "##ScriptHeader" + std::to_string(i);
-        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
-        ImGui::SetNextItemAllowOverlap(); // allow following button to overlap header hit box
-        bool open = ImGui::CollapsingHeader(headerId.c_str(), flags);
-
-        ImVec2 headerMin = ImGui::GetItemRectMin();
-        ImVec2 headerMax = ImGui::GetItemRectMax();
-        float menuWidth = ImGui::GetFrameHeight();
-        ImGui::SameLine();
-        ImGui::SetCursorScreenPos(ImVec2(headerMax.x - menuWidth - ImGui::GetStyle().ItemSpacing.x, headerMin.y + (headerMax.y - headerMin.y - menuWidth) * 0.5f));
-        if (ImGui::SmallButton("...")) {
-            ImGui::OpenPopup("ScriptComponentMenu");
-        }
-        if (ImGui::BeginPopup("ScriptComponentMenu")) {
+        std::string scriptId = "ScriptComponent" + std::to_string(i);
+        auto header = drawComponentHeader(headerLabel.c_str(), scriptId.c_str(), &sc.enabled, true, [&]() {
             if (ImGui::MenuItem("Compile", nullptr, false, !sc.path.empty())) {
                 compileScriptFile(sc.path);
             }
             if (ImGui::MenuItem("Remove")) {
                 scriptToRemove = static_cast<int>(i);
             }
-            ImGui::EndPopup();
+        });
+        if (header.enabledChanged) {
+            scriptsChanged = true;
         }
 
         if (scriptToRemove == static_cast<int>(i)) {
@@ -3125,7 +3037,7 @@ void Engine::renderInspectorPanel() {
             continue;
         }
 
-        if (open) {
+        if (header.open) {
             char pathBuf[512] = {};
             std::snprintf(pathBuf, sizeof(pathBuf), "%s", sc.path.c_str());
             ImGui::TextDisabled("Path");
@@ -3145,13 +3057,6 @@ void Engine::renderInspectorPanel() {
                     }
                 }
             }
-
-            ImGui::SameLine();
-            ImGui::BeginDisabled(sc.path.empty());
-            if (ImGui::SmallButton("Compile")) {
-                compileScriptFile(sc.path);
-            }
-            ImGui::EndDisabled();
 
             if (!sc.path.empty()) {
                 fs::path binary = resolveScriptBinary(sc.path);
@@ -3261,7 +3166,74 @@ void Engine::renderInspectorPanel() {
         scriptsChanged = true;
     }
 
+    ImGui::Spacing();
+    ImGui::Separator();
+    bool componentChanged = false;
+    ImGui::PushID("AddComponent");
+    if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
+        ImGui::OpenPopup("AddComponentPopup");
+    }
+    if (ImGui::BeginPopup("AddComponentPopup")) {
+        if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody")) {
+            obj.hasRigidbody = true;
+            obj.rigidbody = RigidbodyComponent{};
+            componentChanged = true;
+        }
+        if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
+            obj.hasPlayerController = true;
+            obj.playerController = PlayerControllerComponent{};
+            obj.hasCollider = true;
+            obj.collider.type = ColliderType::Capsule;
+            obj.collider.boxSize = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+            obj.collider.convex = true;
+            obj.hasRigidbody = true;
+            obj.rigidbody.enabled = true;
+            obj.rigidbody.useGravity = true;
+            obj.rigidbody.isKinematic = false;
+            obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+            componentChanged = true;
+        }
+        if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
+            obj.hasAudioSource = true;
+            obj.audioSource = AudioSourceComponent{};
+            componentChanged = true;
+        }
+        if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
+            if (ImGui::MenuItem("Box Collider")) {
+                obj.hasCollider = true;
+                obj.collider = ColliderComponent{};
+                obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+                componentChanged = true;
+            }
+            if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
+                obj.hasCollider = true;
+                obj.collider = ColliderComponent{};
+                obj.collider.type = ColliderType::Mesh;
+                obj.collider.convex = false;
+                componentChanged = true;
+            }
+            if (ImGui::MenuItem("Mesh Collider (Convex)")) {
+                obj.hasCollider = true;
+                obj.collider = ColliderComponent{};
+                obj.collider.type = ColliderType::ConvexMesh;
+                obj.collider.convex = true;
+                componentChanged = true;
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem("Script")) {
+            obj.scripts.push_back(ScriptComponent{});
+            scriptsChanged = true;
+            componentChanged = true;
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
     if (scriptsChanged) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    if (componentChanged) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
 
