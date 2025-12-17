@@ -2331,6 +2331,16 @@ void Engine::renderInspectorPanel() {
                 obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
                 changed = true;
             }
+            ImGui::TextDisabled("Rotation Constraints");
+            if (ImGui::Checkbox("Lock Rotation X", &obj.rigidbody.lockRotationX)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Lock Rotation Y", &obj.rigidbody.lockRotationY)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Lock Rotation Z", &obj.rigidbody.lockRotationZ)) {
+                changed = true;
+            }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
         }

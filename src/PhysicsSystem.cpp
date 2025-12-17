@@ -332,7 +332,11 @@ PhysicsSystem::ActorRecord PhysicsSystem::createActorFor(const SceneObject& obj)
         dyn->setLinearDamping(obj.rigidbody.linearDamping);
         dyn->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, obj.rigidbody.isKinematic);
         dyn->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, !obj.rigidbody.useGravity);
-        dyn->setRigidDynamicLockFlags(PxRigidDynamicLockFlag::eLOCK_ANGULAR_X | PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z);
+        PxRigidDynamicLockFlags lockFlags;
+        if (obj.rigidbody.lockRotationX) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_X;
+        if (obj.rigidbody.lockRotationY) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y;
+        if (obj.rigidbody.lockRotationZ) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
+        dyn->setRigidDynamicLockFlags(lockFlags);
         if (obj.hasPlayerController) {
             dyn->setRigidBodyFlag(PxRigidBodyFlag::eENABLE_CCD, true);
             dyn->setMaxDepenetrationVelocity(1.5f);
@@ -404,9 +408,6 @@ bool PhysicsSystem::setActorYaw(int id, float yawDegrees) {
     PxQuat yawQuat(static_cast<float>(glm::radians(yawDegrees)), PxVec3(0, 1, 0));
     pose.q = yawQuat;
     rec.actor->setGlobalPose(pose);
-    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
-        dyn->setRigidDynamicLockFlags(PxRigidDynamicLockFlag::eLOCK_ANGULAR_X | PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z);
-    }
     return true;
 #endif
     return false;
@@ -507,7 +508,23 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         if (it == objects.end() || !it->enabled) continue;
 
         it->position = ToGlmVec3(pose.p);
-        it->rotation.y = ToGlmEulerDeg(pose.q).y;
+        if (it->hasPlayerController && it->playerController.enabled) {
+            continue;
+        }
+        glm::vec3 euler = ToGlmEulerDeg(pose.q);
+        if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+            PxRigidDynamicLockFlags lockFlags = dyn->getRigidDynamicLockFlags();
+            bool lockX = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_X);
+            bool lockY = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y);
+            bool lockZ = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z);
+            if (lockX && lockZ && !lockY) {
+                it->rotation.y = euler.y;
+            } else {
+                it->rotation = euler;
+            }
+        } else {
+            it->rotation.y = euler.y;
+        }
     }
 }
 

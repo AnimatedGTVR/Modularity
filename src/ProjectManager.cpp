@@ -283,6 +283,9 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "rbKinematic=" << (obj.rigidbody.isKinematic ? 1 : 0) << "\n";
                 file << "rbLinearDamping=" << obj.rigidbody.linearDamping << "\n";
                 file << "rbAngularDamping=" << obj.rigidbody.angularDamping << "\n";
+                file << "rbLockRotX=" << (obj.rigidbody.lockRotationX ? 1 : 0) << "\n";
+                file << "rbLockRotY=" << (obj.rigidbody.lockRotationY ? 1 : 0) << "\n";
+                file << "rbLockRotZ=" << (obj.rigidbody.lockRotationZ ? 1 : 0) << "\n";
             }
             file << "hasCollider=" << (obj.hasCollider ? 1 : 0) << "\n";
             if (obj.hasCollider) {
@@ -495,6 +498,12 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->rigidbody.linearDamping = std::stof(value);
                 } else if (key == "rbAngularDamping") {
                     currentObj->rigidbody.angularDamping = std::stof(value);
+                } else if (key == "rbLockRotX") {
+                    currentObj->rigidbody.lockRotationX = std::stoi(value) != 0;
+                } else if (key == "rbLockRotY") {
+                    currentObj->rigidbody.lockRotationY = std::stoi(value) != 0;
+                } else if (key == "rbLockRotZ") {
+                    currentObj->rigidbody.lockRotationZ = std::stoi(value) != 0;
                 } else if (key == "hasCollider") {
                     currentObj->hasCollider = std::stoi(value) != 0;
                 } else if (key == "colliderEnabled") {

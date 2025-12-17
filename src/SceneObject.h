@@ -107,6 +107,9 @@ struct RigidbodyComponent {
     bool isKinematic = false;
     float linearDamping = 0.05f;
     float angularDamping = 0.05f;
+    bool lockRotationX = true;
+    bool lockRotationY = false;
+    bool lockRotationZ = true;
 };
 
 enum class ColliderType {

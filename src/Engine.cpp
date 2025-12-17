@@ -321,13 +321,13 @@ void Engine::run() {
             }
         }
 
+        if (isPlaying) {
+            updatePlayerController(deltaTime);
+        }
+
         bool simulatePhysics = physics.isReady() && ((isPlaying && !isPaused) || (!isPlaying && specMode));
         if (simulatePhysics) {
             physics.simulate(deltaTime, sceneObjects);
-        }
-
-        if (isPlaying) {
-            updatePlayerController(deltaTime);
         }
 
         bool audioShouldPlay = isPlaying || specMode || testMode;
@@ -875,10 +875,12 @@ void Engine::updatePlayerController(float delta) {
 
     if (grounded) {
         pc.verticalVelocity = 0.0f;
-        if (hitGround) {
-            player->position.y = std::max(player->position.y, hitPos.y + capsuleHalf);
-        } else {
-            player->position.y = capsuleHalf;
+        if (!havePhysVel) {
+            if (hitGround) {
+                player->position.y = std::max(player->position.y, hitPos.y + capsuleHalf);
+            } else {
+                player->position.y = capsuleHalf;
+            }
         }
         if (key(GLFW_KEY_SPACE)) {
             pc.verticalVelocity = pc.jumpStrength;

@@ -76,6 +76,9 @@ void ScriptContext::SetRotation(const glm::vec3& rot) {
     if (object) {
         object->rotation = NormalizeEulerDegrees(rot);
         MarkDirty();
+        if (engine && HasRigidbody()) {
+            engine->teleportPhysicsActorFromScript(object->id, object->position, object->rotation);
+        }
     }
 }
 
