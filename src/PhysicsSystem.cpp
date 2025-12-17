@@ -368,6 +368,7 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     createGroundPlane();
 
     for (const auto& obj : objects) {
+        if (!obj.enabled) continue;
         ActorRecord rec = createActorFor(obj);
         if (!rec.actor) continue;
         mScene->addActor(*rec.actor);
@@ -480,6 +481,12 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         if (!rec.actor) continue;
         auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
         if (it == objects.end()) continue;
+        if (!it->enabled) {
+            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, true);
+            continue;
+        } else {
+            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, false);
+        }
         if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
             if (dyn->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
                 dyn->setKinematicTarget(PxTransform(ToPxVec3(it->position), ToPxQuat(it->rotation)));
@@ -497,7 +504,7 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         if (!rec.actor || !rec.isDynamic || rec.isKinematic) continue;
         PxTransform pose = rec.actor->getGlobalPose();
         auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
-        if (it == objects.end()) continue;
+        if (it == objects.end() || !it->enabled) continue;
 
         it->position = ToGlmVec3(pose.p);
         it->rotation.y = ToGlmEulerDeg(pose.q).y;

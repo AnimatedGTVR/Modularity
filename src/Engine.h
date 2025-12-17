@@ -10,6 +10,7 @@
 #include "ScriptCompiler.h"
 #include "ScriptRuntime.h"
 #include "PhysicsSystem.h"
+#include "AudioSystem.h"
 #include "../include/Window/Window.h"
 
 void window_size_callback(GLFWwindow* window, int width, int height);
@@ -111,6 +112,7 @@ private:
     ScriptCompiler scriptCompiler;
     ScriptRuntime scriptRuntime;
     PhysicsSystem physics;
+    AudioSystem audio;
     bool showCompilePopup = false;
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;

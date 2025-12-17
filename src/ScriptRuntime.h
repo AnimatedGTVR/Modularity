@@ -25,6 +25,14 @@ struct ScriptContext {
     // Convenience helpers for scripts
     SceneObject* FindObjectByName(const std::string& name);
     SceneObject* FindObjectById(int id);
+    bool IsObjectEnabled() const;
+    void SetObjectEnabled(bool enabled);
+    int GetLayer() const;
+    void SetLayer(int layer);
+    std::string GetTag() const;
+    void SetTag(const std::string& tag);
+    bool HasTag(const std::string& tag) const;
+    bool IsInLayer(int layer) const;
     void SetPosition(const glm::vec3& pos);
     void SetRotation(const glm::vec3& rot);
     void SetScale(const glm::vec3& scl);

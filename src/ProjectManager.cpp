@@ -258,7 +258,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=7\n";
+        file << "version=8\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
@@ -268,6 +268,9 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "id=" << obj.id << "\n";
             file << "name=" << obj.name << "\n";
             file << "type=" << static_cast<int>(obj.type) << "\n";
+            file << "enabled=" << (obj.enabled ? 1 : 0) << "\n";
+            file << "layer=" << obj.layer << "\n";
+            file << "tag=" << obj.tag << "\n";
             file << "parentId=" << obj.parentId << "\n";
             file << "position=" << obj.position.x << "," << obj.position.y << "," << obj.position.z << "\n";
             file << "rotation=" << obj.rotation.x << "," << obj.rotation.y << "," << obj.rotation.z << "\n";
@@ -297,6 +300,17 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "pcRadius=" << obj.playerController.radius << "\n";
                 file << "pcJumpStrength=" << obj.playerController.jumpStrength << "\n";
             }
+            file << "hasAudioSource=" << (obj.hasAudioSource ? 1 : 0) << "\n";
+            if (obj.hasAudioSource) {
+                file << "audioEnabled=" << (obj.audioSource.enabled ? 1 : 0) << "\n";
+                file << "audioClip=" << obj.audioSource.clipPath << "\n";
+                file << "audioVolume=" << obj.audioSource.volume << "\n";
+                file << "audioLoop=" << (obj.audioSource.loop ? 1 : 0) << "\n";
+                file << "audioPlayOnStart=" << (obj.audioSource.playOnStart ? 1 : 0) << "\n";
+                file << "audioSpatial=" << (obj.audioSource.spatial ? 1 : 0) << "\n";
+                file << "audioMinDistance=" << obj.audioSource.minDistance << "\n";
+                file << "audioMaxDistance=" << obj.audioSource.maxDistance << "\n";
+            }
             file << "materialColor=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
             file << "materialAmbient=" << obj.material.ambientStrength << "\n";
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
@@ -325,6 +339,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "lightColor=" << obj.light.color.r << "," << obj.light.color.g << "," << obj.light.color.b << "\n";
             file << "lightIntensity=" << obj.light.intensity << "\n";
             file << "lightRange=" << obj.light.range << "\n";
+            file << "lightEdgeFade=" << obj.light.edgeFade << "\n";
             file << "lightInner=" << obj.light.innerAngle << "\n";
             file << "lightOuter=" << obj.light.outerAngle << "\n";
             file << "lightSize=" << obj.light.size.x << "," << obj.light.size.y << "\n";
@@ -440,6 +455,12 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     else if (currentObj->type == ObjectType::Camera) {
                         currentObj->camera.type = SceneCameraType::Scene;
                     }
+                } else if (key == "enabled") {
+                    currentObj->enabled = (std::stoi(value) != 0);
+                } else if (key == "layer") {
+                    currentObj->layer = std::stoi(value);
+                } else if (key == "tag") {
+                    currentObj->tag = value;
                 } else if (key == "parentId") {
                     currentObj->parentId = std::stoi(value);
                 } else if (key == "position") {
@@ -499,6 +520,24 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->playerController.radius = std::stof(value);
                 } else if (key == "pcJumpStrength") {
                     currentObj->playerController.jumpStrength = std::stof(value);
+                } else if (key == "hasAudioSource") {
+                    currentObj->hasAudioSource = std::stoi(value) != 0;
+                } else if (key == "audioEnabled") {
+                    currentObj->audioSource.enabled = std::stoi(value) != 0;
+                } else if (key == "audioClip") {
+                    currentObj->audioSource.clipPath = value;
+                } else if (key == "audioVolume") {
+                    currentObj->audioSource.volume = std::stof(value);
+                } else if (key == "audioLoop") {
+                    currentObj->audioSource.loop = std::stoi(value) != 0;
+                } else if (key == "audioPlayOnStart") {
+                    currentObj->audioSource.playOnStart = std::stoi(value) != 0;
+                } else if (key == "audioSpatial") {
+                    currentObj->audioSource.spatial = std::stoi(value) != 0;
+                } else if (key == "audioMinDistance") {
+                    currentObj->audioSource.minDistance = std::stof(value);
+                } else if (key == "audioMaxDistance") {
+                    currentObj->audioSource.maxDistance = std::stof(value);
                 } else if (key == "materialColor") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->material.color.r,
@@ -575,6 +614,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->light.intensity = std::stof(value);
                 } else if (key == "lightRange") {
                     currentObj->light.range = std::stof(value);
+                } else if (key == "lightEdgeFade") {
+                    currentObj->light.edgeFade = std::stof(value);
                 } else if (key == "lightInner") {
                     currentObj->light.innerAngle = std::stof(value);
                 } else if (key == "lightOuter") {

@@ -36,6 +36,7 @@ struct LightComponent {
     glm::vec3 color = glm::vec3(1.0f);
     float intensity = 1.0f;
     float range = 10.0f;
+    float edgeFade = 0.2f; // 0 = sharp cutoff, 1 = fully softened edges (area lights)
     // Spot
     float innerAngle = 15.0f;
     float outerAngle = 25.0f;
@@ -133,10 +134,24 @@ struct PlayerControllerComponent {
     float yaw = 0.0f;
 };
 
+struct AudioSourceComponent {
+    bool enabled = true;
+    std::string clipPath;
+    float volume = 1.0f;
+    bool loop = true;
+    bool playOnStart = true;
+    bool spatial = true;
+    float minDistance = 1.0f;
+    float maxDistance = 25.0f;
+};
+
 class SceneObject {
 public:
     std::string name;
     ObjectType type;
+    bool enabled = true;
+    int layer = 0;
+    std::string tag = "Untagged";
     glm::vec3 position;
     glm::vec3 rotation;
     glm::vec3 scale;
@@ -165,6 +180,8 @@ public:
     ColliderComponent collider;
     bool hasPlayerController = false;
     PlayerControllerComponent playerController;
+    bool hasAudioSource = false;
+    AudioSourceComponent audioSource;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}

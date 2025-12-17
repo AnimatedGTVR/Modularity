@@ -247,6 +247,11 @@ bool Engine::init() {
     std::cerr << "[DEBUG] Setting up ImGui..." << std::endl;
     setupImGui();
     std::cerr << "[DEBUG] ImGui setup complete" << std::endl;
+
+    if (!audio.init()) {
+        std::cerr << "[DEBUG] Audio init failed\n";
+        addConsoleMessage("Audio initialization failed. Audio playback will be disabled.", ConsoleMessageType::Warning);
+    }
     
     logToConsole("Engine initialized - Waiting for project selection");
     return true;
@@ -324,6 +329,17 @@ void Engine::run() {
         if (isPlaying) {
             updatePlayerController(deltaTime);
         }
+
+        bool audioShouldPlay = isPlaying || specMode || testMode;
+        Camera listenerCamera = camera;
+        for (const auto& obj : sceneObjects) {
+            if (obj.type == ObjectType::Camera && obj.camera.type == SceneCameraType::Player) {
+                listenerCamera = makeCameraFromObject(obj);
+                listenerCamera.position = obj.position;
+                break;
+            }
+        }
+        audio.update(sceneObjects, listenerCamera, audioShouldPlay);
 
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
@@ -433,6 +449,8 @@ void Engine::shutdown() {
     }
 
     physics.onPlayStop();
+    audio.onPlayStop();
+    audio.shutdown();
     physics.shutdown();
 
     ImGui_ImplOpenGL3_Shutdown();
@@ -756,6 +774,7 @@ void Engine::updateScripts(float delta) {
     if (sceneObjects.empty()) return;
 
     for (auto& obj : sceneObjects) {
+        if (!obj.enabled) continue;
         for (auto& sc : obj.scripts) {
             if (sc.path.empty()) continue;
             fs::path binary = resolveScriptBinary(sc.path);
@@ -775,7 +794,7 @@ void Engine::updatePlayerController(float delta) {
 
     SceneObject* player = nullptr;
     for (auto& obj : sceneObjects) {
-        if (obj.hasPlayerController && obj.playerController.enabled) {
+        if (obj.enabled && obj.hasPlayerController && obj.playerController.enabled) {
             player = &obj;
             activePlayerId = obj.id;
             break;
@@ -1112,6 +1131,8 @@ void Engine::duplicateSelected() {
         newObj.collider = it->collider;
         newObj.hasPlayerController = it->hasPlayerController;
         newObj.playerController = it->playerController;
+        newObj.hasAudioSource = it->hasAudioSource;
+        newObj.audioSource = it->audioSource;
         
         sceneObjects.push_back(newObj);
         setPrimarySelection(id);

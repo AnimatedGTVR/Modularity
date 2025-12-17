@@ -1,6 +1,8 @@
 #include "ScriptRuntime.h"
 #include "Engine.h"
 #include "SceneObject.h"
+#include <algorithm>
+#include <unordered_map>
 
 #if defined(_WIN32)
     #include <Windows.h>
@@ -16,6 +18,51 @@ SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
 SceneObject* ScriptContext::FindObjectById(int id) {
     if (!engine) return nullptr;
     return engine->findObjectById(id);
+}
+
+bool ScriptContext::IsObjectEnabled() const {
+    return object ? object->enabled : false;
+}
+
+void ScriptContext::SetObjectEnabled(bool enabled) {
+    if (!object) return;
+    if (object->enabled != enabled) {
+        object->enabled = enabled;
+        MarkDirty();
+    }
+}
+
+int ScriptContext::GetLayer() const {
+    return object ? object->layer : 0;
+}
+
+void ScriptContext::SetLayer(int layer) {
+    if (!object) return;
+    int clamped = std::clamp(layer, 0, 31);
+    if (object->layer != clamped) {
+        object->layer = clamped;
+        MarkDirty();
+    }
+}
+
+std::string ScriptContext::GetTag() const {
+    return object ? object->tag : std::string();
+}
+
+void ScriptContext::SetTag(const std::string& tag) {
+    if (!object) return;
+    if (object->tag != tag) {
+        object->tag = tag;
+        MarkDirty();
+    }
+}
+
+bool ScriptContext::HasTag(const std::string& tag) const {
+    return object && object->tag == tag;
+}
+
+bool ScriptContext::IsInLayer(int layer) const {
+    return object && object->layer == layer;
 }
 
 void ScriptContext::SetPosition(const glm::vec3& pos) {
@@ -121,7 +168,18 @@ void ScriptContext::AutoSetting(const std::string& key, bool& value) {
     if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
-    value = GetSettingBool(key, value);
+    static std::unordered_map<std::string, bool> defaults;
+    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string id = scriptId + "|" + key;
+    bool defaultVal = value;
+    auto itDef = defaults.find(id);
+    if (itDef != defaults.end()) {
+        defaultVal = itDef->second;
+    } else {
+        defaults[id] = defaultVal; // capture first-seen initializer for this module/key
+    }
+
+    value = GetSettingBool(key, defaultVal);
     AutoSettingEntry entry;
     entry.type = AutoSettingType::Bool;
     entry.key = key;
@@ -135,7 +193,18 @@ void ScriptContext::AutoSetting(const std::string& key, glm::vec3& value) {
     if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
-    value = GetSettingVec3(key, value);
+    static std::unordered_map<std::string, glm::vec3> defaults;
+    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string id = scriptId + "|" + key;
+    glm::vec3 defaultVal = value;
+    auto itDef = defaults.find(id);
+    if (itDef != defaults.end()) {
+        defaultVal = itDef->second;
+    } else {
+        defaults[id] = defaultVal;
+    }
+
+    value = GetSettingVec3(key, defaultVal);
     AutoSettingEntry entry;
     entry.type = AutoSettingType::Vec3;
     entry.key = key;
@@ -149,9 +218,17 @@ void ScriptContext::AutoSetting(const std::string& key, char* buffer, size_t buf
     if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
-    std::string existing = GetSetting(key, std::string(buffer));
+    static std::unordered_map<std::string, std::string> defaults;
+    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string id = scriptId + "|" + key;
+    std::string defaultVal = defaults.count(id) ? defaults[id] : std::string(buffer);
+    defaults.try_emplace(id, defaultVal);
+
+    std::string existing = GetSetting(key, defaultVal);
     if (!existing.empty()) {
         std::snprintf(buffer, bufferSize, "%s", existing.c_str());
+    } else if (!defaultVal.empty()) {
+        std::snprintf(buffer, bufferSize, "%s", defaultVal.c_str());
     }
     AutoSettingEntry entry;
     entry.type = AutoSettingType::StringBuf;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <cfloat>
 #include <cmath>
 #include <sstream>
@@ -1435,8 +1436,10 @@ void Engine::renderMainMenuBar() {
                 } else {
                     addConsoleMessage("PhysX failed to initialize; physics disabled for play mode", ConsoleMessageType::Warning);
                 }
+                audio.onPlayStart(sceneObjects);
             } else {
                 physics.onPlayStop();
+                audio.onPlayStop();
                 isPaused = false;
                 if (specMode && (physics.isReady() || physics.init())) {
                     physics.onPlayStart(sceneObjects);
@@ -1456,8 +1459,13 @@ void Engine::renderMainMenuBar() {
             }
             specMode = enable;
             if (!isPlaying) {
-                if (specMode) physics.onPlayStart(sceneObjects);
-                else physics.onPlayStop();
+                if (specMode) {
+                    physics.onPlayStart(sceneObjects);
+                    audio.onPlayStart(sceneObjects);
+                } else {
+                    physics.onPlayStop();
+                    audio.onPlayStop();
+                }
             }
         }
 
@@ -1654,9 +1662,13 @@ void Engine::renderInspectorPanel() {
 
     fs::path selectedMaterialPath;
     bool browserHasMaterial = false;
+    fs::path selectedAudioPath;
+    bool browserHasAudio = false;
+    const AudioClipPreview* selectedAudioPreview = nullptr;
     if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
         fs::directory_entry entry(fileBrowser.selectedFile);
-        if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+        FileCategory cat = fileBrowser.getFileCategory(entry);
+        if (cat == FileCategory::Material) {
             selectedMaterialPath = entry.path();
             browserHasMaterial = true;
             if (inspectedMaterialPath != selectedMaterialPath.string()) {
@@ -1676,10 +1688,50 @@ void Engine::renderInspectorPanel() {
             inspectedMaterialPath.clear();
             inspectedMaterialValid = false;
         }
+        if (cat == FileCategory::Audio) {
+            selectedAudioPath = entry.path();
+            browserHasAudio = true;
+            selectedAudioPreview = audio.getPreview(selectedAudioPath.string());
+        }
     } else {
         inspectedMaterialPath.clear();
         inspectedMaterialValid = false;
     }
+
+    auto drawWaveform = [&](const char* id, const AudioClipPreview* preview, const ImVec2& size, float progressRatio, float* seekRatioOut) {
+        if (!preview || preview->waveform.empty()) {
+            ImGui::Dummy(size);
+            return;
+        }
+        ImVec2 start = ImGui::GetCursorScreenPos();
+        ImVec2 end = ImVec2(start.x + size.x, start.y + size.y);
+        ImGui::InvisibleButton(id, size);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(start, end, IM_COL32(30, 35, 45, 180), 4.0f);
+        float midY = (start.y + end.y) * 0.5f;
+        float usableHeight = size.y * 0.45f;
+        size_t count = preview->waveform.size();
+        float step = count > 1 ? size.x / static_cast<float>(count - 1) : size.x;
+        ImU32 color = IM_COL32(255, 180, 100, 200);
+        for (size_t i = 0; i < count; ++i) {
+            float amp = std::clamp(preview->waveform[i], 0.0f, 1.0f);
+            float x = start.x + step * static_cast<float>(i);
+            float yOff = amp * usableHeight;
+            dl->AddLine(ImVec2(x, midY - yOff), ImVec2(x, midY + yOff), color, 1.2f);
+        }
+
+        if (progressRatio >= 0.0f && progressRatio <= 1.0f) {
+            float px = start.x + progressRatio * size.x;
+            dl->AddLine(ImVec2(px, start.y), ImVec2(px, end.y), IM_COL32(120, 210, 255, 230), 2.0f);
+        }
+
+        if (seekRatioOut && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            float mouseX = ImGui::GetIO().MousePos.x;
+            float ratio = (mouseX - start.x) / size.x;
+            ratio = std::clamp(ratio, 0.0f, 1.0f);
+            *seekRatioOut = ratio;
+        }
+    };
 
     auto renderMaterialAssetPanel = [&](const char* headerTitle, bool allowApply) {
         if (!browserHasMaterial) return;
@@ -1858,9 +1910,70 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     };
 
+    auto renderAudioAssetPanel = [&](const char* headerTitle, SceneObject* target) {
+        if (!browserHasAudio) return;
+
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.4f, 0.25f, 1.0f));
+        if (ImGui::CollapsingHeader(headerTitle, ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(8.0f);
+            ImGui::TextDisabled("%s", selectedAudioPath.filename().string().c_str());
+            ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "%s", selectedAudioPath.string().c_str());
+            ImGui::Spacing();
+
+            if (selectedAudioPreview) {
+                double cur = 0.0;
+                double dur = 0.0;
+                float progress = -1.0f;
+                if (audio.getPreviewTime(selectedAudioPath.string(), cur, dur) && dur > 0.0001) {
+                    progress = static_cast<float>(cur / dur);
+                }
+                ImGui::Text("Format: %u ch @ %u Hz", selectedAudioPreview->channels, selectedAudioPreview->sampleRate);
+                ImGui::Text("Length: %.2f s", selectedAudioPreview->durationSeconds);
+                ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 96.0f);
+                float seekRatio = -1.0f;
+                drawWaveform("##AudioWaveAsset", selectedAudioPreview, waveSize, progress, &seekRatio);
+                if (seekRatio >= 0.0f && dur > 0.0) {
+                    audio.seekPreview(selectedAudioPath.string(), seekRatio * dur);
+                }
+                if (dur > 0.0) {
+                    ImGui::TextDisabled("Time: %0.2f / %0.2f", cur, dur);
+                }
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f), "Unable to decode audio preview.");
+            }
+
+            ImGui::Spacing();
+            bool isPlayingPreview = audio.isPreviewing(selectedAudioPath.string());
+            if (ImGui::Button(isPlayingPreview ? "Stop" : "Play", ImVec2(72, 0))) {
+                if (isPlayingPreview) {
+                    audio.stopPreview();
+                } else {
+                    audio.playPreview(selectedAudioPath.string());
+                }
+            }
+
+            if (target) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Assign to Selection")) {
+                    if (!target->hasAudioSource) {
+                        target->hasAudioSource = true;
+                        target->audioSource = AudioSourceComponent{};
+                    }
+                    target->audioSource.clipPath = selectedAudioPath.string();
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+            }
+
+            ImGui::Unindent(8.0f);
+        }
+        ImGui::PopStyleColor();
+    };
+
     if (selectedObjectIds.empty()) {
         if (browserHasMaterial) {
             renderMaterialAssetPanel("Material Asset", true);
+        } else if (browserHasAudio) {
+            renderAudioAssetPanel("Audio Clip", nullptr);
         } else {
             ImGui::TextDisabled("No object selected");
         }
@@ -1879,6 +1992,7 @@ void Engine::renderInspectorPanel() {
     }
 
     SceneObject& obj = *it;
+    ImGui::PushID(obj.id); // Scope per-object widgets to avoid ID collisions
     bool addComponentButtonShown = false;
 
     if (selectedObjectIds.size() > 1) {
@@ -1922,6 +2036,31 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("ID:");
         ImGui::SameLine();
         ImGui::TextDisabled("%d", obj.id);
+
+        if (ImGui::Checkbox("Enabled##ObjEnabled", &obj.enabled)) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+
+        ImGui::Text("Layer:");
+        ImGui::SameLine();
+        int layer = obj.layer;
+        ImGui::SetNextItemWidth(120);
+        if (ImGui::SliderInt("##Layer", &layer, 0, 31)) {
+            obj.layer = layer;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(0-31)");
+
+        ImGui::Text("Tag:");
+        ImGui::SameLine();
+        char tagBuf[64] = {};
+        std::snprintf(tagBuf, sizeof(tagBuf), "%s", obj.tag.c_str());
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##Tag", tagBuf, sizeof(tagBuf))) {
+            obj.tag = tagBuf;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
     }
 
     ImGui::PopStyleColor();
@@ -1931,6 +2070,7 @@ void Engine::renderInspectorPanel() {
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.5f, 0.3f, 1.0f));
 
     if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Transform");
         ImGui::Indent(10.0f);
 
         if (obj.type == ObjectType::PostFXNode) {
@@ -1973,6 +2113,7 @@ void Engine::renderInspectorPanel() {
         }
 
         ImGui::Unindent(10.0f);
+        ImGui::PopID();
     }
 
     ImGui::PopStyleColor();
@@ -1981,10 +2122,11 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.35f, 1.0f));
         if (ImGui::CollapsingHeader("Collider", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Collider");
             ImGui::Indent(10.0f);
             bool changed = false;
 
-            if (ImGui::Checkbox("Enabled", &obj.collider.enabled)) {
+            if (ImGui::Checkbox("Enabled##Collider", &obj.collider.enabled)) {
                 changed = true;
             }
 
@@ -2035,6 +2177,7 @@ void Engine::renderInspectorPanel() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2043,10 +2186,11 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.7f, 1.0f));
         if (ImGui::CollapsingHeader("Player Controller", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("PlayerController");
             ImGui::Indent(10.0f);
             bool changed = false;
 
-            if (ImGui::Checkbox("Enabled", &obj.playerController.enabled)) {
+            if (ImGui::Checkbox("Enabled##PlayerController", &obj.playerController.enabled)) {
                 changed = true;
             }
             if (ImGui::DragFloat("Move Speed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
@@ -2089,6 +2233,7 @@ void Engine::renderInspectorPanel() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2097,10 +2242,11 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.45f, 0.25f, 1.0f));
         if (ImGui::CollapsingHeader("Rigidbody", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Rigidbody");
             ImGui::Indent(10.0f);
             bool changed = false;
 
-            if (ImGui::Checkbox("Enabled", &obj.rigidbody.enabled)) {
+            if (ImGui::Checkbox("Enabled##Rigidbody", &obj.rigidbody.enabled)) {
                 changed = true;
             }
             ImGui::SameLine();
@@ -2137,6 +2283,124 @@ void Engine::renderInspectorPanel() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasAudioSource) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.55f, 0.4f, 0.3f, 1.0f));
+        if (ImGui::CollapsingHeader("Audio Source", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("AudioSource");
+            ImGui::Indent(10.0f);
+            bool changed = false;
+            auto& src = obj.audioSource;
+
+            if (ImGui::Checkbox("Enabled##AudioSource", &src.enabled)) {
+                changed = true;
+            }
+
+            char clipBuf[512] = {};
+            std::snprintf(clipBuf, sizeof(clipBuf), "%s", src.clipPath.c_str());
+            ImGui::TextDisabled("Clip");
+            ImGui::SetNextItemWidth(-170);
+            if (ImGui::InputText("##ClipPath", clipBuf, sizeof(clipBuf))) {
+                src.clipPath = clipBuf;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear##AudioClip")) {
+                src.clipPath.clear();
+                changed = true;
+            }
+            ImGui::SameLine();
+            bool selectionIsAudio = false;
+            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+                selectionIsAudio = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == FileCategory::Audio;
+            }
+            ImGui::BeginDisabled(!selectionIsAudio);
+            if (ImGui::SmallButton("Use Selection##AudioClip")) {
+                src.clipPath = fileBrowser.selectedFile.string();
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            bool previewPlaying = !src.clipPath.empty() && audio.isPreviewing(src.clipPath);
+            if (ImGui::Button(previewPlaying ? "Stop Preview" : "Play Preview")) {
+                if (previewPlaying) {
+                    audio.stopPreview();
+                } else if (!src.clipPath.empty()) {
+                    audio.playPreview(src.clipPath, src.volume);
+                }
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", src.clipPath.empty() ? "No clip selected" : fs::path(src.clipPath).filename().string().c_str());
+
+            if (ImGui::SliderFloat("Volume", &src.volume, 0.0f, 1.5f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Loop", &src.loop)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Play On Start", &src.playOnStart)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("3D Spatialization", &src.spatial)) {
+                changed = true;
+            }
+            ImGui::BeginDisabled(!src.spatial);
+            if (ImGui::DragFloat("Min Distance", &src.minDistance, 0.1f, 0.1f, 200.0f, "%.2f")) {
+                src.minDistance = std::max(0.1f, src.minDistance);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Max Distance", &src.maxDistance, 0.1f, src.minDistance + 0.5f, 500.0f, "%.2f")) {
+                src.maxDistance = std::max(src.maxDistance, src.minDistance + 0.5f);
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            const AudioClipPreview* clipPreview = audio.getPreview(src.clipPath);
+            ImGui::Separator();
+            ImGui::TextDisabled("Waveform");
+            ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 80.0f);
+            double cur = 0.0;
+            double dur = clipPreview ? clipPreview->durationSeconds : 0.0;
+            float progress = -1.0f;
+            if (audio.getPreviewTime(src.clipPath, cur, dur) && dur > 0.0001) {
+                progress = static_cast<float>(cur / dur);
+            }
+            float seekRatio = -1.0f;
+            drawWaveform("##AudioWaveComponent", clipPreview, waveSize, progress, &seekRatio);
+            if (seekRatio >= 0.0f && dur > 0.0) {
+                audio.seekPreview(src.clipPath, seekRatio * dur);
+            }
+            if (dur > 0.0) {
+                ImGui::TextDisabled("Time: %0.2f / %0.2f", cur, dur);
+            }
+            if (clipPreview) {
+                ImGui::TextDisabled("Length: %.2fs | %u channels @ %u Hz",
+                    clipPreview->durationSeconds,
+                    clipPreview->channels,
+                    clipPreview->sampleRate);
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Remove Audio Source", ImVec2(-1, 0))) {
+                if (audio.isPreviewing(src.clipPath)) {
+                    audio.stopPreview();
+                }
+                obj.hasAudioSource = false;
+                changed = true;
+            }
+
+            if (changed) {
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2145,6 +2409,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.35f, 0.65f, 1.0f));
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Camera");
             ImGui::Indent(10.0f);
             const char* cameraTypes[] = { "Scene", "Player" };
             int camType = static_cast<int>(obj.camera.type);
@@ -2165,6 +2430,7 @@ void Engine::renderInspectorPanel() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2173,6 +2439,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
         if (ImGui::CollapsingHeader("Post Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("PostFX");
             ImGui::Indent(10.0f);
             bool changed = false;
 
@@ -2273,6 +2540,7 @@ void Engine::renderInspectorPanel() {
             ImGui::TextDisabled("Nodes stack in hierarchy order; latest node overrides previous settings.");
             ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2283,6 +2551,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
 
         if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Material");
             ImGui::Indent(10.0f);
 
             auto textureField = [&](const char* label, const char* idSuffix, std::string& path) {
@@ -2508,6 +2777,11 @@ void Engine::renderInspectorPanel() {
                     obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
                     materialChanged = true;
                 }
+                if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
+                    obj.hasAudioSource = true;
+                    obj.audioSource = AudioSourceComponent{};
+                    materialChanged = true;
+                }
                 if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
                     if (ImGui::MenuItem("Box Collider")) {
                         obj.hasCollider = true;
@@ -2548,6 +2822,7 @@ void Engine::renderInspectorPanel() {
             }
 
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
 
         ImGui::PopStyleColor();
@@ -2557,6 +2832,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.45f, 0.2f, 1.0f));
         if (ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Light");
             ImGui::Indent(10.0f);
 
             int currentType = (obj.type == ObjectType::DirectionalLight) ? 0 :
@@ -2586,6 +2862,7 @@ void Engine::renderInspectorPanel() {
                     obj.light.range = 10.0f;
                     obj.light.intensity = 3.0f;
                     obj.light.size = glm::vec2(2.0f, 2.0f);
+                    obj.light.edgeFade = 0.2f;
                 }
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
@@ -2601,7 +2878,7 @@ void Engine::renderInspectorPanel() {
                     projectManager.currentProject.hasUnsavedChanges = true;
                 }
             }
-            if (ImGui::Checkbox("Enabled", &obj.light.enabled)) {
+            if (ImGui::Checkbox("Enabled##Light", &obj.light.enabled)) {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
 
@@ -2618,9 +2895,13 @@ void Engine::renderInspectorPanel() {
                 if (ImGui::DragFloat2("Size", &obj.light.size.x, 0.05f, 0.1f, 10.0f)) {
                     projectManager.currentProject.hasUnsavedChanges = true;
                 }
+                if (ImGui::SliderFloat("Edge Softness", &obj.light.edgeFade, 0.0f, 1.0f, "%.2f")) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
             }
 
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         ImGui::PopStyleColor();
     }
@@ -2630,6 +2911,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.4f, 1.0f));
         
         if (ImGui::CollapsingHeader("Mesh Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("MeshInfo");
             ImGui::Indent(10.0f);
             
             const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId);
@@ -2673,6 +2955,7 @@ void Engine::renderInspectorPanel() {
             }
             
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
         
         ImGui::PopStyleColor();
@@ -2683,6 +2966,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.65f, 1.0f));
 
         if (ImGui::CollapsingHeader("Model Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("ModelInfo");
             ImGui::Indent(10.0f);
 
             const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
@@ -2724,6 +3008,7 @@ void Engine::renderInspectorPanel() {
             }
 
             ImGui::Unindent(10.0f);
+            ImGui::PopID();
         }
 
         ImGui::PopStyleColor();
@@ -2756,6 +3041,12 @@ void Engine::renderInspectorPanel() {
                 obj.rigidbody.useGravity = true;
                 obj.rigidbody.isKinematic = false;
                 obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+                projectManager.currentProject.hasUnsavedChanges = true;
+                addComponentButtonShown = true;
+            }
+            if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
+                obj.hasAudioSource = true;
+                obj.audioSource = AudioSourceComponent{};
                 projectManager.currentProject.hasUnsavedChanges = true;
                 addComponentButtonShown = true;
             }
@@ -2808,6 +3099,7 @@ void Engine::renderInspectorPanel() {
         std::string headerLabel = sc.path.empty() ? "Script" : fs::path(sc.path).filename().string();
         std::string headerId = headerLabel + "##ScriptHeader" + std::to_string(i);
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen;
+        ImGui::SetNextItemAllowOverlap(); // allow following button to overlap header hit box
         bool open = ImGui::CollapsingHeader(headerId.c_str(), flags);
 
         ImVec2 headerMin = ImGui::GetItemRectMin();
@@ -2871,7 +3163,11 @@ void Engine::renderInspectorPanel() {
                     ScriptContext ctx;
                     ctx.engine = this;
                     ctx.object = &obj;
+                    // Scope script inspector to avoid shared ImGui IDs across objects or multiple instances
+                    std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
+                    ImGui::PushID(inspectorId.c_str());
                     inspector(ctx);
+                    ImGui::PopID();
                 } else if (!scriptRuntime.getLastError().empty()) {
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "Inspector load failed");
                     ImGui::TextWrapped("%s", scriptRuntime.getLastError().c_str());
@@ -2887,17 +3183,60 @@ void Engine::renderInspectorPanel() {
                 char valBuf[256] = {};
                 std::snprintf(keyBuf, sizeof(keyBuf), "%s", sc.settings[s].key.c_str());
                 std::snprintf(valBuf, sizeof(valBuf), "%s", sc.settings[s].value.c_str());
+                auto isBoolString = [](const std::string& v, bool& out) {
+                    if (v == "1" || v == "true" || v == "True") { out = true; return true; }
+                    if (v == "0" || v == "false" || v == "False") { out = false; return true; }
+                    return false;
+                };
+                auto isNumberString = [](const std::string& v, float& out) {
+                    if (v.empty()) return false;
+                    char* end = nullptr;
+                    out = std::strtof(v.c_str(), &end);
+                    return end && *end == '\0';
+                };
+                bool boolVal = false;
+                bool hasBool = isBoolString(sc.settings[s].value, boolVal);
+                float numVal = 0.0f;
+                bool hasNumber = isNumberString(sc.settings[s].value, numVal);
                 ImGui::SetNextItemWidth(140);
                 if (ImGui::InputText("##Key", keyBuf, sizeof(keyBuf))) {
                     sc.settings[s].key = keyBuf;
                     scriptsChanged = true;
                 }
                 ImGui::SameLine();
-                ImGui::SetNextItemWidth(-100);
-                if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
-                    sc.settings[s].value = valBuf;
+                ImGui::SetNextItemWidth(-200);
+                if (hasBool) {
+                    if (ImGui::Checkbox("##BoolVal", &boolVal)) {
+                        sc.settings[s].value = boolVal ? "1" : "0";
+                        scriptsChanged = true;
+                    }
+                } else if (hasNumber) {
+                    if (ImGui::InputFloat("##NumVal", &numVal, 0.0f, 0.0f, "%.4f")) {
+                        sc.settings[s].value = std::to_string(numVal);
+                        scriptsChanged = true;
+                    }
+                } else {
+                    if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
+                        sc.settings[s].value = valBuf;
+                        scriptsChanged = true;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(hasBool);
+                if (ImGui::SmallButton("As Bool")) {
+                    sc.settings[s].value = (!sc.settings[s].value.empty() && sc.settings[s].value != "0" && sc.settings[s].value != "false") ? "1" : "0";
                     scriptsChanged = true;
                 }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(hasNumber);
+                if (ImGui::SmallButton("As Number")) {
+                    float parsed = 0.0f;
+                    if (!isNumberString(sc.settings[s].value, parsed)) parsed = 0.0f;
+                    sc.settings[s].value = std::to_string(parsed);
+                    scriptsChanged = true;
+                }
+                ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::SmallButton("X")) {
                     sc.settings.erase(sc.settings.begin() + static_cast<long>(s));
@@ -2926,11 +3265,16 @@ void Engine::renderInspectorPanel() {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
 
+    if (browserHasAudio) {
+        ImGui::Spacing();
+        renderAudioAssetPanel("Audio Clip (File Browser)", &obj);
+    }
     if (browserHasMaterial) {
         ImGui::Spacing();
         renderMaterialAssetPanel("Material Asset (File Browser)", true);
     }
 
+    ImGui::PopID(); // object scope
     ImGui::End();
 }
 

@@ -873,6 +873,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         float inner = glm::cos(glm::radians(15.0f));
         float outer = glm::cos(glm::radians(25.0f));
         glm::vec2 areaSize = glm::vec2(1.0f); // width/height for area lights
+        float areaFade = 0.0f; // 0 sharp, 1 fully softened
     };
     auto forwardFromRotation = [](const SceneObject& obj) {
         glm::vec3 f = glm::normalize(glm::vec3(
@@ -891,6 +892,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     lights.reserve(10);
 
     for (const auto& obj : sceneObjects) {
+        if (!obj.enabled) continue;
         if (obj.light.enabled && obj.type == ObjectType::DirectionalLight) {
             LightUniform l;
             l.type = 0;
@@ -903,6 +905,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
     if (lights.size() < 10) {
         for (const auto& obj : sceneObjects) {
+            if (!obj.enabled) continue;
             if (obj.light.enabled && obj.type == ObjectType::SpotLight) {
                 LightUniform l;
                 l.type = 2;
@@ -920,6 +923,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
     if (lights.size() < 10) {
         for (const auto& obj : sceneObjects) {
+            if (!obj.enabled) continue;
             if (obj.light.enabled && obj.type == ObjectType::PointLight) {
                 LightUniform l;
                 l.type = 1;
@@ -934,6 +938,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
     if (lights.size() < 10) {
         for (const auto& obj : sceneObjects) {
+            if (!obj.enabled) continue;
             if (obj.light.enabled && obj.type == ObjectType::AreaLight) {
                 LightUniform l;
                 l.type = 3; // area
@@ -944,6 +949,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 float sizeHint = glm::max(obj.light.size.x, obj.light.size.y);
                 l.range = (obj.light.range > 0.0f) ? obj.light.range : glm::max(sizeHint * 2.0f, 1.0f);
                 l.areaSize = obj.light.size;
+                l.areaFade = glm::clamp(obj.light.edgeFade, 0.0f, 1.0f);
                 lights.push_back(l);
                 if (lights.size() >= 10) break;
             }
@@ -951,6 +957,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 
     for (const auto& obj : sceneObjects) {
+        if (!obj.enabled) continue;
         // Skip light gizmo-only types and camera helpers
         if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode) {
             continue;
@@ -980,6 +987,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setFloat("lightInnerCosArr" + idx, l.inner);
         shader->setFloat("lightOuterCosArr" + idx, l.outer);
         shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
+            shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
     }
 
         glm::mat4 model = glm::mat4(1.0f);

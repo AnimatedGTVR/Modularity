@@ -31,6 +31,7 @@ uniform float lightRangeArr[MAX_LIGHTS];
 uniform float lightInnerCosArr[MAX_LIGHTS];
 uniform float lightOuterCosArr[MAX_LIGHTS];
 uniform vec2 lightAreaSizeArr[MAX_LIGHTS];
+uniform float lightAreaFadeArr[MAX_LIGHTS];
 
 // Single directional light controlled by hierarchy (fallback if none set)
 uniform vec3 lightDir = normalize(vec3(0.3, 1.0, 0.5));
@@ -92,8 +93,23 @@ void main()
             vec2 local;
             local.x = dot(onPlane - center, tangent);
             local.y = dot(onPlane - center, bitangent);
-            vec2 clamped = clamp(local, -halfSize, halfSize);
-            vec3 closest = center + tangent * clamped.x + bitangent * clamped.y;
+
+            float fade = clamp(lightAreaFadeArr[i], 0.0, 1.0);
+            vec2 absLocal = abs(local);
+            float edgeWeight = 1.0;
+            if (fade < 0.0001) {
+                if (absLocal.x > halfSize.x || absLocal.y > halfSize.y) continue;
+            } else {
+                vec2 inner = halfSize * (1.0 - fade);
+                vec2 delta = max(halfSize - inner, vec2(0.0001));
+                vec2 outside = max(absLocal - inner, vec2(0.0));
+                float maxOutside = max(outside.x / delta.x, outside.y / delta.y);
+                edgeWeight = 1.0 - clamp(maxOutside, 0.0, 1.0);
+                if (edgeWeight <= 0.0) continue;
+                edgeWeight = smoothstep(0.0, 1.0, edgeWeight);
+            }
+
+            vec3 closest = center + tangent * local.x + bitangent * local.y;
 
             vec3 lvec = closest - FragPos;
             float dist = length(lvec);
@@ -110,7 +126,7 @@ void main()
             // Lambert against area normal for softer look
             float nl = max(dot(norm, lDirN), 0.0);
             float facing = max(dot(n, -lDirN), 0.0);
-            attenuation *= facing;
+            attenuation *= facing * edgeWeight;
 
             vec3 diffuse = nl * lightColorArr[i] * intensity;
             vec3 halfwayDir = normalize(lDirN + viewDir);
