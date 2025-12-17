@@ -3576,6 +3576,7 @@ void Engine::renderViewport() {
     }
 
     bool mouseOverViewportImage = false;
+    bool blockSelection = false;
 
     if (rendererInitialized) {
         glm::mat4 proj = glm::perspective(
@@ -3686,6 +3687,11 @@ void Engine::renderViewport() {
 
             if (clickedIdx >= 0) {
                 setCameraFacing(arrows[clickedIdx].dir);
+            }
+
+            // Prevent viewport picking when interacting with the axis widget.
+            if (widgetHover) {
+                blockSelection = true;
             }
         }
 
@@ -4170,9 +4176,11 @@ void Engine::renderViewport() {
             }
         };
 
-        for (const auto& obj : sceneObjects) {
-            if (obj.type == ObjectType::Camera) {
-                drawCameraDirection(obj);
+        if (showSceneGizmos) {
+            for (const auto& obj : sceneObjects) {
+                if (obj.type == ObjectType::Camera) {
+                    drawCameraDirection(obj);
+                }
             }
         }
 
@@ -4269,9 +4277,11 @@ void Engine::renderViewport() {
             }
         };
 
-        for (const auto& obj : sceneObjects) {
-            if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
-                drawLightOverlays(obj);
+        if (showSceneGizmos) {
+            for (const auto& obj : sceneObjects) {
+                if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight) {
+                    drawLightOverlays(obj);
+                }
             }
         }
 
@@ -4406,6 +4416,14 @@ void Engine::renderViewport() {
             }
         }
 
+        ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
+        if (GizmoToolbar::ModeButton("Gizmos", showSceneGizmos, ImVec2(70, 24), baseCol, accentCol, textCol)) {
+            showSceneGizmos = !showSceneGizmos;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Toggle light/camera scene symbols");
+        }
+
         ImGui::EndGroup();
         ImGui::PopStyleVar();
 
@@ -4420,10 +4438,16 @@ void Engine::renderViewport() {
 
         splitter.Merge(toolbarDrawList);
 
+        // Prevent viewport picking when clicking on the toolbar overlay.
+        if (ImGui::IsMouseHoveringRect(bgMin, bgMax)) {
+            blockSelection = true;
+        }
+
         // Left-click picking inside viewport
         if (mouseOverViewportImage &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-            !ImGuizmo::IsUsing() && !ImGuizmo::IsOver())
+            !ImGuizmo::IsUsing() && !ImGuizmo::IsOver() &&
+            !blockSelection)
         {
             glm::mat4 invViewProj = glm::inverse(proj * view);
             ImVec2 mousePos = ImGui::GetMousePos();

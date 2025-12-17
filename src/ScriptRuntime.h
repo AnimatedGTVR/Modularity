@@ -40,6 +40,13 @@ struct ScriptContext {
     bool SetRigidbodyVelocity(const glm::vec3& velocity);
     bool GetRigidbodyVelocity(glm::vec3& outVelocity) const;
     bool TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg);
+    // Audio helpers
+    bool HasAudioSource() const;
+    bool PlayAudio();
+    bool StopAudio();
+    bool SetAudioLoop(bool loop);
+    bool SetAudioVolume(float volume);
+    bool SetAudioClip(const std::string& path);
     // Settings helpers (auto-mark dirty)
     std::string GetSetting(const std::string& key, const std::string& fallback = "") const;
     void SetSetting(const std::string& key, const std::string& value);

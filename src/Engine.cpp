@@ -1266,6 +1266,42 @@ bool Engine::teleportPhysicsActorFromScript(int id, const glm::vec3& position, c
     return physics.setActorPose(id, position, rotationDeg);
 }
 
+bool Engine::playAudioFromScript(int id) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAudioSource) return false;
+    return audio.playObjectSound(*obj);
+}
+
+bool Engine::stopAudioFromScript(int id) {
+    return audio.stopObjectSound(id);
+}
+
+bool Engine::setAudioLoopFromScript(int id, bool loop) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAudioSource) return false;
+    obj->audioSource.loop = loop;
+    markProjectDirty();
+    return audio.setObjectLoop(*obj, loop);
+}
+
+bool Engine::setAudioVolumeFromScript(int id, float volume) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAudioSource) return false;
+    obj->audioSource.volume = std::clamp(volume, 0.0f, 2.0f);
+    markProjectDirty();
+    return audio.setObjectVolume(*obj, obj->audioSource.volume);
+}
+
+bool Engine::setAudioClipFromScript(int id, const std::string& path) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAudioSource) return false;
+    obj->audioSource.clipPath = path;
+    markProjectDirty();
+    // Ensure clip is loaded; do not auto-play unless PlayAudio is called.
+    audio.setObjectLoop(*obj, obj->audioSource.loop);
+    return true;
+}
+
 void Engine::compileScriptFile(const fs::path& scriptPath) {
     if (!projectManager.currentProject.isLoaded) {
         addConsoleMessage("No project is loaded", ConsoleMessageType::Warning);

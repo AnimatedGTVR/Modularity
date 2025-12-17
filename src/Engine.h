@@ -92,6 +92,7 @@ private:
     bool isPlaying = false;
     bool isPaused = false;
     bool showViewOutput = true;
+    bool showSceneGizmos = true;
     bool showGameViewport = true;
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
@@ -221,4 +222,10 @@ public:
     bool setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity);
     bool getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity);
     bool teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg);
+    // Audio control exposed to scripts
+    bool playAudioFromScript(int id);
+    bool stopAudioFromScript(int id);
+    bool setAudioLoopFromScript(int id, bool loop);
+    bool setAudioVolumeFromScript(int id, float volume);
+    bool setAudioClipFromScript(int id, const std::string& path);
 };

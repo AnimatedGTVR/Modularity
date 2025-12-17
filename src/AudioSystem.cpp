@@ -80,6 +80,7 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
 
     snd.clipPath = obj.audioSource.clipPath;
     snd.spatial = obj.audioSource.spatial;
+    snd.started = false;
     refreshSoundParams(obj, snd);
     activeSounds[obj.id] = std::move(snd);
     return true;
@@ -93,8 +94,9 @@ void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
     ma_sound_set_max_distance(&snd.sound, obj.audioSource.maxDistance);
     ma_sound_set_position(&snd.sound, obj.position.x, obj.position.y, obj.position.z);
 
-    if (!ma_sound_is_playing(&snd.sound) && obj.audioSource.playOnStart && obj.audioSource.enabled) {
+    if (!ma_sound_is_playing(&snd.sound) && !snd.started && obj.audioSource.playOnStart && obj.audioSource.enabled) {
         ma_sound_start(&snd.sound);
+        snd.started = true;
     }
 }
 
@@ -195,6 +197,34 @@ bool AudioSystem::seekPreview(const std::string& path, double seconds) {
     ma_uint64 targetFrame = static_cast<ma_uint64>(seconds * static_cast<double>(sampleRate));
     ma_result res = ma_sound_seek_to_pcm_frame(&previewSound, targetFrame);
     return res == MA_SUCCESS;
+}
+
+bool AudioSystem::playObjectSound(const SceneObject& obj) {
+    if (!obj.hasAudioSource || obj.audioSource.clipPath.empty() || !obj.audioSource.enabled) return false;
+    if (!ensureSoundFor(obj)) return false;
+    ActiveSound& snd = activeSounds[obj.id];
+    snd.started = true;
+    return ma_sound_start(&snd.sound) == MA_SUCCESS;
+}
+
+bool AudioSystem::stopObjectSound(int objectId) {
+    auto it = activeSounds.find(objectId);
+    if (it == activeSounds.end()) return false;
+    return ma_sound_stop(&it->second.sound) == MA_SUCCESS;
+}
+
+bool AudioSystem::setObjectLoop(const SceneObject& obj, bool loop) {
+    if (!ensureSoundFor(obj)) return false;
+    ActiveSound& snd = activeSounds[obj.id];
+    ma_sound_set_looping(&snd.sound, loop ? MA_TRUE : MA_FALSE);
+    return true;
+}
+
+bool AudioSystem::setObjectVolume(const SceneObject& obj, float volume) {
+    if (!ensureSoundFor(obj)) return false;
+    ActiveSound& snd = activeSounds[obj.id];
+    ma_sound_set_volume(&snd.sound, volume);
+    return true;
 }
 
 AudioClipPreview AudioSystem::loadPreview(const std::string& path) {

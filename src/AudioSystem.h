@@ -33,11 +33,18 @@ public:
     bool getPreviewTime(const std::string& path, double& cursorSeconds, double& durationSeconds) const;
     bool seekPreview(const std::string& path, double seconds);
 
+    // Scene audio control (runtime)
+    bool playObjectSound(const SceneObject& obj);
+    bool stopObjectSound(int objectId);
+    bool setObjectLoop(const SceneObject& obj, bool loop);
+    bool setObjectVolume(const SceneObject& obj, float volume);
+
 private:
     struct ActiveSound {
         ma_sound sound;
         std::string clipPath;
         bool spatial = true;
+        bool started = false; // prevents auto-restart after manual stop
     };
 
     ma_engine engine{};

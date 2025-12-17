@@ -108,6 +108,42 @@ bool ScriptContext::TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rot
     return engine->teleportPhysicsActorFromScript(object->id, pos, object->rotation);
 }
 
+bool ScriptContext::HasAudioSource() const {
+    return object && object->hasAudioSource && object->audioSource.enabled;
+}
+
+bool ScriptContext::PlayAudio() {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    return engine->playAudioFromScript(object->id);
+}
+
+bool ScriptContext::StopAudio() {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    return engine->stopAudioFromScript(object->id);
+}
+
+bool ScriptContext::SetAudioLoop(bool loop) {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    object->audioSource.loop = loop;
+    engine->markProjectDirty();
+    return engine->setAudioLoopFromScript(object->id, loop);
+}
+
+bool ScriptContext::SetAudioVolume(float volume) {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    float clamped = std::clamp(volume, 0.0f, 2.0f);
+    object->audioSource.volume = clamped;
+    engine->markProjectDirty();
+    return engine->setAudioVolumeFromScript(object->id, clamped);
+}
+
+bool ScriptContext::SetAudioClip(const std::string& path) {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    object->audioSource.clipPath = path;
+    engine->markProjectDirty();
+    return engine->setAudioClipFromScript(object->id, path);
+}
+
 std::string ScriptContext::GetSetting(const std::string& key, const std::string& fallback) const {
     if (!script) return fallback;
     auto it = std::find_if(script->settings.begin(), script->settings.end(),
