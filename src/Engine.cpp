@@ -380,7 +380,7 @@ void Engine::run() {
             }
             renderLauncher();
         } else {
-            setupDockspace();
+            setupDockspace([this]() { renderPlayControlsBar(); });
             renderMainMenuBar();
 
             if (!viewportFullscreen) {
@@ -910,6 +910,8 @@ void Engine::OpenProjectPath(const std::string& path) {
                 fs::create_directories(projectManager.currentProject.scenesPath);
             }
 
+            packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+
             if (!initRenderer()) {
                 addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
                 showLauncher = true;
@@ -947,6 +949,8 @@ void Engine::createNewProject(const char* name, const char* location) {
         projectManager.currentProject = newProject;
         projectManager.addToRecentProjects(name,
                                           (newProject.projectPath / "project.modu").string());
+
+        packageManager.setProjectRoot(projectManager.currentProject.projectPath);
 
         if (!initRenderer()) {
             logToConsole("Error: Failed to initialize renderer!");
@@ -1328,6 +1332,8 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         addConsoleMessage("Script config error: " + error, ConsoleMessageType::Error);
         return;
     }
+
+    packageManager.applyToBuildConfig(config);
 
     ScriptBuildCommands commands;
     if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {

@@ -55,6 +55,7 @@ struct CameraComponent {
     float fov = FOV;
     float nearClip = NEAR_PLANE;
     float farClip = FAR_PLANE;
+    bool applyPostFX = true;
 };
 
 struct PostFXSettings {

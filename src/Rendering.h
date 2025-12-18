@@ -69,6 +69,7 @@ private:
     };
     RenderTarget previewTarget;
     RenderTarget postTarget;
+    RenderTarget previewPostTarget;
     RenderTarget historyTarget;
     RenderTarget bloomTargetA;
     RenderTarget bloomTargetB;
@@ -112,7 +113,7 @@ private:
     void clearHistory();
     void clearTarget(RenderTarget& target);
     void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane);
-    void applyPostProcessing(const std::vector<SceneObject>& sceneObjects);
+    unsigned int applyPostProcessing(const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory);
     PostFXSettings gatherPostFX(const std::vector<SceneObject>& sceneObjects) const;
 
 public:
@@ -133,7 +134,7 @@ public:
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
     void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE);
-    unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
+    unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false);
     void endRender();
 
     Skybox* getSkybox() { return skybox; }

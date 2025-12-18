@@ -352,6 +352,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "cameraFov=" << obj.camera.fov << "\n";
             file << "cameraNear=" << obj.camera.nearClip << "\n";
             file << "cameraFar=" << obj.camera.farClip << "\n";
+            file << "cameraPostFX=" << (obj.camera.applyPostFX ? 1 : 0) << "\n";
             if (obj.type == ObjectType::PostFXNode) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
@@ -647,6 +648,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->camera.nearClip = std::stof(value);
                 } else if (key == "cameraFar") {
                     currentObj->camera.farClip = std::stof(value);
+                } else if (key == "cameraPostFX") {
+                    currentObj->camera.applyPostFX = (std::stoi(value) != 0);
                 } else if (key == "postEnabled") {
                     currentObj->postFx.enabled = (std::stoi(value) != 0);
                 } else if (key == "postBloomEnabled") {

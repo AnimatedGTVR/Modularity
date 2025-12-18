@@ -271,7 +271,7 @@ void applyModernTheme() {
     style.TabBorderSize = 1.0f;
 }
 
-void setupDockspace() {
+void setupDockspace(const std::function<void()>& menuBarContent) {
     static bool dockspaceOpen = true;
     static ImGuiDockNodeFlags dockspaceFlags = ImGuiDockNodeFlags_None;
 
@@ -290,6 +290,13 @@ void setupDockspace() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("DockSpace", &dockspaceOpen, windowFlags);
     ImGui::PopStyleVar(3);
+
+    if (ImGui::BeginMenuBar()) {
+        if (menuBarContent) {
+            menuBarContent();
+        }
+        ImGui::EndMenuBar();
+    }
 
     ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), dockspaceFlags);

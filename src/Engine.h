@@ -11,6 +11,7 @@
 #include "ScriptRuntime.h"
 #include "PhysicsSystem.h"
 #include "AudioSystem.h"
+#include "PackageManager.h"
 #include "../include/Window/Window.h"
 
 void window_size_callback(GLFWwindow* window, int width, int height);
@@ -71,6 +72,7 @@ private:
     int draggedObjectId = -1;
 
     ProjectManager projectManager;
+    PackageManager packageManager;
     bool showLauncher = true;
     bool showNewSceneDialog = false;
     bool showSaveSceneAsDialog = false;
@@ -97,6 +99,8 @@ private:
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
     bool gameViewportFocused = false;
+    bool showUITextOverlay = false;
+    bool showCanvasOverlay = false;
     int activePlayerId = -1;
     MeshBuilder meshBuilder;
     char meshBuilderPath[260] = "";
@@ -142,6 +146,7 @@ private:
     void renderNewProjectDialog();
     void renderOpenProjectDialog();
     void renderMainMenuBar();
+    void renderPlayControlsBar();
     void renderEnvironmentWindow();
     void renderCameraWindow();
     void renderHierarchyPanel();

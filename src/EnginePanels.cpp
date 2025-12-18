@@ -10,6 +10,9 @@
 #include <sstream>
 #include <unordered_set>
 #include <optional>
+#include <future>
+#include <chrono>
+#include <future>
 
 #ifdef _WIN32
 #include <shlobj.h>
@@ -298,6 +301,106 @@ namespace FileIcons {
     }
 }
 
+namespace ImGui {
+
+// Animated progress bar that keeps circles moving while work happens in the background.
+bool BufferingBar(const char* label, float value, const ImVec2& size_arg, const ImU32& bg_col, const ImU32& fg_col) {
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+    const ImGuiID id = window->GetID(label);
+
+    ImVec2 pos = window->DC.CursorPos;
+    ImVec2 size = size_arg;
+    size.x -= style.FramePadding.x * 2;
+
+    const ImRect bb(pos, ImVec2(pos.x + size.x, pos.y + size.y));
+    ItemSize(bb, style.FramePadding.y);
+    if (!ItemAdd(bb, id))
+        return false;
+
+    const float circleStart = size.x * 0.7f;
+    const float circleEnd = size.x;
+    const float circleWidth = circleEnd - circleStart;
+
+    window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart, bb.Max.y), bg_col);
+    window->DrawList->AddRectFilled(bb.Min, ImVec2(pos.x + circleStart * value, bb.Max.y), fg_col);
+
+    const float t = g.Time;
+    const float r = size.y / 2;
+    const float speed = 1.5f;
+
+    const float a = speed * 0;
+    const float b = speed * 0.333f;
+    const float c = speed * 0.666f;
+
+    const float o1 = (circleWidth + r) * (t + a - speed * (int)((t + a) / speed)) / speed;
+    const float o2 = (circleWidth + r) * (t + b - speed * (int)((t + b) / speed)) / speed;
+    const float o3 = (circleWidth + r) * (t + c - speed * (int)((t + c) / speed)) / speed;
+
+    window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o1, bb.Min.y + r), r, bg_col);
+    window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o2, bb.Min.y + r), r, bg_col);
+    window->DrawList->AddCircleFilled(ImVec2(pos.x + circleEnd - o3, bb.Min.y + r), r, bg_col);
+    return true;
+}
+
+// Simple loading spinner for indeterminate tasks.
+bool Spinner(const char* label, float radius, int thickness, const ImU32& color) {
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+    const ImGuiID id = window->GetID(label);
+
+    ImVec2 pos = window->DC.CursorPos;
+    ImVec2 size((radius) * 2, (radius + style.FramePadding.y) * 2);
+
+    const ImRect bb(pos, ImVec2(pos.x + size.x, pos.y + size.y));
+    ItemSize(bb, style.FramePadding.y);
+    if (!ItemAdd(bb, id))
+        return false;
+
+    window->DrawList->PathClear();
+
+    int num_segments = 30;
+    int start = abs(ImSin(g.Time * 1.8f) * (num_segments - 5));
+
+    const float a_min = IM_PI * 2.0f * ((float)start) / (float)num_segments;
+    const float a_max = IM_PI * 2.0f * ((float)num_segments - 3) / (float)num_segments;
+
+    const ImVec2 centre = ImVec2(pos.x + radius, pos.y + radius + style.FramePadding.y);
+
+    for (int i = 0; i < num_segments; i++) {
+        const float a = a_min + ((float)i / (float)num_segments) * (a_max - a_min);
+        window->DrawList->PathLineTo(ImVec2(centre.x + ImCos(a + g.Time * 8) * radius,
+                                            centre.y + ImSin(a + g.Time * 8) * radius));
+    }
+
+    window->DrawList->PathStroke(color, false, thickness);
+    return true;
+}
+
+} // namespace ImGui
+
+namespace {
+struct PackageTaskResult {
+    bool success = false;
+    std::string message;
+};
+
+struct PackageTaskState {
+    bool active = false;
+    float startTime = 0.0f;
+    std::string label;
+    std::future<PackageTaskResult> future;
+};
+} // namespace
+
 void Engine::renderGameViewportWindow() {
     gameViewportFocused = false;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
@@ -308,12 +411,37 @@ void Engine::renderGameViewportWindow() {
     int width = std::max(160, (int)avail.x);
     int height = std::max(120, (int)avail.y);
 
-    const SceneObject* playerCam = nullptr;
-    for (const auto& obj : sceneObjects) {
+    SceneObject* playerCam = nullptr;
+    for (auto& obj : sceneObjects) {
         if (obj.type == ObjectType::Camera && obj.camera.type == SceneCameraType::Player) {
             playerCam = &obj;
             break;
         }
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f, 0.09f, 0.10f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.12f, 0.14f, 0.16f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.14f, 0.18f, 0.20f, 1.0f));
+    ImGui::BeginDisabled(playerCam == nullptr);
+    bool dummyToggle = false;
+    bool postFxChanged = false;
+    if (playerCam) {
+        bool before = playerCam->camera.applyPostFX;
+        if (ImGui::Checkbox("Post FX", &playerCam->camera.applyPostFX)) {
+            postFxChanged = (before != playerCam->camera.applyPostFX);
+        }
+    } else {
+        ImGui::Checkbox("Post FX", &dummyToggle);
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Text", &showUITextOverlay);
+    ImGui::SameLine();
+    ImGui::Checkbox("Canvas Guides", &showCanvasOverlay);
+    ImGui::EndDisabled();
+    ImGui::PopStyleColor(3);
+
+    if (playerCam && postFxChanged) {
+        projectManager.currentProject.hasUnsavedChanges = true;
     }
 
     if (!isPlaying) {
@@ -321,17 +449,37 @@ void Engine::renderGameViewportWindow() {
     }
 
         if (playerCam && rendererInitialized) {
-            unsigned int tex = renderer.renderScenePreview(
-                makeCameraFromObject(*playerCam),
-                sceneObjects,
-                width,
-                height,
+        unsigned int tex = renderer.renderScenePreview(
+            makeCameraFromObject(*playerCam),
+            sceneObjects,
+            width,
+            height,
             playerCam->camera.fov,
             playerCam->camera.nearClip,
-            playerCam->camera.farClip
+            playerCam->camera.farClip,
+            playerCam->camera.applyPostFX
         );
 
         ImGui::Image((void*)(intptr_t)tex, ImVec2((float)width, (float)height), ImVec2(0, 1), ImVec2(1, 0));
+        ImVec2 imageMin = ImGui::GetItemRectMin();
+        ImVec2 imageMax = ImGui::GetItemRectMax();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        if (showCanvasOverlay) {
+            ImVec2 pad(8.0f, 8.0f);
+            ImVec2 tl(imageMin.x + pad.x, imageMin.y + pad.y);
+            ImVec2 br(imageMax.x - pad.x, imageMax.y - pad.y);
+            drawList->AddRect(tl, br, IM_COL32(110, 170, 255, 180), 8.0f, 0, 2.0f);
+        }
+        if (showUITextOverlay) {
+            const char* textLabel = "Text Overlay";
+            ImVec2 textPos(imageMin.x + 16.0f, imageMin.y + 16.0f);
+            ImVec2 size = ImGui::CalcTextSize(textLabel);
+            ImVec2 bgPad(6.0f, 4.0f);
+            ImVec2 bgMin(textPos.x - bgPad.x, textPos.y - bgPad.y);
+            ImVec2 bgMax(textPos.x + size.x + bgPad.x, textPos.y + size.y + bgPad.y);
+            drawList->AddRectFilled(bgMin, bgMax, IM_COL32(20, 20, 24, 200), 4.0f);
+            drawList->AddText(textPos, IM_COL32(235, 235, 245, 255), textLabel);
+        }
         bool hovered = ImGui::IsItemHovered();
         bool clicked = hovered && isPlaying && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
@@ -1302,6 +1450,84 @@ void Engine::renderOpenProjectDialog() {
     ImGui::End();
 }
 
+void Engine::renderPlayControlsBar() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec2 buttonPadding(10.0f, 4.0f);
+    const char* playLabel = isPlaying ? "Stop" : "Play";
+    const char* pauseLabel = isPaused ? "Resume" : "Pause";
+    const char* specLabel = specMode ? "Spec On" : "Spec Mode";
+
+    auto buttonWidth = [&](const char* label) {
+        ImVec2 textSize = ImGui::CalcTextSize(label);
+        return textSize.x + buttonPadding.x * 2.0f + style.FrameBorderSize * 2.0f;
+    };
+
+    float playWidth = buttonWidth(playLabel);
+    float pauseWidth = buttonWidth(pauseLabel);
+    float specWidth = buttonWidth(specLabel);
+    float spacing = style.ItemSpacing.x;
+    float totalWidth = playWidth + pauseWidth + specWidth + spacing * 2.0f;
+
+    // Center the controls inside the dockspace menu bar.
+    float regionMinX = ImGui::GetWindowContentRegionMin().x;
+    float regionMaxX = ImGui::GetWindowContentRegionMax().x;
+    float regionWidth = regionMaxX - regionMinX;
+    float startX = (regionWidth - totalWidth) * 0.5f + regionMinX;
+    if (startX < regionMinX) startX = regionMinX;
+
+    ImVec2 cursor = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(startX, cursor.y));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, buttonPadding);
+    bool playPressed = ImGui::Button(playLabel);
+    ImGui::SameLine(0.0f, spacing);
+    bool pausePressed = ImGui::Button(pauseLabel);
+    ImGui::SameLine(0.0f, spacing);
+    bool specPressed = ImGui::Button(specLabel);
+    ImGui::PopStyleVar();
+
+    if (playPressed) {
+        bool newState = !isPlaying;
+        if (newState) {
+            if (physics.isReady() || physics.init()) {
+                physics.onPlayStart(sceneObjects);
+            } else {
+                addConsoleMessage("PhysX failed to initialize; physics disabled for play mode", ConsoleMessageType::Warning);
+            }
+            audio.onPlayStart(sceneObjects);
+        } else {
+            physics.onPlayStop();
+            audio.onPlayStop();
+            isPaused = false;
+            if (specMode && (physics.isReady() || physics.init())) {
+                physics.onPlayStart(sceneObjects);
+            }
+        }
+        isPlaying = newState;
+    }
+    if (pausePressed) {
+        isPaused = !isPaused;
+        if (isPaused) isPlaying = true; // placeholder: pausing implies we’re in play mode
+    }
+    if (specPressed) {
+        bool enable = !specMode;
+        if (enable && !physics.isReady() && !physics.init()) {
+            addConsoleMessage("PhysX failed to initialize; spec mode disabled", ConsoleMessageType::Warning);
+            enable = false;
+        }
+        specMode = enable;
+        if (!isPlaying) {
+            if (specMode) {
+                physics.onPlayStart(sceneObjects);
+                audio.onPlayStart(sceneObjects);
+            } else {
+                physics.onPlayStop();
+                audio.onPlayStop();
+            }
+        }
+    }
+}
+
 void Engine::renderMainMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14.0f, 8.0f));
@@ -1416,59 +1642,6 @@ void Engine::renderMainMenuBar() {
         std::string sceneLabel = projectManager.currentProject.currentSceneName.empty() ?
             "No Scene Loaded" : projectManager.currentProject.currentSceneName;
         ImGui::TextUnformatted(sceneLabel.c_str());
-
-        ImGui::SameLine();
-        ImGui::Dummy(ImVec2(14.0f, 0.0f));
-        ImGui::SameLine();
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
-        bool playPressed = ImGui::Button(isPlaying ? "Stop" : "Play");
-        ImGui::SameLine(0.0f, 6.0f);
-        bool pausePressed = ImGui::Button(isPaused ? "Resume" : "Pause");
-        ImGui::SameLine(0.0f, 6.0f);
-        bool specPressed = ImGui::Button(specMode ? "Spec On" : "Spec Mode");
-        ImGui::PopStyleVar();
-
-        if (playPressed) {
-            bool newState = !isPlaying;
-            if (newState) {
-                if (physics.isReady() || physics.init()) {
-                    physics.onPlayStart(sceneObjects);
-                } else {
-                    addConsoleMessage("PhysX failed to initialize; physics disabled for play mode", ConsoleMessageType::Warning);
-                }
-                audio.onPlayStart(sceneObjects);
-            } else {
-                physics.onPlayStop();
-                audio.onPlayStop();
-                isPaused = false;
-                if (specMode && (physics.isReady() || physics.init())) {
-                    physics.onPlayStart(sceneObjects);
-                }
-            }
-            isPlaying = newState;
-        }
-        if (pausePressed) {
-            isPaused = !isPaused;
-            if (isPaused) isPlaying = true; // placeholder: pausing implies we’re in play mode
-        }
-        if (specPressed) {
-            bool enable = !specMode;
-            if (enable && !physics.isReady() && !physics.init()) {
-                addConsoleMessage("PhysX failed to initialize; spec mode disabled", ConsoleMessageType::Warning);
-                enable = false;
-            }
-            specMode = enable;
-            if (!isPlaying) {
-                if (specMode) {
-                    physics.onPlayStart(sceneObjects);
-                    audio.onPlayStart(sceneObjects);
-                } else {
-                    physics.onPlayStop();
-                    audio.onPlayStop();
-                }
-            }
-        }
 
         float rightX = ImGui::GetWindowWidth() - 220.0f;
         if (rightX > ImGui::GetCursorPosX()) {
@@ -2495,6 +2668,9 @@ void Engine::renderInspectorPanel() {
             }
             if (ImGui::DragFloat("Far Clip", &obj.camera.farClip, 0.1f, obj.camera.nearClip + 0.05f, 1000.0f, "%.1f")) {
                 obj.camera.farClip = std::max(obj.camera.nearClip + 0.05f, obj.camera.farClip);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (ImGui::Checkbox("Apply Post Processing", &obj.camera.applyPostFX)) {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::Unindent(10.0f);
@@ -4661,7 +4837,8 @@ void Engine::renderViewport() {
                     previewHeight,
                     previewCam->camera.fov,
                     previewCam->camera.nearClip,
-                    previewCam->camera.farClip
+                    previewCam->camera.farClip,
+                    previewCam->camera.applyPostFX
                 );
 
                 if (previewTex != 0) {
@@ -4902,7 +5079,7 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
 
-    ImGui::Begin("Project Manager", &showProjectBrowser);
+    ImGui::Begin("Project Settings", &showProjectBrowser);
 
     if (!projectManager.currentProject.isLoaded) {
         ImGui::TextDisabled("No project loaded");
@@ -4912,7 +5089,7 @@ void Engine::renderProjectBrowserPanel() {
         return;
     }
 
-    ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "[P] %s", projectManager.currentProject.name.c_str());
+    ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "%s", projectManager.currentProject.name.c_str());
     if (projectManager.currentProject.hasUnsavedChanges) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "*");
@@ -4920,7 +5097,21 @@ void Engine::renderProjectBrowserPanel() {
 
     ImGui::Separator();
 
-    if (ImGui::CollapsingHeader("Scenes", ImGuiTreeNodeFlags_DefaultOpen)) {
+    static int selectedTab = 0;
+    const char* tabs[] = { "Scenes", "Packages", "Assets" };
+
+    ImGui::BeginChild("SettingsNav", ImVec2(180, 0), true);
+    for (int i = 0; i < 3; ++i) {
+        if (ImGui::Selectable(tabs[i], selectedTab == i, 0, ImVec2(0, 32))) {
+            selectedTab = i;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("SettingsBody", ImVec2(0, 0), false);
+
+    if (selectedTab == 0) {
         if (ImGui::Button("+ New Scene")) {
             showNewSceneDialog = true;
             memset(newSceneName, 0, sizeof(newSceneName));
@@ -4962,16 +5153,166 @@ void Engine::renderProjectBrowserPanel() {
         if (scenes.empty()) {
             ImGui::TextDisabled("No scenes yet");
         }
-    }
-    
-    if (ImGui::CollapsingHeader("Loaded OBJ Meshes")) {
-        const auto& meshes = g_objLoader.getAllMeshes();
-        if (meshes.empty()) {
+    } else if (selectedTab == 1) {
+        static PackageTaskState packageTask;
+        static std::string packageStatus;
+        static char gitUrlBuf[256] = "";
+        static char gitNameBuf[128] = "";
+        static char gitIncludeBuf[128] = "include";
+
+        auto pollPackageTask = [&]() {
+            if (!packageTask.active) return;
+            if (!packageTask.future.valid()) {
+                packageTask.active = false;
+                return;
+            }
+            auto state = packageTask.future.wait_for(std::chrono::milliseconds(0));
+            if (state == std::future_status::ready) {
+                PackageTaskResult result = packageTask.future.get();
+                packageStatus = result.message;
+                packageTask.active = false;
+                packageTask.future = std::future<PackageTaskResult>();
+            }
+        };
+
+        auto startPackageTask = [&](const char* label, std::function<PackageTaskResult()> fn) {
+            if (packageTask.active) return;
+            packageTask.active = true;
+            packageTask.label = label;
+            packageTask.startTime = static_cast<float>(ImGui::GetTime());
+            packageTask.future = std::async(std::launch::async, std::move(fn));
+        };
+
+        pollPackageTask();
+
+        if (!packageStatus.empty()) {
+            ImGui::TextWrapped("%s", packageStatus.c_str());
+        }
+
+        if (packageTask.active) {
+            const ImU32 col = ImGui::GetColorU32(ImGuiCol_ButtonHovered);
+            const ImU32 bg = ImGui::GetColorU32(ImGuiCol_Button);
+            float elapsed = static_cast<float>(ImGui::GetTime()) - packageTask.startTime;
+            float phase = std::fmod(elapsed * 0.25f, 1.0f);
+
+            ImGui::Separator();
+            ImGui::Text("%s", packageTask.label.c_str());
+            ImGui::BufferingBar("##pkg_buffer", phase, ImVec2(ImGui::GetContentRegionAvail().x, 6.0f), bg, col);
+            ImGui::Spinner("##pkg_spinner", 10.0f, 4, col);
+        }
+
+        ImGui::BeginDisabled(packageTask.active);
+        ImGui::TextDisabled("Add package from Git");
+        ImGui::InputTextWithHint("URL", "https://github.com/user/repo.git", gitUrlBuf, sizeof(gitUrlBuf));
+        ImGui::InputTextWithHint("Name (optional)", "use repo name", gitNameBuf, sizeof(gitNameBuf));
+        ImGui::InputTextWithHint("Include dir", "include", gitIncludeBuf, sizeof(gitIncludeBuf));
+        if (ImGui::Button("Add as submodule")) {
+            std::string url = gitUrlBuf;
+            std::string name = gitNameBuf;
+            std::string include = gitIncludeBuf;
+            startPackageTask("Installing package...", [this, url, name, include]() {
+                PackageTaskResult result;
+                std::string newId;
+                if (packageManager.installGitPackage(url, name, include, newId)) {
+                    result.success = true;
+                    result.message = "Installed package: " + newId;
+                } else {
+                    result.message = packageManager.getLastError();
+                }
+                return result;
+            });
+        }
+
+        ImGui::EndDisabled();
+        ImGui::Separator();
+        ImGui::TextDisabled("Installed packages");
+        if (packageTask.active) {
+            ImGui::TextDisabled("Working...");
+        } else {
+            const auto& registry = packageManager.getRegistry();
+            const auto& installedIds = packageManager.getInstalled();
+            if (installedIds.empty()) {
+                ImGui::TextDisabled("None installed");
+            } else {
+                for (const auto& id : installedIds) {
+                    const PackageInfo* pkg = nullptr;
+                    for (const auto& p : registry) {
+                        if (p.id == id) { pkg = &p; break; }
+                    }
+                    if (!pkg) continue;
+
+                    ImGui::PushID(pkg->id.c_str());
+                    ImGui::Separator();
+                    ImGui::Text("%s", pkg->name.c_str());
+                    ImGui::TextDisabled("%s", pkg->description.c_str());
+                    if (!pkg->external) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "[bundled]");
+                        ImGui::PopID();
+                        continue;
+                    }
+
+                    ImGui::TextDisabled("Path: %s", pkg->localPath.string().c_str());
+                    ImGui::TextDisabled("Git: %s", pkg->gitUrl.c_str());
+
+                    if (ImGui::Button("Check updates")) {
+                        std::string id = pkg->id;
+                        startPackageTask("Checking package status...", [this, id]() {
+                            PackageTaskResult result;
+                            std::string status;
+                            if (packageManager.checkGitStatus(id, status)) {
+                                result.success = true;
+                                result.message = status;
+                            } else {
+                                result.message = packageManager.getLastError();
+                            }
+                            return result;
+                        });
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Update")) {
+                        std::string id = pkg->id;
+                        std::string name = pkg->name;
+                        startPackageTask("Updating package...", [this, id, name]() {
+                            PackageTaskResult result;
+                            std::string log;
+                            if (packageManager.updateGitPackage(id, log)) {
+                                result.success = true;
+                                result.message = "Updated " + name + "\n" + log;
+                            } else {
+                                result.message = packageManager.getLastError();
+                            }
+                            return result;
+                        });
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Uninstall")) {
+                        std::string id = pkg->id;
+                        std::string name = pkg->name;
+                        startPackageTask("Removing package...", [this, id, name]() {
+                            PackageTaskResult result;
+                            if (packageManager.remove(id)) {
+                                result.success = true;
+                                result.message = "Removed " + name;
+                            } else {
+                                result.message = packageManager.getLastError();
+                            }
+                            return result;
+                        });
+                    }
+                    ImGui::PopID();
+                }
+            }
+        }
+    } else if (selectedTab == 2) {
+        ImGui::TextDisabled("Loaded OBJ Meshes");
+        const auto& meshesObj = g_objLoader.getAllMeshes();
+        if (meshesObj.empty()) {
             ImGui::TextDisabled("No meshes loaded");
             ImGui::TextDisabled("Import .obj files from File Browser");
         } else {
-            for (size_t i = 0; i < meshes.size(); i++) {
-                const auto& mesh = meshes[i];
+            for (size_t i = 0; i < meshesObj.size(); i++) {
+                const auto& mesh = meshesObj[i];
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
                                           ImGuiTreeNodeFlags_SpanAvailWidth |
                                           ImGuiTreeNodeFlags_NoTreePushOnOpen;
@@ -4989,16 +5330,16 @@ void Engine::renderProjectBrowserPanel() {
                 }
             }
         }
-    }
 
-    if (ImGui::CollapsingHeader("Loaded Models (Assimp)")) {
-        const auto& meshes = getModelLoader().getAllMeshes();
-        if (meshes.empty()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Loaded Models (Assimp)");
+        const auto& meshesAssimp = getModelLoader().getAllMeshes();
+        if (meshesAssimp.empty()) {
             ImGui::TextDisabled("No models loaded");
             ImGui::TextDisabled("Import FBX/GLTF/other supported models from File Browser");
         } else {
-            for (size_t i = 0; i < meshes.size(); i++) {
-                const auto& mesh = meshes[i];
+            for (size_t i = 0; i < meshesAssimp.size(); i++) {
+                const auto& mesh = meshesAssimp[i];
                 ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
                                           ImGuiTreeNodeFlags_SpanAvailWidth |
                                           ImGuiTreeNodeFlags_NoTreePushOnOpen;
@@ -5018,11 +5359,12 @@ void Engine::renderProjectBrowserPanel() {
         }
     }
 
+    ImGui::EndChild();
+
     ImGui::End();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(3);
 }
-
 void Engine::renderEnvironmentWindow() {
     if (!showEnvironmentWindow) return;
     ImGui::Begin("Environment", &showEnvironmentWindow);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include "Common.h"
 
 enum class FileBrowserViewMode {
@@ -61,4 +62,4 @@ public:
 void applyModernTheme();
 
 // Setup ImGui dockspace for the editor
-void setupDockspace();
+void setupDockspace(const std::function<void()>& menuBarContent = nullptr);
