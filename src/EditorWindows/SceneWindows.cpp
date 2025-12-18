@@ -1614,6 +1614,7 @@ void Engine::renderInspectorPanel() {
                     ScriptContext ctx;
                     ctx.engine = this;
                     ctx.object = &obj;
+                    ctx.script = &sc;
                     // Scope script inspector to avoid shared ImGui IDs across objects or multiple instances
                     std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
                     ImGui::PushID(inspectorId.c_str());

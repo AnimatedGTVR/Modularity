@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "SceneObject.h"
 #include <algorithm>
+#include <iterator>
 #include <unordered_map>
 
 #if defined(_WIN32)
@@ -9,6 +10,24 @@
 #else
     #include <dlfcn.h>
 #endif
+
+namespace {
+std::string makeScriptInstanceKey(const ScriptContext& ctx) {
+    if (!ctx.script) return {};
+    std::string key = (!ctx.script->path.empty())
+        ? ctx.script->path
+        : std::to_string(reinterpret_cast<uintptr_t>(ctx.script));
+    if (ctx.object) {
+        key += "|obj:" + std::to_string(ctx.object->id);
+        auto it = std::find_if(ctx.object->scripts.begin(), ctx.object->scripts.end(),
+            [&](const ScriptComponent& s) { return &s == ctx.script; });
+        if (it != ctx.object->scripts.end()) {
+            key += "|slot:" + std::to_string(std::distance(ctx.object->scripts.begin(), it));
+        }
+    }
+    return key;
+}
+}
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
     if (!engine) return nullptr;
@@ -208,7 +227,7 @@ void ScriptContext::AutoSetting(const std::string& key, bool& value) {
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
     static std::unordered_map<std::string, bool> defaults;
-    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string scriptId = makeScriptInstanceKey(*this);
     std::string id = scriptId + "|" + key;
     bool defaultVal = value;
     auto itDef = defaults.find(id);
@@ -233,7 +252,7 @@ void ScriptContext::AutoSetting(const std::string& key, glm::vec3& value) {
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
     static std::unordered_map<std::string, glm::vec3> defaults;
-    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string scriptId = makeScriptInstanceKey(*this);
     std::string id = scriptId + "|" + key;
     glm::vec3 defaultVal = value;
     auto itDef = defaults.find(id);
@@ -258,7 +277,7 @@ void ScriptContext::AutoSetting(const std::string& key, char* buffer, size_t buf
         [&](const AutoSettingEntry& e){ return e.key == key; })) return;
 
     static std::unordered_map<std::string, std::string> defaults;
-    std::string scriptId = (!script->path.empty()) ? script->path : std::to_string(reinterpret_cast<uintptr_t>(script));
+    std::string scriptId = makeScriptInstanceKey(*this);
     std::string id = scriptId + "|" + key;
     std::string defaultVal = defaults.count(id) ? defaults[id] : std::string(buffer);
     defaults.try_emplace(id, defaultVal);
