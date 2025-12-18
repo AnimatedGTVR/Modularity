@@ -1,10 +1,3 @@
-// Minimal sample showing how to expose a custom editor tab from a script binary.
-// Build via the engine’s “Compile Script” action. If compiling manually:
-// Linux:  g++ -std=c++20 -fPIC -O2 -I../src -I../include -c EditorWindowSample.cpp -o ../Cache/ScriptBin/EditorWindowSample.o
-//         g++ -shared ../Cache/ScriptBin/EditorWindowSample.o -o ../Cache/ScriptBin/EditorWindowSample.so -ldl -lpthread
-// Windows: cl /nologo /std:c++20 /EHsc /MD /O2 /I ..\src /I ..\include /c EditorWindowSample.cpp /Fo ..\Cache\ScriptBin\EditorWindowSample.obj
-//          link /nologo /DLL ..\Cache\ScriptBin\EditorWindowSample.obj /OUT:..\Cache\ScriptBin\EditorWindowSample.dll User32.lib Advapi32.lib
-
 #include "ScriptRuntime.h"
 #include "SceneObject.h"
 #include "ThirdParty/imgui/imgui.h"

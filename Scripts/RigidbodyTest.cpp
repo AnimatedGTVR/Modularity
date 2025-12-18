@@ -1,6 +1,3 @@
-// Minimal rigidbody smoke-test script for Modularity script compilation.
-// Build via the engine's "Compile Script" action (wrapper is generated automatically).
-
 #include "ScriptRuntime.h"
 #include "SceneObject.h"
 #include "ThirdParty/imgui/imgui.h"
