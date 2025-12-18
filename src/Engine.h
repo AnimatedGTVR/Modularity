@@ -78,6 +78,13 @@ private:
     bool showSaveSceneAsDialog = false;
     char newSceneName[128] = "";
     char saveSceneAsName[128] = "";
+    struct ScriptEditorWindowEntry {
+        fs::path binaryPath;
+        std::string label;
+        bool open = false;
+    };
+    std::vector<ScriptEditorWindowEntry> scriptEditorWindows;
+    bool scriptEditorWindowsDirty = true;
     bool rendererInitialized = false;
     
     bool showImportOBJDialog = false;
@@ -159,6 +166,8 @@ private:
     void renderGameViewportWindow();
     void renderDialogs();
     void renderProjectBrowserPanel();
+    void renderScriptEditorWindows();
+    void refreshScriptEditorWindows();
     Camera makeCameraFromObject(const SceneObject& obj) const;
     void compileScriptFile(const fs::path& scriptPath);
     void updateScripts(float delta);

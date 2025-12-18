@@ -2,6 +2,8 @@
 #include "ModelLoader.h"
 #include <iostream>
 #include <fstream>
+#include <unordered_set>
+#include <unordered_map>
 
 namespace {
 struct MaterialFileData {
@@ -394,6 +396,7 @@ void Engine::run() {
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
+            renderScriptEditorWindows();
             renderViewport();
             if (showGameViewport) renderGameViewportWindow();
             renderDialogs();
@@ -926,6 +929,8 @@ void Engine::OpenProjectPath(const std::string& path) {
             fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
             fileBrowser.currentPath = projectManager.currentProject.projectPath;
             fileBrowser.needsRefresh = true;
+            scriptEditorWindowsDirty = true;
+            scriptEditorWindows.clear();
             showLauncher = false;
             addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
         } else {
@@ -970,6 +975,8 @@ void Engine::createNewProject(const char* name, const char* location) {
         fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
         fileBrowser.currentPath = projectManager.currentProject.projectPath;
         fileBrowser.needsRefresh = true;
+        scriptEditorWindowsDirty = true;
+        scriptEditorWindows.clear();
 
         showLauncher = false;
         firstFrame = true;
@@ -1362,6 +1369,119 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     addConsoleMessage("Compiled script -> " + commands.binaryPath.string(), ConsoleMessageType::Success);
     if (!output.compileLog.empty()) addConsoleMessage(output.compileLog, ConsoleMessageType::Info);
     if (!output.linkLog.empty()) addConsoleMessage(output.linkLog, ConsoleMessageType::Info);
+
+    // Update any ScriptComponents that point to this source with the freshly built binary path.
+    std::string compiledSource = fs::absolute(scriptPath).lexically_normal().string();
+    for (auto& obj : sceneObjects) {
+        for (auto& sc : obj.scripts) {
+            std::error_code ec;
+            fs::path scAbs = fs::absolute(sc.path, ec);
+            std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
+            if (scPathNorm == compiledSource) {
+                sc.lastBinaryPath = commands.binaryPath.string();
+            }
+        }
+    }
+
+    // Refresh scripted editor window registry in case new tabs were added by this build.
+    scriptEditorWindowsDirty = true;
+    refreshScriptEditorWindows();
+}
+
+void Engine::refreshScriptEditorWindows() {
+    if (!scriptEditorWindowsDirty) return;
+    scriptEditorWindowsDirty = false;
+
+    if (!projectManager.currentProject.isLoaded) {
+        scriptEditorWindows.clear();
+        return;
+    }
+
+    std::unordered_map<std::string, bool> previousState;
+    for (const auto& entry : scriptEditorWindows) {
+        previousState[entry.binaryPath.lexically_normal().string()] = entry.open;
+    }
+
+    std::unordered_set<std::string> seen;
+    std::vector<ScriptEditorWindowEntry> updated;
+
+    auto tryAddEntry = [&](const fs::path& binaryPath) {
+        if (binaryPath.empty() || !fs::exists(binaryPath)) return;
+        std::string key = binaryPath.lexically_normal().string();
+        if (!seen.insert(key).second) return;
+        if (!scriptRuntime.hasEditorWindow(binaryPath)) return;
+
+        ScriptEditorWindowEntry entry;
+        entry.binaryPath = binaryPath;
+        entry.label = binaryPath.stem().string();
+        if (entry.label.empty()) entry.label = "ScriptWindow";
+        auto it = previousState.find(key);
+        entry.open = (it != previousState.end()) ? it->second : false;
+        updated.push_back(std::move(entry));
+    };
+
+    for (const auto& obj : sceneObjects) {
+        for (const auto& sc : obj.scripts) {
+            fs::path binaryPath;
+            if (!sc.lastBinaryPath.empty()) {
+                binaryPath = fs::path(sc.lastBinaryPath);
+            }
+            if (binaryPath.empty() || !fs::exists(binaryPath)) {
+                binaryPath = resolveScriptBinary(sc.path);
+            }
+            tryAddEntry(binaryPath);
+        }
+    }
+
+    // Also scan the configured script output directory for standalone editor tabs.
+    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
+    if (configPath.empty()) {
+        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
+    }
+    ScriptBuildConfig config;
+    std::string error;
+    if (scriptCompiler.loadConfig(configPath, config, error)) {
+        fs::path outDir = config.outDir;
+        if (!outDir.is_absolute()) {
+            outDir = projectManager.currentProject.projectPath / outDir;
+        }
+        std::error_code ec;
+        if (fs::exists(outDir, ec)) {
+            for (auto it = fs::recursive_directory_iterator(outDir, ec);
+                 it != fs::recursive_directory_iterator(); ++it) {
+                if (it->is_directory()) continue;
+                auto ext = it->path().extension().string();
+                if (ext == ".so" || ext == ".dll" || ext == ".dylib") {
+                    tryAddEntry(it->path());
+                }
+            }
+        }
+    }
+
+    scriptEditorWindows.swap(updated);
+}
+
+void Engine::renderScriptEditorWindows() {
+    if (scriptEditorWindows.empty()) return;
+
+    ScriptContext ctx;
+    ctx.engine = this;
+    ctx.object = getSelectedObject();
+    ctx.script = nullptr;
+
+    for (auto& entry : scriptEditorWindows) {
+        if (!entry.open) continue;
+
+        std::string title = entry.label + "###" + entry.binaryPath.string();
+        if (ImGui::Begin(title.c_str(), &entry.open)) {
+            scriptRuntime.callEditorWindow(entry.binaryPath, ctx);
+        }
+        ImGui::End();
+
+        if (!entry.open) {
+            scriptRuntime.callExitEditorWindow(entry.binaryPath, ctx);
+        }
+    }
 }
 
 void Engine::setupImGui() {

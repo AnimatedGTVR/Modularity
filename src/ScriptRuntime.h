@@ -78,6 +78,8 @@ public:
     using UpdateFn = void(*)(ScriptContext&, float);
     using TickUpdateFn = void(*)(ScriptContext&, float);
     using InspectorFn = void(*)(ScriptContext&);
+    using EditorRenderFn = void(*)(ScriptContext&);
+    using EditorExitFn = void(*)(ScriptContext&);
     using IEnumFn = void(*)(ScriptContext&, float);
 
     InspectorFn getInspector(const fs::path& binaryPath);
@@ -85,6 +87,10 @@ public:
                     bool runSpec, bool runTest);
     void unloadAll();
     const std::string& getLastError() const { return lastError; }
+    // Editor extension hooks: load RenderEditorWindow/ExitRenderEditorWindow from a script binary.
+    bool hasEditorWindow(const fs::path& binaryPath);
+    void callEditorWindow(const fs::path& binaryPath, ScriptContext& ctx);
+    void callExitEditorWindow(const fs::path& binaryPath, ScriptContext& ctx);
 
 private:
     struct Module {
@@ -95,6 +101,8 @@ private:
         TestEditorFn testEditor = nullptr;
         UpdateFn update = nullptr;
         TickUpdateFn tickUpdate = nullptr;
+        EditorRenderFn editorRender = nullptr;
+        EditorExitFn editorExit = nullptr;
         std::unordered_set<int> beginCalledObjects;
     };
     Module* getModule(const fs::path& binaryPath);

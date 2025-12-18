@@ -385,6 +385,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     mod.testEditor = reinterpret_cast<TestEditorFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_TestEditor"));
     mod.update = reinterpret_cast<UpdateFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_Update"));
     mod.tickUpdate = reinterpret_cast<TickUpdateFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_TickUpdate"));
+    mod.editorRender = reinterpret_cast<EditorRenderFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "RenderEditorWindow"));
+    mod.editorExit = reinterpret_cast<EditorExitFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "ExitRenderEditorWindow"));
 #else
     mod.handle = dlopen(binaryPath.string().c_str(), RTLD_NOW);
     if (!mod.handle) {
@@ -398,11 +400,13 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     mod.testEditor = reinterpret_cast<TestEditorFn>(dlsym(mod.handle, "Script_TestEditor"));
     mod.update = reinterpret_cast<UpdateFn>(dlsym(mod.handle, "Script_Update"));
     mod.tickUpdate = reinterpret_cast<TickUpdateFn>(dlsym(mod.handle, "Script_TickUpdate"));
+    mod.editorRender = reinterpret_cast<EditorRenderFn>(dlsym(mod.handle, "RenderEditorWindow"));
+    mod.editorExit = reinterpret_cast<EditorExitFn>(dlsym(mod.handle, "ExitRenderEditorWindow"));
 #if !defined(_WIN32)
     {
         const char* err = dlerror();
         if (err && !mod.inspector && !mod.begin && !mod.spec && !mod.testEditor
-            && !mod.update && !mod.tickUpdate) {
+            && !mod.update && !mod.tickUpdate && !mod.editorRender && !mod.editorExit) {
             lastError = err;
         }
     }
@@ -410,7 +414,7 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
 #endif
 
     if (!mod.inspector && !mod.begin && !mod.spec && !mod.testEditor
-        && !mod.update && !mod.tickUpdate) {
+        && !mod.update && !mod.tickUpdate && !mod.editorRender && !mod.editorExit) {
 #if defined(_WIN32)
         FreeLibrary(static_cast<HMODULE>(mod.handle));
 #else
@@ -468,4 +472,23 @@ void ScriptRuntime::unloadAll() {
 #endif
     }
     loaded.clear();
+}
+
+bool ScriptRuntime::hasEditorWindow(const fs::path& binaryPath) {
+    Module* mod = getModule(binaryPath);
+    return mod && mod->editorRender;
+}
+
+void ScriptRuntime::callEditorWindow(const fs::path& binaryPath, ScriptContext& ctx) {
+    Module* mod = getModule(binaryPath);
+    if (mod && mod->editorRender) {
+        mod->editorRender(ctx);
+    }
+}
+
+void ScriptRuntime::callExitEditorWindow(const fs::path& binaryPath, ScriptContext& ctx) {
+    Module* mod = getModule(binaryPath);
+    if (mod && mod->editorExit) {
+        mod->editorExit(ctx);
+    }
 }
