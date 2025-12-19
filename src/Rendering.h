@@ -73,6 +73,11 @@ private:
     RenderTarget historyTarget;
     RenderTarget bloomTargetA;
     RenderTarget bloomTargetB;
+    struct MirrorSmoothing {
+        glm::vec2 planar = glm::vec2(0.0f);
+        bool initialized = false;
+    };
+    std::unordered_map<int, MirrorSmoothing> mirrorSmooth;
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
     Shader* postShader = nullptr;
@@ -100,19 +105,23 @@ private:
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
+    Mesh* planeMesh = nullptr;
     Skybox* skybox = nullptr;
     unsigned int quadVAO = 0;
     unsigned int quadVBO = 0;
     unsigned int displayTexture = 0;
     bool historyValid = false;
+    std::unordered_map<int, RenderTarget> mirrorTargets;
 
     void setupFBO();
     void ensureRenderTarget(RenderTarget& target, int w, int h);
+    void releaseRenderTarget(RenderTarget& target);
+    void updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void ensureQuad();
     void drawFullscreenQuad();
     void clearHistory();
     void clearTarget(RenderTarget& target);
-    void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane);
+    void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects);
     unsigned int applyPostProcessing(const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory);
     PostFXSettings gatherPostFX(const std::vector<SceneObject>& sceneObjects) const;
 

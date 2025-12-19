@@ -13,7 +13,8 @@ enum class ObjectType {
     SpotLight,
     AreaLight,
     Camera,
-    PostFXNode
+    PostFXNode,
+    Mirror
 };
 
 struct MaterialProperties {

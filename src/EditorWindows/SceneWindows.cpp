@@ -77,6 +77,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
                 if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
                 if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+                if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
                 ImGui::EndMenu();
             }
 
@@ -138,6 +139,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
         case ObjectType::SpotLight: icon = "(S)"; break;
         case ObjectType::AreaLight: icon = "(L)"; break;
         case ObjectType::PostFXNode: icon = "(FX)"; break;
+        case ObjectType::Mirror: icon = "[R]"; break;
     }
 
     bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s %s", icon, obj.name.c_str());
@@ -613,6 +615,7 @@ void Engine::renderInspectorPanel() {
         case ObjectType::SpotLight:  typeLabel = "Spot Light"; break;
         case ObjectType::AreaLight:  typeLabel = "Area Light"; break;
         case ObjectType::PostFXNode: typeLabel = "Post FX Node"; break;
+        case ObjectType::Mirror:     typeLabel = "Mirror"; break;
         }
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
 

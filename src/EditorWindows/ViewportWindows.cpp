@@ -1576,6 +1576,9 @@ void Engine::renderViewport() {
                     case ObjectType::Capsule:
                         hit = rayAabb(localOrigin, localDir, glm::vec3(-0.35f, -0.9f, -0.35f), glm::vec3(0.35f, 0.9f, 0.35f), hitT);
                         break;
+                    case ObjectType::Mirror:
+                        hit = rayAabb(localOrigin, localDir, glm::vec3(-0.5f, -0.5f, -0.02f), glm::vec3(0.5f, 0.5f, 0.02f), hitT);
+                        break;
                     case ObjectType::OBJMesh: {
                         const auto* info = g_objLoader.getMeshInfo(obj.meshId);
                         if (info && info->boundsMin.x < info->boundsMax.x) {

@@ -258,7 +258,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=8\n";
+        file << "version=9\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";

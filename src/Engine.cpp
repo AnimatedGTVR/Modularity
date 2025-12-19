@@ -1107,6 +1107,11 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
     } else if (type == ObjectType::Camera) {
         sceneObjects.back().camera.type = SceneCameraType::Player;
         sceneObjects.back().camera.fov = 60.0f;
+    } else if (type == ObjectType::Mirror) {
+        sceneObjects.back().useOverlay = true;
+        sceneObjects.back().material.textureMix = 1.0f;
+        sceneObjects.back().material.color = glm::vec3(1.0f);
+        sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
     }
     setPrimarySelection(id);
     if (projectManager.currentProject.isLoaded) {

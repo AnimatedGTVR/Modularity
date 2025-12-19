@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "ModelLoader.h"
 #include <unordered_map>
+#include <unordered_set>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../include/ThirdParty/tiny_obj_loader.h"
@@ -58,6 +59,17 @@ float vertices[] = {
      0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
     -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
     -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f
+};
+
+float mirrorPlaneVertices[] = {
+    // positions          // normals        // texcoords
+    -0.5f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+     0.5f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  1.0f, 0.0f,
+     0.5f,  0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  1.0f, 1.0f,
+
+    -0.5f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+     0.5f,  0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  1.0f, 1.0f,
+    -0.5f,  0.5f, 0.0f,    0.0f, 0.0f, 1.0f,  0.0f, 1.0f
 };
 
 std::vector<float> generateSphere(int segments, int rings) {
@@ -422,6 +434,7 @@ Renderer::~Renderer() {
     delete cubeMesh;
     delete sphereMesh;
     delete capsuleMesh;
+    delete planeMesh;
     delete skybox;
     delete postShader;
     delete brightShader;
@@ -441,6 +454,11 @@ Renderer::~Renderer() {
     if (bloomTargetB.fbo) glDeleteFramebuffers(1, &bloomTargetB.fbo);
     if (bloomTargetB.texture) glDeleteTextures(1, &bloomTargetB.texture);
     if (bloomTargetB.rbo) glDeleteRenderbuffers(1, &bloomTargetB.rbo);
+    for (auto& entry : mirrorTargets) {
+        releaseRenderTarget(entry.second);
+    }
+    mirrorTargets.clear();
+    mirrorSmooth.clear();
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (viewportTexture) glDeleteTextures(1, &viewportTexture);
     if (rbo) glDeleteRenderbuffers(1, &rbo);
@@ -519,6 +537,7 @@ void Renderer::initialize() {
 
     auto capsuleVerts = generateCapsule();
     capsuleMesh = new Mesh(capsuleVerts.data(), capsuleVerts.size() * sizeof(float));
+    planeMesh = new Mesh(mirrorPlaneVertices, sizeof(mirrorPlaneVertices));
 
     skybox = new Skybox();
 
@@ -668,6 +687,105 @@ void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void Renderer::releaseRenderTarget(RenderTarget& target) {
+    if (target.texture) {
+        glDeleteTextures(1, &target.texture);
+    }
+    if (target.rbo) {
+        glDeleteRenderbuffers(1, &target.rbo);
+    }
+    if (target.fbo) {
+        glDeleteFramebuffers(1, &target.fbo);
+    }
+    target = {};
+}
+
+void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
+    if (sceneObjects.empty() || width <= 0 || height <= 0) return;
+
+    std::unordered_set<int> active;
+    GLint prevFBO = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+
+    auto planeNormal = [](const SceneObject& obj) {
+        glm::quat q = glm::quat(glm::radians(obj.rotation));
+        glm::vec3 n = q * glm::vec3(0.0f, 0.0f, 1.0f);
+        if (!std::isfinite(n.x) || glm::length(n) < 1e-3f) {
+            n = glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+        return glm::normalize(n);
+    };
+    auto planeUp = [](const SceneObject& obj) {
+        glm::quat q = glm::quat(glm::radians(obj.rotation));
+        glm::vec3 u = q * glm::vec3(0.0f, 1.0f, 0.0f);
+        if (!std::isfinite(u.x) || glm::length(u) < 1e-3f) {
+            u = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+        return glm::normalize(u);
+    };
+
+    for (const auto& obj : sceneObjects) {
+        if (!obj.enabled || obj.type != ObjectType::Mirror) continue;
+        active.insert(obj.id);
+
+        RenderTarget& target = mirrorTargets[obj.id];
+        ensureRenderTarget(target, width, height);
+        if (target.fbo == 0 || target.texture == 0) continue;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+        glViewport(0, 0, target.width, target.height);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glm::vec3 n = planeNormal(obj);
+        glm::vec3 planePoint = obj.position;
+        glm::vec3 upVec = planeUp(obj);
+        glm::vec3 tangent = glm::normalize(glm::cross(upVec, n));
+        if (!std::isfinite(tangent.x) || glm::length(tangent) < 1e-3f) {
+            tangent = glm::vec3(1.0f, 0.0f, 0.0f);
+        }
+        glm::vec3 bitangent = glm::cross(n, tangent);
+
+        Camera mirrorCam = camera;
+        glm::vec3 relToPlane = camera.position - planePoint;
+        float alongT = glm::dot(relToPlane, tangent);
+        float alongB = glm::dot(relToPlane, bitangent);
+        MirrorSmoothing& sm = mirrorSmooth[obj.id];
+        if (!sm.initialized) {
+            sm.planar = glm::vec2(alongT, alongB);
+            sm.initialized = true;
+        } else {
+            float lerp = 0.2f; // slow the planar tracking slightly
+            sm.planar = glm::mix(sm.planar, glm::vec2(alongT, alongB), lerp);
+        }
+
+        float fixedDepth = 0.05f; // keep a small offset off the plane; ignore viewer local Z movement
+        mirrorCam.position = planePoint + tangent * sm.planar.x + bitangent * sm.planar.y + n * fixedDepth;
+        mirrorCam.front = n; // Look straight out from the mirror face
+        mirrorCam.up = upVec;
+        if (!std::isfinite(mirrorCam.front.x) || glm::length(mirrorCam.front) < 1e-3f) {
+            mirrorCam.front = glm::vec3(0.0f, 0.0f, -1.0f);
+        }
+        if (!std::isfinite(mirrorCam.up.x) || glm::length(mirrorCam.up) < 1e-3f) {
+            mirrorCam.up = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+
+        renderSceneInternal(mirrorCam, sceneObjects, target.width, target.height, false, fovDeg, nearPlane, farPlane, false);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+
+    for (auto it = mirrorTargets.begin(); it != mirrorTargets.end(); ) {
+        if (active.find(it->first) == active.end()) {
+            releaseRenderTarget(it->second);
+            mirrorSmooth.erase(it->first);
+            it = mirrorTargets.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void Renderer::ensureQuad() {
     if (quadVAO != 0) return;
 
@@ -790,6 +908,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
+    shader->setBool("unlit", obj.type == ObjectType::Mirror);
 
     Texture* baseTex = texture1;
     if (!obj.albedoTexturePath.empty()) {
@@ -798,7 +917,15 @@ void Renderer::renderObject(const SceneObject& obj) {
     if (baseTex) baseTex->Bind(GL_TEXTURE0);
 
     bool overlayUsed = false;
-    if (obj.useOverlay && !obj.overlayTexturePath.empty()) {
+    if (obj.type == ObjectType::Mirror) {
+        auto it = mirrorTargets.find(obj.id);
+        if (it != mirrorTargets.end() && it->second.texture != 0) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, it->second.texture);
+            overlayUsed = true;
+        }
+    }
+    if (!overlayUsed && obj.useOverlay && !obj.overlayTexturePath.empty()) {
         if (auto* t = getTexture(obj.overlayTexturePath)) {
             t->Bind(GL_TEXTURE1);
             overlayUsed = true;
@@ -827,6 +954,9 @@ void Renderer::renderObject(const SceneObject& obj) {
             break;
         case ObjectType::Capsule:
             capsuleMesh->draw();
+            break;
+        case ObjectType::Mirror:
+            if (planeMesh) planeMesh->draw();
             break;
         case ObjectType::OBJMesh:
             if (obj.meshId >= 0) {
@@ -860,7 +990,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     }
 }
 
-void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane) {
+void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects) {
     if (!defaultShader || width <= 0 || height <= 0) return;
 
     struct LightUniform {
@@ -958,6 +1088,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
     for (const auto& obj : sceneObjects) {
         if (!obj.enabled) continue;
+        if (!drawMirrorObjects && obj.type == ObjectType::Mirror) continue;
         // Skip light gizmo-only types and camera helpers
         if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode) {
             continue;
@@ -971,6 +1102,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setMat4("view", camera.getViewMatrix());
         shader->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane));
         shader->setVec3("viewPos", camera.position);
+        shader->setBool("unlit", obj.type == ObjectType::Mirror);
         shader->setVec3("ambientColor", ambientColor);
         shader->setVec3("ambientColor", ambientColor);
 
@@ -1011,7 +1143,15 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (baseTex) baseTex->Bind(GL_TEXTURE0);
 
         bool overlayUsed = false;
-        if (obj.useOverlay && !obj.overlayTexturePath.empty()) {
+        if (obj.type == ObjectType::Mirror) {
+            auto it = mirrorTargets.find(obj.id);
+            if (it != mirrorTargets.end() && it->second.texture != 0) {
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, it->second.texture);
+                overlayUsed = true;
+            }
+        }
+        if (!overlayUsed && obj.useOverlay && !obj.overlayTexturePath.empty()) {
             if (auto* t = getTexture(obj.overlayTexturePath)) {
                 t->Bind(GL_TEXTURE1);
                 overlayUsed = true;
@@ -1035,6 +1175,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (obj.type == ObjectType::Cube) meshToDraw = cubeMesh;
         else if (obj.type == ObjectType::Sphere) meshToDraw = sphereMesh;
         else if (obj.type == ObjectType::Capsule) meshToDraw = capsuleMesh;
+        else if (obj.type == ObjectType::Mirror) meshToDraw = planeMesh;
         else if (obj.type == ObjectType::OBJMesh && obj.meshId != -1) {
             meshToDraw = g_objLoader.getMesh(obj.meshId);
         } else if (obj.type == ObjectType::Model && obj.meshId != -1) {
@@ -1211,7 +1352,8 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
 }
 
 void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int /*selectedId*/, float fovDeg, float nearPlane, float farPlane) {
-    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane);
+    updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
+    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
     unsigned int result = applyPostProcessing(sceneObjects, viewportTexture, currentWidth, currentHeight, true);
     displayTexture = result ? result : viewportTexture;
 }
@@ -1225,7 +1367,8 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane);
+    updateMirrorTargets(camera, sceneObjects, width, height, fovDeg, nearPlane, farPlane);
+    renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
     if (!applyPostFX) {
         return previewTarget.texture;
     }

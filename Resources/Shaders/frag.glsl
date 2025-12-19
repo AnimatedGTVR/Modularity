@@ -11,6 +11,7 @@ uniform sampler2D normalMap;
 uniform float mixAmount = 0.2;
 uniform bool hasOverlay = false;
 uniform bool hasNormalMap = false;
+uniform bool unlit = false;
 
 uniform vec3 viewPos;
 uniform vec3 materialColor = vec3(1.0);
@@ -51,6 +52,11 @@ void main()
         texColor = mix(texColor, overlay, mixAmount);
     }
     vec3 baseColor = texColor * materialColor;
+
+    if (unlit) {
+        FragColor = vec4(baseColor, tex1.a);
+        return;
+    }
 
     // Normal map (tangent-space)
     if (hasNormalMap) {
