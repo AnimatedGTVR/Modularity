@@ -86,6 +86,8 @@ private:
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
+    std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheLinear;
+    std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheNearest;
     struct ShaderEntry {
         std::unique_ptr<Shader> shader;
         fs::file_time_type vertTime;
@@ -131,6 +133,7 @@ public:
 
     void initialize();
     Texture* getTexture(const std::string& path);
+    Texture* getTexturePreview(const std::string& path, bool nearest);
     Shader* getShader(const std::string& vert, const std::string& frag);
     bool forceReloadShader(const std::string& vert, const std::string& frag);
     void setAmbientColor(const glm::vec3& color) { ambientColor = color; }

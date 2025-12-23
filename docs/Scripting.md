@@ -23,6 +23,12 @@
 Available methods:
 - `FindObjectByName`, `FindObjectById`
 - `SetPosition`, `SetRotation`, `SetScale`
+- `HasRigidbody`
+- `SetRigidbodyVelocity`, `GetRigidbodyVelocity`
+- `SetRigidbodyAngularVelocity`, `GetRigidbodyAngularVelocity`
+- `AddRigidbodyForce`, `AddRigidbodyImpulse`
+- `AddRigidbodyTorque`, `AddRigidbodyAngularImpulse`
+- `SetRigidbodyRotation`, `TeleportRigidbody`
 - `MarkDirty` (flags the project as having unsaved changes)
 Fields:
 - `engine`: pointer to the Engine
@@ -60,3 +66,15 @@ void Script_TickUpdate(ScriptContext& ctx, float dt) {
 - Scripts tick for all objects every frame, even if not selected.
 - Spec/Test toggles are global (main menu → Scripts).
 - Compile scripts via the UI “Compile Script” button or run the build command; wrapper generation is automatic.
+
+## Manual compile (CLI)
+Linux example:
+```bash
+g++ -std=c++20 -fPIC -O0 -g -I../src -I../include -c SampleInspector.cpp -o ../Cache/ScriptBin/SampleInspector.o
+g++ -shared ../Cache/ScriptBin/SampleInspector.o -o ../Cache/ScriptBin/SampleInspector.so -ldl -lpthread
+```
+Windows example:
+```bat
+cl /nologo /std:c++20 /EHsc /MD /Zi /Od /I ..\\src /I ..\\include /c SampleInspector.cpp /Fo ..\\Cache\\ScriptBin\\SampleInspector.obj
+link /nologo /DLL ..\\Cache\\ScriptBin\\SampleInspector.obj /OUT:..\\Cache\\ScriptBin\\SampleInspector.dll User32.lib Advapi32.lib
+```

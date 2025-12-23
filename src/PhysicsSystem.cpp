@@ -398,6 +398,20 @@ bool PhysicsSystem::setLinearVelocity(int id, const glm::vec3& velocity) {
     return false;
 }
 
+bool PhysicsSystem::setAngularVelocity(int id, const glm::vec3& velocity) {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        dyn->setAngularVelocity(ToPxVec3(velocity));
+        return true;
+    }
+#endif
+    return false;
+}
+
 bool PhysicsSystem::setActorYaw(int id, float yawDegrees) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -428,6 +442,21 @@ bool PhysicsSystem::getLinearVelocity(int id, glm::vec3& outVelocity) const {
     return false;
 }
 
+bool PhysicsSystem::getAngularVelocity(int id, glm::vec3& outVelocity) const {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    const ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (const PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        PxVec3 v = dyn->getAngularVelocity();
+        outVelocity = glm::vec3(v.x, v.y, v.z);
+        return true;
+    }
+#endif
+    return false;
+}
+
 bool PhysicsSystem::setActorPose(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -441,6 +470,62 @@ bool PhysicsSystem::setActorPose(int id, const glm::vec3& position, const glm::v
     (void)id; (void)position; (void)rotationDeg;
     return false;
 #endif
+}
+
+bool PhysicsSystem::addForce(int id, const glm::vec3& force) {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        dyn->addForce(ToPxVec3(force), PxForceMode::eFORCE);
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool PhysicsSystem::addImpulse(int id, const glm::vec3& impulse) {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        dyn->addForce(ToPxVec3(impulse), PxForceMode::eIMPULSE);
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool PhysicsSystem::addTorque(int id, const glm::vec3& torque) {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        dyn->addTorque(ToPxVec3(torque), PxForceMode::eFORCE);
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool PhysicsSystem::addAngularImpulse(int id, const glm::vec3& impulse) {
+#ifdef MODULARITY_ENABLE_PHYSX
+    auto it = mActors.find(id);
+    if (it == mActors.end()) return false;
+    ActorRecord& rec = it->second;
+    if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
+    if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        dyn->addTorque(ToPxVec3(impulse), PxForceMode::eIMPULSE);
+        return true;
+    }
+#endif
+    return false;
 }
 
 bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
@@ -544,8 +629,15 @@ bool PhysicsSystem::init() { return false; }
 void PhysicsSystem::shutdown() {}
 bool PhysicsSystem::isReady() const { return false; }
 bool PhysicsSystem::setLinearVelocity(int, const glm::vec3&) { return false; }
+bool PhysicsSystem::setAngularVelocity(int, const glm::vec3&) { return false; }
 bool PhysicsSystem::setActorYaw(int, float) { return false; }
 bool PhysicsSystem::getLinearVelocity(int, glm::vec3&) const { return false; }
+bool PhysicsSystem::getAngularVelocity(int, glm::vec3&) const { return false; }
+bool PhysicsSystem::setActorPose(int, const glm::vec3&, const glm::vec3&) { return false; }
+bool PhysicsSystem::addForce(int, const glm::vec3&) { return false; }
+bool PhysicsSystem::addImpulse(int, const glm::vec3&) { return false; }
+bool PhysicsSystem::addTorque(int, const glm::vec3&) { return false; }
+bool PhysicsSystem::addAngularImpulse(int, const glm::vec3&) { return false; }
 void PhysicsSystem::onPlayStart(const std::vector<SceneObject>&) {}
 void PhysicsSystem::onPlayStop() {}
 void PhysicsSystem::simulate(float, std::vector<SceneObject>&) {}

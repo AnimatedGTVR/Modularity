@@ -122,6 +122,43 @@ bool ScriptContext::GetRigidbodyVelocity(glm::vec3& outVelocity) const {
     return engine->getRigidbodyVelocityFromScript(object->id, outVelocity);
 }
 
+bool ScriptContext::SetRigidbodyAngularVelocity(const glm::vec3& velocity) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->setRigidbodyAngularVelocityFromScript(object->id, velocity);
+}
+
+bool ScriptContext::GetRigidbodyAngularVelocity(glm::vec3& outVelocity) const {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->getRigidbodyAngularVelocityFromScript(object->id, outVelocity);
+}
+
+bool ScriptContext::AddRigidbodyForce(const glm::vec3& force) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->addRigidbodyForceFromScript(object->id, force);
+}
+
+bool ScriptContext::AddRigidbodyImpulse(const glm::vec3& impulse) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->addRigidbodyImpulseFromScript(object->id, impulse);
+}
+
+bool ScriptContext::AddRigidbodyTorque(const glm::vec3& torque) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->addRigidbodyTorqueFromScript(object->id, torque);
+}
+
+bool ScriptContext::AddRigidbodyAngularImpulse(const glm::vec3& impulse) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->addRigidbodyAngularImpulseFromScript(object->id, impulse);
+}
+
+bool ScriptContext::SetRigidbodyRotation(const glm::vec3& rotDeg) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    object->rotation = NormalizeEulerDegrees(rotDeg);
+    MarkDirty();
+    return engine->teleportPhysicsActorFromScript(object->id, object->position, object->rotation);
+}
+
 bool ScriptContext::TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg) {
     if (!engine || !object) return false;
     object->position = pos;

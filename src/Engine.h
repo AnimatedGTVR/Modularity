@@ -13,6 +13,7 @@
 #include "AudioSystem.h"
 #include "PackageManager.h"
 #include "../include/Window/Window.h"
+#include <unordered_map>
 
 void window_size_callback(GLFWwindow* window, int width, int height);
 
@@ -98,6 +99,9 @@ private:
     float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
+    bool hierarchyShowTexturePreview = false;
+    bool hierarchyPreviewNearest = false;
+    std::unordered_map<std::string, bool> texturePreviewFilterOverrides;
     bool isPlaying = false;
     bool isPaused = false;
     bool showViewOutput = true;
@@ -235,7 +239,13 @@ public:
     // Script-accessible physics helpers
     bool setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity);
     bool getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity);
+    bool setRigidbodyAngularVelocityFromScript(int id, const glm::vec3& velocity);
+    bool getRigidbodyAngularVelocityFromScript(int id, glm::vec3& outVelocity);
     bool teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg);
+    bool addRigidbodyForceFromScript(int id, const glm::vec3& force);
+    bool addRigidbodyImpulseFromScript(int id, const glm::vec3& impulse);
+    bool addRigidbodyTorqueFromScript(int id, const glm::vec3& torque);
+    bool addRigidbodyAngularImpulseFromScript(int id, const glm::vec3& impulse);
     // Audio control exposed to scripts
     bool playAudioFromScript(int id);
     bool stopAudioFromScript(int id);

@@ -49,8 +49,9 @@ private:
 
     ma_engine engine{};
     bool initialized = false;
-    std::unordered_map<int, ActiveSound> activeSounds;
+    std::unordered_map<int, std::unique_ptr<ActiveSound>> activeSounds;
     std::unordered_map<std::string, AudioClipPreview> previewCache;
+    std::unordered_set<std::string> missingClips;
 
     ma_sound previewSound{};
     bool previewActive = false;

@@ -480,6 +480,23 @@ Texture* Renderer::getTexture(const std::string& path) {
     return raw;
 }
 
+Texture* Renderer::getTexturePreview(const std::string& path, bool nearest) {
+    if (path.empty()) return nullptr;
+    auto& cache = nearest ? previewTextureCacheNearest : previewTextureCacheLinear;
+    auto it = cache.find(path);
+    if (it != cache.end()) return it->second.get();
+
+    GLenum minFilter = nearest ? GL_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
+    GLenum magFilter = nearest ? GL_NEAREST : GL_LINEAR;
+    auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter);
+    if (!tex->GetID()) {
+        return nullptr;
+    }
+    Texture* raw = tex.get();
+    cache[path] = std::move(tex);
+    return raw;
+}
+
 void Renderer::initialize() {
     shader = new Shader(defaultVertPath.c_str(), defaultFragPath.c_str());
     defaultShader = shader;

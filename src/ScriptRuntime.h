@@ -39,6 +39,13 @@ struct ScriptContext {
     bool HasRigidbody() const;
     bool SetRigidbodyVelocity(const glm::vec3& velocity);
     bool GetRigidbodyVelocity(glm::vec3& outVelocity) const;
+    bool SetRigidbodyAngularVelocity(const glm::vec3& velocity);
+    bool GetRigidbodyAngularVelocity(glm::vec3& outVelocity) const;
+    bool AddRigidbodyForce(const glm::vec3& force);
+    bool AddRigidbodyImpulse(const glm::vec3& impulse);
+    bool AddRigidbodyTorque(const glm::vec3& torque);
+    bool AddRigidbodyAngularImpulse(const glm::vec3& impulse);
+    bool SetRigidbodyRotation(const glm::vec3& rotDeg);
     bool TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg);
     // Audio helpers
     bool HasAudioSource() const;

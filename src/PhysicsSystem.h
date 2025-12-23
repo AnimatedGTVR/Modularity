@@ -16,9 +16,15 @@ public:
     void shutdown();
     bool isReady() const;
     bool setLinearVelocity(int id, const glm::vec3& velocity);
+    bool setAngularVelocity(int id, const glm::vec3& velocity);
     bool setActorYaw(int id, float yawDegrees);
     bool getLinearVelocity(int id, glm::vec3& outVelocity) const;
+    bool getAngularVelocity(int id, glm::vec3& outVelocity) const;
     bool setActorPose(int id, const glm::vec3& position, const glm::vec3& rotationDeg);
+    bool addForce(int id, const glm::vec3& force);
+    bool addImpulse(int id, const glm::vec3& impulse);
+    bool addTorque(int id, const glm::vec3& torque);
+    bool addAngularImpulse(int id, const glm::vec3& impulse);
     bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                         int ignoreId, glm::vec3* hitPos = nullptr,
                         glm::vec3* hitNormal = nullptr, float* hitDistance = nullptr) const;

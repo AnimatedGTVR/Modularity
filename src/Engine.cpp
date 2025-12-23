@@ -1281,8 +1281,32 @@ bool Engine::getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity) {
     return physics.getLinearVelocity(id, outVelocity);
 }
 
+bool Engine::setRigidbodyAngularVelocityFromScript(int id, const glm::vec3& velocity) {
+    return physics.setAngularVelocity(id, velocity);
+}
+
+bool Engine::getRigidbodyAngularVelocityFromScript(int id, glm::vec3& outVelocity) {
+    return physics.getAngularVelocity(id, outVelocity);
+}
+
 bool Engine::teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
     return physics.setActorPose(id, position, rotationDeg);
+}
+
+bool Engine::addRigidbodyForceFromScript(int id, const glm::vec3& force) {
+    return physics.addForce(id, force);
+}
+
+bool Engine::addRigidbodyImpulseFromScript(int id, const glm::vec3& impulse) {
+    return physics.addImpulse(id, impulse);
+}
+
+bool Engine::addRigidbodyTorqueFromScript(int id, const glm::vec3& torque) {
+    return physics.addTorque(id, torque);
+}
+
+bool Engine::addRigidbodyAngularImpulseFromScript(int id, const glm::vec3& impulse) {
+    return physics.addAngularImpulse(id, impulse);
 }
 
 bool Engine::playAudioFromScript(int id) {

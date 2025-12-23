@@ -40,7 +40,7 @@ std::string getSetting(const ScriptContext& ctx, const std::string& key, const s
 
 void loadSettings(ScriptContext& ctx) {
     if (!ctx.script || !ctx.object) return;
-    if (settingsLoadedForId == ctx.object->id && settingsLoadedForScript == ctx.script) return;
+    if (settingsLoadedForId == ctx.object->id && settingsLoadedForScript == ctx.script) return;Segmentation fault (core dumped)
     settingsLoadedForId = ctx.object->id;
     settingsLoadedForScript = ctx.script;
 

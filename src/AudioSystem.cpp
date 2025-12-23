@@ -30,7 +30,9 @@ void AudioSystem::shutdown() {
 
 void AudioSystem::destroyActiveSounds() {
     for (auto& kv : activeSounds) {
-        ma_sound_uninit(&kv.second.sound);
+        if (kv.second) {
+            ma_sound_uninit(&kv.second->sound);
+        }
     }
     activeSounds.clear();
 }
@@ -42,7 +44,7 @@ void AudioSystem::onPlayStart(const std::vector<SceneObject>& objects) {
         if (!obj.enabled || !obj.hasAudioSource || obj.audioSource.clipPath.empty()) continue;
         if (!obj.audioSource.enabled) continue;
         if (ensureSoundFor(obj) && obj.audioSource.playOnStart) {
-            ma_sound_start(&activeSounds[obj.id].sound);
+            ma_sound_start(&activeSounds[obj.id]->sound);
         }
     }
 }
@@ -54,44 +56,56 @@ void AudioSystem::onPlayStop() {
 bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
     auto it = activeSounds.find(obj.id);
     if (it != activeSounds.end()) {
-        if (it->second.clipPath == obj.audioSource.clipPath) {
-            refreshSoundParams(obj, it->second);
+        if (it->second && it->second->clipPath == obj.audioSource.clipPath) {
+            refreshSoundParams(obj, *it->second);
             return true;
         }
-        ma_sound_uninit(&it->second.sound);
+        if (it->second) {
+            ma_sound_uninit(&it->second->sound);
+        }
         activeSounds.erase(it);
     }
 
+    if (!fs::exists(obj.audioSource.clipPath)) {
+        if (missingClips.insert(obj.audioSource.clipPath).second) {
+            std::cerr << "AudioSystem: clip not found " << obj.audioSource.clipPath << "\n";
+        }
+        return false;
+    }
+    missingClips.erase(obj.audioSource.clipPath);
+
     if (!initialized && !init()) return false;
 
-    ActiveSound snd{};
+    auto snd = std::make_unique<ActiveSound>();
     ma_result res = ma_sound_init_from_file(
         &engine,
         obj.audioSource.clipPath.c_str(),
         MA_SOUND_FLAG_STREAM,
         nullptr,
         nullptr,
-        &snd.sound
+        &snd->sound
     );
     if (res != MA_SUCCESS) {
         std::cerr << "AudioSystem: failed to load " << obj.audioSource.clipPath << " (" << res << ")\n";
         return false;
     }
 
-    snd.clipPath = obj.audioSource.clipPath;
-    snd.spatial = obj.audioSource.spatial;
-    snd.started = false;
-    refreshSoundParams(obj, snd);
-    activeSounds[obj.id] = std::move(snd);
+    snd->clipPath = obj.audioSource.clipPath;
+    snd->spatial = obj.audioSource.spatial;
+    snd->started = false;
+    refreshSoundParams(obj, *snd);
+    activeSounds.emplace(obj.id, std::move(snd));
     return true;
 }
 
 void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
+    float minDist = std::max(0.1f, obj.audioSource.minDistance);
+    float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
     ma_sound_set_looping(&snd.sound, obj.audioSource.loop ? MA_TRUE : MA_FALSE);
     ma_sound_set_volume(&snd.sound, obj.audioSource.volume);
     ma_sound_set_spatialization_enabled(&snd.sound, obj.audioSource.spatial ? MA_TRUE : MA_FALSE);
-    ma_sound_set_min_distance(&snd.sound, obj.audioSource.minDistance);
-    ma_sound_set_max_distance(&snd.sound, obj.audioSource.maxDistance);
+    ma_sound_set_min_distance(&snd.sound, minDist);
+    ma_sound_set_max_distance(&snd.sound, maxDist);
     ma_sound_set_position(&snd.sound, obj.position.x, obj.position.y, obj.position.z);
 
     if (!ma_sound_is_playing(&snd.sound) && !snd.started && obj.audioSource.playOnStart && obj.audioSource.enabled) {
@@ -120,20 +134,24 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
         auto eraseIt = activeSounds.find(obj.id);
         if (!obj.enabled || !obj.audioSource.enabled || obj.audioSource.clipPath.empty()) {
             if (eraseIt != activeSounds.end()) {
-                ma_sound_uninit(&eraseIt->second.sound);
+                if (eraseIt->second) {
+                    ma_sound_uninit(&eraseIt->second->sound);
+                }
                 activeSounds.erase(eraseIt);
             }
             continue;
         }
 
         if (ensureSoundFor(obj)) {
-            refreshSoundParams(obj, activeSounds[obj.id]);
+            refreshSoundParams(obj, *activeSounds[obj.id]);
         }
     }
 
     for (auto it = activeSounds.begin(); it != activeSounds.end(); ) {
         if (stillPresent.find(it->first) == stillPresent.end()) {
-            ma_sound_uninit(&it->second.sound);
+            if (it->second) {
+                ma_sound_uninit(&it->second->sound);
+            }
             it = activeSounds.erase(it);
         } else {
             ++it;
@@ -202,7 +220,7 @@ bool AudioSystem::seekPreview(const std::string& path, double seconds) {
 bool AudioSystem::playObjectSound(const SceneObject& obj) {
     if (!obj.hasAudioSource || obj.audioSource.clipPath.empty() || !obj.audioSource.enabled) return false;
     if (!ensureSoundFor(obj)) return false;
-    ActiveSound& snd = activeSounds[obj.id];
+    ActiveSound& snd = *activeSounds[obj.id];
     snd.started = true;
     return ma_sound_start(&snd.sound) == MA_SUCCESS;
 }
@@ -210,19 +228,20 @@ bool AudioSystem::playObjectSound(const SceneObject& obj) {
 bool AudioSystem::stopObjectSound(int objectId) {
     auto it = activeSounds.find(objectId);
     if (it == activeSounds.end()) return false;
-    return ma_sound_stop(&it->second.sound) == MA_SUCCESS;
+    if (!it->second) return false;
+    return ma_sound_stop(&it->second->sound) == MA_SUCCESS;
 }
 
 bool AudioSystem::setObjectLoop(const SceneObject& obj, bool loop) {
     if (!ensureSoundFor(obj)) return false;
-    ActiveSound& snd = activeSounds[obj.id];
+    ActiveSound& snd = *activeSounds[obj.id];
     ma_sound_set_looping(&snd.sound, loop ? MA_TRUE : MA_FALSE);
     return true;
 }
 
 bool AudioSystem::setObjectVolume(const SceneObject& obj, float volume) {
     if (!ensureSoundFor(obj)) return false;
-    ActiveSound& snd = activeSounds[obj.id];
+    ActiveSound& snd = *activeSounds[obj.id];
     ma_sound_set_volume(&snd.sound, volume);
     return true;
 }

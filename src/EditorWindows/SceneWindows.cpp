@@ -35,9 +35,22 @@ void Engine::renderHierarchyPanel() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, headerBg);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
-    ImGui::BeginChild("HierarchyHeader", ImVec2(0, 50), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("HierarchyHeader", ImVec2(0, 74), true, ImGuiWindowFlags_NoScrollbar);
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##Search", "Search...", searchBuffer, sizeof(searchBuffer));
+    ImGui::Spacing();
+    ImGui::Checkbox("Texture Preview", &hierarchyShowTexturePreview);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!hierarchyShowTexturePreview);
+    ImGui::TextDisabled("Filter");
+    ImGui::SameLine();
+    const char* filterOptions[] = { "Bilinear", "Nearest" };
+    int filterIndex = hierarchyPreviewNearest ? 1 : 0;
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::Combo("##HierarchyTexFilter", &filterIndex, filterOptions, IM_ARRAYSIZE(filterOptions))) {
+        hierarchyPreviewNearest = (filterIndex == 1);
+    }
+    ImGui::EndDisabled();
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
@@ -181,6 +194,38 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
         ImGui::EndPopup();
     }
 
+    if (hierarchyShowTexturePreview) {
+        const std::string* previewPath = nullptr;
+        if (!obj.albedoTexturePath.empty()) {
+            previewPath = &obj.albedoTexturePath;
+        } else if (obj.useOverlay && !obj.overlayTexturePath.empty()) {
+            previewPath = &obj.overlayTexturePath;
+        }
+
+        if (previewPath) {
+            auto overrideIt = texturePreviewFilterOverrides.find(*previewPath);
+            bool previewNearest = (overrideIt != texturePreviewFilterOverrides.end())
+                ? overrideIt->second
+                : hierarchyPreviewNearest;
+            Texture* previewTex = renderer.getTexturePreview(*previewPath, previewNearest);
+            if (previewTex && previewTex->GetID()) {
+                ImGuiStyle& style = ImGui::GetStyle();
+                ImVec2 itemMin = ImGui::GetItemRectMin();
+                ImVec2 itemMax = ImGui::GetItemRectMax();
+                float lineHeight = itemMax.y - itemMin.y;
+                float previewSize = std::max(12.0f, lineHeight - 4.0f);
+                float rightEdge = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+                float previewX = rightEdge - previewSize - style.WindowPadding.x;
+                float previewY = itemMin.y + (lineHeight - previewSize) * 0.5f;
+                ImVec2 pMin(previewX, previewY);
+                ImVec2 pMax(previewX + previewSize, previewY + previewSize);
+                ImGui::GetWindowDrawList()->AddImage(
+                    (ImTextureID)(intptr_t)previewTex->GetID(),
+                    pMin, pMax, ImVec2(0, 1), ImVec2(1, 0));
+            }
+        }
+    }
+
     if (nodeOpen) {
         for (int childId : obj.childIds) {
             auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
@@ -201,6 +246,8 @@ void Engine::renderInspectorPanel() {
     fs::path selectedAudioPath;
     bool browserHasAudio = false;
     const AudioClipPreview* selectedAudioPreview = nullptr;
+    fs::path selectedTexturePath;
+    bool browserHasTexture = false;
     if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
         fs::directory_entry entry(fileBrowser.selectedFile);
         FileCategory cat = fileBrowser.getFileCategory(entry);
@@ -228,6 +275,10 @@ void Engine::renderInspectorPanel() {
             selectedAudioPath = entry.path();
             browserHasAudio = true;
             selectedAudioPreview = audio.getPreview(selectedAudioPath.string());
+        }
+        if (cat == FileCategory::Texture) {
+            selectedTexturePath = entry.path();
+            browserHasTexture = true;
         }
     } else {
         inspectedMaterialPath.clear();
@@ -555,11 +606,68 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     };
 
+    auto renderTextureAssetPanel = [&](const char* headerTitle) {
+        if (!browserHasTexture) return;
+
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
+        if (ImGui::CollapsingHeader(headerTitle, ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Indent(8.0f);
+
+            ImGui::TextDisabled("%s", selectedTexturePath.filename().string().c_str());
+            ImGui::TextColored(ImVec4(0.8f, 0.65f, 0.95f, 1.0f), "%s", selectedTexturePath.string().c_str());
+
+            bool hasOverride = texturePreviewFilterOverrides.find(selectedTexturePath.string()) != texturePreviewFilterOverrides.end();
+            bool previewNearest = hasOverride ? texturePreviewFilterOverrides[selectedTexturePath.string()] : hierarchyPreviewNearest;
+            Texture* previewTex = renderer.getTexturePreview(selectedTexturePath.string(), previewNearest);
+
+            ImGui::Spacing();
+            if (previewTex && previewTex->GetID()) {
+                float maxWidth = ImGui::GetContentRegionAvail().x;
+                float size = std::min(maxWidth, 160.0f);
+                float aspect = previewTex->GetHeight() > 0 ? (previewTex->GetWidth() / static_cast<float>(previewTex->GetHeight())) : 1.0f;
+                ImVec2 imageSize(size, size);
+                if (aspect > 1.0f) {
+                    imageSize.y = size / aspect;
+                } else if (aspect > 0.0f) {
+                    imageSize.x = size * aspect;
+                }
+                ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), imageSize, ImVec2(0, 1), ImVec2(1, 0));
+                ImGui::Text("Size: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "Unable to load texture preview.");
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Checkbox("Override Hierarchy Filter", &hasOverride)) {
+                if (hasOverride) {
+                    texturePreviewFilterOverrides[selectedTexturePath.string()] = hierarchyPreviewNearest;
+                } else {
+                    texturePreviewFilterOverrides.erase(selectedTexturePath.string());
+                }
+            }
+            ImGui::BeginDisabled(!hasOverride);
+            const char* filterOptions[] = { "Bilinear", "Nearest" };
+            int filterIndex = previewNearest ? 1 : 0;
+            if (ImGui::Combo("Preview Filter", &filterIndex, filterOptions, IM_ARRAYSIZE(filterOptions))) {
+                texturePreviewFilterOverrides[selectedTexturePath.string()] = (filterIndex == 1);
+            }
+            ImGui::EndDisabled();
+            if (!hasOverride) {
+                ImGui::TextDisabled("Using global: %s", hierarchyPreviewNearest ? "Nearest" : "Bilinear");
+            }
+
+            ImGui::Unindent(8.0f);
+        }
+        ImGui::PopStyleColor();
+    };
+
     if (selectedObjectIds.empty()) {
         if (browserHasMaterial) {
             renderMaterialAssetPanel("Material Asset", true);
         } else if (browserHasAudio) {
             renderAudioAssetPanel("Audio Clip", nullptr);
+        } else if (browserHasTexture) {
+            renderTextureAssetPanel("Texture");
         } else {
             ImGui::TextDisabled("No object selected");
         }
