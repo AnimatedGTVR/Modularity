@@ -25,6 +25,15 @@ bool containsPath(const std::vector<fs::path>& haystack, const fs::path& needle)
     return false;
 }
 
+bool isGitRepo(const fs::path& root) {
+    std::error_code ec;
+    fs::path dotGit = root / ".git";
+    if (fs::exists(dotGit, ec)) {
+        return true;
+    }
+    return false;
+}
+
 fs::path guessIncludeDir(const fs::path& repoRoot, const std::string& includeRel) {
     if (!includeRel.empty()) {
         fs::path candidate = normalizePath(repoRoot / includeRel);
@@ -94,12 +103,24 @@ bool PackageManager::remove(const std::string& id) {
     }
     if (pkg->external) {
         std::string log;
-        std::string deinitCmd = "git submodule deinit -f \"" + pkg->localPath.string() + "\"";
-        runCommand(deinitCmd, log); // best-effort
-        std::string rmCmd = "git rm -f \"" + pkg->localPath.string() + "\"";
-        if (!runCommand(rmCmd, log)) {
-            lastError = "Failed to remove submodule. Git log:\n" + log;
-            return false;
+        if (isGitRepo(projectRoot)) {
+            std::error_code ec;
+            fs::path relPath = fs::relative(pkg->localPath, projectRoot, ec);
+            std::string rel = (!ec ? relPath : pkg->localPath).generic_string();
+            std::string deinitCmd = "git -C \"" + projectRoot.string() + "\" submodule deinit -f \"" + rel + "\"";
+            runCommand(deinitCmd, log); // best-effort
+            std::string rmCmd = "git -C \"" + projectRoot.string() + "\" rm -f \"" + rel + "\"";
+            if (!runCommand(rmCmd, log)) {
+                lastError = "Failed to remove submodule. Git log:\n" + log;
+                return false;
+            }
+        } else {
+            std::error_code ec;
+            fs::remove_all(pkg->localPath, ec);
+            if (ec) {
+                lastError = "Failed to remove package folder: " + ec.message();
+                return false;
+            }
         }
     }
 
@@ -421,10 +442,22 @@ bool PackageManager::installGitPackage(const std::string& url,
     fs::path dest = normalizePath(packagesFolder() / id);
     fs::create_directories(dest.parent_path());
 
-    std::string cmd = "git submodule add --force \"" + url + "\" \"" + dest.string() + "\"";
+    std::string cmd;
+    if (isGitRepo(projectRoot)) {
+        std::error_code ec;
+        fs::path relPath = fs::relative(dest, projectRoot, ec);
+        std::string rel = (!ec ? relPath : dest).generic_string();
+        cmd = "git -C \"" + projectRoot.string() + "\" submodule add --force \"" + url + "\" \"" + rel + "\"";
+    } else {
+        cmd = "git clone \"" + url + "\" \"" + dest.string() + "\"";
+    }
     std::string log;
     if (!runCommand(cmd, log)) {
-        lastError = "git submodule add failed:\n" + log;
+        if (isGitRepo(projectRoot)) {
+            lastError = "git submodule add failed:\n" + log;
+        } else {
+            lastError = "git clone failed:\n" + log;
+        }
         return false;
     }
 
