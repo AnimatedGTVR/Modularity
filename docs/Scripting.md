@@ -67,6 +67,43 @@ void Script_TickUpdate(ScriptContext& ctx, float dt) {
 - Spec/Test toggles are global (main menu → Scripts).
 - Compile scripts via the UI “Compile Script” button or run the build command; wrapper generation is automatic.
 
+## Rigidbody helper usage
+- `SetRigidbodyAngularVelocity(vec3)` sets angular velocity in radians/sec for dynamic, non-kinematic bodies.
+```cpp
+ctx.SetRigidbodyAngularVelocity({0.0f, 3.0f, 0.0f});
+```
+- `GetRigidbodyAngularVelocity(out vec3)` reads current angular velocity into `out`. Returns false if unavailable.
+```cpp
+glm::vec3 angVel;
+if (ctx.GetRigidbodyAngularVelocity(angVel)) {
+    ctx.AddConsoleMessage("AngVel Y: " + std::to_string(angVel.y));
+}
+```
+- `AddRigidbodyForce(vec3)` applies continuous force (mass-aware).
+```cpp
+ctx.AddRigidbodyForce({0.0f, 0.0f, 25.0f});
+```
+- `AddRigidbodyImpulse(vec3)` applies an instant impulse (mass-aware).
+```cpp
+ctx.AddRigidbodyImpulse({0.0f, 6.5f, 0.0f});
+```
+- `AddRigidbodyTorque(vec3)` applies continuous torque.
+```cpp
+ctx.AddRigidbodyTorque({0.0f, 15.0f, 0.0f});
+```
+- `AddRigidbodyAngularImpulse(vec3)` applies an instant angular impulse.
+```cpp
+ctx.AddRigidbodyAngularImpulse({0.0f, 4.0f, 0.0f});
+```
+- `SetRigidbodyRotation(vec3 degrees)` teleports the rigidbody rotation.
+```cpp
+ctx.SetRigidbodyRotation({0.0f, 90.0f, 0.0f});
+```
+Notes:
+- These return false if the object has no enabled rigidbody or is kinematic.
+- Use force/torque for continuous input and impulses for bursty actions.
+- `SetRigidbodyRotation` is authoritative; use it sparingly during gameplay.
+
 ## Manual compile (CLI)
 Linux example:
 ```bash
