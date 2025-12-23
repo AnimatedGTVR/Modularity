@@ -621,6 +621,27 @@ void Engine::renderViewport() {
         mouseOverViewportImage = ImGui::IsItemHovered();
         ImDrawList* viewportDrawList = ImGui::GetWindowDrawList();
 
+        auto importDroppedModel = [&](const fs::path& path) {
+            std::error_code ec;
+            fs::directory_entry entry(path, ec);
+            if (ec || !fileBrowser.isModelFile(entry)) {
+                return;
+            }
+            if (fileBrowser.isOBJFile(entry)) {
+                importOBJToScene(path.string(), "");
+            } else {
+                importModelToScene(path.string(), "");
+            }
+        };
+
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                const char* path = static_cast<const char*>(payload->Data);
+                importDroppedModel(fs::path(path));
+            }
+            ImGui::EndDragDropTarget();
+        }
+
         auto setCameraFacing = [&](const glm::vec3& dir) {
             glm::vec3 worldUp = glm::vec3(0, 1, 0);
             glm::vec3 n = glm::normalize(dir);

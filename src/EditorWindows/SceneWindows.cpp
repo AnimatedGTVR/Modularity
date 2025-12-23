@@ -58,10 +58,35 @@ void Engine::renderHierarchyPanel() {
     std::string filter = searchBuffer;
     std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
 
+    auto importDroppedModel = [&](const fs::path& path, int parentId) {
+        std::error_code ec;
+        fs::directory_entry entry(path, ec);
+        if (ec) {
+            return;
+        }
+        if (!fileBrowser.isModelFile(entry)) {
+            return;
+        }
+        size_t beforeCount = sceneObjects.size();
+        if (fileBrowser.isOBJFile(entry)) {
+            importOBJToScene(path.string(), "");
+        } else {
+            importModelToScene(path.string(), "");
+        }
+        if (sceneObjects.size() > beforeCount && parentId >= 0) {
+            int newId = sceneObjects.back().id;
+            setParent(newId, parentId);
+        }
+    };
+
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
             int draggedId = *(const int*)payload->Data;
             setParent(draggedId, -1);
+        }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+            const char* path = static_cast<const char*>(payload->Data);
+            importDroppedModel(fs::path(path), -1);
         }
         ImGui::EndDragDropTarget();
     }
@@ -168,11 +193,49 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
         ImGui::EndDragDropSource();
     }
 
+    auto importDroppedModel = [&](const fs::path& path, int parentId) {
+        std::error_code ec;
+        fs::directory_entry entry(path, ec);
+        if (ec || !fileBrowser.isModelFile(entry)) {
+            return;
+        }
+        size_t beforeCount = sceneObjects.size();
+        if (fileBrowser.isOBJFile(entry)) {
+            importOBJToScene(path.string(), "");
+        } else {
+            importModelToScene(path.string(), "");
+        }
+        if (sceneObjects.size() > beforeCount && parentId >= 0) {
+            int newId = sceneObjects.back().id;
+            setParent(newId, parentId);
+        }
+    };
+
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
             int draggedId = *(const int*)payload->Data;
             if (draggedId != obj.id) {
                 setParent(draggedId, obj.id);
+            }
+        }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+            const char* path = static_cast<const char*>(payload->Data);
+            std::error_code ec;
+            fs::directory_entry entry(path, ec);
+            if (!ec) {
+                if (fileBrowser.isModelFile(entry)) {
+                    importDroppedModel(fs::path(path), obj.id);
+                } else if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+                    auto alreadyAssigned = std::any_of(obj.scripts.begin(), obj.scripts.end(),
+                        [&](const ScriptComponent& sc) { return sc.path == path; });
+                    if (!alreadyAssigned) {
+                        ScriptComponent sc;
+                        sc.path = path;
+                        obj.scripts.push_back(sc);
+                        projectManager.currentProject.hasUnsavedChanges = true;
+                        addConsoleMessage("Assigned script to " + obj.name, ConsoleMessageType::Success);
+                    }
+                }
             }
         }
         ImGui::EndDragDropTarget();

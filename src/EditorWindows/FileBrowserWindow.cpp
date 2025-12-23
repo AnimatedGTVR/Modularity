@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cerrno>
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
@@ -16,6 +17,7 @@
 
 #ifdef _WIN32
 #include <shlobj.h>
+#include <shellapi.h>
 #endif
 
 namespace FileIcons {
@@ -301,6 +303,80 @@ namespace FileIcons {
     }
 }
 
+namespace {
+    enum class CreateKind {
+        Folder,
+        CppScript,
+        Header,
+        Text,
+        Json,
+        Shader
+    };
+
+    fs::path makeUniquePath(const fs::path& basePath) {
+        if (!fs::exists(basePath)) {
+            return basePath;
+        }
+        std::string stem = basePath.stem().string();
+        std::string ext = basePath.extension().string();
+        for (int i = 1; i < 10000; ++i) {
+            fs::path candidate = basePath.parent_path() / (stem + std::to_string(i) + ext);
+            if (!fs::exists(candidate)) {
+                return candidate;
+            }
+        }
+        return basePath;
+    }
+
+    bool writeFileContents(const fs::path& path, const std::string& contents) {
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+            return false;
+        }
+        out << contents;
+        return static_cast<bool>(out);
+    }
+
+    bool openPathInShell(const fs::path& path) {
+        #ifdef _WIN32
+        std::wstring widePath = path.wstring();
+        HINSTANCE result = ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(result) > 32;
+        #elif __linux__
+        std::string cmd = "xdg-open \"" + path.string() + "\"";
+        return std::system(cmd.c_str()) == 0;
+        #else
+        return false;
+        #endif
+    }
+
+    void openPathInFileManager(const fs::path& path) {
+        #ifdef _WIN32
+        std::wstring widePath = path.wstring();
+        if (fs::is_directory(path)) {
+            ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else {
+            std::wstring args = L"/select,\"" + widePath + L"\"";
+            ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        }
+        #elif __linux__
+        fs::path folder = fs::is_directory(path) ? path : path.parent_path();
+        std::string cmd = "xdg-open \"" + folder.string() + "\"";
+        std::system(cmd.c_str());
+        #endif
+    }
+
+    void openPathWithDialog(const fs::path& path) {
+        #ifdef _WIN32
+        std::wstring widePath = path.wstring();
+        std::wstring args = L"shell32.dll,OpenAs_RunDLL \"" + widePath + L"\"";
+        ShellExecuteW(nullptr, nullptr, L"rundll32.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+        #else
+        openPathInShell(path);
+        #endif
+    }
+}
+
 
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
@@ -313,6 +389,136 @@ void Engine::renderFileBrowserPanel() {
     if (fileBrowser.needsRefresh) {
         fileBrowser.refresh();
     }
+
+    static bool showDeletePopup = false;
+    static bool showRenamePopup = false;
+    static bool triggerDeletePopup = false;
+    static bool triggerRenamePopup = false;
+    static fs::path pendingDeletePath;
+    static fs::path pendingRenamePath;
+    static char renameName[256] = "";
+
+    auto openEntry = [&](const fs::directory_entry& entry) {
+        if (entry.is_directory()) {
+            fileBrowser.navigateTo(entry.path());
+            return;
+        }
+        if (fileBrowser.isModelFile(entry)) {
+            bool isObj = fileBrowser.isOBJFile(entry);
+            std::string defaultName = entry.path().stem().string();
+            if (isObj) {
+                pendingOBJPath = entry.path().string();
+                strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
+                importOBJName[sizeof(importOBJName) - 1] = '\0';
+                showImportOBJDialog = true;
+            } else {
+                pendingModelPath = entry.path().string();
+                strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
+                importModelName[sizeof(importModelName) - 1] = '\0';
+                showImportModelDialog = true;
+            }
+            return;
+        }
+        if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+            if (SceneObject* sel = getSelectedObject()) {
+                sel->materialPath = entry.path().string();
+                loadMaterialFromFile(*sel);
+            }
+            return;
+        }
+        if (fileBrowser.isSceneFile(entry)) {
+            std::string sceneName = entry.path().stem().string();
+            loadScene(sceneName);
+            logToConsole("Loaded scene: " + sceneName);
+            return;
+        }
+        openPathInShell(entry.path());
+    };
+
+    auto createEntry = [&](const fs::path& dir, CreateKind kind, const std::string& name) {
+        fs::path baseDir = dir.empty() ? fileBrowser.currentPath : dir;
+        fs::path target = baseDir / name;
+        if (kind != CreateKind::Folder && target.extension().empty()) {
+            switch (kind) {
+                case CreateKind::CppScript: target += ".cpp"; break;
+                case CreateKind::Header: target += ".h"; break;
+                case CreateKind::Text: target += ".txt"; break;
+                case CreateKind::Json: target += ".json"; break;
+                case CreateKind::Shader: target += ".glsl"; break;
+                default: break;
+            }
+        }
+        target = makeUniquePath(target);
+
+        std::error_code ec;
+        if (!baseDir.empty() && !fs::exists(baseDir)) {
+            fs::create_directories(baseDir, ec);
+        }
+        if (!baseDir.empty() && !fs::exists(baseDir)) {
+            addConsoleMessage("Create failed: target folder missing " + baseDir.string(),
+                              ConsoleMessageType::Error);
+            return false;
+        }
+
+        bool created = false;
+        if (kind == CreateKind::Folder) {
+            created = fs::create_directories(target, ec);
+        } else {
+            std::string contents;
+            switch (kind) {
+                case CreateKind::CppScript:
+                    contents =
+                        "#include \"ScriptRuntime.h\"\n"
+                        "#include \"SceneObject.h\"\n"
+                        "#include \"ThirdParty/imgui/imgui.h\"\n"
+                        "\n"
+                        "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n"
+                        "    ImGui::TextUnformatted(\"New Script\");\n"
+                        "}\n"
+                        "\n"
+                        "void Begin(ScriptContext& ctx, float /*deltaTime*/) {\n"
+                        "}\n"
+                        "\n"
+                        "void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {\n"
+                        "}\n";
+                    break;
+                case CreateKind::Header:
+                    contents = "#pragma once\n";
+                    break;
+                case CreateKind::Json:
+                    contents = "{\n}\n";
+                    break;
+                case CreateKind::Shader:
+                    contents =
+                        "// Shader entry point\n"
+                        "void main() {\n"
+                        "}\n";
+                    break;
+                case CreateKind::Text:
+                default:
+                    contents.clear();
+                    break;
+            }
+            created = writeFileContents(target, contents);
+        }
+
+        if (created) {
+            fileBrowser.selectedFile = target;
+            fileBrowser.refresh();
+            addConsoleMessage("Created: " + target.string(), ConsoleMessageType::Success);
+            return true;
+        }
+
+        std::string reason = ec ? ec.message() : std::strerror(errno);
+        if (kind == CreateKind::Folder) {
+            addConsoleMessage("Create failed: unable to create folder " + target.string() + " (" + reason + ")",
+                              ConsoleMessageType::Error);
+        } else {
+            addConsoleMessage("Create failed: unable to write " + target.string() + " (" + reason + ")",
+                              ConsoleMessageType::Error);
+        }
+        return false;
+    };
     
     // Get colors for categories
     auto getCategoryColor = [](FileCategory cat) -> ImU32 {
@@ -555,41 +761,50 @@ void Engine::renderFileBrowserPanel() {
                 
                 // Handle double click
                 if (doubleClicked) {
-                    if (entry.is_directory()) {
-                        fileBrowser.navigateTo(entry.path());
-                    } else if (fileBrowser.isModelFile(entry)) {
-                        bool isObj = fileBrowser.isOBJFile(entry);
-                        std::string defaultName = entry.path().stem().string();
-                        if (isObj) {
-                            pendingOBJPath = entry.path().string();
-                            strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
-                            showImportOBJDialog = true;
-                        } else {
-                            pendingModelPath = entry.path().string();
-                            strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
-                            showImportModelDialog = true;
-                        }
-                    } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
-                        if (SceneObject* sel = getSelectedObject()) {
-                            sel->materialPath = entry.path().string();
-                            loadMaterialFromFile(*sel);
-                        }
-                    } else if (fileBrowser.isSceneFile(entry)) {
-                        std::string sceneName = entry.path().stem().string();
-                        loadScene(sceneName);
-                        logToConsole("Loaded scene: " + sceneName);
-                    }
+                    openEntry(entry);
                 }
                 
                 // Context menu
                 if (ImGui::BeginPopupContextItem("FileContextMenu")) {
                     if (ImGui::MenuItem("Open")) {
-                        if (entry.is_directory()) {
-                            fileBrowser.navigateTo(entry.path());
-                        } else if (fileBrowser.isSceneFile(entry)) {
-                            std::string sceneName = entry.path().stem().string();
-                            loadScene(sceneName);
+                        openEntry(entry);
+                    }
+                    #ifdef _WIN32
+                    if (!entry.is_directory() && ImGui::MenuItem("Open With...")) {
+                        openPathWithDialog(entry.path());
+                    }
+                    #endif
+                    if (entry.is_directory() && ImGui::BeginMenu("New")) {
+                        if (ImGui::MenuItem("Folder")) {
+                            createEntry(entry.path(), CreateKind::Folder, "New Folder");
                         }
+                        if (ImGui::MenuItem("C++ Script")) {
+                            createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
+                        }
+                        if (ImGui::MenuItem("Header")) {
+                            createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
+                        }
+                        if (ImGui::MenuItem("Text File")) {
+                            createEntry(entry.path(), CreateKind::Text, "NewFile.txt");
+                        }
+                        if (ImGui::MenuItem("JSON File")) {
+                            createEntry(entry.path(), CreateKind::Json, "NewData.json");
+                        }
+                        if (ImGui::MenuItem("Shader")) {
+                            createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
+                        }
+                        if (ImGui::MenuItem("Material")) {
+                            fs::path target = entry.path() / "NewMaterial.mat";
+                            int counter = 1;
+                            while (fs::exists(target)) {
+                                target = entry.path() / ("NewMaterial" + std::to_string(counter++) + ".mat");
+                            }
+                            SceneObject temp("Material", ObjectType::Cube, -1);
+                            temp.materialPath = target.string();
+                            saveMaterialToFile(temp);
+                            fileBrowser.needsRefresh = true;
+                        }
+                        ImGui::EndMenu();
                     }
                     if (fileBrowser.isModelFile(entry)) {
                         bool isObj = fileBrowser.isOBJFile(entry);
@@ -630,16 +845,32 @@ void Engine::renderFileBrowserPanel() {
                         }
                     }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Show in Explorer")) {
-                        #ifdef _WIN32
-                        std::string cmd = "explorer \"" + entry.path().parent_path().string() + "\"";
-                        system(cmd.c_str());
-                        #elif __linux__
-                        std::string cmd = "xdg-open \"" + entry.path().parent_path().string() + "\"";
-                        system(cmd.c_str());
-                        #endif
+                    if (ImGui::MenuItem("Open in File Explorer")) {
+                        openPathInFileManager(entry.path());
+                    }
+                    if (ImGui::MenuItem("Rename")) {
+                        pendingRenamePath = entry.path();
+                        std::string baseName = pendingRenamePath.filename().string();
+                        std::strncpy(renameName, baseName.c_str(), sizeof(renameName) - 1);
+                        renameName[sizeof(renameName) - 1] = '\0';
+                        showRenamePopup = true;
+                        triggerRenamePopup = true;
+                        addConsoleMessage("Rename request: " + pendingRenamePath.string(), ConsoleMessageType::Info);
+                    }
+                    if (ImGui::MenuItem(entry.is_directory() ? "Delete Folder" : "Delete File")) {
+                        pendingDeletePath = entry.path();
+                        showDeletePopup = true;
+                        triggerDeletePopup = true;
+                        addConsoleMessage("Delete request: " + pendingDeletePath.string(), ConsoleMessageType::Info);
                     }
                     ImGui::EndPopup();
+                }
+
+                if (!entry.is_directory() && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                    std::string payloadPath = entry.path().string();
+                    ImGui::SetDragDropPayload("FILE_PATH", payloadPath.c_str(), payloadPath.size() + 1);
+                    ImGui::Text("%s", filename.c_str());
+                    ImGui::EndDragDropSource();
                 }
                 
                 ImGui::PopID();
@@ -664,42 +895,51 @@ void Engine::renderFileBrowserPanel() {
                 fileBrowser.selectedFile = entry.path();
                 
                 if (ImGui::IsMouseDoubleClicked(0)) {
-                    if (entry.is_directory()) {
-                        fileBrowser.navigateTo(entry.path());
-                    } else if (fileBrowser.isModelFile(entry)) {
-                        bool isObj = fileBrowser.isOBJFile(entry);
-                        std::string defaultName = entry.path().stem().string();
-                        if (isObj) {
-                            pendingOBJPath = entry.path().string();
-                            strncpy(importOBJName, defaultName.c_str(), sizeof(importOBJName) - 1);
-                            showImportOBJDialog = true;
-                        } else {
-                            pendingModelPath = entry.path().string();
-                            strncpy(importModelName, defaultName.c_str(), sizeof(importModelName) - 1);
-                            showImportModelDialog = true;
-                        }
-                    } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
-                        if (SceneObject* sel = getSelectedObject()) {
-                            sel->materialPath = entry.path().string();
-                            loadMaterialFromFile(*sel);
-                        }
-                    } else if (fileBrowser.isSceneFile(entry)) {
-                        std::string sceneName = entry.path().stem().string();
-                        loadScene(sceneName);
-                        logToConsole("Loaded scene: " + sceneName);
-                    }
+                    openEntry(entry);
                 }
             }
             
             // Context menu
             if (ImGui::BeginPopupContextItem("FileContextMenu")) {
                 if (ImGui::MenuItem("Open")) {
-                    if (entry.is_directory()) {
-                        fileBrowser.navigateTo(entry.path());
-                    } else if (fileBrowser.isSceneFile(entry)) {
-                        std::string sceneName = entry.path().stem().string();
-                        loadScene(sceneName);
+                    openEntry(entry);
+                }
+                #ifdef _WIN32
+                if (!entry.is_directory() && ImGui::MenuItem("Open With...")) {
+                    openPathWithDialog(entry.path());
+                }
+                #endif
+                if (entry.is_directory() && ImGui::BeginMenu("New")) {
+                    if (ImGui::MenuItem("Folder")) {
+                        createEntry(entry.path(), CreateKind::Folder, "New Folder");
                     }
+                    if (ImGui::MenuItem("C++ Script")) {
+                        createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
+                    }
+                    if (ImGui::MenuItem("Header")) {
+                        createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
+                    }
+                    if (ImGui::MenuItem("Text File")) {
+                        createEntry(entry.path(), CreateKind::Text, "NewFile.txt");
+                    }
+                    if (ImGui::MenuItem("JSON File")) {
+                        createEntry(entry.path(), CreateKind::Json, "NewData.json");
+                    }
+                    if (ImGui::MenuItem("Shader")) {
+                        createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
+                    }
+                    if (ImGui::MenuItem("Material")) {
+                        fs::path target = entry.path() / "NewMaterial.mat";
+                        int counter = 1;
+                        while (fs::exists(target)) {
+                            target = entry.path() / ("NewMaterial" + std::to_string(counter++) + ".mat");
+                        }
+                        SceneObject temp("Material", ObjectType::Cube, -1);
+                        temp.materialPath = target.string();
+                        saveMaterialToFile(temp);
+                        fileBrowser.needsRefresh = true;
+                    }
+                    ImGui::EndMenu();
                 }
                 if (fileBrowser.isModelFile(entry)) {
                     bool isObj = fileBrowser.isOBJFile(entry);
@@ -743,16 +983,32 @@ void Engine::renderFileBrowserPanel() {
                     }
                 }
                 ImGui::Separator();
-                if (ImGui::MenuItem("Show in Explorer")) {
-                    #ifdef _WIN32
-                    std::string cmd = "explorer \"" + entry.path().parent_path().string() + "\"";
-                    system(cmd.c_str());
-                    #elif __linux__
-                    std::string cmd = "xdg-open \"" + entry.path().parent_path().string() + "\"";
-                    system(cmd.c_str());
-                    #endif
+                if (ImGui::MenuItem("Open in File Explorer")) {
+                    openPathInFileManager(entry.path());
+                }
+                if (ImGui::MenuItem("Rename")) {
+                    pendingRenamePath = entry.path();
+                    std::string baseName = pendingRenamePath.filename().string();
+                    std::strncpy(renameName, baseName.c_str(), sizeof(renameName) - 1);
+                    renameName[sizeof(renameName) - 1] = '\0';
+                    showRenamePopup = true;
+                    triggerRenamePopup = true;
+                    addConsoleMessage("Rename request: " + pendingRenamePath.string(), ConsoleMessageType::Info);
+                }
+                if (ImGui::MenuItem(entry.is_directory() ? "Delete Folder" : "Delete File")) {
+                    pendingDeletePath = entry.path();
+                    showDeletePopup = true;
+                    triggerDeletePopup = true;
+                    addConsoleMessage("Delete request: " + pendingDeletePath.string(), ConsoleMessageType::Info);
                 }
                 ImGui::EndPopup();
+            }
+
+            if (!entry.is_directory() && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                std::string payloadPath = entry.path().string();
+                ImGui::SetDragDropPayload("FILE_PATH", payloadPath.c_str(), payloadPath.size() + 1);
+                ImGui::Text("%s", filename.c_str());
+                ImGui::EndDragDropSource();
             }
             
             // Draw icon inline
@@ -780,9 +1036,126 @@ void Engine::renderFileBrowserPanel() {
         
         ImGui::PopStyleVar();
     }
-    
+
+    if (ImGui::BeginPopupContextWindow("FileBrowserEmptyContext", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight)) {
+        if (ImGui::MenuItem("Open in File Explorer")) {
+            openPathInFileManager(fileBrowser.currentPath);
+        }
+        if (ImGui::MenuItem("Refresh")) {
+            fileBrowser.needsRefresh = true;
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("New")) {
+            if (ImGui::MenuItem("Folder")) {
+                createEntry(fileBrowser.currentPath, CreateKind::Folder, "New Folder");
+            }
+            if (ImGui::MenuItem("C++ Script")) {
+                createEntry(fileBrowser.currentPath, CreateKind::CppScript, "NewScript.cpp");
+            }
+            if (ImGui::MenuItem("Header")) {
+                createEntry(fileBrowser.currentPath, CreateKind::Header, "NewHeader.h");
+            }
+            if (ImGui::MenuItem("Text File")) {
+                createEntry(fileBrowser.currentPath, CreateKind::Text, "NewFile.txt");
+            }
+            if (ImGui::MenuItem("JSON File")) {
+                createEntry(fileBrowser.currentPath, CreateKind::Json, "NewData.json");
+            }
+            if (ImGui::MenuItem("Shader")) {
+                createEntry(fileBrowser.currentPath, CreateKind::Shader, "NewShader.glsl");
+            }
+            if (ImGui::MenuItem("Material")) {
+                fs::path target = fileBrowser.currentPath / "NewMaterial.mat";
+                int counter = 1;
+                while (fs::exists(target)) {
+                    target = fileBrowser.currentPath / ("NewMaterial" + std::to_string(counter++) + ".mat");
+                }
+                SceneObject temp("Material", ObjectType::Cube, -1);
+                temp.materialPath = target.string();
+                saveMaterialToFile(temp);
+                fileBrowser.needsRefresh = true;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::EndChild();
     ImGui::PopStyleColor();
+
+    if (triggerDeletePopup) {
+        ImGui::OpenPopup("Confirm Delete");
+        triggerDeletePopup = false;
+    }
+    if (ImGui::BeginPopupModal("Confirm Delete", &showDeletePopup, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Delete %s?", pendingDeletePath.filename().string().c_str());
+        ImGui::TextDisabled("%s", pendingDeletePath.string().c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Delete", ImVec2(120, 0))) {
+            std::error_code ec;
+            fs::remove_all(pendingDeletePath, ec);
+            if (fileBrowser.selectedFile == pendingDeletePath) {
+                fileBrowser.selectedFile.clear();
+            }
+            fileBrowser.needsRefresh = true;
+            if (ec) {
+                addConsoleMessage("Delete failed: " + pendingDeletePath.string() + " (" + ec.message() + ")",
+                                  ConsoleMessageType::Error);
+            } else {
+                addConsoleMessage("Deleted: " + pendingDeletePath.string(), ConsoleMessageType::Success);
+            }
+            showDeletePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            showDeletePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (triggerRenamePopup) {
+        ImGui::OpenPopup("Rename Item");
+        triggerRenamePopup = false;
+    }
+    if (ImGui::BeginPopupModal("Rename Item", &showRenamePopup, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Rename %s", pendingRenamePath.filename().string().c_str());
+        ImGui::Spacing();
+        ImGui::InputText("New Name", renameName, sizeof(renameName));
+        bool canRename = std::strlen(renameName) > 0;
+        ImGui::BeginDisabled(!canRename);
+        if (ImGui::Button("Rename", ImVec2(120, 0))) {
+            fs::path newPath = pendingRenamePath.parent_path() / renameName;
+            if (newPath == pendingRenamePath) {
+                addConsoleMessage("Rename skipped: name unchanged", ConsoleMessageType::Info);
+            } else if (fs::exists(newPath)) {
+                addConsoleMessage("Rename failed: target exists " + newPath.string(), ConsoleMessageType::Error);
+            } else {
+                std::error_code ec;
+                fs::rename(pendingRenamePath, newPath, ec);
+                if (ec) {
+                    addConsoleMessage("Rename failed: " + pendingRenamePath.string() + " (" + ec.message() + ")",
+                                      ConsoleMessageType::Error);
+                } else {
+                    if (fileBrowser.selectedFile == pendingRenamePath) {
+                        fileBrowser.selectedFile = newPath;
+                    }
+                    fileBrowser.needsRefresh = true;
+                    addConsoleMessage("Renamed to: " + newPath.string(), ConsoleMessageType::Success);
+                }
+            }
+            showRenamePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            showRenamePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::End();
 }
-
