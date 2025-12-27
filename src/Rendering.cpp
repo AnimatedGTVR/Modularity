@@ -232,6 +232,58 @@ std::vector<float> generateCapsule(int segments, int rings) {
     return triangulated;
 }
 
+std::vector<float> generateTorus(int segments, int sides) {
+    std::vector<float> vertices;
+    float majorRadius = 0.35f;
+    float minorRadius = 0.15f;
+
+    for (int seg = 0; seg <= segments; ++seg) {
+        float u = seg * 2.0f * PI / segments;
+        float cosU = cos(u);
+        float sinU = sin(u);
+
+        for (int side = 0; side <= sides; ++side) {
+            float v = side * 2.0f * PI / sides;
+            float cosV = cos(v);
+            float sinV = sin(v);
+
+            float x = (majorRadius + minorRadius * cosV) * cosU;
+            float y = minorRadius * sinV;
+            float z = (majorRadius + minorRadius * cosV) * sinU;
+
+            glm::vec3 normal = glm::normalize(glm::vec3(cosU * cosV, sinV, sinU * cosV));
+
+            vertices.push_back(x);
+            vertices.push_back(y);
+            vertices.push_back(z);
+            vertices.push_back(normal.x);
+            vertices.push_back(normal.y);
+            vertices.push_back(normal.z);
+            vertices.push_back((float)seg / segments);
+            vertices.push_back((float)side / sides);
+        }
+    }
+
+    std::vector<float> triangulated;
+    int stride = sides + 1;
+    for (int seg = 0; seg < segments; ++seg) {
+        for (int side = 0; side < sides; ++side) {
+            int current = seg * stride + side;
+            int next = current + stride;
+
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[current * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(current + 1) * 8 + i]);
+
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(current + 1) * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(next + 1) * 8 + i]);
+        }
+    }
+
+    return triangulated;
+}
+
 // Mesh implementation
 Mesh::Mesh(const float* vertexData, size_t dataSizeBytes) {
     vertexCount = dataSizeBytes / (8 * sizeof(float));
@@ -435,6 +487,7 @@ Renderer::~Renderer() {
     delete sphereMesh;
     delete capsuleMesh;
     delete planeMesh;
+    delete torusMesh;
     delete skybox;
     delete postShader;
     delete brightShader;
@@ -458,7 +511,6 @@ Renderer::~Renderer() {
         releaseRenderTarget(entry.second);
     }
     mirrorTargets.clear();
-    mirrorSmooth.clear();
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (viewportTexture) glDeleteTextures(1, &viewportTexture);
     if (rbo) glDeleteRenderbuffers(1, &rbo);
@@ -555,6 +607,8 @@ void Renderer::initialize() {
     auto capsuleVerts = generateCapsule();
     capsuleMesh = new Mesh(capsuleVerts.data(), capsuleVerts.size() * sizeof(float));
     planeMesh = new Mesh(mirrorPlaneVertices, sizeof(mirrorPlaneVertices));
+    auto torusVerts = generateTorus();
+    torusMesh = new Mesh(torusVerts.data(), torusVerts.size() * sizeof(float));
 
     skybox = new Skybox();
 
@@ -732,14 +786,6 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
         }
         return glm::normalize(n);
     };
-    auto planeUp = [](const SceneObject& obj) {
-        glm::quat q = glm::quat(glm::radians(obj.rotation));
-        glm::vec3 u = q * glm::vec3(0.0f, 1.0f, 0.0f);
-        if (!std::isfinite(u.x) || glm::length(u) < 1e-3f) {
-            u = glm::vec3(0.0f, 1.0f, 0.0f);
-        }
-        return glm::normalize(u);
-    };
 
     for (const auto& obj : sceneObjects) {
         if (!obj.enabled || obj.type != ObjectType::Mirror) continue;
@@ -756,30 +802,20 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
 
         glm::vec3 n = planeNormal(obj);
         glm::vec3 planePoint = obj.position;
-        glm::vec3 upVec = planeUp(obj);
-        glm::vec3 tangent = glm::normalize(glm::cross(upVec, n));
-        if (!std::isfinite(tangent.x) || glm::length(tangent) < 1e-3f) {
-            tangent = glm::vec3(1.0f, 0.0f, 0.0f);
-        }
-        glm::vec3 bitangent = glm::cross(n, tangent);
+
+        auto reflectPoint = [&](const glm::vec3& p) {
+            float dist = glm::dot(p - planePoint, n);
+            return p - 2.0f * dist * n;
+        };
+        auto reflectDir = [&](const glm::vec3& v) {
+            float dist = glm::dot(v, n);
+            return v - 2.0f * dist * n;
+        };
 
         Camera mirrorCam = camera;
-        glm::vec3 relToPlane = camera.position - planePoint;
-        float alongT = glm::dot(relToPlane, tangent);
-        float alongB = glm::dot(relToPlane, bitangent);
-        MirrorSmoothing& sm = mirrorSmooth[obj.id];
-        if (!sm.initialized) {
-            sm.planar = glm::vec2(alongT, alongB);
-            sm.initialized = true;
-        } else {
-            float lerp = 0.2f; // slow the planar tracking slightly
-            sm.planar = glm::mix(sm.planar, glm::vec2(alongT, alongB), lerp);
-        }
-
-        float fixedDepth = 0.05f; // keep a small offset off the plane; ignore viewer local Z movement
-        mirrorCam.position = planePoint + tangent * sm.planar.x + bitangent * sm.planar.y + n * fixedDepth;
-        mirrorCam.front = n; // Look straight out from the mirror face
-        mirrorCam.up = upVec;
+        mirrorCam.position = reflectPoint(camera.position);
+        mirrorCam.front = glm::normalize(reflectDir(camera.front));
+        mirrorCam.up = glm::normalize(reflectDir(camera.up));
         if (!std::isfinite(mirrorCam.front.x) || glm::length(mirrorCam.front) < 1e-3f) {
             mirrorCam.front = glm::vec3(0.0f, 0.0f, -1.0f);
         }
@@ -795,7 +831,6 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
     for (auto it = mirrorTargets.begin(); it != mirrorTargets.end(); ) {
         if (active.find(it->first) == active.end()) {
             releaseRenderTarget(it->second);
-            mirrorSmooth.erase(it->first);
             it = mirrorTargets.erase(it);
         } else {
             ++it;
@@ -972,8 +1007,14 @@ void Renderer::renderObject(const SceneObject& obj) {
         case ObjectType::Capsule:
             capsuleMesh->draw();
             break;
+        case ObjectType::Plane:
+            if (planeMesh) planeMesh->draw();
+            break;
         case ObjectType::Mirror:
             if (planeMesh) planeMesh->draw();
+            break;
+        case ObjectType::Torus:
+            if (torusMesh) torusMesh->draw();
             break;
         case ObjectType::OBJMesh:
             if (obj.meshId >= 0) {
@@ -1192,7 +1233,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (obj.type == ObjectType::Cube) meshToDraw = cubeMesh;
         else if (obj.type == ObjectType::Sphere) meshToDraw = sphereMesh;
         else if (obj.type == ObjectType::Capsule) meshToDraw = capsuleMesh;
+        else if (obj.type == ObjectType::Plane) meshToDraw = planeMesh;
         else if (obj.type == ObjectType::Mirror) meshToDraw = planeMesh;
+        else if (obj.type == ObjectType::Torus) meshToDraw = torusMesh;
         else if (obj.type == ObjectType::OBJMesh && obj.meshId != -1) {
             meshToDraw = g_objLoader.getMesh(obj.meshId);
         } else if (obj.type == ObjectType::Model && obj.meshId != -1) {
@@ -1259,6 +1302,8 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     if (allowHistory) {
         ensureRenderTarget(historyTarget, width, height);
     }
+    ensureRenderTarget(bloomTargetA, width, height);
+    ensureRenderTarget(bloomTargetB, width, height);
     if (target.fbo == 0 || target.texture == 0) {
         if (allowHistory) {
             displayTexture = sourceTexture;

@@ -14,6 +14,8 @@ struct AudioClipPreview {
     uint32_t sampleRate = 0;
     double durationSeconds = 0.0;
     std::vector<float> waveform; // Normalized 0..1 amplitude envelope for drawing
+    std::vector<float> waveformLeft; // Left channel envelope (if available)
+    std::vector<float> waveformRight; // Right channel envelope (if available)
 };
 
 class AudioSystem {
@@ -26,12 +28,13 @@ public:
     void onPlayStop();
     void update(const std::vector<SceneObject>& objects, const Camera& listenerCamera, bool playing);
 
-    bool playPreview(const std::string& path, float volume = 1.0f);
+    bool playPreview(const std::string& path, float volume = 1.0f, bool loop = false);
     void stopPreview();
     bool isPreviewing(const std::string& path) const;
     const AudioClipPreview* getPreview(const std::string& path);
     bool getPreviewTime(const std::string& path, double& cursorSeconds, double& durationSeconds) const;
     bool seekPreview(const std::string& path, double seconds);
+    bool setPreviewLoop(bool loop);
 
     // Scene audio control (runtime)
     bool playObjectSound(const SceneObject& obj);

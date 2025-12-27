@@ -2,6 +2,7 @@
 #include "ModelLoader.h"
 #include <iostream>
 #include <fstream>
+#include <functional>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -153,6 +154,15 @@ glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
     // GLM's extractEulerAngleXYZ returns (-T1, -T2, -T3)
     return glm::vec3(-T1, -T2, -T3);
 }
+
+glm::quat QuatFromEulerXYZ(const glm::vec3& deg) {
+    glm::vec3 r = glm::radians(deg);
+    glm::mat4 m(1.0f);
+    m = glm::rotate(m, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    m = glm::rotate(m, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    m = glm::rotate(m, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
+    return glm::quat_cast(glm::mat3(m));
+}
 }
 
 void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale) {
@@ -165,9 +175,25 @@ void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3&
     if (scale.x != 0.0f) rotMat[0] /= scale.x;
     if (scale.y != 0.0f) rotMat[1] /= scale.y;
     if (scale.z != 0.0f) rotMat[2] /= scale.z;
+    // Orthonormalize to reduce shear-induced rotation jitter.
+    rotMat[0] = glm::normalize(rotMat[0]);
+    rotMat[1] = glm::normalize(rotMat[1] - rotMat[0] * glm::dot(rotMat[0], rotMat[1]));
+    rotMat[2] = glm::normalize(glm::cross(rotMat[0], rotMat[1]));
 
     // Use explicit XYZ extraction so yaw isn't clamped to [-90, 90] like glm::yaw/pitch/roll.
     rot = ExtractEulerXYZ(rotMat);
+}
+
+glm::mat4 Engine::ComposeTransform(const glm::vec3& position, const glm::quat& rotation, const glm::vec3& scale) {
+    glm::mat4 m(1.0f);
+    m = glm::translate(m, position);
+    m *= glm::mat4_cast(rotation);
+    m = glm::scale(m, scale);
+    return m;
+}
+
+glm::mat4 Engine::ComposeTransform(const glm::vec3& position, const glm::vec3& rotationDeg, const glm::vec3& scale) {
+    return ComposeTransform(position, QuatFromEulerXYZ(rotationDeg), scale);
 }
 
 void Engine::recordState(const char* /*reason*/) {
@@ -327,10 +353,14 @@ void Engine::run() {
             updatePlayerController(deltaTime);
         }
 
+        updateHierarchyWorldTransforms();
+
         bool simulatePhysics = physics.isReady() && ((isPlaying && !isPaused) || (!isPlaying && specMode));
         if (simulatePhysics) {
             physics.simulate(deltaTime, sceneObjects);
         }
+
+        updateHierarchyWorldTransforms();
 
         bool audioShouldPlay = isPlaying || specMode || testMode;
         Camera listenerCamera = camera;
@@ -901,6 +931,162 @@ void Engine::updatePlayerController(float delta) {
     if (!physics.setLinearVelocity(player->id, velocity)) {
         player->position += velocity * delta;
     }
+    syncLocalTransform(*player);
+}
+
+void Engine::updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
+    auto safeDiv = [](float v, float d) { return (std::abs(d) > 1e-6f) ? (v / d) : 0.0f; };
+    auto unwrapNear = [](float angle, float reference) {
+        float result = angle;
+        while (result - reference > 180.0f) result -= 360.0f;
+        while (reference - result > 180.0f) result += 360.0f;
+        return result;
+    };
+
+    glm::quat invParent = glm::inverse(parentRot);
+    glm::vec3 localPos = invParent * (obj.position - parentPos);
+    localPos.x = safeDiv(localPos.x, parentScale.x);
+    localPos.y = safeDiv(localPos.y, parentScale.y);
+    localPos.z = safeDiv(localPos.z, parentScale.z);
+
+    glm::quat worldRot = QuatFromEulerXYZ(obj.rotation);
+    glm::quat localRot = invParent * worldRot;
+    glm::vec3 localRotDeg = glm::degrees(ExtractEulerXYZ(glm::mat3_cast(localRot)));
+    glm::vec3 refRot = obj.localInitialized ? obj.localRotation : obj.rotation;
+    localRotDeg.x = unwrapNear(localRotDeg.x, refRot.x);
+    localRotDeg.y = unwrapNear(localRotDeg.y, refRot.y);
+    localRotDeg.z = unwrapNear(localRotDeg.z, refRot.z);
+
+    glm::vec3 localScale(1.0f);
+    localScale.x = safeDiv(obj.scale.x, parentScale.x);
+    localScale.y = safeDiv(obj.scale.y, parentScale.y);
+    localScale.z = safeDiv(obj.scale.z, parentScale.z);
+
+    obj.localPosition = localPos;
+    obj.localRotation = localRotDeg;
+    obj.localScale = localScale;
+    obj.localInitialized = true;
+}
+
+void Engine::initializeLocalTransformsFromWorld(int sceneVersion) {
+    if (sceneObjects.empty()) return;
+
+    if (sceneVersion >= 10) {
+        for (auto& obj : sceneObjects) {
+            if (!obj.localInitialized) {
+                obj.localPosition = obj.position;
+                obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+                obj.localScale = obj.scale;
+                obj.localInitialized = true;
+            }
+        }
+        updateHierarchyWorldTransforms();
+        return;
+    }
+
+    std::unordered_map<int, glm::mat4> worldById;
+    worldById.reserve(sceneObjects.size());
+    for (const auto& obj : sceneObjects) {
+        worldById[obj.id] = ComposeTransform(obj.position, obj.rotation, obj.scale);
+    }
+
+    for (auto& obj : sceneObjects) {
+        if (obj.parentId == -1) {
+            obj.localPosition = obj.position;
+            obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+            obj.localScale = obj.scale;
+            obj.localInitialized = true;
+            continue;
+        }
+        auto itParent = worldById.find(obj.parentId);
+        if (itParent == worldById.end()) {
+            obj.localPosition = obj.position;
+            obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+            obj.localScale = obj.scale;
+            obj.localInitialized = true;
+            continue;
+        }
+        glm::vec3 pPos, pRotDeg, pScale;
+        DecomposeMatrix(itParent->second, pPos, pRotDeg, pScale);
+        updateLocalFromWorld(obj, pPos, QuatFromEulerXYZ(pRotDeg), pScale);
+    }
+
+    updateHierarchyWorldTransforms();
+}
+
+void Engine::updateHierarchyWorldTransforms() {
+    if (sceneObjects.empty()) return;
+
+    std::unordered_map<int, size_t> indexById;
+    indexById.reserve(sceneObjects.size());
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+        indexById[sceneObjects[i].id] = i;
+    }
+
+    auto unwrapNear = [](float angle, float reference) {
+        float result = angle;
+        while (result - reference > 180.0f) result -= 360.0f;
+        while (reference - result > 180.0f) result += 360.0f;
+        return result;
+    };
+
+    std::unordered_set<int> visiting;
+    std::unordered_set<int> visited;
+    visiting.reserve(sceneObjects.size());
+    visited.reserve(sceneObjects.size());
+
+    std::function<void(int, const glm::vec3&, const glm::quat&, const glm::vec3&)> processNode =
+        [&](int id, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
+        if (visited.count(id)) return;
+        if (visiting.count(id)) return;
+        auto itIndex = indexById.find(id);
+        if (itIndex == indexById.end()) return;
+
+        visiting.insert(id);
+        SceneObject& obj = sceneObjects[itIndex->second];
+        if (!obj.localInitialized) {
+            obj.localPosition = obj.position;
+            obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+            obj.localScale = obj.scale;
+            obj.localInitialized = true;
+        }
+
+        bool useWorldAuthoritative = obj.hasRigidbody && obj.rigidbody.enabled && !obj.rigidbody.isKinematic;
+        glm::vec3 worldPos = obj.position;
+        glm::quat worldRot = QuatFromEulerXYZ(obj.rotation);
+        glm::vec3 worldScale = obj.scale;
+        if (useWorldAuthoritative) {
+            updateLocalFromWorld(obj, parentPos, parentRot, parentScale);
+            worldPos = obj.position;
+            worldRot = QuatFromEulerXYZ(obj.rotation);
+            worldScale = obj.scale;
+        } else {
+            glm::quat localRot = QuatFromEulerXYZ(obj.localRotation);
+            worldRot = parentRot * localRot;
+            worldScale = parentScale * obj.localScale;
+            worldPos = parentPos + parentRot * (parentScale * obj.localPosition);
+            glm::vec3 worldRotDeg = glm::degrees(ExtractEulerXYZ(glm::mat3_cast(worldRot)));
+            worldRotDeg.x = unwrapNear(worldRotDeg.x, obj.rotation.x);
+            worldRotDeg.y = unwrapNear(worldRotDeg.y, obj.rotation.y);
+            worldRotDeg.z = unwrapNear(worldRotDeg.z, obj.rotation.z);
+            obj.position = worldPos;
+            obj.rotation = worldRotDeg;
+            obj.scale = worldScale;
+        }
+
+        for (int childId : obj.childIds) {
+            processNode(childId, worldPos, worldRot, worldScale);
+        }
+
+        visiting.erase(id);
+        visited.insert(id);
+    };
+
+    for (const auto& obj : sceneObjects) {
+        if (obj.parentId == -1 || indexById.find(obj.parentId) == indexById.end()) {
+            processNode(obj.id, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f));
+        }
+    }
 }
 void Engine::OpenProjectPath(const std::string& path) {
     try {
@@ -999,7 +1185,9 @@ void Engine::loadRecentScenes() {
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
     if (fs::exists(scenePath)) {
-        if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId)) {
+        int sceneVersion = 9;
+        if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion)) {
+            initializeLocalTransformsFromWorld(sceneVersion);
             addConsoleMessage("Loaded scene: " + projectManager.currentProject.currentSceneName, ConsoleMessageType::Success);
         } else {
             addConsoleMessage("Warning: Failed to load scene, starting fresh", ConsoleMessageType::Warning);
@@ -1037,7 +1225,9 @@ void Engine::loadScene(const std::string& sceneName) {
     }
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
-    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId)) {
+    int sceneVersion = 9;
+    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion)) {
+        initializeLocalTransformsFromWorld(sceneVersion);
         undoStack.clear();
         redoStack.clear();
         projectManager.currentProject.currentSceneName = sceneName;
@@ -1112,7 +1302,13 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
         sceneObjects.back().material.textureMix = 1.0f;
         sceneObjects.back().material.color = glm::vec3(1.0f);
         sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
+    } else if (type == ObjectType::Plane) {
+        sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
     }
+    sceneObjects.back().localPosition = sceneObjects.back().position;
+    sceneObjects.back().localRotation = NormalizeEulerDegrees(sceneObjects.back().rotation);
+    sceneObjects.back().localScale = sceneObjects.back().scale;
+    sceneObjects.back().localInitialized = true;
     setPrimarySelection(id);
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -1150,6 +1346,10 @@ void Engine::duplicateSelected() {
         newObj.collider = it->collider;
         newObj.hasPlayerController = it->hasPlayerController;
         newObj.playerController = it->playerController;
+        newObj.localPosition = newObj.position;
+        newObj.localRotation = NormalizeEulerDegrees(newObj.rotation);
+        newObj.localScale = newObj.scale;
+        newObj.localInitialized = true;
         newObj.hasAudioSource = it->hasAudioSource;
         newObj.audioSource = it->audioSource;
         
@@ -1201,6 +1401,19 @@ void Engine::setParent(int childId, int parentId) {
         if (newParentIt != sceneObjects.end()) {
             newParentIt->childIds.push_back(childId);
         }
+    }
+    {
+        glm::vec3 parentPos(0.0f);
+        glm::quat parentRot(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3 parentScale(1.0f);
+        if (parentId != -1) {
+            if (SceneObject* parent = findObjectById(parentId)) {
+                parentPos = parent->position;
+                parentRot = QuatFromEulerXYZ(parent->rotation);
+                parentScale = parent->scale;
+            }
+        }
+        updateLocalFromWorld(*childIt, parentPos, parentRot, parentScale);
     }
 
     if (projectManager.currentProject.isLoaded) {
@@ -1307,6 +1520,30 @@ bool Engine::addRigidbodyTorqueFromScript(int id, const glm::vec3& torque) {
 
 bool Engine::addRigidbodyAngularImpulseFromScript(int id, const glm::vec3& impulse) {
     return physics.addAngularImpulse(id, impulse);
+}
+
+bool Engine::setRigidbodyYawFromScript(int id, float yawDegrees) {
+    return physics.setActorYaw(id, yawDegrees);
+}
+
+bool Engine::raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                                      int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal,
+                                      float* hitDistance) const {
+    return physics.raycastClosest(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance);
+}
+
+void Engine::syncLocalTransform(SceneObject& obj) {
+    glm::vec3 parentPos(0.0f);
+    glm::quat parentRot(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 parentScale(1.0f);
+    if (obj.parentId != -1) {
+        if (SceneObject* parent = findObjectById(obj.parentId)) {
+            parentPos = parent->position;
+            parentRot = QuatFromEulerXYZ(parent->rotation);
+            parentScale = parent->scale;
+        }
+    }
+    updateLocalFromWorld(obj, parentPos, parentRot, parentScale);
 }
 
 bool Engine::playAudioFromScript(int id) {

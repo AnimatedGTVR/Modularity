@@ -59,5 +59,6 @@ public:
 
     static bool loadScene(const fs::path& filePath,
                          std::vector<SceneObject>& objects,
-                         int& nextId);
+                         int& nextId,
+                         int& outVersion);
 };

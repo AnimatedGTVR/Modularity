@@ -45,6 +45,10 @@ struct ScriptContext {
     bool AddRigidbodyImpulse(const glm::vec3& impulse);
     bool AddRigidbodyTorque(const glm::vec3& torque);
     bool AddRigidbodyAngularImpulse(const glm::vec3& impulse);
+    bool SetRigidbodyYaw(float yawDegrees);
+    bool RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                        glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr,
+                        float* hitDistance = nullptr) const;
     bool SetRigidbodyRotation(const glm::vec3& rotDeg);
     bool TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg);
     // Audio helpers

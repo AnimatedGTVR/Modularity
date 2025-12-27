@@ -258,7 +258,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=9\n";
+        file << "version=10\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
@@ -272,9 +272,9 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "layer=" << obj.layer << "\n";
             file << "tag=" << obj.tag << "\n";
             file << "parentId=" << obj.parentId << "\n";
-            file << "position=" << obj.position.x << "," << obj.position.y << "," << obj.position.z << "\n";
-            file << "rotation=" << obj.rotation.x << "," << obj.rotation.y << "," << obj.rotation.z << "\n";
-            file << "scale=" << obj.scale.x << "," << obj.scale.y << "," << obj.scale.z << "\n";
+            file << "position=" << obj.localPosition.x << "," << obj.localPosition.y << "," << obj.localPosition.z << "\n";
+            file << "rotation=" << obj.localRotation.x << "," << obj.localRotation.y << "," << obj.localRotation.z << "\n";
+            file << "scale=" << obj.localScale.x << "," << obj.localScale.y << "," << obj.localScale.z << "\n";
             file << "hasRigidbody=" << (obj.hasRigidbody ? 1 : 0) << "\n";
             if (obj.hasRigidbody) {
                 file << "rbEnabled=" << (obj.rigidbody.enabled ? 1 : 0) << "\n";
@@ -409,7 +409,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
 
 bool SceneSerializer::loadScene(const fs::path& filePath,
                                std::vector<SceneObject>& objects,
-                               int& nextId) {
+                               int& nextId,
+                               int& outVersion) {
     try {
         std::ifstream file(filePath);
         if (!file.is_open()) return false;
@@ -417,6 +418,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         objects.clear();
         std::string line;
         SceneObject* currentObj = nullptr;
+        int sceneVersion = 9;
 
         while (std::getline(file, line)) {
             size_t first = line.find_first_not_of(" \t\r\n");
@@ -445,7 +447,9 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
             std::string key = line.substr(0, eqPos);
             std::string value = line.substr(eqPos + 1);
 
-            if (key == "nextId") {
+            if (key == "version") {
+                sceneVersion = std::stoi(value);
+            } else if (key == "nextId") {
                 nextId = std::stoi(value);
             } else if (currentObj) {
                 if (key == "id") {
@@ -474,17 +478,23 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                            &currentObj->position.x,
                            &currentObj->position.y,
                            &currentObj->position.z);
+                    currentObj->localPosition = currentObj->position;
+                    currentObj->localInitialized = true;
                 } else if (key == "rotation") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->rotation.x,
                            &currentObj->rotation.y,
                            &currentObj->rotation.z);
                     currentObj->rotation = NormalizeEulerDegrees(currentObj->rotation);
+                    currentObj->localRotation = currentObj->rotation;
+                    currentObj->localInitialized = true;
                 } else if (key == "scale") {
                     sscanf(value.c_str(), "%f,%f,%f",
                            &currentObj->scale.x,
                            &currentObj->scale.y,
                            &currentObj->scale.z);
+                    currentObj->localScale = currentObj->scale;
+                    currentObj->localInitialized = true;
                 } else if (key == "hasRigidbody") {
                     currentObj->hasRigidbody = std::stoi(value) != 0;
                 } else if (key == "rbEnabled") {
@@ -752,6 +762,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         }
 
         file.close();
+        outVersion = sceneVersion;
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load scene: " << e.what() << std::endl;

@@ -14,7 +14,9 @@ enum class ObjectType {
     AreaLight,
     Camera,
     PostFXNode,
-    Mirror
+    Mirror,
+    Plane,
+    Torus
 };
 
 struct MaterialProperties {
@@ -161,6 +163,10 @@ public:
     glm::vec3 position;
     glm::vec3 rotation;
     glm::vec3 scale;
+    glm::vec3 localPosition;
+    glm::vec3 localRotation;
+    glm::vec3 localScale;
+    bool localInitialized = false;
     int id;
     int parentId = -1;
     std::vector<int> childIds;
@@ -190,5 +196,14 @@ public:
     AudioSourceComponent audioSource;
 
     SceneObject(const std::string& name, ObjectType type, int id)
-        : name(name), type(type), position(0.0f), rotation(0.0f), scale(1.0f), id(id) {}
+        : name(name),
+          type(type),
+          position(0.0f),
+          rotation(0.0f),
+          scale(1.0f),
+          localPosition(0.0f),
+          localRotation(0.0f),
+          localScale(1.0f),
+          localInitialized(true),
+          id(id) {}
 };

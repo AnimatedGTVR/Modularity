@@ -125,9 +125,11 @@ void Engine::renderLauncher() {
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 24.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 18.0f);
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.09f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -143,27 +145,65 @@ void Engine::renderLauncher() {
 
     if (ImGui::Begin("Launcher", nullptr, flags))
     {
-        float leftPanelWidth = 280.0f;
+        const float leftPanelWidth = 300.0f;
+        const float heroHeight = 120.0f;
+        const ImVec4 bgTopLeft = ImVec4(0.10f, 0.11f, 0.16f, 1.0f);
+        const ImVec4 bgTopRight = ImVec4(0.15f, 0.16f, 0.22f, 1.0f);
+        const ImVec4 bgBottomRight = ImVec4(0.07f, 0.08f, 0.12f, 1.0f);
+        const ImVec4 bgBottomLeft = ImVec4(0.08f, 0.09f, 0.13f, 1.0f);
+        const ImVec4 cardBg = ImVec4(0.14f, 0.15f, 0.21f, 0.98f);
+        const ImVec4 cardOutline = ImVec4(0.20f, 0.22f, 0.30f, 0.70f);
+        const ImVec4 accent = ImVec4(0.91f, 0.42f, 0.78f, 1.0f);
+        const ImVec4 accentCool = ImVec4(0.42f, 0.72f, 0.96f, 1.0f);
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.06f, 0.07f, 1.0f));
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        ImVec2 windowPos = ImGui::GetWindowPos();
+        ImVec2 windowSize = ImGui::GetWindowSize();
+        drawList->AddRectFilledMultiColor(
+            windowPos,
+            ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
+            ImGui::GetColorU32(bgTopLeft),
+            ImGui::GetColorU32(bgTopRight),
+            ImGui::GetColorU32(bgBottomRight),
+            ImGui::GetColorU32(bgBottomLeft)
+        );
+
+        ImGui::BeginChild("LauncherHero", ImVec2(0, heroHeight), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
+
+        ImDrawList* heroDraw = ImGui::GetWindowDrawList();
+        ImVec2 heroPos = ImGui::GetWindowPos();
+        ImVec2 heroSize = ImGui::GetWindowSize();
+        heroDraw->AddRectFilled(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
+                                ImGui::GetColorU32(cardBg), 18.0f);
+        heroDraw->AddRect(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
+                          ImGui::GetColorU32(cardBg), 18.0f);
+
+        ImGui::SetCursorPos(ImVec2(28.0f, 24.0f));
+        ImGui::TextDisabled("Project Manager");
+        ImGui::SetWindowFontScale(1.4f);
+        ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.0f), "Modularity");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Debug Build V0.7.0");
+
+
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
         ImGui::BeginChild("LauncherLeft", ImVec2(leftPanelWidth, 0), true);
         ImGui::PopStyleColor();
 
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.45f, 0.72f, 0.95f, 1.0f), "MODULARITY");
-        ImGui::TextDisabled("Game Engine");
-        ImGui::Spacing();
-        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "GET STARTED");
         ImGui::Spacing();
 
-        ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.78f, 1.0f), "GET STARTED");
-        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.32f, 0.22f, 0.54f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.43f, 0.30f, 0.70f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.26f, 0.60f, 1.0f));
 
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.38f, 0.55f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.48f, 0.68f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.42f, 0.60f, 1.0f));
-
-        if (ImGui::Button("New Project", ImVec2(-1, 36.0f)))
+        if (ImGui::Button("New Project", ImVec2(-1, 40.0f)))
         {
             projectManager.showNewProjectDialog = true;
             projectManager.errorMessage.clear();
@@ -186,7 +226,7 @@ void Engine::renderLauncher() {
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Open Project", ImVec2(-1, 36.0f)))
+        if (ImGui::Button("Open Project", ImVec2(-1, 40.0f)))
         {
             projectManager.showOpenProjectDialog = true;
             projectManager.errorMessage.clear();
@@ -195,43 +235,47 @@ void Engine::renderLauncher() {
         ImGui::PopStyleColor(3);
 
         ImGui::Spacing();
-        ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.78f, 1.0f), "QUICK ACTIONS");
+        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "QUICK ACTIONS");
         ImGui::Spacing();
 
-        if (ImGui::Button("Documentation", ImVec2(-1, 30.0f)))
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.22f, 0.32f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.30f, 0.42f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
+
+        if (ImGui::Button("Documentation", ImVec2(-1, 34.0f)))
         {
             #ifdef _WIN32
-            system("start https://github.com");
+            system("start https://docs.shockinteractive.xyz");
             #else
-            system("xdg-open https://github.com &");
+            system("xdg-open https://docs.shockinteractive.xyz &");
             #endif
         }
 
-        if (ImGui::Button("Exit", ImVec2(-1, 30.0f)))
+        if (ImGui::Button("Exit", ImVec2(-1, 34.0f)))
         {
             glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
         }
+
+        ImGui::PopStyleColor(3);
 
         ImGui::EndChild();
 
         ImGui::SameLine();
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.10f, 0.11f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
         ImGui::BeginChild("LauncherRight", ImVec2(0, 0), true);
         ImGui::PopStyleColor();
 
-        ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.78f, 1.0f), "RECENT PROJECTS");
+        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "RECENT PROJECTS");
         ImGui::Spacing();
 
         if (projectManager.recentProjects.empty())
         {
             ImGui::Spacing();
-            ImGui::TextDisabled("No recent projects");
-            ImGui::TextDisabled("Create a new project to get started!");
+            ImGui::TextDisabled("There are no recent projects yet.\nCreate or open a project to get started.");
         }
         else
         {
@@ -241,30 +285,12 @@ void Engine::renderLauncher() {
                 const auto& rp = projectManager.recentProjects[i];
                 ImGui::PushID(static_cast<int>(i));
 
-                char label[512];
-                std::snprintf(label, sizeof(label), "%s\n%s",
-                            rp.name.c_str(), rp.path.c_str());
-
-                ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.20f, 0.30f, 0.45f, 0.40f));
-                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.25f, 0.38f, 0.55f, 0.70f));
-                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.20f, 0.35f, 0.60f, 0.90f));
-
-                bool selected = ImGui::Selectable(
-                    label,
-                    false,
-                    ImGuiSelectableFlags_AllowDoubleClick,
-                    ImVec2(availWidth, 48.0f)
-                );
-
-                ImGui::PopStyleColor(3);
-                
-                // Dummy to extend window bounds properly
-                ImGui::Dummy(ImVec2(0, 0));
-
-                if (selected || ImGui::IsItemClicked(ImGuiMouseButton_Left))
-                {
-                    OpenProjectPath(rp.path);
-                }
+                const ImVec2 cardSize(availWidth, 72.0f);
+                const ImVec2 cardPos = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton("RecentCard", cardSize);
+                bool hovered = ImGui::IsItemHovered();
+                bool clicked = ImGui::IsItemClicked();
+                ImVec2 afterPos = ImGui::GetCursorScreenPos();
 
                 if (ImGui::BeginPopupContextItem("RecentProjectContext"))
                 {
@@ -287,6 +313,34 @@ void Engine::renderLauncher() {
                     ImGui::EndPopup();
                 }
 
+                ImU32 cardCol = ImGui::GetColorU32(hovered ? ImVec4(0.18f, 0.19f, 0.27f, 1.0f)
+                                                          : ImVec4(0.16f, 0.17f, 0.24f, 1.0f));
+                ImDrawList* list = ImGui::GetWindowDrawList();
+                list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardCol, 14.0f);
+                list->AddRect(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
+                              ImGui::GetColorU32(cardOutline), 14.0f);
+
+                ImVec2 textPos = ImVec2(cardPos.x + 16.0f, cardPos.y + 14.0f);
+                ImGui::SetCursorScreenPos(textPos);
+                ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.96f, 1.0f), "%s", rp.name.c_str());
+                ImGui::SetCursorScreenPos(ImVec2(textPos.x, textPos.y + 22.0f));
+                ImGui::TextDisabled("%s", rp.path.c_str());
+
+                const float buttonWidth = 88.0f;
+                ImGui::SetCursorScreenPos(ImVec2(cardPos.x + cardSize.x - buttonWidth - 16.0f, cardPos.y + 20.0f));
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.32f, 0.38f, 0.55f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.35f, 0.50f, 1.0f));
+                bool openClicked = ImGui::Button("Open", ImVec2(buttonWidth, 30.0f));
+                ImGui::PopStyleColor(3);
+
+                if ((clicked && !openClicked) || openClicked)
+                {
+                    OpenProjectPath(rp.path);
+                }
+
+                ImGui::SetCursorScreenPos(afterPos);
+
                 ImGui::PopID();
                 ImGui::Spacing();
             }
@@ -303,7 +357,7 @@ void Engine::renderLauncher() {
 
     ImGui::End();
     ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(5);
 
     if (projectManager.showNewProjectDialog)
         renderNewProjectDialog();

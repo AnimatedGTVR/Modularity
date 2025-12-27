@@ -87,6 +87,12 @@ bool ScriptContext::IsInLayer(int layer) const {
 void ScriptContext::SetPosition(const glm::vec3& pos) {
     if (object) {
         object->position = pos;
+        if (engine) {
+            engine->syncLocalTransform(*object);
+        } else {
+            object->localPosition = object->position;
+            object->localInitialized = true;
+        }
         MarkDirty();
     }
 }
@@ -94,6 +100,12 @@ void ScriptContext::SetPosition(const glm::vec3& pos) {
 void ScriptContext::SetRotation(const glm::vec3& rot) {
     if (object) {
         object->rotation = NormalizeEulerDegrees(rot);
+        if (engine) {
+            engine->syncLocalTransform(*object);
+        } else {
+            object->localRotation = object->rotation;
+            object->localInitialized = true;
+        }
         MarkDirty();
         if (engine && HasRigidbody()) {
             engine->teleportPhysicsActorFromScript(object->id, object->position, object->rotation);
@@ -104,6 +116,12 @@ void ScriptContext::SetRotation(const glm::vec3& rot) {
 void ScriptContext::SetScale(const glm::vec3& scl) {
     if (object) {
         object->scale = scl;
+        if (engine) {
+            engine->syncLocalTransform(*object);
+        } else {
+            object->localScale = object->scale;
+            object->localInitialized = true;
+        }
         MarkDirty();
     }
 }
@@ -152,9 +170,22 @@ bool ScriptContext::AddRigidbodyAngularImpulse(const glm::vec3& impulse) {
     return engine->addRigidbodyAngularImpulseFromScript(object->id, impulse);
 }
 
+bool ScriptContext::SetRigidbodyYaw(float yawDegrees) {
+    if (!engine || !object || !HasRigidbody()) return false;
+    return engine->setRigidbodyYawFromScript(object->id, yawDegrees);
+}
+
+bool ScriptContext::RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                                   glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance) const {
+    if (!engine) return false;
+    int ignoreId = object ? object->id : -1;
+    return engine->raycastClosestFromScript(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance);
+}
+
 bool ScriptContext::SetRigidbodyRotation(const glm::vec3& rotDeg) {
     if (!engine || !object || !HasRigidbody()) return false;
     object->rotation = NormalizeEulerDegrees(rotDeg);
+    engine->syncLocalTransform(*object);
     MarkDirty();
     return engine->teleportPhysicsActorFromScript(object->id, object->position, object->rotation);
 }
@@ -163,6 +194,7 @@ bool ScriptContext::TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rot
     if (!engine || !object) return false;
     object->position = pos;
     object->rotation = NormalizeEulerDegrees(rotDeg);
+    engine->syncLocalTransform(*object);
     MarkDirty();
     return engine->teleportPhysicsActorFromScript(object->id, pos, object->rotation);
 }

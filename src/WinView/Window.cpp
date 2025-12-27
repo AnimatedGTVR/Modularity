@@ -1,5 +1,6 @@
 #include "../../include/Window/Window.h"
 #include "../../include/ThirdParty/stb_image.h"
+#include <cstdlib>
 
 int width, height, channels;
 
@@ -7,7 +8,17 @@ GLFWwindow *Window::makeWindow() {
   unsigned char *pixels = stbi_load("Resources/Engine-Root/Modu-Logo.png",
                                     &width, &height, &channels, 4);
 #if defined(__linux__)
-  setenv("XDG_SESSION_TYPE", "x11", 1);
+  const char *wayland_display = std::getenv("WAYLAND_DISPLAY");
+  const char *x11_display = std::getenv("DISPLAY");
+  if (wayland_display && *wayland_display &&
+      glfwPlatformSupported(GLFW_PLATFORM_WAYLAND)) {
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+  } else if (x11_display && *x11_display &&
+             glfwPlatformSupported(GLFW_PLATFORM_X11)) {
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11);
+  } else {
+    glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
+  }
 #endif
 
   if (!glfwInit()) {

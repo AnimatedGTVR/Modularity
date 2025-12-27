@@ -102,6 +102,9 @@ private:
     bool hierarchyShowTexturePreview = false;
     bool hierarchyPreviewNearest = false;
     std::unordered_map<std::string, bool> texturePreviewFilterOverrides;
+    bool audioPreviewLoop = false;
+    bool audioPreviewAutoPlay = false;
+    std::string audioPreviewSelectedPath;
     bool isPlaying = false;
     bool isPaused = false;
     bool showViewOutput = true;
@@ -136,13 +139,17 @@ private:
     bool specMode = false;
     bool testMode = false;
     bool collisionWireframe = false;
-
     // Private methods
     SceneObject* getSelectedObject();
     glm::vec3 getSelectionCenterWorld(bool worldSpace) const;
     void setPrimarySelection(int id, bool additive = false);
     void clearSelection();
     static void DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale);
+    static glm::mat4 ComposeTransform(const glm::vec3& position, const glm::quat& rotation, const glm::vec3& scale);
+    static glm::mat4 ComposeTransform(const glm::vec3& position, const glm::vec3& rotationDeg, const glm::vec3& scale);
+    void updateHierarchyWorldTransforms();
+    void updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale);
+    void initializeLocalTransformsFromWorld(int sceneVersion);
     
     void importOBJToScene(const std::string& filepath, const std::string& objectName);
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
@@ -161,7 +168,8 @@ private:
     void renderEnvironmentWindow();
     void renderCameraWindow();
     void renderHierarchyPanel();
-    void renderObjectNode(SceneObject& obj, const std::string& filter);
+    void renderObjectNode(SceneObject& obj, const std::string& filter,
+                          std::vector<bool>& ancestorHasNext, bool isLast, int depth);
     void renderFileBrowserPanel();
     void renderMeshBuilderPanel();
     void renderInspectorPanel();
@@ -246,10 +254,15 @@ public:
     bool addRigidbodyImpulseFromScript(int id, const glm::vec3& impulse);
     bool addRigidbodyTorqueFromScript(int id, const glm::vec3& torque);
     bool addRigidbodyAngularImpulseFromScript(int id, const glm::vec3& impulse);
+    bool setRigidbodyYawFromScript(int id, float yawDegrees);
+    bool raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                                  int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal,
+                                  float* hitDistance) const;
     // Audio control exposed to scripts
     bool playAudioFromScript(int id);
     bool stopAudioFromScript(int id);
     bool setAudioLoopFromScript(int id, bool loop);
     bool setAudioVolumeFromScript(int id, float volume);
     bool setAudioClipFromScript(int id, const std::string& path);
+    void syncLocalTransform(SceneObject& obj);
 };

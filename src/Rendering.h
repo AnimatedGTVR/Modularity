@@ -13,6 +13,7 @@ extern float vertices[];
 // Primitive generation functions
 std::vector<float> generateSphere(int segments = 32, int rings = 16);
 std::vector<float> generateCapsule(int segments = 16, int rings = 8);
+std::vector<float> generateTorus(int segments = 32, int sides = 16);
 
 class Mesh {
 private:
@@ -73,11 +74,6 @@ private:
     RenderTarget historyTarget;
     RenderTarget bloomTargetA;
     RenderTarget bloomTargetB;
-    struct MirrorSmoothing {
-        glm::vec2 planar = glm::vec2(0.0f);
-        bool initialized = false;
-    };
-    std::unordered_map<int, MirrorSmoothing> mirrorSmooth;
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
     Shader* postShader = nullptr;
@@ -108,6 +104,7 @@ private:
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
     Mesh* planeMesh = nullptr;
+    Mesh* torusMesh = nullptr;
     Skybox* skybox = nullptr;
     unsigned int quadVAO = 0;
     unsigned int quadVBO = 0;

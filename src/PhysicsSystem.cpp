@@ -203,6 +203,20 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         tuneShape(shape, std::min(radius * 2.0f, halfHeight * 2.0f), isDynamic);
         break;
     }
+        case ObjectType::Plane: {
+            glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
+            halfExtents.z = std::max(halfExtents.z, 0.01f);
+            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
+            break;
+        }
+        case ObjectType::Torus: {
+            float radius = std::max({obj.scale.x, obj.scale.y, obj.scale.z}) * 0.5f;
+            radius = std::max(radius, 0.01f);
+            shape = mPhysics->createShape(PxSphereGeometry(radius), *mDefaultMaterial, true);
+            tuneShape(shape, radius * 2.0f, isDynamic);
+            break;
+        }
         default:
             break;
     }

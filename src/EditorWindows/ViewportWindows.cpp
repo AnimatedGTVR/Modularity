@@ -525,6 +525,9 @@ void Engine::renderMainMenuBar() {
             if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
             if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");
             if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+            if (ImGui::MenuItem("Plane")) addObject(ObjectType::Plane, "Plane");
+            if (ImGui::MenuItem("Torus")) addObject(ObjectType::Torus, "Torus");
+            if (ImGui::MenuItem("Mirror")) addObject(ObjectType::Mirror, "Mirror");
             if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
             if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
             if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
@@ -1066,6 +1069,14 @@ void Engine::renderViewport() {
                         gizmoBoundsMin = glm::vec3(-0.35f, -0.9f, -0.35f);
                         gizmoBoundsMax = glm::vec3(0.35f, 0.9f, 0.35f);
                         break;
+                    case ObjectType::Plane:
+                        gizmoBoundsMin = glm::vec3(-0.5f, -0.5f, -0.02f);
+                        gizmoBoundsMax = glm::vec3(0.5f, 0.5f, 0.02f);
+                        break;
+                    case ObjectType::Torus:
+                        gizmoBoundsMin = glm::vec3(-0.5f);
+                        gizmoBoundsMax = glm::vec3(0.5f);
+                        break;
                     case ObjectType::OBJMesh: {
                         const auto* info = g_objLoader.getMeshInfo(selectedObj->meshId);
                         if (info && info->boundsMin.x < info->boundsMax.x) {
@@ -1167,12 +1178,33 @@ void Engine::renderViewport() {
                         o.position = t;
                         o.rotation = NormalizeEulerDegrees(glm::degrees(r));
                         o.scale = s;
+                        syncLocalTransform(o);
                     };
 
                     if (selectedObjectIds.size() <= 1) {
                         applyDelta(*selectedObj);
                     } else {
+                        std::unordered_set<int> selectedSet(selectedObjectIds.begin(), selectedObjectIds.end());
+                        auto getParentId = [&](int id) -> int {
+                            auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                                [id](const SceneObject& o){ return o.id == id; });
+                            if (it == sceneObjects.end()) return -1;
+                            return it->parentId;
+                        };
+                        auto hasSelectedAncestor = [&](int id) -> bool {
+                            int parentId = getParentId(id);
+                            while (parentId != -1) {
+                                if (selectedSet.count(parentId)) {
+                                    return true;
+                                }
+                                parentId = getParentId(parentId);
+                            }
+                            return false;
+                        };
                         for (int id : selectedObjectIds) {
+                            if (hasSelectedAncestor(id)) {
+                                continue;
+                            }
                             auto itObj = std::find_if(sceneObjects.begin(), sceneObjects.end(),
                                 [id](const SceneObject& o){ return o.id == id; });
                             if (itObj != sceneObjects.end()) {
@@ -1597,8 +1629,14 @@ void Engine::renderViewport() {
                     case ObjectType::Capsule:
                         hit = rayAabb(localOrigin, localDir, glm::vec3(-0.35f, -0.9f, -0.35f), glm::vec3(0.35f, 0.9f, 0.35f), hitT);
                         break;
+                    case ObjectType::Plane:
+                        hit = rayAabb(localOrigin, localDir, glm::vec3(-0.5f, -0.5f, -0.02f), glm::vec3(0.5f, 0.5f, 0.02f), hitT);
+                        break;
                     case ObjectType::Mirror:
                         hit = rayAabb(localOrigin, localDir, glm::vec3(-0.5f, -0.5f, -0.02f), glm::vec3(0.5f, 0.5f, 0.02f), hitT);
+                        break;
+                    case ObjectType::Torus:
+                        hit = raySphere(localOrigin, localDir, 0.5f, hitT);
                         break;
                     case ObjectType::OBJMesh: {
                         const auto* info = g_objLoader.getMeshInfo(obj.meshId);

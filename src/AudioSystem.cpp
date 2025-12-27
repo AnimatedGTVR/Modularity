@@ -159,7 +159,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
     }
 }
 
-bool AudioSystem::playPreview(const std::string& path, float volume) {
+bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) {
     if (path.empty()) return false;
     if (!initialized && !init()) return false;
 
@@ -169,6 +169,7 @@ bool AudioSystem::playPreview(const std::string& path, float volume) {
         std::cerr << "AudioSystem: preview load failed for " << path << " (" << res << ")\n";
         return false;
     }
+    ma_sound_set_looping(&previewSound, loop ? MA_TRUE : MA_FALSE);
     ma_sound_set_volume(&previewSound, volume);
     ma_sound_set_spatialization_enabled(&previewSound, MA_FALSE);
     previewPath = path;
@@ -215,6 +216,12 @@ bool AudioSystem::seekPreview(const std::string& path, double seconds) {
     ma_uint64 targetFrame = static_cast<ma_uint64>(seconds * static_cast<double>(sampleRate));
     ma_result res = ma_sound_seek_to_pcm_frame(&previewSound, targetFrame);
     return res == MA_SUCCESS;
+}
+
+bool AudioSystem::setPreviewLoop(bool loop) {
+    if (!previewActive) return false;
+    ma_sound_set_looping(&previewSound, loop ? MA_TRUE : MA_FALSE);
+    return true;
 }
 
 bool AudioSystem::playObjectSound(const SceneObject& obj) {
@@ -268,12 +275,18 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
 
     const ma_uint64 framesPerBucket = std::max<ma_uint64>(1, totalFrames / kPreviewBuckets);
     preview.waveform.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+    if (preview.channels >= 2) {
+        preview.waveformLeft.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+        preview.waveformRight.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+    }
 
     std::vector<float> temp(kPreviewChunkFrames * preview.channels);
     ma_uint64 frameCursor = 0;
     size_t bucketIndex = 0;
     ma_uint64 bucketCursor = 0;
     float bucketMax = 0.0f;
+    float bucketMaxLeft = 0.0f;
+    float bucketMaxRight = 0.0f;
 
     while (frameCursor < totalFrames && bucketIndex < preview.waveform.size()) {
         ma_uint64 framesToRead = std::min<ma_uint64>(kPreviewChunkFrames, totalFrames - frameCursor);
@@ -285,9 +298,16 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
         if (framesRead == 0) break;
 
         for (ma_uint64 f = 0; f < framesRead; ++f) {
+            size_t frameOffset = static_cast<size_t>(f * preview.channels);
             for (ma_uint32 c = 0; c < preview.channels; ++c) {
-                float sample = temp[static_cast<size_t>(f * preview.channels + c)];
+                float sample = temp[frameOffset + c];
                 bucketMax = std::max(bucketMax, std::fabs(sample));
+            }
+            if (preview.channels >= 2) {
+                float leftSample = temp[frameOffset];
+                float rightSample = temp[frameOffset + 1];
+                bucketMaxLeft = std::max(bucketMaxLeft, std::fabs(leftSample));
+                bucketMaxRight = std::max(bucketMaxRight, std::fabs(rightSample));
             }
             bucketCursor++;
             frameCursor++;
@@ -295,16 +315,26 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
             if (bucketCursor >= framesPerBucket) {
                 if (bucketIndex < preview.waveform.size()) {
                     preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
+                    if (preview.channels >= 2) {
+                        preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
+                        preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
+                    }
                     bucketIndex++;
                 }
                 bucketCursor = 0;
                 bucketMax = 0.0f;
+                bucketMaxLeft = 0.0f;
+                bucketMaxRight = 0.0f;
             }
         }
     }
 
     if (bucketIndex < preview.waveform.size() && bucketMax > 0.0f) {
         preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
+        if (preview.channels >= 2) {
+            preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
+            preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
+        }
     }
 
     ma_decoder_uninit(&decoder);

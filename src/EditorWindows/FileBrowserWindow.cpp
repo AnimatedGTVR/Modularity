@@ -21,268 +21,367 @@
 #endif
 
 namespace FileIcons {
+    namespace {
+        ImU32 BlendColor(ImU32 a, ImU32 b, float t) {
+            int ar = a & 0xFF;
+            int ag = (a >> 8) & 0xFF;
+            int ab = (a >> 16) & 0xFF;
+            int aa = (a >> 24) & 0xFF;
+            int br = b & 0xFF;
+            int bg = (b >> 8) & 0xFF;
+            int bb = (b >> 16) & 0xFF;
+            int ba = (b >> 24) & 0xFF;
+            int r = ar + static_cast<int>((br - ar) * t);
+            int g = ag + static_cast<int>((bg - ag) * t);
+            int bch = ab + static_cast<int>((bb - ab) * t);
+            int aout = aa + static_cast<int>((ba - aa) * t);
+            return IM_COL32(r, g, bch, aout);
+        }
+
+        void DrawPaperSpeckles(ImDrawList* drawList, ImVec2 min, ImVec2 max, ImU32 color) {
+            const ImVec2 points[] = {
+                ImVec2(0.18f, 0.22f), ImVec2(0.42f, 0.36f), ImVec2(0.66f, 0.28f),
+                ImVec2(0.28f, 0.62f), ImVec2(0.52f, 0.68f), ImVec2(0.74f, 0.58f),
+                ImVec2(0.36f, 0.82f), ImVec2(0.82f, 0.78f)
+            };
+            float w = max.x - min.x;
+            float h = max.y - min.y;
+            float r = std::min(w, h) * 0.015f;
+            for (const auto& p : points) {
+                ImVec2 dot(min.x + w * p.x, min.y + h * p.y);
+                drawList->AddCircleFilled(dot, r, color);
+            }
+        }
+
+        struct PaperFrame {
+            ImVec2 min;
+            ImVec2 max;
+        };
+
+        PaperFrame DrawPaperFileBase(ImDrawList* drawList, ImVec2 pos, float size, ImU32 accentColor) {
+            const ImU32 kPaperBase = IM_COL32(205, 185, 128, 255);
+            const ImU32 kPaperEdge = IM_COL32(122, 106, 72, 200);
+            const ImU32 kPaperFold = IM_COL32(223, 206, 150, 230);
+            const ImU32 kPaperShadow = IM_COL32(110, 95, 60, 80);
+            const ImU32 kPaperSpeck = IM_COL32(120, 110, 80, 55);
+
+            float w = size * 0.78f;
+            float h = size * 0.95f;
+            float offsetX = (size - w) * 0.5f;
+            float offsetY = (size - h) * 0.5f;
+            float cornerSize = w * 0.22f;
+            float rounding = size * 0.08f;
+            float shadowOffset = size * 0.04f;
+
+            ImVec2 min = ImVec2(pos.x + offsetX, pos.y + offsetY);
+            ImVec2 max = ImVec2(pos.x + offsetX + w, pos.y + offsetY + h);
+
+            drawList->AddRectFilled(ImVec2(min.x + shadowOffset, min.y + shadowOffset),
+                                    ImVec2(max.x + shadowOffset, max.y + shadowOffset),
+                                    kPaperShadow, rounding);
+
+            drawList->AddRectFilled(min, max, kPaperBase, rounding);
+            drawList->AddRect(min, max, kPaperEdge, rounding, 0, 1.2f);
+
+            ImVec2 foldA(max.x - cornerSize, min.y);
+            ImVec2 foldB(max.x, min.y + cornerSize);
+            drawList->AddTriangleFilled(foldA, foldB, ImVec2(max.x - cornerSize, min.y + cornerSize), kPaperFold);
+
+            ImU32 band = BlendColor(accentColor, kPaperBase, 0.65f);
+            float bandH = h * 0.14f;
+            drawList->AddRectFilled(ImVec2(min.x, max.y - bandH), max, band, rounding);
+
+            DrawPaperSpeckles(drawList, min, ImVec2(max.x, max.y - bandH), kPaperSpeck);
+
+            ImVec2 contentMin(min.x + w * 0.12f, min.y + h * 0.16f);
+            ImVec2 contentMax(max.x - w * 0.12f, max.y - h * 0.22f);
+            return {contentMin, contentMax};
+        }
+
+        PaperFrame DrawSheetFileBase(ImDrawList* drawList, ImVec2 pos, float size, ImU32 accentColor) {
+            const ImU32 kSheetBase = IM_COL32(248, 248, 248, 255);
+            const ImU32 kSheetBack = IM_COL32(238, 238, 238, 235);
+            const ImU32 kSheetEdge = IM_COL32(185, 185, 185, 200);
+            const ImU32 kSheetFold = IM_COL32(232, 232, 232, 255);
+            const ImU32 kSheetShadow = IM_COL32(0, 0, 0, 55);
+            const ImU32 kSheetInner = IM_COL32(255, 255, 255, 80);
+            const ImU32 kFoldShadow = IM_COL32(0, 0, 0, 35);
+
+            float w = size * 0.78f;
+            float h = size * 0.95f;
+            float offsetX = (size - w) * 0.5f;
+            float offsetY = (size - h) * 0.5f;
+            float cornerSize = w * 0.24f;
+            float rounding = size * 0.075f;
+            float shadowOffset = size * 0.04f;
+            float backOffset = size * 0.02f;
+
+            ImVec2 min = ImVec2(pos.x + offsetX, pos.y + offsetY);
+            ImVec2 max = ImVec2(pos.x + offsetX + w, pos.y + offsetY + h);
+
+            ImVec2 backMin = ImVec2(min.x + backOffset, min.y + backOffset * 0.6f);
+            ImVec2 backMax = ImVec2(max.x + backOffset, max.y + backOffset * 0.6f);
+            drawList->AddRectFilled(backMin, backMax, kSheetBack, rounding);
+
+            drawList->AddRectFilled(ImVec2(min.x + shadowOffset, min.y + shadowOffset),
+                                    ImVec2(max.x + shadowOffset, max.y + shadowOffset),
+                                    kSheetShadow, rounding);
+
+            drawList->AddRectFilled(min, max, kSheetBase, rounding);
+            drawList->AddRect(min, max, kSheetEdge, rounding, 0, 1.2f);
+            drawList->AddRect(ImVec2(min.x + 1.0f, min.y + 1.0f),
+                              ImVec2(max.x - 1.0f, max.y - 1.0f),
+                              kSheetInner, rounding, 0, 1.0f);
+
+            ImVec2 foldA(max.x - cornerSize, min.y);
+            ImVec2 foldB(max.x, min.y + cornerSize);
+            ImVec2 foldC(max.x - cornerSize, min.y + cornerSize);
+            drawList->AddTriangleFilled(ImVec2(foldA.x + 1.0f, foldA.y + 1.0f),
+                                        ImVec2(foldB.x + 1.0f, foldB.y + 1.0f),
+                                        ImVec2(foldC.x + 1.0f, foldC.y + 1.0f),
+                                        kFoldShadow);
+            drawList->AddTriangleFilled(foldA, foldB, ImVec2(max.x - cornerSize, min.y + cornerSize), kSheetFold);
+            drawList->AddTriangle(foldA, foldB, foldC, kSheetEdge, 1.0f);
+
+            ImU32 band = BlendColor(accentColor, kSheetBase, 0.55f);
+            float bandH = h * 0.16f;
+            drawList->AddRectFilled(ImVec2(min.x, max.y - bandH), max, band, rounding);
+
+            ImVec2 contentMin(min.x + w * 0.12f, min.y + h * 0.16f);
+            ImVec2 contentMax(max.x - w * 0.12f, max.y - h * 0.24f);
+            return {contentMin, contentMax};
+        }
+
+        ImU32 InkColor() {
+            return IM_COL32(92, 78, 52, 220);
+        }
+    }
+
     // Draw a folder icon
     void DrawFolderIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        const ImU32 kFolderBase = IM_COL32(198, 178, 120, 255);
+        const ImU32 kFolderTab = IM_COL32(215, 197, 140, 255);
+        const ImU32 kFolderEdge = IM_COL32(120, 104, 70, 200);
+        const ImU32 kFolderShadow = IM_COL32(110, 95, 60, 70);
+        const ImU32 kFolderSpeck = IM_COL32(120, 110, 80, 55);
+
         float w = size;
-        float h = size * 0.75f;
-        float tabW = w * 0.4f;
-        float tabH = h * 0.15f;
-        
-        // Folder body
-        drawList->AddRectFilled(
-            ImVec2(pos.x, pos.y + tabH),
-            ImVec2(pos.x + w, pos.y + h),
-            color, 3.0f
-        );
-        // Folder tab
-        drawList->AddRectFilled(
-            ImVec2(pos.x, pos.y),
-            ImVec2(pos.x + tabW, pos.y + tabH + 2),
-            color, 2.0f
-        );
+        float h = size * 0.72f;
+        float tabW = w * 0.46f;
+        float tabH = h * 0.28f;
+        float rounding = size * 0.08f;
+        float shadowOffset = size * 0.04f;
+
+        ImVec2 bodyMin(pos.x, pos.y + tabH * 0.55f);
+        ImVec2 bodyMax(pos.x + w, pos.y + h);
+        ImVec2 tabMin(pos.x + w * 0.06f, pos.y);
+        ImVec2 tabMax(pos.x + tabW, pos.y + tabH);
+
+        drawList->AddRectFilled(ImVec2(bodyMin.x + shadowOffset, bodyMin.y + shadowOffset),
+                                ImVec2(bodyMax.x + shadowOffset, bodyMax.y + shadowOffset),
+                                kFolderShadow, rounding);
+
+        drawList->AddRectFilled(bodyMin, bodyMax, kFolderBase, rounding);
+        drawList->AddRect(bodyMin, bodyMax, kFolderEdge, rounding, 0, 1.2f);
+
+        drawList->AddRectFilled(tabMin, tabMax, kFolderTab, rounding);
+        drawList->AddRect(tabMin, tabMax, kFolderEdge, rounding, 0, 1.0f);
+
+        ImU32 band = BlendColor(color, kFolderBase, 0.7f);
+        float bandH = h * 0.14f;
+        drawList->AddRectFilled(ImVec2(bodyMin.x, bodyMax.y - bandH), bodyMax, band, rounding);
+
+        DrawPaperSpeckles(drawList, bodyMin, ImVec2(bodyMax.x, bodyMax.y - bandH), kFolderSpeck);
     }
     
     // Draw a scene/document icon
     void DrawSceneIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float w = size * 0.8f;
-        float h = size;
-        float cornerSize = w * 0.25f;
-        
-        // Main document body
-        ImVec2 p1 = ImVec2(pos.x, pos.y);
-        ImVec2 p2 = ImVec2(pos.x + w - cornerSize, pos.y);
-        ImVec2 p3 = ImVec2(pos.x + w, pos.y + cornerSize);
-        ImVec2 p4 = ImVec2(pos.x + w, pos.y + h);
-        ImVec2 p5 = ImVec2(pos.x, pos.y + h);
-        
-        drawList->AddQuadFilled(p1, ImVec2(pos.x + w - cornerSize, pos.y), ImVec2(pos.x + w - cornerSize, pos.y + h), p5, color);
-        drawList->AddTriangleFilled(p2, p3, ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), color);
-        drawList->AddRectFilled(ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), p4, color);
-        
-        // Corner fold
-        drawList->AddTriangleFilled(p2, ImVec2(pos.x + w - cornerSize, pos.y + cornerSize), p3, 
-            IM_COL32(255, 255, 255, 60));
-        
-        // Scene icon indicator (play triangle)
-        float cx = pos.x + w * 0.5f;
-        float cy = pos.y + h * 0.55f;
-        float triSize = size * 0.25f;
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        float w = frame.max.x - frame.min.x;
+        float h = frame.max.y - frame.min.y;
+        ImVec2 center(frame.min.x + w * 0.55f, frame.min.y + h * 0.55f);
+        float tri = std::min(w, h) * 0.35f;
         drawList->AddTriangleFilled(
-            ImVec2(cx - triSize * 0.4f, cy - triSize * 0.5f),
-            ImVec2(cx - triSize * 0.4f, cy + triSize * 0.5f),
-            ImVec2(cx + triSize * 0.5f, cy),
-            IM_COL32(255, 255, 255, 180)
+            ImVec2(center.x - tri * 0.4f, center.y - tri * 0.55f),
+            ImVec2(center.x - tri * 0.4f, center.y + tri * 0.55f),
+            ImVec2(center.x + tri * 0.6f, center.y),
+            ink
         );
     }
     
     // Draw a 3D model icon (cube wireframe)
     void DrawModelIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float s = size * 0.8f;
-        float offset = size * 0.1f;
-        float depth = s * 0.3f;
-        
-        // Front face
-        ImVec2 f1 = ImVec2(pos.x + offset, pos.y + offset + depth);
-        ImVec2 f2 = ImVec2(pos.x + offset + s, pos.y + offset + depth);
-        ImVec2 f3 = ImVec2(pos.x + offset + s, pos.y + offset + s);
-        ImVec2 f4 = ImVec2(pos.x + offset, pos.y + offset + s);
-        
-        // Back face
-        ImVec2 b1 = ImVec2(f1.x + depth, f1.y - depth);
-        ImVec2 b2 = ImVec2(f2.x + depth, f2.y - depth);
-        ImVec2 b3 = ImVec2(f3.x + depth, f3.y - depth);
-        
-        // Fill front face
-        drawList->AddQuadFilled(f1, f2, f3, f4, color);
-        
-        // Fill top face
-        drawList->AddQuadFilled(f1, f2, b2, b1, IM_COL32(
-            (color & 0xFF) * 0.7f,
-            ((color >> 8) & 0xFF) * 0.7f,
-            ((color >> 16) & 0xFF) * 0.7f,
-            (color >> 24) & 0xFF
-        ));
-        
-        // Fill right face
-        drawList->AddQuadFilled(f2, b2, b3, f3, IM_COL32(
-            (color & 0xFF) * 0.5f,
-            ((color >> 8) & 0xFF) * 0.5f,
-            ((color >> 16) & 0xFF) * 0.5f,
-            (color >> 24) & 0xFF
-        ));
-        
-        // Edges
-        ImU32 edgeColor = IM_COL32(255, 255, 255, 100);
-        drawList->AddLine(f1, f2, edgeColor, 1.0f);
-        drawList->AddLine(f2, f3, edgeColor, 1.0f);
-        drawList->AddLine(f3, f4, edgeColor, 1.0f);
-        drawList->AddLine(f4, f1, edgeColor, 1.0f);
-        drawList->AddLine(f1, b1, edgeColor, 1.0f);
-        drawList->AddLine(f2, b2, edgeColor, 1.0f);
-        drawList->AddLine(b1, b2, edgeColor, 1.0f);
-        drawList->AddLine(f3, b3, edgeColor, 1.0f);
-        drawList->AddLine(b2, b3, edgeColor, 1.0f);
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+        float s = std::min(w, h) * 0.6f;
+        ImVec2 origin(min.x + w * 0.25f, min.y + h * 0.25f);
+        float depth = s * 0.35f;
+
+        ImVec2 f1(origin.x, origin.y + depth);
+        ImVec2 f2(origin.x + s, origin.y + depth);
+        ImVec2 f3(origin.x + s, origin.y + s + depth);
+        ImVec2 f4(origin.x, origin.y + s + depth);
+
+        ImVec2 b1(f1.x + depth, f1.y - depth);
+        ImVec2 b2(f2.x + depth, f2.y - depth);
+        ImVec2 b3(f3.x + depth, f3.y - depth);
+        ImVec2 b4(f4.x + depth, f4.y - depth);
+
+        drawList->AddLine(f1, f2, ink, 1.4f);
+        drawList->AddLine(f2, f3, ink, 1.4f);
+        drawList->AddLine(f3, f4, ink, 1.4f);
+        drawList->AddLine(f4, f1, ink, 1.4f);
+        drawList->AddLine(b1, b2, ink, 1.2f);
+        drawList->AddLine(b2, b3, ink, 1.2f);
+        drawList->AddLine(b3, b4, ink, 1.2f);
+        drawList->AddLine(b4, b1, ink, 1.2f);
+        drawList->AddLine(f1, b1, ink, 1.2f);
+        drawList->AddLine(f2, b2, ink, 1.2f);
+        drawList->AddLine(f3, b3, ink, 1.2f);
+        drawList->AddLine(f4, b4, ink, 1.2f);
     }
     
     // Draw a texture/image icon
     void DrawTextureIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float padding = size * 0.1f;
-        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
-        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
-        
-        // Frame
-        drawList->AddRectFilled(tl, br, color, 2.0f);
-        
-        // Mountain landscape
-        float midY = pos.y + size * 0.6f;
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+
+        ImVec2 frameMin(min.x + w * 0.08f, min.y + h * 0.12f);
+        ImVec2 frameMax(max.x - w * 0.08f, max.y - h * 0.1f);
+        drawList->AddRect(frameMin, frameMax, ink, 3.0f, 0, 1.2f);
+
+        float midY = frameMax.y - h * 0.28f;
         drawList->AddTriangleFilled(
-            ImVec2(pos.x + size * 0.2f, br.y - padding),
-            ImVec2(pos.x + size * 0.45f, midY),
-            ImVec2(pos.x + size * 0.7f, br.y - padding),
-            IM_COL32(60, 60, 60, 255)
+            ImVec2(frameMin.x + w * 0.1f, frameMax.y),
+            ImVec2(frameMin.x + w * 0.35f, midY),
+            ImVec2(frameMin.x + w * 0.6f, frameMax.y),
+            ink
         );
         drawList->AddTriangleFilled(
-            ImVec2(pos.x + size * 0.5f, br.y - padding),
-            ImVec2(pos.x + size * 0.7f, midY + size * 0.1f),
-            ImVec2(pos.x + size * 0.9f, br.y - padding),
-            IM_COL32(80, 80, 80, 255)
+            ImVec2(frameMin.x + w * 0.45f, frameMax.y),
+            ImVec2(frameMin.x + w * 0.7f, midY + h * 0.1f),
+            ImVec2(frameMin.x + w * 0.9f, frameMax.y),
+            ink
         );
-        
-        // Sun
-        float sunR = size * 0.1f;
-        drawList->AddCircleFilled(ImVec2(pos.x + size * 0.75f, pos.y + size * 0.35f), sunR, IM_COL32(255, 220, 100, 255));
+
+        float sunR = std::min(w, h) * 0.12f;
+        drawList->AddCircleFilled(ImVec2(frameMax.x - w * 0.18f, frameMin.y + h * 0.2f), sunR, ink);
     }
     
     // Draw a shader icon (code brackets)
     void DrawShaderIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float padding = size * 0.15f;
-        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
-        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
-        
-        // Background
-        drawList->AddRectFilled(tl, br, color, 3.0f);
-        
-        // Code lines
-        ImU32 lineColor = IM_COL32(255, 255, 255, 180);
-        float lineY = pos.y + size * 0.35f;
-        float lineH = size * 0.08f;
-        float lineSpacing = size * 0.15f;
-        
-        drawList->AddRectFilled(ImVec2(pos.x + size * 0.25f, lineY), ImVec2(pos.x + size * 0.7f, lineY + lineH), lineColor);
-        lineY += lineSpacing;
-        drawList->AddRectFilled(ImVec2(pos.x + size * 0.3f, lineY), ImVec2(pos.x + size * 0.8f, lineY + lineH), lineColor);
-        lineY += lineSpacing;
-        drawList->AddRectFilled(ImVec2(pos.x + size * 0.25f, lineY), ImVec2(pos.x + size * 0.55f, lineY + lineH), lineColor);
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+
+        float lineH = h * 0.12f;
+        float lineY = min.y + h * 0.2f;
+        drawList->AddRectFilled(ImVec2(min.x + w * 0.15f, lineY), ImVec2(min.x + w * 0.75f, lineY + lineH), ink);
+        lineY += h * 0.22f;
+        drawList->AddRectFilled(ImVec2(min.x + w * 0.2f, lineY), ImVec2(min.x + w * 0.85f, lineY + lineH), ink);
+        lineY += h * 0.22f;
+        drawList->AddRectFilled(ImVec2(min.x + w * 0.15f, lineY), ImVec2(min.x + w * 0.55f, lineY + lineH), ink);
     }
     
     // Draw an audio icon (speaker/waveform)
     void DrawAudioIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        // Speaker body
-        float spkW = size * 0.25f;
-        float spkH = size * 0.3f;
-        float cx = pos.x + size * 0.35f;
-        float cy = pos.y + size * 0.5f;
-        
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+        float spkW = w * 0.25f;
+        float spkH = h * 0.28f;
+        float cx = min.x + w * 0.35f;
+        float cy = min.y + h * 0.55f;
+
         drawList->AddRectFilled(
             ImVec2(cx - spkW * 0.5f, cy - spkH * 0.5f),
             ImVec2(cx + spkW * 0.5f, cy + spkH * 0.5f),
-            color
+            ink
         );
-        
-        // Speaker cone
         drawList->AddTriangleFilled(
             ImVec2(cx + spkW * 0.5f, cy - spkH * 0.5f),
             ImVec2(cx + spkW * 0.5f, cy + spkH * 0.5f),
-            ImVec2(cx + spkW * 1.2f, cy + spkH),
-            color
+            ImVec2(cx + spkW * 1.1f, cy + spkH * 0.9f),
+            ink
         );
         drawList->AddTriangleFilled(
             ImVec2(cx + spkW * 0.5f, cy - spkH * 0.5f),
-            ImVec2(cx + spkW * 1.2f, cy - spkH),
-            ImVec2(cx + spkW * 1.2f, cy + spkH),
-            color
+            ImVec2(cx + spkW * 1.1f, cy - spkH * 0.9f),
+            ImVec2(cx + spkW * 1.1f, cy + spkH * 0.9f),
+            ink
         );
-        
-        // Sound waves
-        ImU32 waveColor = IM_COL32(255, 255, 255, 150);
-        float waveX = cx + spkW * 1.5f;
+
+        float waveX = cx + spkW * 1.4f;
         drawList->AddBezierQuadratic(
-            ImVec2(waveX, cy - size * 0.15f),
-            ImVec2(waveX + size * 0.1f, cy),
-            ImVec2(waveX, cy + size * 0.15f),
-            waveColor, 2.0f
+            ImVec2(waveX, cy - h * 0.12f),
+            ImVec2(waveX + w * 0.12f, cy),
+            ImVec2(waveX, cy + h * 0.12f),
+            ink, 1.6f
         );
-        waveX += size * 0.12f;
+        waveX += w * 0.12f;
         drawList->AddBezierQuadratic(
-            ImVec2(waveX, cy - size * 0.22f),
-            ImVec2(waveX + size * 0.12f, cy),
-            ImVec2(waveX, cy + size * 0.22f),
-            waveColor, 2.0f
+            ImVec2(waveX, cy - h * 0.2f),
+            ImVec2(waveX + w * 0.14f, cy),
+            ImVec2(waveX, cy + h * 0.2f),
+            ink, 1.6f
         );
     }
     
     // Draw a generic file icon
     void DrawFileIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float w = size * 0.7f;
-        float h = size * 0.9f;
-        float offsetX = (size - w) * 0.5f;
-        float offsetY = (size - h) * 0.5f;
-        float cornerSize = w * 0.25f;
-        
-        ImVec2 p1 = ImVec2(pos.x + offsetX, pos.y + offsetY);
-        ImVec2 p2 = ImVec2(pos.x + offsetX + w - cornerSize, pos.y + offsetY);
-        ImVec2 p3 = ImVec2(pos.x + offsetX + w, pos.y + offsetY + cornerSize);
-        ImVec2 p4 = ImVec2(pos.x + offsetX + w, pos.y + offsetY + h);
-        ImVec2 p5 = ImVec2(pos.x + offsetX, pos.y + offsetY + h);
-        
-        // Main body
-        drawList->AddQuadFilled(p1, p2, ImVec2(p2.x, p4.y), p5, color);
-        drawList->AddTriangleFilled(p2, p3, ImVec2(p2.x, p3.y), color);
-        drawList->AddRectFilled(ImVec2(p2.x, p3.y), p4, color);
-        
-        // Corner fold
-        drawList->AddTriangleFilled(p2, ImVec2(p2.x, p3.y), p3, IM_COL32(255, 255, 255, 50));
+        DrawSheetFileBase(drawList, pos, size, color);
     }
     
     // Draw a script/code icon
     void DrawScriptIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float padding = size * 0.12f;
-        ImVec2 tl = ImVec2(pos.x + padding, pos.y + padding);
-        ImVec2 br = ImVec2(pos.x + size - padding, pos.y + size - padding);
-        
-        // Background
-        drawList->AddRectFilled(tl, br, color, 3.0f);
-        
-        // Brackets < >
-        ImU32 bracketColor = IM_COL32(255, 255, 255, 200);
-        float cx = pos.x + size * 0.5f;
-        float cy = pos.y + size * 0.5f;
-        float bSize = size * 0.2f;
-        
-        // Left bracket <
-        drawList->AddLine(ImVec2(cx - bSize * 0.5f, cy - bSize), ImVec2(cx - bSize * 1.5f, cy), bracketColor, 2.5f);
-        drawList->AddLine(ImVec2(cx - bSize * 1.5f, cy), ImVec2(cx - bSize * 0.5f, cy + bSize), bracketColor, 2.5f);
-        
-        // Right bracket >
-        drawList->AddLine(ImVec2(cx + bSize * 0.5f, cy - bSize), ImVec2(cx + bSize * 1.5f, cy), bracketColor, 2.5f);
-        drawList->AddLine(ImVec2(cx + bSize * 1.5f, cy), ImVec2(cx + bSize * 0.5f, cy + bSize), bracketColor, 2.5f);
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+        float cx = min.x + w * 0.5f;
+        float cy = min.y + h * 0.5f;
+        float bSize = std::min(w, h) * 0.28f;
+
+        drawList->AddLine(ImVec2(cx - bSize * 0.5f, cy - bSize), ImVec2(cx - bSize * 1.3f, cy), ink, 1.8f);
+        drawList->AddLine(ImVec2(cx - bSize * 1.3f, cy), ImVec2(cx - bSize * 0.5f, cy + bSize), ink, 1.8f);
+        drawList->AddLine(ImVec2(cx + bSize * 0.5f, cy - bSize), ImVec2(cx + bSize * 1.3f, cy), ink, 1.8f);
+        drawList->AddLine(ImVec2(cx + bSize * 1.3f, cy), ImVec2(cx + bSize * 0.5f, cy + bSize), ink, 1.8f);
     }
     
     // Draw a text icon
     void DrawTextIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        DrawFileIcon(drawList, pos, size, color);
-        
-        // Text lines
-        ImU32 lineColor = IM_COL32(255, 255, 255, 150);
-        float startX = pos.x + size * 0.25f;
-        float endX = pos.x + size * 0.65f;
-        float lineY = pos.y + size * 0.4f;
-        float lineH = size * 0.06f;
-        float spacing = size * 0.12f;
-        
-        for (int i = 0; i < 3; i++) {
-            float w = (i == 1) ? (endX - startX) * 0.7f : (endX - startX);
-            drawList->AddRectFilled(ImVec2(startX, lineY), ImVec2(startX + w, lineY + lineH), lineColor);
+        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
+        ImU32 ink = IM_COL32(90, 90, 90, 230);
+        ImVec2 min = frame.min;
+        ImVec2 max = frame.max;
+        float w = max.x - min.x;
+        float h = max.y - min.y;
+        float lineY = min.y + h * 0.25f;
+        float lineH = h * 0.12f;
+        float spacing = h * 0.2f;
+
+        for (int i = 0; i < 3; ++i) {
+            float lineW = (i == 1) ? w * 0.55f : w * 0.75f;
+            drawList->AddRectFilled(ImVec2(min.x + w * 0.12f, lineY),
+                                    ImVec2(min.x + w * 0.12f + lineW, lineY + lineH),
+                                    ink);
             lineY += spacing;
         }
     }
@@ -647,23 +746,7 @@ void Engine::renderFileBrowserPanel() {
         fileBrowser.viewMode = isGridMode ? FileBrowserViewMode::List : FileBrowserViewMode::Grid;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
-
     ImGui::SameLine();
-    if (ImGui::Button("Refresh", ImVec2(68, 0))) {
-        fileBrowser.needsRefresh = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("New Mat", ImVec2(78, 0))) {
-        fs::path target = fileBrowser.currentPath / "NewMaterial.mat";
-        int counter = 1;
-        while (fs::exists(target)) {
-            target = fileBrowser.currentPath / ("NewMaterial" + std::to_string(counter++) + ".mat");
-        }
-        SceneObject temp("Material", ObjectType::Cube, -1);
-        temp.materialPath = target.string();
-        saveMaterialToFile(temp);
-        fileBrowser.needsRefresh = true;
-    }
 
     ImGui::EndChild();
     ImGui::PopStyleVar(2);

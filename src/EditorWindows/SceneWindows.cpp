@@ -18,6 +18,83 @@
 #include <shlobj.h>
 #endif
 
+namespace {
+    ImU32 GetHierarchyTypeColor(ObjectType type) {
+        switch (type) {
+            case ObjectType::Camera: return IM_COL32(110, 175, 235, 220);
+            case ObjectType::DirectionalLight:
+            case ObjectType::PointLight:
+            case ObjectType::SpotLight:
+            case ObjectType::AreaLight: return IM_COL32(255, 200, 90, 220);
+            case ObjectType::PostFXNode: return IM_COL32(200, 140, 230, 220);
+            case ObjectType::OBJMesh:
+            case ObjectType::Model: return IM_COL32(120, 200, 150, 220);
+            case ObjectType::Mirror: return IM_COL32(180, 200, 210, 220);
+            case ObjectType::Plane: return IM_COL32(170, 180, 190, 220);
+            case ObjectType::Torus: return IM_COL32(155, 215, 180, 220);
+            default: return IM_COL32(140, 190, 235, 220);
+        }
+    }
+
+    void DrawFileOutlineIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float w = size * 0.78f;
+        float h = size * 0.95f;
+        float offsetX = (size - w) * 0.5f;
+        float offsetY = (size - h) * 0.5f;
+        float corner = w * 0.28f;
+        ImVec2 min(pos.x + offsetX, pos.y + offsetY);
+        ImVec2 max(pos.x + offsetX + w, pos.y + offsetY + h);
+        ImVec2 foldA(max.x - corner, min.y);
+        ImVec2 foldB(max.x, min.y + corner);
+        ImVec2 foldC(max.x - corner, min.y + corner);
+        drawList->AddRect(min, max, color, size * 0.12f, 0, 1.2f);
+        drawList->AddTriangle(foldA, foldB, foldC, color, 1.2f);
+        drawList->AddLine(ImVec2(foldA.x, foldA.y), ImVec2(foldC.x, foldC.y), color, 1.2f);
+    }
+
+    void DrawCubeOutlineIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        float inset = size * 0.18f;
+        float backOffset = size * 0.16f;
+        ImVec2 frontMin(pos.x + inset, pos.y + inset + backOffset);
+        ImVec2 frontMax(pos.x + size - inset, pos.y + size - inset + backOffset);
+        ImVec2 backMin(pos.x + inset + backOffset, pos.y + inset);
+        ImVec2 backMax(pos.x + size - inset + backOffset, pos.y + size - inset);
+        drawList->AddRect(frontMin, frontMax, color, 0.0f, 0, 1.2f);
+        drawList->AddRect(backMin, backMax, color, 0.0f, 0, 1.2f);
+        drawList->AddLine(frontMin, backMin, color, 1.2f);
+        drawList->AddLine(ImVec2(frontMax.x, frontMin.y), ImVec2(backMax.x, backMin.y), color, 1.2f);
+        drawList->AddLine(ImVec2(frontMin.x, frontMax.y), ImVec2(backMin.x, backMax.y), color, 1.2f);
+        drawList->AddLine(frontMax, backMax, color, 1.2f);
+    }
+
+    void DrawHierarchyLines(ImDrawList* drawList, const ImVec2& itemMin, const ImVec2& itemMax,
+                            const std::vector<bool>& ancestorHasNext, int depth, bool isLast) {
+        if (depth <= 0) {
+            return;
+        }
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+        ImU32 lineColor = ImGui::ColorConvertFloat4ToU32(ImVec4(base.x, base.y, base.z, 0.6f));
+        float indent = style.IndentSpacing;
+        float rowTop = itemMin.y;
+        float rowBottom = itemMax.y;
+        float rowMid = (rowTop + rowBottom) * 0.5f;
+        float baseX = itemMin.x - indent * depth;
+
+        for (int i = 0; i < depth && i < static_cast<int>(ancestorHasNext.size()); ++i) {
+            if (ancestorHasNext[i]) {
+                float x = baseX + indent * (i + 0.5f);
+                drawList->AddLine(ImVec2(x, rowTop), ImVec2(x, rowBottom), lineColor, 1.0f);
+            }
+        }
+
+        float connectorX = baseX + indent * (depth - 0.5f);
+        float vertEnd = isLast ? rowMid : rowBottom;
+        drawList->AddLine(ImVec2(connectorX, rowTop), ImVec2(connectorX, vertEnd), lineColor, 1.0f);
+        drawList->AddLine(ImVec2(connectorX, rowMid), ImVec2(itemMin.x + 6.0f, rowMid), lineColor, 1.0f);
+    }
+}
+
 void Engine::renderHierarchyPanel() {
     ImGui::Begin("Hierarchy", &showHierarchy);
 
@@ -96,11 +173,18 @@ void Engine::renderHierarchyPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 2.0f));
     ImGui::BeginChild("HierarchyList", ImVec2(0, 0), true);
 
+    std::vector<size_t> rootIndices;
+    rootIndices.reserve(sceneObjects.size());
     for (size_t i = 0; i < sceneObjects.size(); i++) {
-        if (sceneObjects[i].parentId != -1)
-            continue;
+        if (sceneObjects[i].parentId == -1) {
+            rootIndices.push_back(i);
+        }
+    }
 
-        renderObjectNode(sceneObjects[i], filter);
+    std::vector<bool> ancestorHasNext;
+    for (size_t i = 0; i < rootIndices.size(); ++i) {
+        bool isLastRoot = (i + 1 == rootIndices.size());
+        renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0);
     }
 
     if (ImGui::BeginPopupContextWindow("HierarchyBackground",
@@ -115,6 +199,8 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
                 if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
                 if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
+                if (ImGui::MenuItem("Plane"))   addObject(ObjectType::Plane, "Plane");
+                if (ImGui::MenuItem("Torus"))   addObject(ObjectType::Torus, "Torus");
                 if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
                 ImGui::EndMenu();
             }
@@ -149,7 +235,8 @@ void Engine::renderHierarchyPanel() {
     ImGui::End();
 }
 
-void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
+void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
+                              std::vector<bool>& ancestorHasNext, bool isLast, int depth) {
     std::string nameLower = obj.name;
     std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
 
@@ -164,23 +251,23 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
     if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
 
-    const char* icon = "";
-    switch (obj.type) {
-        case ObjectType::Cube: icon = "[#]"; break;
-        case ObjectType::Sphere: icon = "(O)"; break;
-        case ObjectType::Capsule: icon = "[|]"; break;
-        case ObjectType::OBJMesh: icon = "[M]"; break;
-        case ObjectType::Model: icon = "[A]"; break;
-        case ObjectType::Camera: icon = "(C)"; break;
-        case ObjectType::DirectionalLight: icon = "(D)"; break;
-        case ObjectType::PointLight: icon = "(P)"; break;
-        case ObjectType::SpotLight: icon = "(S)"; break;
-        case ObjectType::AreaLight: icon = "(L)"; break;
-        case ObjectType::PostFXNode: icon = "(FX)"; break;
-        case ObjectType::Mirror: icon = "[R]"; break;
-    }
+    std::string label = "   " + obj.name;
+    bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", label.c_str());
 
-    bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s %s", icon, obj.name.c_str());
+    ImVec2 itemMin = ImGui::GetItemRectMin();
+    ImVec2 itemMax = ImGui::GetItemRectMax();
+    DrawHierarchyLines(ImGui::GetWindowDrawList(), itemMin, itemMax, ancestorHasNext, depth, isLast);
+
+    float lineHeight = itemMax.y - itemMin.y;
+    float iconSize = std::max(8.0f, lineHeight - 6.0f);
+    float labelStart = itemMin.x + ImGui::GetTreeNodeToLabelSpacing();
+    ImVec2 iconPos(labelStart, itemMin.y + (lineHeight - iconSize) * 0.5f);
+    ImU32 iconColor = GetHierarchyTypeColor(obj.type);
+    if (obj.parentId == -1) {
+        DrawCubeOutlineIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
+    } else {
+        DrawFileOutlineIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
+    }
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
@@ -290,13 +377,26 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter) {
     }
 
     if (nodeOpen) {
+        std::vector<SceneObject*> visibleChildren;
+        visibleChildren.reserve(obj.childIds.size());
         for (int childId : obj.childIds) {
             auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
                 [childId](const SceneObject& o) { return o.id == childId; });
             if (it != sceneObjects.end()) {
-                renderObjectNode(*it, filter);
+                std::string childLower = it->name;
+                std::transform(childLower.begin(), childLower.end(), childLower.begin(), ::tolower);
+                if (filter.empty() || childLower.find(filter) != std::string::npos) {
+                    visibleChildren.push_back(&(*it));
+                }
             }
         }
+
+        ancestorHasNext.push_back(!isLast);
+        for (size_t i = 0; i < visibleChildren.size(); ++i) {
+            bool childLast = (i + 1 == visibleChildren.size());
+            renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1);
+        }
+        ancestorHasNext.pop_back();
         ImGui::TreePop();
     }
 }
@@ -348,8 +448,23 @@ void Engine::renderInspectorPanel() {
         inspectedMaterialValid = false;
     }
 
+    if (browserHasAudio) {
+        std::string selectedAudio = selectedAudioPath.string();
+        if (selectedAudio != audioPreviewSelectedPath) {
+            audioPreviewSelectedPath = selectedAudio;
+            if (audioPreviewAutoPlay) {
+                audio.playPreview(selectedAudio, 1.0f, audioPreviewLoop);
+            }
+        }
+    } else {
+        audioPreviewSelectedPath.clear();
+    }
+
     auto drawWaveform = [&](const char* id, const AudioClipPreview* preview, const ImVec2& size, float progressRatio, float* seekRatioOut) {
-        if (!preview || preview->waveform.empty()) {
+        bool hasStereo = preview && preview->channels >= 2
+            && !preview->waveformLeft.empty()
+            && !preview->waveformRight.empty();
+        if (!preview || (!hasStereo && preview->waveform.empty())) {
             ImGui::Dummy(size);
             return;
         }
@@ -360,14 +475,33 @@ void Engine::renderInspectorPanel() {
         dl->AddRectFilled(start, end, IM_COL32(30, 35, 45, 180), 4.0f);
         float midY = (start.y + end.y) * 0.5f;
         float usableHeight = size.y * 0.45f;
-        size_t count = preview->waveform.size();
+        size_t count = hasStereo
+            ? std::min(preview->waveformLeft.size(), preview->waveformRight.size())
+            : preview->waveform.size();
         float step = count > 1 ? size.x / static_cast<float>(count - 1) : size.x;
-        ImU32 color = IM_COL32(255, 180, 100, 200);
-        for (size_t i = 0; i < count; ++i) {
-            float amp = std::clamp(preview->waveform[i], 0.0f, 1.0f);
-            float x = start.x + step * static_cast<float>(i);
-            float yOff = amp * usableHeight;
-            dl->AddLine(ImVec2(x, midY - yOff), ImVec2(x, midY + yOff), color, 1.2f);
+        if (hasStereo) {
+            ImU32 leftColor = IM_COL32(255, 190, 90, 200);
+            ImU32 rightColor = IM_COL32(100, 200, 255, 200);
+            float topMidY = start.y + size.y * 0.25f;
+            float bottomMidY = start.y + size.y * 0.75f;
+            float stereoHeight = size.y * 0.22f;
+            for (size_t i = 0; i < count; ++i) {
+                float leftAmp = std::clamp(preview->waveformLeft[i], 0.0f, 1.0f);
+                float rightAmp = std::clamp(preview->waveformRight[i], 0.0f, 1.0f);
+                float x = start.x + step * static_cast<float>(i);
+                float leftOff = leftAmp * stereoHeight;
+                float rightOff = rightAmp * stereoHeight;
+                dl->AddLine(ImVec2(x, topMidY - leftOff), ImVec2(x, topMidY + leftOff), leftColor, 1.2f);
+                dl->AddLine(ImVec2(x, bottomMidY - rightOff), ImVec2(x, bottomMidY + rightOff), rightColor, 1.2f);
+            }
+        } else {
+            ImU32 color = IM_COL32(255, 180, 100, 200);
+            for (size_t i = 0; i < count; ++i) {
+                float amp = std::clamp(preview->waveform[i], 0.0f, 1.0f);
+                float x = start.x + step * static_cast<float>(i);
+                float yOff = amp * usableHeight;
+                dl->AddLine(ImVec2(x, midY - yOff), ImVec2(x, midY + yOff), color, 1.2f);
+            }
         }
 
         if (progressRatio >= 0.0f && progressRatio <= 1.0f) {
@@ -648,7 +782,19 @@ void Engine::renderInspectorPanel() {
                 if (isPlayingPreview) {
                     audio.stopPreview();
                 } else {
-                    audio.playPreview(selectedAudioPath.string());
+                    audio.playPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Loop##AudioPreview", &audioPreviewLoop)) {
+                if (isPlayingPreview) {
+                    audio.setPreviewLoop(audioPreviewLoop);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Auto Play##AudioPreview", &audioPreviewAutoPlay)) {
+                if (audioPreviewAutoPlay && !selectedAudioPath.empty() && !isPlayingPreview) {
+                    audio.playPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop);
                 }
             }
 
@@ -787,6 +933,8 @@ void Engine::renderInspectorPanel() {
         case ObjectType::AreaLight:  typeLabel = "Area Light"; break;
         case ObjectType::PostFXNode: typeLabel = "Post FX Node"; break;
         case ObjectType::Mirror:     typeLabel = "Mirror"; break;
+        case ObjectType::Plane:      typeLabel = "Plane"; break;
+        case ObjectType::Torus:      typeLabel = "Torus"; break;
         }
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
 
@@ -837,6 +985,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("Position");
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Position", &obj.position.x, 0.1f)) {
+            syncLocalTransform(obj);
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -847,6 +996,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f)) {
             obj.rotation = NormalizeEulerDegrees(obj.rotation);
+            syncLocalTransform(obj);
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -856,6 +1006,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("Scale");
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Scale", &obj.scale.x, 0.05f, 0.01f, 100.0f)) {
+            syncLocalTransform(obj);
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -866,6 +1017,7 @@ void Engine::renderInspectorPanel() {
             obj.position = glm::vec3(0.0f);
             obj.rotation = glm::vec3(0.0f);
             obj.scale = glm::vec3(1.0f);
+            syncLocalTransform(obj);
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
@@ -1110,7 +1262,7 @@ void Engine::renderInspectorPanel() {
                 if (previewPlaying) {
                     audio.stopPreview();
                 } else if (!src.clipPath.empty()) {
-                    audio.playPreview(src.clipPath, src.volume);
+                    audio.playPreview(src.clipPath, src.volume, src.loop);
                 }
             }
             ImGui::SameLine();
@@ -1234,7 +1386,7 @@ void Engine::renderInspectorPanel() {
             if (ImGui::SliderFloat("Threshold", &obj.postFx.bloomThreshold, 0.0f, 3.0f, "%.2f")) {
                 changed = true;
             }
-            if (ImGui::SliderFloat("Intensity", &obj.postFx.bloomIntensity, 0.0f, 3.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Intensity##Bloom", &obj.postFx.bloomIntensity, 0.0f, 3.0f, "%.2f")) {
                 changed = true;
             }
             if (ImGui::SliderFloat("Spread", &obj.postFx.bloomRadius, 0.5f, 3.5f, "%.2f")) {
@@ -1279,7 +1431,7 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
             ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
-            if (ImGui::SliderFloat("Intensity", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
+            if (ImGui::SliderFloat("Intensity##Vignette", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
                 changed = true;
             }
             if (ImGui::SliderFloat("Smoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
@@ -1912,6 +2064,7 @@ void Engine::renderInspectorPanel() {
             obj.rigidbody.useGravity = true;
             obj.rigidbody.isKinematic = false;
             obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
+            syncLocalTransform(obj);
             componentChanged = true;
         }
         if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
