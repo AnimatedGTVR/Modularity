@@ -17,7 +17,7 @@ mkdir build
 cd build
 
 echo [INFO] Configuring with CMake (Visual Studio 18 2026)...
-cmake -G "Visual Studio 18 2026" -A x64 ..
+cmake -A x64 ..
 
 if errorlevel 1 (
     echo.
