@@ -110,6 +110,10 @@ list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 
 add_library(core STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "Disable Assimp warnings as errors" FORCE)
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "Disable Assimp tests" FORCE)
+set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "Disable Assimp samples" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "Disable Assimp tools" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "Disable Assimp install targets" FORCE)
 add_subdirectory(src/ThirdParty/assimp EXCLUDE_FROM_ALL)
 target_link_libraries(core PUBLIC assimp)
 target_include_directories(core PUBLIC 
