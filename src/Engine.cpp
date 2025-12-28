@@ -1419,7 +1419,6 @@ void Engine::setParent(int childId, int parentId) {
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
-    logToConsole("Reparented object");
 }
 
 void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType type) {

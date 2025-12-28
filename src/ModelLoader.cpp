@@ -173,6 +173,13 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
         loaded.boundsMin = raw.boundsMin;
         loaded.boundsMax = raw.boundsMax;
         loaded.triangleVertices = std::move(triPositions);
+        loaded.positions = raw.positions;
+        loaded.triangleIndices.reserve(raw.faces.size() * 3);
+        for (const auto& face : raw.faces) {
+            loaded.triangleIndices.push_back(face.x);
+            loaded.triangleIndices.push_back(face.y);
+            loaded.triangleIndices.push_back(face.z);
+        }
 
         loadedMeshes.push_back(std::move(loaded));
 
@@ -209,6 +216,8 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     glm::vec3 boundsMin(FLT_MAX);
     glm::vec3 boundsMax(-FLT_MAX);
     std::vector<glm::vec3> triPositions;
+    std::vector<glm::vec3> positions;
+    std::vector<uint32_t> indices;
 
     // Process all meshes in the scene
     std::vector<float> vertices;
@@ -218,7 +227,7 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     result.hasTangents = false;
     
     // Process the root node recursively
-    processNode(scene->mRootNode, scene, aiMatrix4x4(), vertices, triPositions, boundsMin, boundsMax);
+    processNode(scene->mRootNode, scene, aiMatrix4x4(), vertices, triPositions, positions, indices, boundsMin, boundsMax);
     
     // Check mesh properties
     for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
@@ -248,6 +257,8 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     loaded.boundsMin = boundsMin;
     loaded.boundsMax = boundsMax;
     loaded.triangleVertices = std::move(triPositions);
+    loaded.positions = std::move(positions);
+    loaded.triangleIndices = std::move(indices);
 
     loadedMeshes.push_back(std::move(loaded));
     
@@ -521,6 +532,14 @@ bool ModelLoader::updateRawMesh(int meshIndex, const RawMeshAsset& asset, std::s
     loaded.boundsMin = asset.boundsMin;
     loaded.boundsMax = asset.boundsMax;
     loaded.triangleVertices = std::move(triPositions);
+    loaded.positions = asset.positions;
+    loaded.triangleIndices.clear();
+    loaded.triangleIndices.reserve(asset.faces.size() * 3);
+    for (const auto& face : asset.faces) {
+        loaded.triangleIndices.push_back(face.x);
+        loaded.triangleIndices.push_back(face.y);
+        loaded.triangleIndices.push_back(face.z);
+    }
 
     return true;
 }
@@ -589,27 +608,54 @@ static void collectRawMeshData(aiNode* node, const aiScene* scene, const aiMatri
     }
 }
 
-void ModelLoader::processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, std::vector<float>& vertices, std::vector<glm::vec3>& triPositions, glm::vec3& boundsMin, glm::vec3& boundsMax) {
+void ModelLoader::processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform,
+                              std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
+                              std::vector<glm::vec3>& positions, std::vector<uint32_t>& indices,
+                              glm::vec3& boundsMin, glm::vec3& boundsMax) {
     aiMatrix4x4 currentTransform = parentTransform * node->mTransformation;
     // Process all meshes in this node
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        processMesh(mesh, currentTransform, vertices, triPositions, boundsMin, boundsMax);
+        processMesh(mesh, currentTransform, vertices, triPositions, positions, indices, boundsMin, boundsMax);
     }
     
     // Process children nodes
     for (unsigned int i = 0; i < node->mNumChildren; i++) {
-        processNode(node->mChildren[i], scene, currentTransform, vertices, triPositions, boundsMin, boundsMax);
+        processNode(node->mChildren[i], scene, currentTransform, vertices, triPositions, positions, indices, boundsMin, boundsMax);
     }
 }
 
-void ModelLoader::processMesh(aiMesh* mesh, const aiMatrix4x4& transform, std::vector<float>& vertices, std::vector<glm::vec3>& triPositions, glm::vec3& boundsMin, glm::vec3& boundsMax) {
+void ModelLoader::processMesh(aiMesh* mesh, const aiMatrix4x4& transform,
+                              std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
+                              std::vector<glm::vec3>& positions, std::vector<uint32_t>& indices,
+                              glm::vec3& boundsMin, glm::vec3& boundsMax) {
     glm::mat4 gTransform = aiToGlm(transform);
     glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(gTransform)));
+
+    size_t baseIndex = positions.size();
+    positions.reserve(baseIndex + mesh->mNumVertices);
+    for (unsigned int v = 0; v < mesh->mNumVertices; v++) {
+        glm::vec3 pos(mesh->mVertices[v].x, mesh->mVertices[v].y, mesh->mVertices[v].z);
+        glm::vec4 transformed = gTransform * glm::vec4(pos, 1.0f);
+        glm::vec3 finalPos = glm::vec3(transformed) / (transformed.w == 0.0f ? 1.0f : transformed.w);
+        positions.push_back(finalPos);
+
+        boundsMin.x = std::min(boundsMin.x, finalPos.x);
+        boundsMin.y = std::min(boundsMin.y, finalPos.y);
+        boundsMin.z = std::min(boundsMin.z, finalPos.z);
+        boundsMax.x = std::max(boundsMax.x, finalPos.x);
+        boundsMax.y = std::max(boundsMax.y, finalPos.y);
+        boundsMax.z = std::max(boundsMax.z, finalPos.z);
+    }
 
     // Process each face
     for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
         aiFace face = mesh->mFaces[i];
+        if (face.mNumIndices == 3) {
+            indices.push_back(static_cast<uint32_t>(baseIndex + face.mIndices[0]));
+            indices.push_back(static_cast<uint32_t>(baseIndex + face.mIndices[1]));
+            indices.push_back(static_cast<uint32_t>(baseIndex + face.mIndices[2]));
+        }
         
         // Process each vertex of the face
         for (unsigned int j = 0; j < face.mNumIndices; j++) {
@@ -627,13 +673,6 @@ void ModelLoader::processMesh(aiMesh* mesh, const aiMatrix4x4& transform, std::v
 
             triPositions.push_back(finalPos);
 
-            boundsMin.x = std::min(boundsMin.x, finalPos.x);
-            boundsMin.y = std::min(boundsMin.y, finalPos.y);
-            boundsMin.z = std::min(boundsMin.z, finalPos.z);
-            boundsMax.x = std::max(boundsMax.x, finalPos.x);
-            boundsMax.y = std::max(boundsMax.y, finalPos.y);
-            boundsMax.z = std::max(boundsMax.z, finalPos.z);
-            
             // Normal
             if (mesh->mNormals) {
                 glm::vec3 n(mesh->mNormals[index].x,

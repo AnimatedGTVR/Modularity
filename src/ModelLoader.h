@@ -89,8 +89,14 @@ private:
     ModelLoader& operator=(const ModelLoader&) = delete;
     
     // Process Assimp scene
-    void processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, std::vector<float>& vertices, std::vector<glm::vec3>& triPositions, glm::vec3& boundsMin, glm::vec3& boundsMax);
-    void processMesh(aiMesh* mesh, const aiMatrix4x4& transform, std::vector<float>& vertices, std::vector<glm::vec3>& triPositions, glm::vec3& boundsMin, glm::vec3& boundsMax);
+    void processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform,
+                     std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
+                     std::vector<glm::vec3>& positions, std::vector<uint32_t>& indices,
+                     glm::vec3& boundsMin, glm::vec3& boundsMax);
+    void processMesh(aiMesh* mesh, const aiMatrix4x4& transform,
+                     std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
+                     std::vector<glm::vec3>& positions, std::vector<uint32_t>& indices,
+                     glm::vec3& boundsMin, glm::vec3& boundsMax);
     
     // Storage for loaded meshes (reusing OBJLoader::LoadedMesh structure)
     std::vector<OBJLoader::LoadedMesh> loadedMeshes;

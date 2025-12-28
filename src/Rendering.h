@@ -6,6 +6,7 @@
 #include "../include/Textures/Texture.h"
 #include "../include/Skybox/Skybox.h"
 #include <unordered_map>
+#include <cstdint>
 
 // Cube vertex data (position + normal + texcoord)
 extern float vertices[];
@@ -41,6 +42,8 @@ public:
         glm::vec3 boundsMin = glm::vec3(FLT_MAX);
         glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
         std::vector<glm::vec3> triangleVertices; // positions duplicated per-triangle for picking
+        std::vector<glm::vec3> positions; // unique vertex positions for physics
+        std::vector<uint32_t> triangleIndices; // triangle indices into positions
     };
     
 private:

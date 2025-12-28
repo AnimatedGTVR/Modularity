@@ -363,6 +363,13 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
     glm::vec3 boundsMin(FLT_MAX);
     glm::vec3 boundsMax(-FLT_MAX);
     std::vector<glm::vec3> triPositions;
+    std::vector<glm::vec3> positions;
+    std::vector<uint32_t> triangleIndices;
+
+    positions.reserve(attrib.vertices.size() / 3);
+    for (size_t i = 0; i + 2 < attrib.vertices.size(); i += 3) {
+        positions.emplace_back(attrib.vertices[i], attrib.vertices[i + 1], attrib.vertices[i + 2]);
+    }
 
     for (const auto& shape : shapes) {
         size_t indexOffset = 0;
@@ -376,6 +383,8 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
                 bool hasNormal = false;
             };
             std::vector<TempVertex> faceVerts;
+            std::vector<int> facePosIndices;
+            facePosIndices.reserve(static_cast<size_t>(fv));
 
             for (int v = 0; v < fv; v++) {
                 tinyobj::index_t idx = shape.mesh.indices[indexOffset + v];
@@ -407,6 +416,7 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
                 }
 
                 faceVerts.push_back(tv);
+                facePosIndices.push_back(idx.vertex_index);
             }
 
             if (!hasNormalsInFile && fv >= 3) {
@@ -423,6 +433,15 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
 
             for (int v = 1; v < fv - 1; v++) {
                 const TempVertex* tri[3] = { &faceVerts[0], &faceVerts[v], &faceVerts[v+1] };
+
+                int idx0 = facePosIndices[0];
+                int idx1 = facePosIndices[v];
+                int idx2 = facePosIndices[v + 1];
+                if (idx0 >= 0 && idx1 >= 0 && idx2 >= 0) {
+                    triangleIndices.push_back(static_cast<uint32_t>(idx0));
+                    triangleIndices.push_back(static_cast<uint32_t>(idx1));
+                    triangleIndices.push_back(static_cast<uint32_t>(idx2));
+                }
 
                 for (int i = 0; i < 3; i++) {
                     triPositions.push_back(tri[i]->pos);
@@ -457,6 +476,8 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
     loaded.boundsMin = boundsMin;
     loaded.boundsMax = boundsMax;
     loaded.triangleVertices = std::move(triPositions);
+    loaded.positions = std::move(positions);
+    loaded.triangleIndices = std::move(triangleIndices);
 
     loadedMeshes.push_back(std::move(loaded));
     return static_cast<int>(loadedMeshes.size() - 1);

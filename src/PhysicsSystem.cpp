@@ -5,6 +5,7 @@
 #include "ModelLoader.h"
 #include <numeric>
 #include <algorithm>
+#include <new>
 #include "extensions/PxRigidBodyExt.h"
 
 using namespace physx;
@@ -72,6 +73,7 @@ bool PhysicsSystem::init() {
     mCookParams = PxCookingParams(scale);
     mCookParams.meshPreprocessParams |= PxMeshPreprocessingFlag::eDISABLE_ACTIVE_EDGES_PRECOMPUTE;
     mCookParams.meshPreprocessParams |= PxMeshPreprocessingFlag::eWELD_VERTICES;
+    mCookParams.meshWeldTolerance = std::max(0.0001f, 0.001f * scale.length);
 
     PxSceneDesc sceneDesc(mPhysics->getTolerancesScale());
     sceneDesc.gravity = PxVec3(0.0f, -9.81f, 0.0f);
@@ -110,7 +112,21 @@ bool PhysicsSystem::gatherMeshData(const SceneObject& obj, std::vector<PxVec3>& 
     } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
         meshInfo = getModelLoader().getMeshInfo(obj.meshId);
     }
-    if (!meshInfo || meshInfo->triangleVertices.empty()) {
+    if (!meshInfo) {
+        return false;
+    }
+
+    if (!meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3) {
+        vertices.reserve(meshInfo->positions.size());
+        indices.reserve(meshInfo->triangleIndices.size());
+        for (const auto& v : meshInfo->positions) {
+            vertices.emplace_back(v.x, v.y, v.z);
+        }
+        indices.insert(indices.end(), meshInfo->triangleIndices.begin(), meshInfo->triangleIndices.end());
+        return !vertices.empty() && (indices.size() % 3 == 0);
+    }
+
+    if (meshInfo->triangleVertices.empty()) {
         return false;
     }
 
@@ -130,38 +146,46 @@ PxTriangleMesh* PhysicsSystem::cookTriangleMesh(const std::vector<PxVec3>& verti
                                                 const std::vector<uint32_t>& indices) const {
     if (vertices.empty() || indices.size() < 3) return nullptr;
 
-    PxTriangleMeshDesc desc;
-    desc.points.count = static_cast<uint32_t>(vertices.size());
-    desc.points.stride = sizeof(PxVec3);
-    desc.points.data = vertices.data();
-    desc.triangles.count = static_cast<uint32_t>(indices.size() / 3);
-    desc.triangles.stride = 3 * sizeof(uint32_t);
-    desc.triangles.data = indices.data();
+    try {
+        PxTriangleMeshDesc desc;
+        desc.points.count = static_cast<uint32_t>(vertices.size());
+        desc.points.stride = sizeof(PxVec3);
+        desc.points.data = vertices.data();
+        desc.triangles.count = static_cast<uint32_t>(indices.size() / 3);
+        desc.triangles.stride = 3 * sizeof(uint32_t);
+        desc.triangles.data = indices.data();
 
-    PxDefaultMemoryOutputStream buf;
-    if (!PxCookTriangleMesh(mCookParams, desc, buf)) {
+        PxDefaultMemoryOutputStream buf;
+        if (!PxCookTriangleMesh(mCookParams, desc, buf)) {
+            return nullptr;
+        }
+        PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
+        return mPhysics->createTriangleMesh(input);
+    } catch (const std::bad_alloc&) {
         return nullptr;
     }
-    PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
-    return mPhysics->createTriangleMesh(input);
 }
 
 PxConvexMesh* PhysicsSystem::cookConvexMesh(const std::vector<PxVec3>& vertices) const {
     if (vertices.size() < 4) return nullptr;
 
-    PxConvexMeshDesc desc;
-    desc.points.count = static_cast<uint32_t>(vertices.size());
-    desc.points.stride = sizeof(PxVec3);
-    desc.points.data = vertices.data();
-    desc.flags = PxConvexFlag::eCOMPUTE_CONVEX | PxConvexFlag::eCHECK_ZERO_AREA_TRIANGLES;
-    desc.vertexLimit = 255;
+    try {
+        PxConvexMeshDesc desc;
+        desc.points.count = static_cast<uint32_t>(vertices.size());
+        desc.points.stride = sizeof(PxVec3);
+        desc.points.data = vertices.data();
+        desc.flags = PxConvexFlag::eCOMPUTE_CONVEX | PxConvexFlag::eCHECK_ZERO_AREA_TRIANGLES;
+        desc.vertexLimit = 255;
 
-    PxDefaultMemoryOutputStream buf;
-    if (!PxCookConvexMesh(mCookParams, desc, buf)) {
+        PxDefaultMemoryOutputStream buf;
+        if (!PxCookConvexMesh(mCookParams, desc, buf)) {
+            return nullptr;
+        }
+        PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
+        return mPhysics->createConvexMesh(input);
+    } catch (const std::bad_alloc&) {
         return nullptr;
     }
-    PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
-    return mPhysics->createConvexMesh(input);
 }
 
 bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const {
@@ -255,36 +279,98 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
         }
         minDim = std::min(radius * 2.0f, halfHeight * 2.0f);
     } else {
-        std::vector<PxVec3> verts;
-        std::vector<uint32_t> indices;
-        if (!gatherMeshData(obj, verts, indices)) {
+        const OBJLoader::LoadedMesh* meshInfo = nullptr;
+        if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+            meshInfo = g_objLoader.getMeshInfo(obj.meshId);
+        } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+            meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+        }
+        if (!meshInfo) {
+            return false;
+        }
+        const bool hasIndexed = !meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3;
+        const bool hasTriVerts = !meshInfo->triangleVertices.empty();
+        if (!hasIndexed && !hasTriVerts) {
             return false;
         }
 
-        bool useConvex = obj.collider.convex || obj.collider.type == ColliderType::ConvexMesh || isDynamic;
-        glm::vec3 boundsMin(FLT_MAX);
-        glm::vec3 boundsMax(-FLT_MAX);
-        for (auto& v : verts) {
-            boundsMin.x = std::min(boundsMin.x, v.x * obj.scale.x);
-            boundsMin.y = std::min(boundsMin.y, v.y * obj.scale.y);
-            boundsMin.z = std::min(boundsMin.z, v.z * obj.scale.z);
-            boundsMax.x = std::max(boundsMax.x, v.x * obj.scale.x);
-            boundsMax.y = std::max(boundsMax.y, v.y * obj.scale.y);
-            boundsMax.z = std::max(boundsMax.z, v.z * obj.scale.z);
-        }
-        minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
-        if (useConvex) {
-            PxConvexMesh* convex = cookConvexMesh(verts);
-            if (!convex) return false;
-            PxConvexMeshGeometry geom(convex, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
-            shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
-            convex->release();
+        auto makeBoundsShape = [&](const glm::vec3& boundsMin, const glm::vec3& boundsMax) {
+            glm::vec3 halfExtents = glm::max((boundsMax - boundsMin) * 0.5f, glm::vec3(0.01f));
+            glm::vec3 center = (boundsMax + boundsMin) * 0.5f;
+            PxShape* box = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            if (box) {
+                box->setLocalPose(PxTransform(ToPxVec3(center), PxQuat(PxIdentity)));
+            }
+            return box;
+        };
+
+        constexpr size_t kMaxCookVertices = 1000000;
+        size_t cookVertices = hasIndexed ? meshInfo->positions.size() : meshInfo->triangleVertices.size();
+        if (cookVertices > kMaxCookVertices) {
+            glm::vec3 boundsMin(FLT_MAX);
+            glm::vec3 boundsMax(-FLT_MAX);
+            const auto& sourceVerts = hasIndexed ? meshInfo->positions : meshInfo->triangleVertices;
+            for (const auto& v : sourceVerts) {
+                glm::vec3 scaled = v * obj.scale;
+                boundsMin = glm::min(boundsMin, scaled);
+                boundsMax = glm::max(boundsMax, scaled);
+            }
+            minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
+            shape = makeBoundsShape(boundsMin, boundsMax);
         } else {
-            PxTriangleMesh* tri = cookTriangleMesh(verts, indices);
-            if (!tri) return false;
-            PxTriangleMeshGeometry geom(tri, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
-            shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
-            tri->release();
+            std::vector<PxVec3> verts;
+            std::vector<uint32_t> indices;
+            bool hasMeshData = false;
+            try {
+                hasMeshData = gatherMeshData(obj, verts, indices);
+            } catch (const std::bad_alloc&) {
+                hasMeshData = false;
+            }
+
+            if (!hasMeshData) {
+                glm::vec3 boundsMin(FLT_MAX);
+                glm::vec3 boundsMax(-FLT_MAX);
+                const auto& sourceVerts = hasIndexed ? meshInfo->positions : meshInfo->triangleVertices;
+                for (const auto& v : sourceVerts) {
+                    glm::vec3 scaled = v * obj.scale;
+                    boundsMin = glm::min(boundsMin, scaled);
+                    boundsMax = glm::max(boundsMax, scaled);
+                }
+                minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
+                shape = makeBoundsShape(boundsMin, boundsMax);
+            } else {
+                bool useConvex = obj.collider.convex || obj.collider.type == ColliderType::ConvexMesh || isDynamic;
+                glm::vec3 boundsMin(FLT_MAX);
+                glm::vec3 boundsMax(-FLT_MAX);
+                for (auto& v : verts) {
+                    boundsMin.x = std::min(boundsMin.x, v.x * obj.scale.x);
+                    boundsMin.y = std::min(boundsMin.y, v.y * obj.scale.y);
+                    boundsMin.z = std::min(boundsMin.z, v.z * obj.scale.z);
+                    boundsMax.x = std::max(boundsMax.x, v.x * obj.scale.x);
+                    boundsMax.y = std::max(boundsMax.y, v.y * obj.scale.y);
+                    boundsMax.z = std::max(boundsMax.z, v.z * obj.scale.z);
+                }
+                minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
+                if (useConvex) {
+                    PxConvexMesh* convex = cookConvexMesh(verts);
+                    if (convex) {
+                        PxConvexMeshGeometry geom(convex, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
+                        shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
+                        convex->release();
+                    }
+                } else {
+                    PxTriangleMesh* tri = cookTriangleMesh(verts, indices);
+                    if (tri) {
+                        PxTriangleMeshGeometry geom(tri, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
+                        shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
+                        tri->release();
+                    }
+                }
+
+                if (!shape) {
+                    shape = makeBoundsShape(boundsMin, boundsMax);
+                }
+            }
         }
     }
 
@@ -384,6 +470,51 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
 
     clearActors();
     createGroundPlane();
+
+    struct MeshCookInfo {
+        std::string name;
+        size_t vertices = 0;
+        size_t triangles = 0;
+        size_t duplicateVertices = 0;
+    };
+    std::vector<MeshCookInfo> cookInfos;
+    cookInfos.reserve(objects.size());
+
+    for (const auto& obj : objects) {
+        if (!obj.enabled || !obj.hasCollider || !obj.collider.enabled) continue;
+        if (obj.collider.type == ColliderType::Box || obj.collider.type == ColliderType::Capsule) continue;
+        const OBJLoader::LoadedMesh* meshInfo = nullptr;
+        if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+            meshInfo = g_objLoader.getMeshInfo(obj.meshId);
+        } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+            meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+        }
+        if (!meshInfo) continue;
+        const bool hasIndexed = !meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3;
+        const bool hasTriVerts = !meshInfo->triangleVertices.empty();
+        if (!hasIndexed && !hasTriVerts) continue;
+        MeshCookInfo info;
+        info.name = obj.name;
+        info.vertices = hasIndexed ? meshInfo->positions.size() : meshInfo->triangleVertices.size();
+        info.triangles = hasIndexed ? (meshInfo->triangleIndices.size() / 3) : (meshInfo->triangleVertices.size() / 3);
+        info.duplicateVertices = meshInfo->triangleVertices.size();
+        cookInfos.push_back(info);
+    }
+
+    if (!cookInfos.empty()) {
+        std::sort(cookInfos.begin(), cookInfos.end(),
+                  [](const MeshCookInfo& a, const MeshCookInfo& b) { return a.vertices > b.vertices; });
+        size_t reportCount = std::min<size_t>(cookInfos.size(), 5);
+        std::cerr << "[Physics] Mesh collider stats (top " << reportCount << " by vertex count):\n";
+        for (size_t i = 0; i < reportCount; ++i) {
+            const auto& info = cookInfos[i];
+            std::cerr << "  " << info.name
+                      << " verts=" << info.vertices
+                      << " tris=" << info.triangles
+                      << " dupVerts=" << info.duplicateVertices
+                      << "\n";
+        }
+    }
 
     for (const auto& obj : objects) {
         if (!obj.enabled) continue;
