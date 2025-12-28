@@ -84,6 +84,7 @@ private:
     Shader* blurShader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
+    unsigned int debugWhiteTexture = 0;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
     std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheLinear;
     std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheNearest;
@@ -145,8 +146,9 @@ public:
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
-    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE);
+    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false);
     unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false);
+    void renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void endRender();
 
     Skybox* getSkybox() { return skybox; }

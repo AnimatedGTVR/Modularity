@@ -537,6 +537,7 @@ Renderer::~Renderer() {
     if (rbo) glDeleteRenderbuffers(1, &rbo);
     if (quadVBO) glDeleteBuffers(1, &quadVBO);
     if (quadVAO) glDeleteVertexArrays(1, &quadVAO);
+    if (debugWhiteTexture) glDeleteTextures(1, &debugWhiteTexture);
 }
 
 Texture* Renderer::getTexture(const std::string& path) {
@@ -619,6 +620,17 @@ void Renderer::initialize() {
 
     texture1 = new Texture("Resources/Textures/container.jpg");
     texture2 = new Texture("Resources/Textures/awesomeface.png");
+    if (debugWhiteTexture == 0) {
+        unsigned char white[4] = { 255, 255, 255, 255 };
+        glGenTextures(1, &debugWhiteTexture);
+        glBindTexture(GL_TEXTURE_2D, debugWhiteTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
     cubeMesh = new Mesh(vertices, sizeof(vertices));
 
@@ -1449,9 +1461,15 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     return target.texture;
 }
 
-void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int /*selectedId*/, float fovDeg, float nearPlane, float farPlane) {
+void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int /*selectedId*/, float fovDeg, float nearPlane, float farPlane, bool drawColliders) {
     updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
+    if (drawColliders) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glViewport(0, 0, currentWidth, currentHeight);
+        renderCollisionOverlay(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
     unsigned int result = applyPostProcessing(sceneObjects, viewportTexture, currentWidth, currentHeight, true);
     displayTexture = result ? result : viewportTexture;
 }
@@ -1472,6 +1490,119 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     }
     unsigned int processed = applyPostProcessing(sceneObjects, previewTarget.texture, width, height, false);
     return processed ? processed : previewTarget.texture;
+}
+
+void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
+    if (!defaultShader || width <= 0 || height <= 0) return;
+
+    GLint prevPoly[2] = { GL_FILL, GL_FILL };
+    glGetIntegerv(GL_POLYGON_MODE, prevPoly);
+    GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
+    GLboolean polyOffsetLine = glIsEnabled(GL_POLYGON_OFFSET_LINE);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_POLYGON_OFFSET_LINE);
+    glPolygonOffset(-1.0f, -1.0f);
+
+    Shader* active = defaultShader;
+    active->use();
+    active->setMat4("view", camera.getViewMatrix());
+    active->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane));
+    active->setVec3("viewPos", camera.position);
+    active->setBool("unlit", true);
+    active->setBool("hasOverlay", false);
+    active->setBool("hasNormalMap", false);
+    active->setInt("lightCount", 0);
+    active->setFloat("mixAmount", 0.0f);
+    active->setVec3("materialColor", glm::vec3(0.2f, 1.0f, 0.2f));
+    active->setFloat("ambientStrength", 1.0f);
+    active->setFloat("specularStrength", 0.0f);
+    active->setFloat("shininess", 1.0f);
+    active->setInt("texture1", 0);
+    active->setInt("overlayTex", 1);
+    active->setInt("normalMap", 2);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, debugWhiteTexture ? debugWhiteTexture : (texture1 ? texture1->GetID() : 0));
+
+    for (const auto& obj : sceneObjects) {
+        if (!obj.enabled) continue;
+        if (!(obj.hasCollider && obj.collider.enabled) && !(obj.hasRigidbody && obj.rigidbody.enabled)) continue;
+
+        Mesh* meshToDraw = nullptr;
+        glm::vec3 scale = obj.scale;
+        glm::vec3 position = obj.position;
+        glm::vec3 rotation = obj.rotation;
+
+        if (obj.hasCollider && obj.collider.enabled) {
+            switch (obj.collider.type) {
+                case ColliderType::Box:
+                    meshToDraw = cubeMesh;
+                    scale = obj.collider.boxSize;
+                    break;
+                case ColliderType::Capsule:
+                    meshToDraw = capsuleMesh;
+                    scale = obj.collider.boxSize;
+                    break;
+                case ColliderType::Mesh:
+                case ColliderType::ConvexMesh:
+                    if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+                        meshToDraw = g_objLoader.getMesh(obj.meshId);
+                    } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+                        meshToDraw = getModelLoader().getMesh(obj.meshId);
+                    } else {
+                        meshToDraw = nullptr;
+                    }
+                    scale = obj.scale;
+                    break;
+            }
+        } else {
+            switch (obj.type) {
+                case ObjectType::Cube:
+                    meshToDraw = cubeMesh;
+                    break;
+                case ObjectType::Sphere:
+                    meshToDraw = sphereMesh;
+                    break;
+                case ObjectType::Capsule:
+                    meshToDraw = capsuleMesh;
+                    break;
+                case ObjectType::Plane:
+                    meshToDraw = planeMesh;
+                    break;
+                case ObjectType::Torus:
+                    meshToDraw = sphereMesh;
+                    break;
+                case ObjectType::OBJMesh:
+                    if (obj.meshId >= 0) meshToDraw = g_objLoader.getMesh(obj.meshId);
+                    break;
+                case ObjectType::Model:
+                    if (obj.meshId >= 0) meshToDraw = getModelLoader().getMesh(obj.meshId);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (!meshToDraw) continue;
+
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, position);
+        model = glm::rotate(model, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, scale);
+        active->setMat4("model", model);
+
+        meshToDraw->draw();
+    }
+
+    if (!polyOffsetLine) glDisable(GL_POLYGON_OFFSET_LINE);
+    if (cullFace) glEnable(GL_CULL_FACE);
+    if (depthTest) glEnable(GL_DEPTH_TEST);
+    glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
 }
 
 void Renderer::endRender() {

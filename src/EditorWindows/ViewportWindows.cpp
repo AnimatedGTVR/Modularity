@@ -614,7 +614,7 @@ void Engine::renderViewport() {
         glm::mat4 view = camera.getViewMatrix();
 
         renderer.beginRender(view, proj, camera.position);
-        renderer.renderScene(camera, sceneObjects, selectedObjectId);
+        renderer.renderScene(camera, sceneObjects, selectedObjectId, FOV, NEAR_PLANE, FAR_PLANE, collisionWireframe);
         unsigned int tex = renderer.getViewportTexture();
 
         ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));

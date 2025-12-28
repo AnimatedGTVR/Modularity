@@ -46,12 +46,34 @@ void Shader::compileShaders(const char* vertexSource, const char* fragmentSource
     glShaderSource(fragment, 1, &fragmentSource, NULL);
     glCompileShader(fragment);
     checkCompileErrors(fragment, "FRAGMENT");
+
+    int success = 0;
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        ID = 0;
+        return;
+    }
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        ID = 0;
+        return;
+    }
     
     ID = glCreateProgram();
     glAttachShader(ID, vertex);
     glAttachShader(ID, fragment);
     glLinkProgram(ID);
     checkCompileErrors(ID, "PROGRAM");
+
+    glGetProgramiv(ID, GL_LINK_STATUS, &success);
+    if (!success) {
+        glDeleteProgram(ID);
+        ID = 0;
+    }
     
     glDeleteShader(vertex);
     glDeleteShader(fragment);

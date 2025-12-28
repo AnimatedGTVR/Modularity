@@ -379,19 +379,9 @@ void Engine::run() {
             if (aspect <= 0.0f) aspect = 1.0f;
             glm::mat4 proj = glm::perspective(glm::radians(FOV), aspect, NEAR_PLANE, FAR_PLANE);
 
-#ifdef GL_POLYGON_MODE
-            GLint prevPoly[2] = { GL_FILL, GL_FILL };
-            glGetIntegerv(GL_POLYGON_MODE, prevPoly);
-            glPolygonMode(GL_FRONT_AND_BACK, collisionWireframe ? GL_LINE : GL_FILL);
-#endif
-
             renderer.beginRender(view, proj, camera.position);
-            renderer.renderScene(camera, sceneObjects, selectedObjectId);
+            renderer.renderScene(camera, sceneObjects, selectedObjectId, FOV, NEAR_PLANE, FAR_PLANE, collisionWireframe);
             renderer.endRender();
-
-#ifdef GL_POLYGON_MODE
-            glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
-#endif
         }
 
         if (firstFrame) {
