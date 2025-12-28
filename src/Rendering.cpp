@@ -1097,71 +1097,86 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         return f;
     };
 
+    constexpr size_t kMaxLights = 10;
     std::vector<LightUniform> lights;
-    lights.reserve(10);
+    lights.reserve(kMaxLights);
+
+    struct LightCandidate {
+        LightUniform light;
+        float distSq = 0.0f;
+        int id = 0;
+    };
+    std::vector<LightCandidate> candidates;
+    candidates.reserve(sceneObjects.size());
 
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled) continue;
-        if (obj.light.enabled && obj.type == ObjectType::DirectionalLight) {
+        if (!obj.enabled || !obj.light.enabled) continue;
+        if (obj.type == ObjectType::DirectionalLight) {
             LightUniform l;
             l.type = 0;
             l.dir = forwardFromRotation(obj);
             l.color = obj.light.color;
             l.intensity = obj.light.intensity;
             lights.push_back(l);
-            if (lights.size() >= 10) break;
+            if (lights.size() >= kMaxLights) break;
+        } else if (obj.type == ObjectType::SpotLight) {
+            LightUniform l;
+            l.type = 2;
+            l.pos = obj.position;
+            l.dir = forwardFromRotation(obj);
+            l.color = obj.light.color;
+            l.intensity = obj.light.intensity;
+            l.range = obj.light.range;
+            l.inner = glm::cos(glm::radians(obj.light.innerAngle));
+            l.outer = glm::cos(glm::radians(obj.light.outerAngle));
+            LightCandidate c;
+            c.light = l;
+            glm::vec3 delta = obj.position - camera.position;
+            c.distSq = glm::dot(delta, delta);
+            c.id = obj.id;
+            candidates.push_back(c);
+        } else if (obj.type == ObjectType::PointLight) {
+            LightUniform l;
+            l.type = 1;
+            l.pos = obj.position;
+            l.color = obj.light.color;
+            l.intensity = obj.light.intensity;
+            l.range = obj.light.range;
+            LightCandidate c;
+            c.light = l;
+            glm::vec3 delta = obj.position - camera.position;
+            c.distSq = glm::dot(delta, delta);
+            c.id = obj.id;
+            candidates.push_back(c);
+        } else if (obj.type == ObjectType::AreaLight) {
+            LightUniform l;
+            l.type = 3; // area
+            l.pos = obj.position;
+            l.dir = forwardFromRotation(obj); // plane normal
+            l.color = obj.light.color;
+            l.intensity = obj.light.intensity;
+            float sizeHint = glm::max(obj.light.size.x, obj.light.size.y);
+            l.range = (obj.light.range > 0.0f) ? obj.light.range : glm::max(sizeHint * 2.0f, 1.0f);
+            l.areaSize = obj.light.size;
+            l.areaFade = glm::clamp(obj.light.edgeFade, 0.0f, 1.0f);
+            LightCandidate c;
+            c.light = l;
+            glm::vec3 delta = obj.position - camera.position;
+            c.distSq = glm::dot(delta, delta);
+            c.id = obj.id;
+            candidates.push_back(c);
         }
     }
-    if (lights.size() < 10) {
-        for (const auto& obj : sceneObjects) {
-            if (!obj.enabled) continue;
-            if (obj.light.enabled && obj.type == ObjectType::SpotLight) {
-                LightUniform l;
-                l.type = 2;
-                l.pos = obj.position;
-                l.dir = forwardFromRotation(obj);
-                l.color = obj.light.color;
-                l.intensity = obj.light.intensity;
-                l.range = obj.light.range;
-                l.inner = glm::cos(glm::radians(obj.light.innerAngle));
-                l.outer = glm::cos(glm::radians(obj.light.outerAngle));
-                lights.push_back(l);
-                if (lights.size() >= 10) break;
-            }
-        }
-    }
-    if (lights.size() < 10) {
-        for (const auto& obj : sceneObjects) {
-            if (!obj.enabled) continue;
-            if (obj.light.enabled && obj.type == ObjectType::PointLight) {
-                LightUniform l;
-                l.type = 1;
-                l.pos = obj.position;
-                l.color = obj.light.color;
-                l.intensity = obj.light.intensity;
-                l.range = obj.light.range;
-                lights.push_back(l);
-                if (lights.size() >= 10) break;
-            }
-        }
-    }
-    if (lights.size() < 10) {
-        for (const auto& obj : sceneObjects) {
-            if (!obj.enabled) continue;
-            if (obj.light.enabled && obj.type == ObjectType::AreaLight) {
-                LightUniform l;
-                l.type = 3; // area
-                l.pos = obj.position;
-                l.dir = forwardFromRotation(obj); // plane normal
-                l.color = obj.light.color;
-                l.intensity = obj.light.intensity;
-                float sizeHint = glm::max(obj.light.size.x, obj.light.size.y);
-                l.range = (obj.light.range > 0.0f) ? obj.light.range : glm::max(sizeHint * 2.0f, 1.0f);
-                l.areaSize = obj.light.size;
-                l.areaFade = glm::clamp(obj.light.edgeFade, 0.0f, 1.0f);
-                lights.push_back(l);
-                if (lights.size() >= 10) break;
-            }
+
+    if (lights.size() < kMaxLights && !candidates.empty()) {
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const LightCandidate& a, const LightCandidate& b) {
+                      if (a.distSq != b.distSq) return a.distSq < b.distSq;
+                      return a.id < b.id;
+                  });
+        for (const auto& c : candidates) {
+            if (lights.size() >= kMaxLights) break;
+            lights.push_back(c.light);
         }
     }
 

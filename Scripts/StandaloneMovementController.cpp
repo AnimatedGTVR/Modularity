@@ -27,6 +27,18 @@ ControllerState& getState(int id) {
     return g_states[id];
 }
 
+void bindSettings(ScriptContext& ctx) {
+    ctx.AutoSetting("moveTuning", moveTuning);
+    ctx.AutoSetting("lookTuning", lookTuning);
+    ctx.AutoSetting("capsuleTuning", capsuleTuning);
+    ctx.AutoSetting("gravityTuning", gravityTuning);
+    ctx.AutoSetting("enableMouseLook", enableMouseLook);
+    ctx.AutoSetting("requireMouseButton", requireMouseButton);
+    ctx.AutoSetting("enforceCollider", enforceCollider);
+    ctx.AutoSetting("enforceRigidbody", enforceRigidbody);
+    ctx.AutoSetting("showDebug", showDebug);
+}
+
 void ensureComponents(ScriptContext& ctx, float height, float radius) {
     if (!ctx.object) return;
     if (enforceCollider) {
@@ -46,15 +58,7 @@ void ensureComponents(ScriptContext& ctx, float height, float radius) {
 } // namespace
 
 extern "C" void Script_OnInspector(ScriptContext& ctx) {
-    ctx.AutoSetting("moveTuning", moveTuning);
-    ctx.AutoSetting("lookTuning", lookTuning);
-    ctx.AutoSetting("capsuleTuning", capsuleTuning);
-    ctx.AutoSetting("gravityTuning", gravityTuning);
-    ctx.AutoSetting("enableMouseLook", enableMouseLook);
-    ctx.AutoSetting("requireMouseButton", requireMouseButton);
-    ctx.AutoSetting("enforceCollider", enforceCollider);
-    ctx.AutoSetting("enforceRigidbody", enforceRigidbody);
-    ctx.AutoSetting("showDebug", showDebug);
+    bindSettings(ctx);
 
     ImGui::TextUnformatted("Standalone Movement Controller");
     ImGui::Separator();
@@ -77,6 +81,7 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
 
 void Begin(ScriptContext& ctx, float /*deltaTime*/) {
     if (!ctx.object) return;
+    bindSettings(ctx);
     ControllerState& state = getState(ctx.object->id);
     if (!state.initialized) {
         state.pitch = ctx.object->rotation.x;
