@@ -42,17 +42,8 @@ vec3 applyColorAdjust(vec3 color) {
     return color;
 }
 
-vec3 sampleCombined(vec2 uv) {
-    vec3 c = texture(sceneTex, uv).rgb;
-    if (enableBloom) {
-        vec3 glow = texture(bloomTex, uv).rgb * bloomIntensity;
-        c += glow;
-    }
-    return c;
-}
-
-vec3 sampleAdjusted(vec2 uv) {
-    return applyColorAdjust(sampleCombined(uv));
+vec3 sampleBase(vec2 uv) {
+    return applyColorAdjust(texture(sceneTex, uv).rgb);
 }
 
 float luminance(vec3 c) {
@@ -66,24 +57,24 @@ float computeVignette(vec2 uv) {
 }
 
 vec3 applyChromatic(vec2 uv) {
-    vec3 base = sampleAdjusted(uv);
+    vec3 base = sampleBase(uv);
     vec2 dir = uv - vec2(0.5);
     float dist = max(length(dir), 0.0001);
     vec2 offset = normalize(dir) * chromaticAmount * (1.0 + dist * 2.0);
-    vec3 rSample = sampleAdjusted(uv + offset);
-    vec3 bSample = sampleAdjusted(uv - offset);
+    vec3 rSample = sampleBase(uv + offset);
+    vec3 bSample = sampleBase(uv - offset);
     vec3 ca = vec3(rSample.r, base.g, bSample.b);
     return mix(base, ca, 0.85);
 }
 
 float computeAOFactor(vec2 uv) {
-    vec3 centerColor = sampleAdjusted(uv);
+    vec3 centerColor = sampleBase(uv);
     float centerLum = luminance(centerColor);
     float occlusion = 0.0;
     vec2 directions[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
     for (int i = 0; i < 4; ++i) {
         vec2 sampleUv = uv + directions[i] * aoRadius;
-        vec3 sampleColor = sampleAdjusted(sampleUv);
+        vec3 sampleColor = sampleBase(sampleUv);
         float sampleLum = luminance(sampleColor);
         occlusion += max(0.0, centerLum - sampleLum);
     }
@@ -92,7 +83,7 @@ float computeAOFactor(vec2 uv) {
 }
 
 void main() {
-    vec3 color = sampleAdjusted(TexCoord);
+    vec3 color = sampleBase(TexCoord);
 
     if (enableChromatic) {
         color = applyChromatic(TexCoord);
@@ -130,6 +121,11 @@ void main() {
         if (mixAmt > 0.0001) {
             color = mix(color, history, mixAmt);
         }
+    }
+
+    if (enableBloom) {
+        vec3 glow = texture(bloomTex, TexCoord).rgb * bloomIntensity;
+        color += glow;
     }
 
     FragColor = vec4(color, 1.0);
