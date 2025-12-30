@@ -20,6 +20,7 @@ public:
     std::string currentSceneName;
     bool isLoaded = false;
     bool hasUnsavedChanges = false;
+    bool usesNewLayout = false;
 
     Project() = default;
     Project(const std::string& projectName, const fs::path& basePath);

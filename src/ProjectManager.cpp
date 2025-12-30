@@ -6,32 +6,39 @@
 Project::Project(const std::string& projectName, const fs::path& basePath)
     : name(projectName) {
     projectPath = basePath / projectName;
-    scenesPath = projectPath / "Scenes";
     assetsPath = projectPath / "Assets";
-    scriptsPath = projectPath / "Scripts";
-    scriptsConfigPath = projectPath / "Scripts.modu";
+    scenesPath = assetsPath / "Scenes";
+    scriptsPath = assetsPath / "Scripts";
+    scriptsConfigPath = projectPath / "scripts.modu";
+    usesNewLayout = true;
 }
 
 bool Project::create() {
     try {
         fs::create_directories(projectPath);
-        fs::create_directories(scenesPath);
         fs::create_directories(assetsPath);
-        fs::create_directories(assetsPath / "Textures");
+        fs::create_directories(assetsPath / "Scenes");
+        fs::create_directories(assetsPath / "Scripts" / "Runtime");
+        fs::create_directories(assetsPath / "Scripts" / "Editor");
         fs::create_directories(assetsPath / "Models");
         fs::create_directories(assetsPath / "Shaders");
-        fs::create_directories(scriptsPath);
-        fs::create_directories(projectPath / "Cache" / "ScriptBin");
+        fs::create_directories(assetsPath / "Materials");
+        fs::create_directories(projectPath / "Library" / "CompiledScripts");
+        fs::create_directories(projectPath / "Library" / "InstalledPackages");
+        fs::create_directories(projectPath / "Library" / "ScriptTemp");
+        fs::create_directories(projectPath / "Library" / "Temp");
+        fs::create_directories(projectPath / "ProjectUserSettings" / "ProjectLayout");
+        fs::create_directories(projectPath / "ProjectUserSettings" / "ScriptSettings");
 
         saveProjectFile();
 
         // Initialize a default scripting build file
         fs::path engineRoot = fs::current_path();
         std::ofstream scriptCfg(scriptsConfigPath);
-        scriptCfg << "# Scripts.modu\n";
+        scriptCfg << "# scripts.modu\n";
         scriptCfg << "cppStandard=c++20\n";
-        scriptCfg << "scriptsDir=Scripts\n";
-        scriptCfg << "outDir=Cache/ScriptBin\n";
+        scriptCfg << "scriptsDir=Assets/Scripts\n";
+        scriptCfg << "outDir=Library/CompiledScripts\n";
         scriptCfg << "includeDir=" << (engineRoot / "src").string() << "\n";
         scriptCfg << "includeDir=" << (engineRoot / "include").string() << "\n";
         scriptCfg << "includeDir=" << (engineRoot / "src/ThirdParty").string() << "\n";
@@ -44,8 +51,13 @@ bool Project::create() {
         scriptCfg << "win.linkLib=Advapi32.lib\n";
         scriptCfg.close();
 
+        std::ofstream packageManifest(projectPath / "packages.modu");
+        packageManifest << "# Modularity package manifest\n";
+        packageManifest.close();
+
         currentSceneName = "Main";
         isLoaded = true;
+        usesNewLayout = true;
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to create project: " << e.what() << std::endl;
@@ -56,10 +68,39 @@ bool Project::create() {
 bool Project::load(const fs::path& projectFilePath) {
     try {
         projectPath = projectFilePath.parent_path();
-        scenesPath = projectPath / "Scenes";
         assetsPath = projectPath / "Assets";
-        scriptsPath = projectPath / "Scripts";
-        scriptsConfigPath = projectPath / "Scripts.modu";
+
+        fs::path oldScenes = projectPath / "Scenes";
+        fs::path oldScripts = projectPath / "Scripts";
+        fs::path oldConfig = projectPath / "Scripts.modu";
+        fs::path newScenes = assetsPath / "Scenes";
+        fs::path newScripts = assetsPath / "Scripts";
+        fs::path newConfig = projectPath / "scripts.modu";
+
+        bool hasOldScenes = fs::exists(oldScenes);
+        bool hasOldScripts = fs::exists(oldScripts);
+        bool hasOldConfig = fs::exists(oldConfig);
+        bool hasNewScenes = fs::exists(newScenes);
+        bool hasNewScripts = fs::exists(newScripts);
+        bool hasNewConfig = fs::exists(newConfig);
+
+        bool useNewLayout = false;
+        if (hasOldScenes || hasOldScripts || hasOldConfig) {
+            useNewLayout = false;
+        } else if (hasNewScenes || hasNewScripts || hasNewConfig) {
+            useNewLayout = true;
+        }
+
+        if (useNewLayout) {
+            scenesPath = newScenes;
+            scriptsPath = newScripts;
+            scriptsConfigPath = hasNewConfig ? newConfig : (hasOldConfig ? oldConfig : newConfig);
+        } else {
+            scenesPath = oldScenes;
+            scriptsPath = oldScripts;
+            scriptsConfigPath = hasOldConfig ? oldConfig : (hasNewConfig ? newConfig : oldConfig);
+        }
+        usesNewLayout = useNewLayout;
 
         std::ifstream file(projectFilePath);
         if (!file.is_open()) return false;

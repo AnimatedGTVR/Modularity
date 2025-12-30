@@ -77,12 +77,3 @@ void Begin(ScriptContext& ctx, float /*deltaTime*/) {
         Launch(ctx);
     }
 }
-
-void Spec(ScriptContext& ctx, float /*deltaTime*/) {
-}
-
-void TestEditor(ScriptContext& ctx, float /*deltaTime*/) {
-}
-
-void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {
-}

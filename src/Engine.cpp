@@ -1102,8 +1102,11 @@ void Engine::OpenProjectPath(const std::string& path) {
             }
 
             loadRecentScenes();
-            fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
-            fileBrowser.currentPath = projectManager.currentProject.projectPath;
+            fs::path contentRoot = projectManager.currentProject.usesNewLayout
+                ? projectManager.currentProject.assetsPath
+                : projectManager.currentProject.projectPath;
+            fileBrowser.setProjectRoot(contentRoot);
+            fileBrowser.currentPath = contentRoot;
             fileBrowser.needsRefresh = true;
             scriptEditorWindowsDirty = true;
             scriptEditorWindows.clear();
@@ -1148,8 +1151,11 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         addObject(ObjectType::Cube, "Cube");
 
-        fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
-        fileBrowser.currentPath = projectManager.currentProject.projectPath;
+        fs::path contentRoot = projectManager.currentProject.usesNewLayout
+            ? projectManager.currentProject.assetsPath
+            : projectManager.currentProject.projectPath;
+        fileBrowser.setProjectRoot(contentRoot);
+        fileBrowser.currentPath = contentRoot;
         fileBrowser.needsRefresh = true;
         scriptEditorWindowsDirty = true;
         scriptEditorWindows.clear();
@@ -1189,8 +1195,11 @@ void Engine::loadRecentScenes() {
     }
     recordState("sceneLoaded");
 
-    fileBrowser.setProjectRoot(projectManager.currentProject.projectPath);
-    fileBrowser.currentPath = projectManager.currentProject.projectPath;
+    fs::path contentRoot = projectManager.currentProject.usesNewLayout
+        ? projectManager.currentProject.assetsPath
+        : projectManager.currentProject.projectPath;
+    fileBrowser.setProjectRoot(contentRoot);
+    fileBrowser.currentPath = contentRoot;
     fileBrowser.needsRefresh = true;
 }
 

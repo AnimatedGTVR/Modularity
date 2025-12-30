@@ -408,6 +408,10 @@ std::string PackageManager::join(const std::vector<std::string>& vals, char deli
 }
 
 fs::path PackageManager::packagesFolder() const {
+    fs::path newFolder = projectRoot / "Library" / "InstalledPackages";
+    if (fs::exists(newFolder) || fs::exists(projectRoot / "scripts.modu")) {
+        return newFolder;
+    }
     return projectRoot / "Packages";
 }
 
