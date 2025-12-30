@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #endif
 
+#pragma region Gizmo Toolbar
 namespace GizmoToolbar {
     enum class Icon {
         Translate,
@@ -249,8 +250,10 @@ namespace GizmoToolbar {
         return pressed;
     }
 }
+#pragma endregion
 
 
+#pragma region Game Viewport Window
 void Engine::renderGameViewportWindow() {
     gameViewportFocused = false;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
@@ -350,6 +353,9 @@ void Engine::renderGameViewportWindow() {
     ImGui::End();
     ImGui::PopStyleVar();
 }
+#pragma endregion
+
+#pragma region Play Controls Bar
 void Engine::renderPlayControlsBar() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec2 buttonPadding(10.0f, 4.0f);
@@ -428,6 +434,9 @@ void Engine::renderPlayControlsBar() {
     }
 }
 
+#pragma endregion
+
+#pragma region Main Menu Bar
 void Engine::renderMainMenuBar() {
     refreshScriptEditorWindows();
 
@@ -572,6 +581,10 @@ void Engine::renderMainMenuBar() {
     }
 }
 
+#pragma endregion
+
+#pragma region Scene Viewport
+// Final scene output for the editor viewport.
 void Engine::renderViewport() {
     ImGuiWindowFlags viewportFlags = ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
 
@@ -1817,3 +1830,4 @@ void Engine::renderViewport() {
 
     ImGui::End();
 }
+#pragma endregion

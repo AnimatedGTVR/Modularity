@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <unordered_map>
 
+#pragma region Material File IO Helpers
 namespace {
 struct MaterialFileData {
     MaterialProperties props;
@@ -78,7 +79,9 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     return true;
 }
 } // namespace
+#pragma endregion
 
+#pragma region Window + Selection Utilities
 void window_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
@@ -141,7 +144,9 @@ Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     }
     return cam;
 }
+#pragma endregion
 
+#pragma region Transform Helpers
 namespace {
 // Equivalent to glm::extractEulerAngleXYZ without depending on the experimental header.
 glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
@@ -195,7 +200,9 @@ glm::mat4 Engine::ComposeTransform(const glm::vec3& position, const glm::quat& r
 glm::mat4 Engine::ComposeTransform(const glm::vec3& position, const glm::vec3& rotationDeg, const glm::vec3& scale) {
     return ComposeTransform(position, QuatFromEulerXYZ(rotationDeg), scale);
 }
+#pragma endregion
 
+#pragma region Undo / Redo
 void Engine::recordState(const char* /*reason*/) {
     SceneSnapshot snap;
     snap.objects = sceneObjects;
@@ -246,7 +253,9 @@ void Engine::redo() {
     nextObjectId = snap.nextId;
     projectManager.currentProject.hasUnsavedChanges = true;
 }
+#pragma endregion
 
+#pragma region Engine Lifecycle
 bool Engine::init() {
     std::cerr << "[DEBUG] Creating window..." << std::endl;
     editorWindow = window.makeWindow();
@@ -481,7 +490,9 @@ void Engine::shutdown() {
     ImGui::DestroyContext();
     glfwTerminate();
 }
+#pragma endregion
 
+#pragma region Asset Import
 void Engine::importOBJToScene(const std::string& filepath, const std::string& objectName) {
     recordState("importOBJ");
     std::string errorMsg;
@@ -564,7 +575,9 @@ void Engine::convertModelToRawMesh(const std::string& filepath) {
         addConsoleMessage("Raw mesh export failed: " + error, ConsoleMessageType::Error);
     }
 }
+#pragma endregion
 
+#pragma region Mesh Editing
 bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     if (!obj) return false;
     fs::path ext = fs::path(obj->meshPath).extension();
@@ -604,7 +617,9 @@ bool Engine::syncMeshEditToGPU(SceneObject* obj) {
     projectManager.currentProject.hasUnsavedChanges = true;
     return true;
 }
+#pragma endregion
 
+#pragma region Material IO
 void Engine::loadMaterialFromFile(SceneObject& obj) {
     if (obj.materialPath.empty()) return;
     try {
@@ -688,7 +703,9 @@ void Engine::saveMaterialToFile(const SceneObject& obj) {
         addConsoleMessage("Failed to save material: " + obj.materialPath, ConsoleMessageType::Error);
     }
 }
+#pragma endregion
 
+#pragma region Editor Shortcuts
 void Engine::handleKeyboardShortcuts() {
     static bool f11Pressed = false;
     if (glfwGetKey(editorWindow, GLFW_KEY_F11) == GLFW_PRESS && !f11Pressed) {
@@ -792,7 +809,9 @@ void Engine::handleKeyboardShortcuts() {
         gameViewCursorLocked = false;
     }
 }
+#pragma endregion
 
+#pragma region Runtime Updates
 void Engine::updateScripts(float delta) {
     if (sceneObjects.empty()) return;
 
@@ -923,7 +942,9 @@ void Engine::updatePlayerController(float delta) {
     }
     syncLocalTransform(*player);
 }
+#pragma endregion
 
+#pragma region Transform Hierarchy
 void Engine::updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
     auto safeDiv = [](float v, float d) { return (std::abs(d) > 1e-6f) ? (v / d) : 0.0f; };
     auto unwrapNear = [](float angle, float reference) {
@@ -1078,6 +1099,9 @@ void Engine::updateHierarchyWorldTransforms() {
         }
     }
 }
+#pragma endregion
+
+#pragma region Project Lifecycle
 void Engine::OpenProjectPath(const std::string& path) {
     try {
         if (projectManager.loadProject(path)) {
@@ -1171,7 +1195,9 @@ void Engine::createNewProject(const char* name, const char* location) {
         projectManager.errorMessage = "Failed to create project directory";
     }
 }
+#pragma endregion
 
+#pragma region Scene Management
 void Engine::loadRecentScenes() {
     sceneObjects.clear();
     clearSelection();
@@ -1269,7 +1295,9 @@ void Engine::createNewScene(const std::string& sceneName) {
 
     addConsoleMessage("Created new scene: " + sceneName, ConsoleMessageType::Success);
 }
+#pragma endregion
 
+#pragma region Scene Objects
 void Engine::addObject(ObjectType type, const std::string& baseName) {
     recordState("addObject");
     int id = nextObjectId++;
@@ -1419,7 +1447,9 @@ void Engine::setParent(int childId, int parentId) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
 }
+#pragma endregion
 
+#pragma region Console Logging
 void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType type) {
     std::string prefix;
     switch (type) {
@@ -1447,7 +1477,9 @@ void Engine::logToConsole(const std::string& message) {
 void Engine::addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type) {
     addConsoleMessage(message, type);
 }
+#pragma endregion
 
+#pragma region Object Lookup
 SceneObject* Engine::findObjectByName(const std::string& name) {
     auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [&](const SceneObject& o) {
         return o.name == name;
@@ -1463,7 +1495,9 @@ SceneObject* Engine::findObjectById(int id) {
     if (it != sceneObjects.end()) return &(*it);
     return nullptr;
 }
+#pragma endregion
 
+#pragma region Script Hooks
 fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
     ScriptBuildConfig config;
     std::string error;
@@ -1579,7 +1613,9 @@ bool Engine::setAudioClipFromScript(int id, const std::string& path) {
     audio.setObjectLoop(*obj, obj->audioSource.loop);
     return true;
 }
+#pragma endregion
 
+#pragma region Script Compilation + Editor Tabs
 void Engine::compileScriptFile(const fs::path& scriptPath) {
     if (!projectManager.currentProject.isLoaded) {
         addConsoleMessage("No project is loaded", ConsoleMessageType::Warning);
@@ -1747,7 +1783,9 @@ void Engine::renderScriptEditorWindows() {
         }
     }
 }
+#pragma endregion
 
+#pragma region ImGui Setup
 void Engine::setupImGui() {
     std::cerr << "[DEBUG] setupImGui: getting primary monitor..." << std::endl;
     float mainScale = 1.0f;
@@ -1793,3 +1831,4 @@ void Engine::setupImGui() {
     }
     std::cerr << "[DEBUG] setupImGui: complete!" << std::endl;
 }
+#pragma endregion

@@ -20,6 +20,7 @@
 #include <shellapi.h>
 #endif
 
+#pragma region File Icons
 namespace FileIcons {
     namespace {
         ImU32 BlendColor(ImU32 a, ImU32 b, float t) {
@@ -401,7 +402,9 @@ namespace FileIcons {
         }
     }
 }
+#pragma endregion
 
+#pragma region File Actions
 namespace {
     enum class CreateKind {
         Folder,
@@ -475,8 +478,10 @@ namespace {
         #endif
     }
 }
+#pragma endregion
 
-
+#pragma region File Browser Panel
+// Uses FileBrowser state for navigation, selection, and drag-drop.
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1242,3 +1247,4 @@ void Engine::renderFileBrowserPanel() {
 
     ImGui::End();
 }
+#pragma endregion

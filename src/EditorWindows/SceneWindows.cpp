@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #endif
 
+#pragma region Hierarchy Helpers
 namespace {
     ImU32 GetHierarchyTypeColor(ObjectType type) {
         switch (type) {
@@ -94,7 +95,9 @@ namespace {
         drawList->AddLine(ImVec2(connectorX, rowMid), ImVec2(itemMin.x + 6.0f, rowMid), lineColor, 1.0f);
     }
 }
+#pragma endregion
 
+#pragma region Hierarchy Panel
 void Engine::renderHierarchyPanel() {
     ImGui::Begin("Hierarchy", &showHierarchy);
 
@@ -400,7 +403,9 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         ImGui::TreePop();
     }
 }
+#pragma endregion
 
+#pragma region Inspector Panel
 void Engine::renderInspectorPanel() {
     ImGui::Begin("Inspector", &showInspector);
 
@@ -2124,6 +2129,9 @@ void Engine::renderInspectorPanel() {
     ImGui::End();
 }
 
+#pragma endregion
+
+#pragma region Console Panel
 void Engine::renderConsolePanel() {
     ImGui::Begin("Console", &showConsole);
 
@@ -2160,6 +2168,9 @@ void Engine::renderConsolePanel() {
     ImGui::End();
 }
 
+#pragma endregion
+
+#pragma region Mesh Builder Panel
 void Engine::renderMeshBuilderPanel() {
     ImGui::Begin("Mesh Builder", &showMeshBuilder);
 
@@ -2301,6 +2312,9 @@ void Engine::renderMeshBuilderPanel() {
     ImGui::End();
 }
 
+#pragma endregion
+
+#pragma region Dialogs
 void Engine::renderDialogs() {
     if (showNewSceneDialog) {
         ImGuiIO& io = ImGui::GetIO();

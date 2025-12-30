@@ -1,6 +1,6 @@
 #include "EditorUI.h"
 
-// FileBrowser implementation
+#pragma region File Browser
 FileBrowser::FileBrowser() {
     currentPath = fs::current_path();
     projectRoot = currentPath;
@@ -183,7 +183,9 @@ bool FileBrowser::matchesFilter(const fs::directory_entry& entry) const {
     
     return filenameLower.find(filterLower) != std::string::npos;
 }
+#pragma endregion
 
+#pragma region ImGui Theme
 void applyModernTheme() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
@@ -271,7 +273,10 @@ void applyModernTheme() {
     style.PopupBorderSize = 1.0f;
     style.TabBorderSize = 1.0f;
 }
+#pragma endregion
 
+#pragma region Dockspace
+// Call once per frame before rendering editor panels.
 void setupDockspace(const std::function<void()>& menuBarContent) {
     static bool dockspaceOpen = true;
     static ImGuiDockNodeFlags dockspaceFlags = ImGuiDockNodeFlags_None;
@@ -304,3 +309,4 @@ void setupDockspace(const std::function<void()>& menuBarContent) {
 
     ImGui::End();
 }
+#pragma endregion

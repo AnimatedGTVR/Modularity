@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <sstream>
 
+#pragma region Local Path Helpers
 namespace {
 fs::path normalizePath(const fs::path& p) {
     std::error_code ec;
@@ -59,7 +60,9 @@ fs::path guessIncludeDir(const fs::path& repoRoot, const std::string& includeRel
     return normalizePath(repoRoot);
 }
 } // namespace
+#pragma endregion
 
+#pragma region Lifecycle
 PackageManager::PackageManager() {
     buildRegistry();
 }
@@ -70,7 +73,9 @@ void PackageManager::setProjectRoot(const fs::path& root) {
     manifestPath = projectRoot / "packages.modu";
     loadManifest();
 }
+#pragma endregion
 
+#pragma region Install / Remove
 bool PackageManager::isInstalled(const std::string& id) const {
     return std::find(installedIds.begin(), installedIds.end(), id) != installedIds.end();
 }
@@ -135,7 +140,9 @@ bool PackageManager::remove(const std::string& id) {
     saveManifest();
     return true;
 }
+#pragma endregion
 
+#pragma region Build Config
 void PackageManager::applyToBuildConfig(ScriptBuildConfig& config) const {
     std::unordered_set<std::string> defineSet(config.defines.begin(), config.defines.end());
     std::unordered_set<std::string> linuxLibSet(config.linuxLinkLibs.begin(), config.linuxLinkLibs.end());
@@ -167,7 +174,9 @@ void PackageManager::applyToBuildConfig(ScriptBuildConfig& config) const {
         }
     }
 }
+#pragma endregion
 
+#pragma region Registry
 void PackageManager::buildRegistry() {
     registry.clear();
     fs::path engineRoot = fs::current_path();
@@ -230,7 +239,9 @@ void PackageManager::buildRegistry() {
     miniaudio.includeDirs = { engineRoot / "include/ThirdParty" };
     add(miniaudio);
 }
+#pragma endregion
 
+#pragma region Manifest IO
 void PackageManager::loadManifest() {
     installedIds.clear();
     for (const auto& pkg : registry) {
@@ -336,7 +347,9 @@ void PackageManager::saveManifest() const {
         file << join(pkg->windowsLibs, ';') << "\n";
     }
 }
+#pragma endregion
 
+#pragma region Registry Lookup
 const PackageInfo* PackageManager::findPackage(const std::string& id) const {
     auto it = std::find_if(registry.begin(), registry.end(), [&](const PackageInfo& p) {
         return p.id == id;
@@ -348,7 +361,9 @@ bool PackageManager::isBuiltIn(const std::string& id) const {
     const PackageInfo* pkg = findPackage(id);
     return pkg && pkg->builtIn;
 }
+#pragma endregion
 
+#pragma region Utility Helpers
 std::string PackageManager::trim(const std::string& value) {
     size_t start = 0;
     while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) start++;
@@ -406,7 +421,9 @@ std::string PackageManager::join(const std::vector<std::string>& vals, char deli
     }
     return oss.str();
 }
+#pragma endregion
 
+#pragma region External Packages
 fs::path PackageManager::packagesFolder() const {
     fs::path newFolder = projectRoot / "Library" / "InstalledPackages";
     if (fs::exists(newFolder) || fs::exists(projectRoot / "scripts.modu")) {
@@ -516,3 +533,4 @@ bool PackageManager::updateGitPackage(const std::string& id, std::string& outLog
     }
     return true;
 }
+#pragma endregion

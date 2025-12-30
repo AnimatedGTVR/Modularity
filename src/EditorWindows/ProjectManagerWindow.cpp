@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #endif
 
+#pragma region ImGui Helpers
 namespace ImGui {
 
 // Animated progress bar that keeps circles moving while work happens in the background.
@@ -103,7 +104,9 @@ bool Spinner(const char* label, float radius, int thickness, const ImU32& color)
 }
 
 } // namespace ImGui
+#pragma endregion
 
+#pragma region Package Task State
 namespace {
 struct PackageTaskResult {
     bool success = false;
@@ -117,8 +120,9 @@ struct PackageTaskState {
     std::future<PackageTaskResult> future;
 };
 } // namespace
+#pragma endregion
 
-
+#pragma region Launcher
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 displaySize = io.DisplaySize;
@@ -364,7 +368,9 @@ void Engine::renderLauncher() {
     if (projectManager.showOpenProjectDialog)
         renderOpenProjectDialog();
 }
+#pragma endregion
 
+#pragma region New Project Dialog
 void Engine::renderNewProjectDialog() {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -441,7 +447,9 @@ void Engine::renderNewProjectDialog() {
     }
     ImGui::End();
 }
+#pragma endregion
 
+#pragma region Open Project Dialog
 void Engine::renderOpenProjectDialog() {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -497,7 +505,9 @@ void Engine::renderOpenProjectDialog() {
     }
     ImGui::End();
 }
+#pragma endregion
 
+#pragma region Project Browser Panel
 void Engine::renderProjectBrowserPanel() {
     ImVec4 headerCol = ImVec4(0.20f, 0.27f, 0.36f, 1.0f);
     ImVec4 headerColActive = ImVec4(0.24f, 0.34f, 0.46f, 1.0f);
@@ -793,3 +803,4 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(3);
 }
+#pragma endregion

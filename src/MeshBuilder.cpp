@@ -1,5 +1,6 @@
 #include "MeshBuilder.h"
 
+#pragma region State Reset
 void MeshBuilder::clear() {
     mesh = RawMeshAsset();
     hasMesh = false;
@@ -7,7 +8,9 @@ void MeshBuilder::clear() {
     selectedVertex = -1;
     loadedPath.clear();
 }
+#pragma endregion
 
+#pragma region File IO
 bool MeshBuilder::load(const std::string& path, std::string& error) {
     auto& loader = getModelLoader();
     RawMeshAsset loaded;
@@ -35,7 +38,9 @@ bool MeshBuilder::save(const std::string& path, std::string& error) {
     dirty = false;
     return true;
 }
+#pragma endregion
 
+#pragma region Geometry Editing
 void MeshBuilder::recomputeNormals() {
     if (mesh.positions.empty()) return;
     mesh.normals.assign(mesh.positions.size(), glm::vec3(0.0f));
@@ -103,3 +108,4 @@ bool MeshBuilder::addFace(const std::vector<uint32_t>& indices, std::string& err
     dirty = true;
     return true;
 }
+#pragma endregion

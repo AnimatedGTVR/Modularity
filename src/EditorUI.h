@@ -3,6 +3,8 @@
 #include <functional>
 #include "Common.h"
 
+#pragma region File Browser Enums
+
 enum class FileBrowserViewMode {
     List,
     Grid
@@ -20,6 +22,9 @@ enum class FileCategory {
     Text,
     Unknown
 };
+#pragma endregion
+
+#pragma region File Browser
 
 class FileBrowser {
 public:
@@ -40,6 +45,7 @@ public:
 
     FileBrowser();
 
+    // Call refresh after mutating currentPath/searchFilter/showHiddenFiles.
     void refresh();
     void navigateUp();
     void navigateTo(const fs::path& path);
@@ -57,9 +63,13 @@ public:
     // Legacy compatibility
     bool isOBJFile(const fs::directory_entry& entry) const;
 };
+#pragma endregion
+
+#pragma region Editor UI Helpers
 
 // Apply the modern dark theme to ImGui
 void applyModernTheme();
 
 // Setup ImGui dockspace for the editor
 void setupDockspace(const std::function<void()>& menuBarContent = nullptr);
+#pragma endregion

@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #endif
 
+#pragma region Environment Window
 void Engine::renderEnvironmentWindow() {
     if (!showEnvironmentWindow) return;
     ImGui::Begin("Environment", &showEnvironmentWindow);
@@ -74,7 +75,9 @@ void Engine::renderEnvironmentWindow() {
 
     ImGui::End();
 }
+#pragma endregion
 
+#pragma region Camera Window
 void Engine::renderCameraWindow() {
     if (!showCameraWindow) return;
     ImGui::Begin("Camera", &showCameraWindow);
@@ -96,3 +99,4 @@ void Engine::renderCameraWindow() {
 
     ImGui::End();
 }
+#pragma endregion
