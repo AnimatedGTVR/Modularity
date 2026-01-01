@@ -121,6 +121,8 @@ private:
     char meshBuilderFaceInput[128] = "";
     bool meshEditMode = false;
     bool meshEditLoaded = false;
+    bool meshEditDirty = false;
+    bool meshEditExtrudeMode = false;
     std::string meshEditPath;
     RawMeshAsset meshEditAsset;
     std::vector<int> meshEditSelectedVertices;
@@ -139,6 +141,15 @@ private:
     bool specMode = false;
     bool testMode = false;
     bool collisionWireframe = false;
+    bool fpsCapEnabled = false;
+    float fpsCap = 120.0f;
+    struct UIStylePreset {
+        std::string name;
+        ImGuiStyle style;
+        bool builtin = false;
+    };
+    std::vector<UIStylePreset> uiStylePresets;
+    int uiStylePresetIndex = 0;
     // Private methods
     SceneObject* getSelectedObject();
     glm::vec3 getSelectionCenterWorld(bool worldSpace) const;
@@ -154,8 +165,10 @@ private:
     void importOBJToScene(const std::string& filepath, const std::string& objectName);
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
     void convertModelToRawMesh(const std::string& filepath);
+    void createRMeshPrimitive(const std::string& primitiveName);
     bool ensureMeshEditTarget(SceneObject* obj);
     bool syncMeshEditToGPU(SceneObject* obj);
+    bool saveMeshEditAsset(std::string& error);
     void handleKeyboardShortcuts();
     void OpenProjectPath(const std::string& path);
     
@@ -184,6 +197,11 @@ private:
     void compileScriptFile(const fs::path& scriptPath);
     void updateScripts(float delta);
     void updatePlayerController(float delta);
+    void updateRigidbody2D(float delta);
+    void initUIStylePresets();
+    int findUIStylePreset(const std::string& name) const;
+    const UIStylePreset* getUIStylePreset(const std::string& name) const;
+    void registerUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace);
     
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();
@@ -265,4 +283,7 @@ public:
     bool setAudioVolumeFromScript(int id, float volume);
     bool setAudioClipFromScript(int id, const std::string& path);
     void syncLocalTransform(SceneObject& obj);
+    const std::vector<UIStylePreset>& getUIStylePresets() const { return uiStylePresets; }
+    void registerUIStylePresetFromScript(const std::string& name, const ImGuiStyle& style, bool replace = false);
+    void setFrameRateCapFromScript(bool enabled, float cap);
 };

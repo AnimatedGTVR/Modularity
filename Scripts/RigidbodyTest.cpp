@@ -36,15 +36,10 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
     ImGui::TextUnformatted("RigidbodyTest");
     ImGui::Separator();
 
-    bool changed = false;
-    changed |= ImGui::Checkbox("Launch on Begin", &autoLaunch);
-    changed |= ImGui::Checkbox("Show Velocity Readback", &showVelocity);
-    changed |= ImGui::DragFloat3("Launch Velocity", &launchVelocity.x, 0.25f, -50.0f, 50.0f);
-    changed |= ImGui::DragFloat3("Teleport Offset", &teleportOffset.x, 0.1f, -10.0f, 10.0f);
-
-    if (changed) {
-        ctx.SaveAutoSettings();
-    }
+    ImGui::Checkbox("Launch on Begin", &autoLaunch);
+    ImGui::Checkbox("Show Velocity Readback", &showVelocity);
+    ImGui::DragFloat3("Launch Velocity", &launchVelocity.x, 0.25f, -50.0f, 50.0f);
+    ImGui::DragFloat3("Teleport Offset", &teleportOffset.x, 0.1f, -10.0f, 10.0f);
 
     if (ImGui::Button("Launch Now")) {
         Launch(ctx);

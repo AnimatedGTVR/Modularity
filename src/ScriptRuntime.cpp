@@ -2,6 +2,8 @@
 #include "Engine.h"
 #include "SceneObject.h"
 #include <algorithm>
+#include <cmath>
+#include <cctype>
 #include <iterator>
 #include <unordered_map>
 
@@ -27,6 +29,27 @@ std::string makeScriptInstanceKey(const ScriptContext& ctx) {
     }
     return key;
 }
+
+std::string trimString(const std::string& input) {
+    size_t start = 0;
+    while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start]))) {
+        ++start;
+    }
+    size_t end = input.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(input[end - 1]))) {
+        --end;
+    }
+    return input.substr(start, end - start);
+}
+
+bool isUIObjectType(ObjectType type) {
+    return type == ObjectType::Canvas ||
+           type == ObjectType::UIImage ||
+           type == ObjectType::UISlider ||
+           type == ObjectType::UIButton ||
+           type == ObjectType::UIText ||
+           type == ObjectType::Sprite2D;
+}
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -37,6 +60,31 @@ SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
 SceneObject* ScriptContext::FindObjectById(int id) {
     if (!engine) return nullptr;
     return engine->findObjectById(id);
+}
+
+SceneObject* ScriptContext::ResolveObjectRef(const std::string& ref) {
+    if (ref.empty()) return nullptr;
+    std::string trimmed = trimString(ref);
+    if (trimmed == "ObjectSelf") return object;
+
+    const std::string namePrefix = "Object.";
+    const std::string idPrefix = "Object.ID-";
+    if (trimmed.rfind(idPrefix, 0) == 0) {
+        std::string idStr = trimmed.substr(idPrefix.size());
+        if (idStr.empty()) return nullptr;
+        try {
+            int id = std::stoi(idStr);
+            return FindObjectById(id);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+    if (trimmed.rfind(namePrefix, 0) == 0) {
+        std::string name = trimmed.substr(namePrefix.size());
+        if (name.empty()) return nullptr;
+        return FindObjectByName(name);
+    }
+    return nullptr;
 }
 
 bool ScriptContext::IsObjectEnabled() const {
@@ -97,6 +145,12 @@ void ScriptContext::SetPosition(const glm::vec3& pos) {
     }
 }
 
+void ScriptContext::SetPosition2D(const glm::vec2& pos) {
+    if (!object) return;
+    object->ui.position = pos;
+    MarkDirty();
+}
+
 void ScriptContext::SetRotation(const glm::vec3& rot) {
     if (object) {
         object->rotation = NormalizeEulerDegrees(rot);
@@ -126,8 +180,202 @@ void ScriptContext::SetScale(const glm::vec3& scl) {
     }
 }
 
+void ScriptContext::GetPlanarYawPitchVectors(float pitchDeg, float yawDeg,
+                                             glm::vec3& outForward, glm::vec3& outRight) const {
+    glm::quat q = glm::quat(glm::radians(glm::vec3(pitchDeg, yawDeg, 0.0f)));
+    glm::vec3 forward = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
+    glm::vec3 right = glm::normalize(q * glm::vec3(1.0f, 0.0f, 0.0f));
+    outForward = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
+    outRight = glm::normalize(glm::vec3(right.x, 0.0f, right.z));
+    if (!std::isfinite(outForward.x) || glm::length(outForward) < 1e-3f) {
+        outForward = glm::vec3(0.0f, 0.0f, -1.0f);
+    }
+    if (!std::isfinite(outRight.x) || glm::length(outRight) < 1e-3f) {
+        outRight = glm::vec3(1.0f, 0.0f, 0.0f);
+    }
+}
+
+bool ScriptContext::IsUIButtonPressed() const {
+    return object && object->type == ObjectType::UIButton && object->ui.buttonPressed;
+}
+
+bool ScriptContext::IsUIInteractable() const {
+    return object ? object->ui.interactable : false;
+}
+
+void ScriptContext::SetUIInteractable(bool interactable) {
+    if (!object) return;
+    if (object->ui.interactable != interactable) {
+        object->ui.interactable = interactable;
+        MarkDirty();
+    }
+}
+
+float ScriptContext::GetUISliderValue() const {
+    if (!object || object->type != ObjectType::UISlider) return 0.0f;
+    return object->ui.sliderValue;
+}
+
+void ScriptContext::SetUISliderValue(float value) {
+    if (!object || object->type != ObjectType::UISlider) return;
+    float clamped = std::clamp(value, object->ui.sliderMin, object->ui.sliderMax);
+    if (object->ui.sliderValue != clamped) {
+        object->ui.sliderValue = clamped;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::SetUISliderRange(float minValue, float maxValue) {
+    if (!object || object->type != ObjectType::UISlider) return;
+    if (maxValue < minValue) std::swap(minValue, maxValue);
+    object->ui.sliderMin = minValue;
+    object->ui.sliderMax = maxValue;
+    object->ui.sliderValue = std::clamp(object->ui.sliderValue, minValue, maxValue);
+    MarkDirty();
+}
+
+void ScriptContext::SetUILabel(const std::string& label) {
+    if (!object) return;
+    if (object->ui.label != label) {
+        object->ui.label = label;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::SetUIColor(const glm::vec4& color) {
+    if (!object) return;
+    if (object->ui.color != color) {
+        object->ui.color = color;
+        MarkDirty();
+    }
+}
+
+float ScriptContext::GetUITextScale() const {
+    if (!object || object->type != ObjectType::UIText) return 1.0f;
+    return object->ui.textScale;
+}
+
+void ScriptContext::SetUITextScale(float scale) {
+    if (!object || object->type != ObjectType::UIText) return;
+    float clamped = std::max(0.1f, scale);
+    if (object->ui.textScale != clamped) {
+        object->ui.textScale = clamped;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::SetUISliderStyle(UISliderStyle style) {
+    if (!object || object->type != ObjectType::UISlider) return;
+    if (object->ui.sliderStyle != style) {
+        object->ui.sliderStyle = style;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::SetUIButtonStyle(UIButtonStyle style) {
+    if (!object || object->type != ObjectType::UIButton) return;
+    if (object->ui.buttonStyle != style) {
+        object->ui.buttonStyle = style;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::SetUIStylePreset(const std::string& name) {
+    if (!object || name.empty()) return;
+    if (object->ui.stylePreset != name) {
+        object->ui.stylePreset = name;
+        MarkDirty();
+    }
+}
+
+void ScriptContext::RegisterUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace) {
+    if (engine) {
+        engine->registerUIStylePresetFromScript(name, style, replace);
+    }
+}
+
+void ScriptContext::SetFPSCap(bool enabled, float cap) {
+    if (engine) {
+        engine->setFrameRateCapFromScript(enabled, cap);
+    }
+}
+
 bool ScriptContext::HasRigidbody() const {
     return object && object->hasRigidbody && object->rigidbody.enabled;
+}
+
+bool ScriptContext::HasRigidbody2D() const {
+    return object && isUIObjectType(object->type) && object->hasRigidbody2D && object->rigidbody2D.enabled;
+}
+
+bool ScriptContext::EnsureCapsuleCollider(float height, float radius) {
+    if (!object) return false;
+    bool changed = false;
+    if (!object->hasCollider) {
+        object->hasCollider = true;
+        changed = true;
+    }
+    ColliderComponent& col = object->collider;
+    if (!col.enabled) {
+        col.enabled = true;
+        changed = true;
+    }
+    if (col.type != ColliderType::Capsule) {
+        col.type = ColliderType::Capsule;
+        changed = true;
+    }
+    if (!col.convex) {
+        col.convex = true;
+        changed = true;
+    }
+    glm::vec3 size(radius * 2.0f, height, radius * 2.0f);
+    if (col.boxSize != size) {
+        col.boxSize = size;
+        changed = true;
+    }
+    if (changed) {
+        MarkDirty();
+    }
+    return true;
+}
+
+bool ScriptContext::EnsureRigidbody(bool useGravity, bool kinematic) {
+    if (!object) return false;
+    bool changed = false;
+    if (!object->hasRigidbody) {
+        object->hasRigidbody = true;
+        changed = true;
+    }
+    RigidbodyComponent& rb = object->rigidbody;
+    if (!rb.enabled) {
+        rb.enabled = true;
+        changed = true;
+    }
+    if (rb.useGravity != useGravity) {
+        rb.useGravity = useGravity;
+        changed = true;
+    }
+    if (rb.isKinematic != kinematic) {
+        rb.isKinematic = kinematic;
+        changed = true;
+    }
+    if (changed) {
+        MarkDirty();
+    }
+    return true;
+}
+
+bool ScriptContext::SetRigidbody2DVelocity(const glm::vec2& velocity) {
+    if (!object || !HasRigidbody2D()) return false;
+    object->rigidbody2D.velocity = velocity;
+    MarkDirty();
+    return true;
+}
+
+bool ScriptContext::GetRigidbody2DVelocity(glm::vec2& outVelocity) const {
+    if (!object || !HasRigidbody2D()) return false;
+    outVelocity = object->rigidbody2D.velocity;
+    return true;
 }
 
 bool ScriptContext::SetRigidbodyVelocity(const glm::vec3& velocity) {
@@ -138,6 +386,12 @@ bool ScriptContext::SetRigidbodyVelocity(const glm::vec3& velocity) {
 bool ScriptContext::GetRigidbodyVelocity(glm::vec3& outVelocity) const {
     if (!engine || !object || !HasRigidbody()) return false;
     return engine->getRigidbodyVelocityFromScript(object->id, outVelocity);
+}
+
+bool ScriptContext::AddRigidbodyVelocity(const glm::vec3& deltaVelocity) {
+    glm::vec3 current;
+    if (!GetRigidbodyVelocity(current)) return false;
+    return SetRigidbodyVelocity(current + deltaVelocity);
 }
 
 bool ScriptContext::SetRigidbodyAngularVelocity(const glm::vec3& velocity) {
@@ -265,6 +519,17 @@ void ScriptContext::SetSettingBool(const std::string& key, bool value) {
     SetSetting(key, value ? "1" : "0");
 }
 
+float ScriptContext::GetSettingFloat(const std::string& key, float fallback) const {
+    std::string v = GetSetting(key, "");
+    if (v.empty()) return fallback;
+    try { return std::stof(v); } catch (...) {}
+    return fallback;
+}
+
+void ScriptContext::SetSettingFloat(const std::string& key, float value) {
+    SetSetting(key, std::to_string(value));
+}
+
 glm::vec3 ScriptContext::GetSettingVec3(const std::string& key, const glm::vec3& fallback) const {
     std::string v = GetSetting(key, "");
     if (v.empty()) return fallback;
@@ -312,6 +577,31 @@ void ScriptContext::AutoSetting(const std::string& key, bool& value) {
     entry.key = key;
     entry.ptr = &value;
     entry.initialBool = value;
+    autoSettings.push_back(entry);
+}
+
+void ScriptContext::AutoSetting(const std::string& key, float& value) {
+    if (!script) return;
+    if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
+        [&](const AutoSettingEntry& e){ return e.key == key; })) return;
+
+    static std::unordered_map<std::string, float> defaults;
+    std::string scriptId = makeScriptInstanceKey(*this);
+    std::string id = scriptId + "|" + key;
+    float defaultVal = value;
+    auto itDef = defaults.find(id);
+    if (itDef != defaults.end()) {
+        defaultVal = itDef->second;
+    } else {
+        defaults[id] = defaultVal;
+    }
+
+    value = GetSettingFloat(key, defaultVal);
+    AutoSettingEntry entry;
+    entry.type = AutoSettingType::Float;
+    entry.key = key;
+    entry.ptr = &value;
+    entry.initialFloat = value;
     autoSettings.push_back(entry);
 }
 
@@ -376,6 +666,12 @@ void ScriptContext::SaveAutoSettings() {
                 bool cur = *static_cast<bool*>(e.ptr);
                 if (cur == e.initialBool) continue;
                 newVal = cur ? "1" : "0";
+                break;
+            }
+            case AutoSettingType::Float: {
+                float cur = *static_cast<float*>(e.ptr);
+                if (std::abs(cur - e.initialFloat) < 1e-6f) continue;
+                newVal = std::to_string(cur);
                 break;
             }
             case AutoSettingType::Vec3: {

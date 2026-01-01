@@ -10,13 +10,14 @@ struct ScriptContext {
     Engine* engine = nullptr;
     SceneObject* object = nullptr;
     ScriptComponent* script = nullptr;
-    enum class AutoSettingType { Bool, Vec3, StringBuf };
+    enum class AutoSettingType { Bool, Float, Vec3, StringBuf };
     struct AutoSettingEntry {
         AutoSettingType type;
         std::string key;
         void* ptr = nullptr;
         size_t bufSize = 0;
         bool initialBool = false;
+        float initialFloat = 0.0f;
         glm::vec3 initialVec3 = glm::vec3(0.0f);
         std::string initialString;
     };
@@ -25,6 +26,7 @@ struct ScriptContext {
     // Convenience helpers for scripts
     SceneObject* FindObjectByName(const std::string& name);
     SceneObject* FindObjectById(int id);
+    SceneObject* ResolveObjectRef(const std::string& ref);
     bool IsObjectEnabled() const;
     void SetObjectEnabled(bool enabled);
     int GetLayer() const;
@@ -34,11 +36,35 @@ struct ScriptContext {
     bool HasTag(const std::string& tag) const;
     bool IsInLayer(int layer) const;
     void SetPosition(const glm::vec3& pos);
+    void SetPosition2D(const glm::vec2& pos);
     void SetRotation(const glm::vec3& rot);
     void SetScale(const glm::vec3& scl);
+    void GetPlanarYawPitchVectors(float pitchDeg, float yawDeg, glm::vec3& outForward, glm::vec3& outRight) const;
+    // UI helpers
+    bool IsUIButtonPressed() const;
+    bool IsUIInteractable() const;
+    void SetUIInteractable(bool interactable);
+    float GetUISliderValue() const;
+    void SetUISliderValue(float value);
+    void SetUISliderRange(float minValue, float maxValue);
+    void SetUILabel(const std::string& label);
+    void SetUIColor(const glm::vec4& color);
+    float GetUITextScale() const;
+    void SetUITextScale(float scale);
+    void SetUISliderStyle(UISliderStyle style);
+    void SetUIButtonStyle(UIButtonStyle style);
+    void SetUIStylePreset(const std::string& name);
+    void RegisterUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace = false);
+    void SetFPSCap(bool enabled, float cap = 120.0f);
     bool HasRigidbody() const;
+    bool HasRigidbody2D() const;
+    bool EnsureCapsuleCollider(float height, float radius);
+    bool EnsureRigidbody(bool useGravity = true, bool kinematic = false);
+    bool SetRigidbody2DVelocity(const glm::vec2& velocity);
+    bool GetRigidbody2DVelocity(glm::vec2& outVelocity) const;
     bool SetRigidbodyVelocity(const glm::vec3& velocity);
     bool GetRigidbodyVelocity(glm::vec3& outVelocity) const;
+    bool AddRigidbodyVelocity(const glm::vec3& deltaVelocity);
     bool SetRigidbodyAngularVelocity(const glm::vec3& velocity);
     bool GetRigidbodyAngularVelocity(glm::vec3& outVelocity) const;
     bool AddRigidbodyForce(const glm::vec3& force);
@@ -63,12 +89,15 @@ struct ScriptContext {
     void SetSetting(const std::string& key, const std::string& value);
     bool GetSettingBool(const std::string& key, bool fallback = false) const;
     void SetSettingBool(const std::string& key, bool value);
+    float GetSettingFloat(const std::string& key, float fallback = 0.0f) const;
+    void SetSettingFloat(const std::string& key, float value);
     glm::vec3 GetSettingVec3(const std::string& key, const glm::vec3& fallback = glm::vec3(0.0f)) const;
     void SetSettingVec3(const std::string& key, const glm::vec3& value);
     // Console helper
     void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
-    // Auto-binding helpers: bind once per call, optionally load stored value, then SaveAutoSettings() writes back on change.
+    // Auto-binding helpers: bind once per call, optionally load stored value.
     void AutoSetting(const std::string& key, bool& value);
+    void AutoSetting(const std::string& key, float& value);
     void AutoSetting(const std::string& key, glm::vec3& value);
     void AutoSetting(const std::string& key, char* buffer, size_t bufferSize);
     void SaveAutoSettings();

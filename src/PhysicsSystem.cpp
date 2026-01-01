@@ -16,8 +16,12 @@ PxVec3 ToPxVec3(const glm::vec3& v) {
 }
 
 PxQuat ToPxQuat(const glm::vec3& eulerDeg) {
-    glm::vec3 radians = glm::radians(eulerDeg);
-    glm::quat q = glm::quat(radians);
+    glm::vec3 r = glm::radians(eulerDeg);
+    glm::mat4 m(1.0f);
+    m = glm::rotate(m, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    m = glm::rotate(m, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    m = glm::rotate(m, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::quat q = glm::quat_cast(glm::mat3(m));
     return PxQuat(q.x, q.y, q.z, q.w);
 }
 
@@ -25,9 +29,20 @@ glm::vec3 ToGlmVec3(const PxVec3& v) {
     return glm::vec3(v.x, v.y, v.z);
 }
 
+glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
+    float T1 = std::atan2(m[2][1], m[2][2]);
+    float C2 = std::sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+    float T2 = std::atan2(-m[2][0], C2);
+    float S1 = std::sin(T1);
+    float C1 = std::cos(T1);
+    float T3 = std::atan2(S1 * m[0][2] - C1 * m[0][1], C1 * m[1][1] - S1 * m[1][2]);
+    return glm::vec3(-T1, -T2, -T3);
+}
+
 glm::vec3 ToGlmEulerDeg(const PxQuat& q) {
     glm::quat gq(q.w, q.x, q.y, q.z);
-    return glm::degrees(glm::eulerAngles(gq));
+    glm::mat3 m = glm::mat3_cast(gq);
+    return glm::degrees(ExtractEulerXYZ(m));
 }
 } // namespace
 
@@ -228,6 +243,13 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         break;
     }
         case ObjectType::Plane: {
+            glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
+            halfExtents.z = std::max(halfExtents.z, 0.01f);
+            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
+            break;
+        }
+        case ObjectType::Sprite: {
             glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
             halfExtents.z = std::max(halfExtents.z, 0.01f);
             shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);

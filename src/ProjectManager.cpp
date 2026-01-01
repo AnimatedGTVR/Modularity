@@ -299,7 +299,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=10\n";
+        file << "version=11\n";
         file << "nextId=" << nextId << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
@@ -327,6 +327,14 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "rbLockRotX=" << (obj.rigidbody.lockRotationX ? 1 : 0) << "\n";
                 file << "rbLockRotY=" << (obj.rigidbody.lockRotationY ? 1 : 0) << "\n";
                 file << "rbLockRotZ=" << (obj.rigidbody.lockRotationZ ? 1 : 0) << "\n";
+            }
+            file << "hasRigidbody2D=" << (obj.hasRigidbody2D ? 1 : 0) << "\n";
+            if (obj.hasRigidbody2D) {
+                file << "rb2dEnabled=" << (obj.rigidbody2D.enabled ? 1 : 0) << "\n";
+                file << "rb2dUseGravity=" << (obj.rigidbody2D.useGravity ? 1 : 0) << "\n";
+                file << "rb2dGravityScale=" << obj.rigidbody2D.gravityScale << "\n";
+                file << "rb2dLinearDamping=" << obj.rigidbody2D.linearDamping << "\n";
+                file << "rb2dVelocity=" << obj.rigidbody2D.velocity.x << "," << obj.rigidbody2D.velocity.y << "\n";
             }
             file << "hasCollider=" << (obj.hasCollider ? 1 : 0) << "\n";
             if (obj.hasCollider) {
@@ -394,6 +402,19 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "cameraNear=" << obj.camera.nearClip << "\n";
             file << "cameraFar=" << obj.camera.farClip << "\n";
             file << "cameraPostFX=" << (obj.camera.applyPostFX ? 1 : 0) << "\n";
+            file << "uiAnchor=" << static_cast<int>(obj.ui.anchor) << "\n";
+            file << "uiPosition=" << obj.ui.position.x << "," << obj.ui.position.y << "\n";
+            file << "uiSize=" << obj.ui.size.x << "," << obj.ui.size.y << "\n";
+            file << "uiSliderValue=" << obj.ui.sliderValue << "\n";
+            file << "uiSliderMin=" << obj.ui.sliderMin << "\n";
+            file << "uiSliderMax=" << obj.ui.sliderMax << "\n";
+            file << "uiLabel=" << obj.ui.label << "\n";
+            file << "uiColor=" << obj.ui.color.r << "," << obj.ui.color.g << "," << obj.ui.color.b << "," << obj.ui.color.a << "\n";
+            file << "uiInteractable=" << (obj.ui.interactable ? 1 : 0) << "\n";
+            file << "uiSliderStyle=" << static_cast<int>(obj.ui.sliderStyle) << "\n";
+            file << "uiButtonStyle=" << static_cast<int>(obj.ui.buttonStyle) << "\n";
+            file << "uiStylePreset=" << obj.ui.stylePreset << "\n";
+            file << "uiTextScale=" << obj.ui.textScale << "\n";
             if (obj.type == ObjectType::PostFXNode) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
@@ -556,6 +577,20 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->rigidbody.lockRotationY = std::stoi(value) != 0;
                 } else if (key == "rbLockRotZ") {
                     currentObj->rigidbody.lockRotationZ = std::stoi(value) != 0;
+                } else if (key == "hasRigidbody2D") {
+                    currentObj->hasRigidbody2D = std::stoi(value) != 0;
+                } else if (key == "rb2dEnabled") {
+                    currentObj->rigidbody2D.enabled = std::stoi(value) != 0;
+                } else if (key == "rb2dUseGravity") {
+                    currentObj->rigidbody2D.useGravity = std::stoi(value) != 0;
+                } else if (key == "rb2dGravityScale") {
+                    currentObj->rigidbody2D.gravityScale = std::stof(value);
+                } else if (key == "rb2dLinearDamping") {
+                    currentObj->rigidbody2D.linearDamping = std::stof(value);
+                } else if (key == "rb2dVelocity") {
+                    sscanf(value.c_str(), "%f,%f",
+                           &currentObj->rigidbody2D.velocity.x,
+                           &currentObj->rigidbody2D.velocity.y);
                 } else if (key == "hasCollider") {
                     currentObj->hasCollider = std::stoi(value) != 0;
                 } else if (key == "colliderEnabled") {
@@ -701,6 +736,40 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                     currentObj->camera.farClip = std::stof(value);
                 } else if (key == "cameraPostFX") {
                     currentObj->camera.applyPostFX = (std::stoi(value) != 0);
+                } else if (key == "uiAnchor") {
+                    currentObj->ui.anchor = static_cast<UIAnchor>(std::stoi(value));
+                } else if (key == "uiPosition") {
+                    sscanf(value.c_str(), "%f,%f",
+                           &currentObj->ui.position.x,
+                           &currentObj->ui.position.y);
+                } else if (key == "uiSize") {
+                    sscanf(value.c_str(), "%f,%f",
+                           &currentObj->ui.size.x,
+                           &currentObj->ui.size.y);
+                } else if (key == "uiSliderValue") {
+                    currentObj->ui.sliderValue = std::stof(value);
+                } else if (key == "uiSliderMin") {
+                    currentObj->ui.sliderMin = std::stof(value);
+                } else if (key == "uiSliderMax") {
+                    currentObj->ui.sliderMax = std::stof(value);
+                } else if (key == "uiLabel") {
+                    currentObj->ui.label = value;
+                } else if (key == "uiColor") {
+                    sscanf(value.c_str(), "%f,%f,%f,%f",
+                           &currentObj->ui.color.r,
+                           &currentObj->ui.color.g,
+                           &currentObj->ui.color.b,
+                           &currentObj->ui.color.a);
+                } else if (key == "uiInteractable") {
+                    currentObj->ui.interactable = (std::stoi(value) != 0);
+                } else if (key == "uiSliderStyle") {
+                    currentObj->ui.sliderStyle = static_cast<UISliderStyle>(std::stoi(value));
+                } else if (key == "uiButtonStyle") {
+                    currentObj->ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value));
+                } else if (key == "uiStylePreset") {
+                    currentObj->ui.stylePreset = value;
+                } else if (key == "uiTextScale") {
+                    currentObj->ui.textScale = std::stof(value);
                 } else if (key == "postEnabled") {
                     currentObj->postFx.enabled = (std::stoi(value) != 0);
                 } else if (key == "postBloomEnabled") {

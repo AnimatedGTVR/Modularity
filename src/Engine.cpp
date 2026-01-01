@@ -5,6 +5,7 @@
 #include <functional>
 #include <unordered_set>
 #include <unordered_map>
+#include "ThirdParty/glm/gtc/constants.hpp"
 
 #pragma region Material File IO Helpers
 namespace {
@@ -77,6 +78,122 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     f << "vertexShader=" << data.vertexShader << "\n";
     f << "fragmentShader=" << data.fragmentShader << "\n";
     return true;
+}
+
+RawMeshAsset buildCubeRMesh() {
+    RawMeshAsset mesh;
+    mesh.positions.reserve(24);
+    mesh.normals.reserve(24);
+    mesh.uvs.reserve(24);
+    mesh.faces.reserve(12);
+
+    struct Face {
+        glm::vec3 n;
+        glm::vec3 v[4];
+    };
+
+    const float h = 0.5f;
+    Face faces[] = {
+        { glm::vec3(0, 0, 1),  { {-h,-h, h}, { h,-h, h}, { h, h, h}, {-h, h, h} } }, // +Z
+        { glm::vec3(0, 0,-1),  { { h,-h,-h}, {-h,-h,-h}, {-h, h,-h}, { h, h,-h} } }, // -Z
+        { glm::vec3(1, 0, 0),  { { h,-h, h}, { h,-h,-h}, { h, h,-h}, { h, h, h} } }, // +X
+        { glm::vec3(-1,0, 0),  { {-h,-h,-h}, {-h,-h, h}, {-h, h, h}, {-h, h,-h} } }, // -X
+        { glm::vec3(0, 1, 0),  { {-h, h, h}, { h, h, h}, { h, h,-h}, {-h, h,-h} } }, // +Y
+        { glm::vec3(0,-1, 0),  { {-h,-h,-h}, { h,-h,-h}, { h,-h, h}, {-h,-h, h} } }, // -Y
+    };
+
+    glm::vec2 uvs[4] = {
+        glm::vec2(0, 0),
+        glm::vec2(1, 0),
+        glm::vec2(1, 1),
+        glm::vec2(0, 1),
+    };
+
+    for (const auto& f : faces) {
+        uint32_t base = static_cast<uint32_t>(mesh.positions.size());
+        for (int i = 0; i < 4; ++i) {
+            mesh.positions.push_back(f.v[i]);
+            mesh.normals.push_back(f.n);
+            mesh.uvs.push_back(uvs[i]);
+        }
+        mesh.faces.push_back(glm::u32vec3(base, base + 1, base + 2));
+        mesh.faces.push_back(glm::u32vec3(base, base + 2, base + 3));
+    }
+
+    mesh.boundsMin = glm::vec3(-h);
+    mesh.boundsMax = glm::vec3(h);
+    mesh.hasNormals = true;
+    mesh.hasUVs = true;
+    return mesh;
+}
+
+RawMeshAsset buildPlaneRMesh() {
+    RawMeshAsset mesh;
+    mesh.positions = {
+        glm::vec3(-0.5f, 0.0f,  0.5f),
+        glm::vec3( 0.5f, 0.0f,  0.5f),
+        glm::vec3( 0.5f, 0.0f, -0.5f),
+        glm::vec3(-0.5f, 0.0f, -0.5f),
+    };
+    mesh.normals = {
+        glm::vec3(0, 1, 0),
+        glm::vec3(0, 1, 0),
+        glm::vec3(0, 1, 0),
+        glm::vec3(0, 1, 0),
+    };
+    mesh.uvs = {
+        glm::vec2(0, 0),
+        glm::vec2(1, 0),
+        glm::vec2(1, 1),
+        glm::vec2(0, 1),
+    };
+    mesh.faces = {
+        glm::u32vec3(0, 1, 2),
+        glm::u32vec3(0, 2, 3),
+    };
+    mesh.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+    mesh.boundsMax = glm::vec3(0.5f, 0.0f, 0.5f);
+    mesh.hasNormals = true;
+    mesh.hasUVs = true;
+    return mesh;
+}
+
+RawMeshAsset buildSphereRMesh(int slices = 24, int stacks = 16) {
+    RawMeshAsset mesh;
+    const float radius = 0.5f;
+    for (int i = 0; i <= stacks; ++i) {
+        float v = static_cast<float>(i) / static_cast<float>(stacks);
+        float phi = v * glm::pi<float>();
+        float y = std::cos(phi);
+        float r = std::sin(phi);
+        for (int j = 0; j <= slices; ++j) {
+            float u = static_cast<float>(j) / static_cast<float>(slices);
+            float theta = u * glm::two_pi<float>();
+            float x = r * std::cos(theta);
+            float z = r * std::sin(theta);
+            glm::vec3 pos = glm::vec3(x, y, z) * radius;
+            mesh.positions.push_back(pos);
+            mesh.normals.push_back(glm::normalize(glm::vec3(x, y, z)));
+            mesh.uvs.push_back(glm::vec2(u, 1.0f - v));
+        }
+    }
+
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            uint32_t i0 = i * (slices + 1) + j;
+            uint32_t i1 = i0 + 1;
+            uint32_t i2 = i0 + (slices + 1);
+            uint32_t i3 = i2 + 1;
+            mesh.faces.push_back(glm::u32vec3(i0, i2, i1));
+            mesh.faces.push_back(glm::u32vec3(i1, i2, i3));
+        }
+    }
+
+    mesh.boundsMin = glm::vec3(-radius);
+    mesh.boundsMax = glm::vec3(radius);
+    mesh.hasNormals = true;
+    mesh.hasUVs = true;
+    return mesh;
 }
 } // namespace
 #pragma endregion
@@ -310,6 +427,7 @@ void Engine::run() {
     std::cerr << "[DEBUG] Entering main loop, showLauncher=" << showLauncher << std::endl;
     
     while (!glfwWindowShouldClose(editorWindow)) {
+        double frameStart = glfwGetTime();
         if (glfwGetWindowAttrib(editorWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
             continue;
@@ -360,6 +478,11 @@ void Engine::run() {
 
         if (isPlaying) {
             updatePlayerController(deltaTime);
+        }
+
+        bool simulate2D = (isPlaying && !isPaused) || (!isPlaying && specMode) || (!isPlaying && testMode);
+        if (simulate2D) {
+            updateRigidbody2D(deltaTime);
         }
 
         updateHierarchyWorldTransforms();
@@ -465,6 +588,16 @@ void Engine::run() {
         }
 
         glfwSwapBuffers(editorWindow);
+
+        if (fpsCapEnabled && fpsCap > 1.0f) {
+            double target = 1.0 / fpsCap;
+            double frameEnd = glfwGetTime();
+            double elapsed = frameEnd - frameStart;
+            if (elapsed < target) {
+                int sleepMs = static_cast<int>((target - elapsed) * 1000.0);
+                if (sleepMs > 0) ImGui_ImplGlfw_Sleep(sleepMs);
+            }
+        }
         
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame complete!" << std::endl;
@@ -575,6 +708,45 @@ void Engine::convertModelToRawMesh(const std::string& filepath) {
         addConsoleMessage("Raw mesh export failed: " + error, ConsoleMessageType::Error);
     }
 }
+
+void Engine::createRMeshPrimitive(const std::string& primitiveName) {
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("Load a project before creating RMesh primitives", ConsoleMessageType::Warning);
+        return;
+    }
+
+    fs::path root = projectManager.currentProject.assetsPath / "Models" / "RMeshes" / "Primitives";
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    if (ec) {
+        addConsoleMessage("Failed to create RMesh folder: " + root.string(), ConsoleMessageType::Error);
+        return;
+    }
+
+    RawMeshAsset asset;
+    if (primitiveName == "Cube") {
+        asset = buildCubeRMesh();
+    } else if (primitiveName == "Sphere") {
+        asset = buildSphereRMesh();
+    } else if (primitiveName == "Plane") {
+        asset = buildPlaneRMesh();
+    } else {
+        addConsoleMessage("Unknown RMesh primitive: " + primitiveName, ConsoleMessageType::Warning);
+        return;
+    }
+
+    fs::path filePath = root / (primitiveName + ".rmesh");
+    if (!fs::exists(filePath)) {
+        std::string error;
+        if (!getModelLoader().saveRawMesh(asset, filePath.string(), error)) {
+            addConsoleMessage("Failed to save RMesh primitive: " + error, ConsoleMessageType::Error);
+            return;
+        }
+        fileBrowser.needsRefresh = true;
+    }
+
+    importModelToScene(filePath.string(), primitiveName);
+}
 #pragma endregion
 
 #pragma region Mesh Editing
@@ -600,6 +772,7 @@ bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     }
     meshEditLoaded = true;
     meshEditPath = obj->meshPath;
+    meshEditDirty = false;
     meshEditSelectedVertices.clear();
     meshEditSelectedEdges.clear();
     meshEditSelectedFaces.clear();
@@ -615,6 +788,23 @@ bool Engine::syncMeshEditToGPU(SceneObject* obj) {
         return false;
     }
     projectManager.currentProject.hasUnsavedChanges = true;
+    return true;
+}
+
+bool Engine::saveMeshEditAsset(std::string& error) {
+    if (!meshEditLoaded) {
+        error = "No mesh loaded for editing";
+        return false;
+    }
+    if (meshEditPath.empty()) {
+        error = "Mesh edit path is empty";
+        return false;
+    }
+    if (!getModelLoader().saveRawMesh(meshEditAsset, meshEditPath, error)) {
+        return false;
+    }
+    meshEditDirty = false;
+    fileBrowser.needsRefresh = true;
     return true;
 }
 #pragma endregion
@@ -942,6 +1132,33 @@ void Engine::updatePlayerController(float delta) {
     }
     syncLocalTransform(*player);
 }
+
+void Engine::updateRigidbody2D(float delta) {
+    if (delta <= 0.0f) return;
+    const float gravityPx = -980.0f;
+    auto isUIType = [](ObjectType type) {
+        return type == ObjectType::Canvas ||
+               type == ObjectType::UIImage ||
+               type == ObjectType::UISlider ||
+               type == ObjectType::UIButton ||
+               type == ObjectType::UIText ||
+               type == ObjectType::Sprite2D;
+    };
+    for (auto& obj : sceneObjects) {
+        if (!obj.enabled || !obj.hasRigidbody2D || !obj.rigidbody2D.enabled) continue;
+        if (!isUIType(obj.type)) continue;
+        glm::vec2 vel = obj.rigidbody2D.velocity;
+        if (obj.rigidbody2D.useGravity) {
+            vel.y += gravityPx * obj.rigidbody2D.gravityScale * delta;
+        }
+        float damping = std::max(0.0f, obj.rigidbody2D.linearDamping);
+        if (damping > 0.0f) {
+            vel -= vel * std::min(1.0f, damping * delta);
+        }
+        obj.ui.position += vel * delta;
+        obj.rigidbody2D.velocity = vel;
+    }
+}
 #pragma endregion
 
 #pragma region Transform Hierarchy
@@ -1068,6 +1285,13 @@ void Engine::updateHierarchyWorldTransforms() {
         glm::vec3 worldScale = obj.scale;
         if (useWorldAuthoritative) {
             updateLocalFromWorld(obj, parentPos, parentRot, parentScale);
+            worldPos = obj.position;
+            worldRot = QuatFromEulerXYZ(obj.rotation);
+            worldScale = obj.scale;
+        } else if (obj.parentId == -1) {
+            obj.position = obj.localPosition;
+            obj.rotation = NormalizeEulerDegrees(obj.localRotation);
+            obj.scale = obj.localScale;
             worldPos = obj.position;
             worldRot = QuatFromEulerXYZ(obj.rotation);
             worldScale = obj.scale;
@@ -1331,6 +1555,27 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
         sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
     } else if (type == ObjectType::Plane) {
         sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
+    } else if (type == ObjectType::Sprite) {
+        sceneObjects.back().scale = glm::vec3(1.0f, 1.0f, 0.05f);
+        sceneObjects.back().material.ambientStrength = 1.0f;
+    } else if (type == ObjectType::Canvas) {
+        sceneObjects.back().ui.label = "Canvas";
+        sceneObjects.back().ui.size = glm::vec2(600.0f, 400.0f);
+    } else if (type == ObjectType::UIImage) {
+        sceneObjects.back().ui.label = "Image";
+        sceneObjects.back().ui.size = glm::vec2(200.0f, 200.0f);
+    } else if (type == ObjectType::UISlider) {
+        sceneObjects.back().ui.label = "Slider";
+        sceneObjects.back().ui.size = glm::vec2(240.0f, 32.0f);
+    } else if (type == ObjectType::UIButton) {
+        sceneObjects.back().ui.label = "Button";
+        sceneObjects.back().ui.size = glm::vec2(160.0f, 40.0f);
+    } else if (type == ObjectType::UIText) {
+        sceneObjects.back().ui.label = "Text";
+        sceneObjects.back().ui.size = glm::vec2(240.0f, 32.0f);
+    } else if (type == ObjectType::Sprite2D) {
+        sceneObjects.back().ui.label = "Sprite2D";
+        sceneObjects.back().ui.size = glm::vec2(128.0f, 128.0f);
     }
     sceneObjects.back().localPosition = sceneObjects.back().position;
     sceneObjects.back().localRotation = NormalizeEulerDegrees(sceneObjects.back().rotation);
@@ -1369,6 +1614,8 @@ void Engine::duplicateSelected() {
         newObj.postFx = it->postFx;
         newObj.hasRigidbody = it->hasRigidbody;
         newObj.rigidbody = it->rigidbody;
+        newObj.hasRigidbody2D = it->hasRigidbody2D;
+        newObj.rigidbody2D = it->rigidbody2D;
         newObj.hasCollider = it->hasCollider;
         newObj.collider = it->collider;
         newObj.hasPlayerController = it->hasPlayerController;
@@ -1379,6 +1626,7 @@ void Engine::duplicateSelected() {
         newObj.localInitialized = true;
         newObj.hasAudioSource = it->hasAudioSource;
         newObj.audioSource = it->audioSource;
+        newObj.ui = it->ui;
         
         sceneObjects.push_back(newObj);
         setPrimarySelection(id);
@@ -1565,6 +1813,13 @@ bool Engine::raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& 
 }
 
 void Engine::syncLocalTransform(SceneObject& obj) {
+    if (obj.parentId == -1) {
+        obj.localPosition = obj.position;
+        obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+        obj.localScale = obj.scale;
+        obj.localInitialized = true;
+        return;
+    }
     glm::vec3 parentPos(0.0f);
     glm::quat parentRot(1.0f, 0.0f, 0.0f, 0.0f);
     glm::vec3 parentScale(1.0f);
@@ -1576,6 +1831,11 @@ void Engine::syncLocalTransform(SceneObject& obj) {
         }
     }
     updateLocalFromWorld(obj, parentPos, parentRot, parentScale);
+}
+
+void Engine::setFrameRateCapFromScript(bool enabled, float cap) {
+    fpsCapEnabled = enabled;
+    fpsCap = std::max(1.0f, cap);
 }
 
 bool Engine::playAudioFromScript(int id) {
@@ -1820,6 +2080,7 @@ void Engine::setupImGui() {
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
+    initUIStylePresets();
 
     std::cerr << "[DEBUG] setupImGui: initializing ImGui GLFW backend..." << std::endl;
     ImGui_ImplGlfw_InitForOpenGL(editorWindow, true);
@@ -1832,3 +2093,62 @@ void Engine::setupImGui() {
     std::cerr << "[DEBUG] setupImGui: complete!" << std::endl;
 }
 #pragma endregion
+
+void Engine::initUIStylePresets() {
+    uiStylePresets.clear();
+    uiStylePresets.shrink_to_fit();
+
+    UIStylePreset current;
+    current.name = "Default";
+    current.style = ImGui::GetStyle();
+    current.builtin = true;
+    uiStylePresets.push_back(current);
+
+    UIStylePreset editor;
+    editor.name = "Editor Style";
+    editor.style = ImGui::GetStyle();
+    editor.builtin = true;
+    uiStylePresets.push_back(editor);
+
+    UIStylePreset imguiDefault;
+    imguiDefault.name = "ImGui Default";
+    imguiDefault.style = ImGui::GetStyle();
+    ImGui::StyleColorsDark(&imguiDefault.style);
+    imguiDefault.builtin = true;
+    uiStylePresets.push_back(imguiDefault);
+
+    uiStylePresetIndex = 0;
+}
+
+int Engine::findUIStylePreset(const std::string& name) const {
+    for (size_t i = 0; i < uiStylePresets.size(); ++i) {
+        if (uiStylePresets[i].name == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+const Engine::UIStylePreset* Engine::getUIStylePreset(const std::string& name) const {
+    int idx = findUIStylePreset(name);
+    if (idx < 0) return nullptr;
+    return &uiStylePresets[idx];
+}
+
+void Engine::registerUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace) {
+    if (name.empty()) return;
+    int idx = findUIStylePreset(name);
+    if (idx >= 0) {
+        if (replace) {
+            uiStylePresets[idx].style = style;
+        }
+        return;
+    }
+    UIStylePreset preset;
+    preset.name = name;
+    preset.style = style;
+    preset.builtin = false;
+    uiStylePresets.push_back(preset);
+}
+
+void Engine::registerUIStylePresetFromScript(const std::string& name, const ImGuiStyle& style, bool replace) {
+    registerUIStylePreset(name, style, replace);
+}

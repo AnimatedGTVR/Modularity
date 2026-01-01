@@ -3,20 +3,27 @@
 #include "Common.h"
 
 enum class ObjectType {
-    Cube,
-    Sphere,
-    Capsule,
-    OBJMesh,
-    Model,       // New type for Assimp-loaded models (FBX, GLTF, etc.)
-    DirectionalLight,
-    PointLight,
-    SpotLight,
-    AreaLight,
-    Camera,
-    PostFXNode,
-    Mirror,
-    Plane,
-    Torus
+    Cube = 0,
+    Sphere = 1,
+    Capsule = 2,
+    OBJMesh = 3,
+    Model = 4,        // New type for Assimp-loaded models (FBX, GLTF, etc.)
+    DirectionalLight = 5,
+    PointLight = 6,
+    SpotLight = 7,
+    AreaLight = 8,
+    Camera = 9,
+    PostFXNode = 10,
+    Mirror = 11,
+    Plane = 12,
+    Torus = 13,
+    Sprite = 14,      // 3D quad sprite (lit/unlit with material)
+    Sprite2D = 15,    // Screen-space sprite
+    Canvas = 16,      // UI canvas root
+    UIImage = 17,
+    UISlider = 18,
+    UIButton = 19,
+    UIText = 20
 };
 
 struct MaterialProperties {
@@ -32,6 +39,25 @@ enum class LightType {
     Point = 1,
     Spot = 2,
     Area = 3
+};
+
+enum class UIAnchor {
+    Center = 0,
+    TopLeft = 1,
+    TopRight = 2,
+    BottomLeft = 3,
+    BottomRight = 4
+};
+
+enum class UISliderStyle {
+    ImGui = 0,
+    Fill = 1,
+    Circle = 2
+};
+
+enum class UIButtonStyle {
+    ImGui = 0,
+    Outline = 1
 };
 
 struct LightComponent {
@@ -142,6 +168,31 @@ struct PlayerControllerComponent {
     float yaw = 0.0f;
 };
 
+struct UIElementComponent {
+    UIAnchor anchor = UIAnchor::Center;
+    glm::vec2 position = glm::vec2(0.0f); // offset in pixels from anchor
+    glm::vec2 size = glm::vec2(160.0f, 40.0f);
+    float sliderValue = 0.5f;
+    float sliderMin = 0.0f;
+    float sliderMax = 1.0f;
+    std::string label = "UI Element";
+    bool buttonPressed = false;
+    glm::vec4 color = glm::vec4(1.0f);
+    bool interactable = true;
+    UISliderStyle sliderStyle = UISliderStyle::ImGui;
+    UIButtonStyle buttonStyle = UIButtonStyle::ImGui;
+    std::string stylePreset = "Default";
+    float textScale = 1.0f;
+};
+
+struct Rigidbody2DComponent {
+    bool enabled = true;
+    bool useGravity = false;
+    float gravityScale = 1.0f;
+    float linearDamping = 0.0f;
+    glm::vec2 velocity = glm::vec2(0.0f);
+};
+
 struct AudioSourceComponent {
     bool enabled = true;
     std::string clipPath;
@@ -188,12 +239,15 @@ public:
     std::vector<std::string> additionalMaterialPaths;
     bool hasRigidbody = false;
     RigidbodyComponent rigidbody;
+    bool hasRigidbody2D = false;
+    Rigidbody2DComponent rigidbody2D;
     bool hasCollider = false;
     ColliderComponent collider;
     bool hasPlayerController = false;
     PlayerControllerComponent playerController;
     bool hasAudioSource = false;
     AudioSourceComponent audioSource;
+    UIElementComponent ui;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name),

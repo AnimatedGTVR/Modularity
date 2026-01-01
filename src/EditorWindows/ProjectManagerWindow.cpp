@@ -188,7 +188,7 @@ void Engine::renderLauncher() {
         ImGui::SetWindowFontScale(1.4f);
         ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.0f), "Modularity");
         ImGui::SetWindowFontScale(1.0f);
-        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Debug Build V0.7.0");
+        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Beta V1.0");
 
 
         ImGui::EndChild();
@@ -349,13 +349,10 @@ void Engine::renderLauncher() {
                 ImGui::Spacing();
             }
         }
-
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-
-        ImGui::TextDisabled("Modularity Engine - Version 0.6.8");
-
+        ImGui::TextDisabled("Modularity Engine - Beta V1.0");
         ImGui::EndChild();
     }
 

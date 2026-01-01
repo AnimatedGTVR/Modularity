@@ -993,7 +993,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
-    shader->setBool("unlit", obj.type == ObjectType::Mirror);
+    shader->setBool("unlit", obj.type == ObjectType::Mirror || obj.type == ObjectType::Sprite);
 
     Texture* baseTex = texture1;
     if (!obj.albedoTexturePath.empty()) {
@@ -1046,6 +1046,9 @@ void Renderer::renderObject(const SceneObject& obj) {
         case ObjectType::Mirror:
             if (planeMesh) planeMesh->draw();
             break;
+        case ObjectType::Sprite:
+            if (planeMesh) planeMesh->draw();
+            break;
         case ObjectType::Torus:
             if (torusMesh) torusMesh->draw();
             break;
@@ -1077,6 +1080,14 @@ void Renderer::renderObject(const SceneObject& obj) {
             // Cameras are editor helpers only
             break;
         case ObjectType::PostFXNode:
+            break;
+        case ObjectType::Sprite2D:
+        case ObjectType::Canvas:
+        case ObjectType::UIImage:
+        case ObjectType::UISlider:
+        case ObjectType::UIButton:
+        case ObjectType::UIText:
+            // UI types are rendered via ImGui, not here.
             break;
     }
 }
@@ -1196,7 +1207,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (!obj.enabled) continue;
         if (!drawMirrorObjects && obj.type == ObjectType::Mirror) continue;
         // Skip light gizmo-only types and camera helpers
-        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode) {
+        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode || obj.type == ObjectType::Canvas || obj.type == ObjectType::UIImage || obj.type == ObjectType::UISlider || obj.type == ObjectType::UIButton || obj.type == ObjectType::UIText || obj.type == ObjectType::Sprite2D) {
             continue;
         }
 
@@ -1283,6 +1294,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         else if (obj.type == ObjectType::Capsule) meshToDraw = capsuleMesh;
         else if (obj.type == ObjectType::Plane) meshToDraw = planeMesh;
         else if (obj.type == ObjectType::Mirror) meshToDraw = planeMesh;
+        else if (obj.type == ObjectType::Sprite) meshToDraw = planeMesh;
         else if (obj.type == ObjectType::Torus) meshToDraw = torusMesh;
         else if (obj.type == ObjectType::OBJMesh && obj.meshId != -1) {
             meshToDraw = g_objLoader.getMesh(obj.meshId);
@@ -1461,7 +1473,7 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     return target.texture;
 }
 
-void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int /*selectedId*/, float fovDeg, float nearPlane, float farPlane, bool drawColliders) {
+void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane, bool drawColliders) {
     updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
     if (drawColliders) {
@@ -1470,6 +1482,7 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         renderCollisionOverlay(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
+    renderSelectionOutline(camera, sceneObjects, selectedId, fovDeg, nearPlane, farPlane);
     unsigned int result = applyPostProcessing(sceneObjects, viewportTexture, currentWidth, currentHeight, true);
     displayTexture = result ? result : viewportTexture;
 }
@@ -1498,7 +1511,11 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
     GLint prevPoly[2] = { GL_FILL, GL_FILL };
     glGetIntegerv(GL_POLYGON_MODE, prevPoly);
     GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean depthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
     GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
+    GLint prevCullMode = GL_BACK;
+    glGetIntegerv(GL_CULL_FACE_MODE, &prevCullMode);
     GLboolean polyOffsetLine = glIsEnabled(GL_POLYGON_OFFSET_LINE);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1572,6 +1589,9 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
                 case ObjectType::Plane:
                     meshToDraw = planeMesh;
                     break;
+                case ObjectType::Sprite:
+                    meshToDraw = planeMesh;
+                    break;
                 case ObjectType::Torus:
                     meshToDraw = sphereMesh;
                     break;
@@ -1603,6 +1623,153 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
     if (cullFace) glEnable(GL_CULL_FACE);
     if (depthTest) glEnable(GL_DEPTH_TEST);
     glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
+}
+
+void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane) {
+    if (!defaultShader || selectedId < 0 || currentWidth <= 0 || currentHeight <= 0) return;
+
+    const SceneObject* selectedObj = nullptr;
+    for (const auto& obj : sceneObjects) {
+        if (obj.id == selectedId) {
+            selectedObj = &obj;
+            break;
+        }
+    }
+    if (!selectedObj || !selectedObj->enabled) return;
+
+    if (selectedObj->type == ObjectType::PointLight ||
+        selectedObj->type == ObjectType::SpotLight ||
+        selectedObj->type == ObjectType::AreaLight ||
+        selectedObj->type == ObjectType::Camera ||
+        selectedObj->type == ObjectType::PostFXNode ||
+        selectedObj->type == ObjectType::Canvas ||
+        selectedObj->type == ObjectType::UIImage ||
+        selectedObj->type == ObjectType::UISlider ||
+        selectedObj->type == ObjectType::UIButton ||
+        selectedObj->type == ObjectType::UIText ||
+        selectedObj->type == ObjectType::Sprite2D) {
+        return;
+    }
+
+    Mesh* meshToDraw = nullptr;
+    if (selectedObj->type == ObjectType::Cube) meshToDraw = cubeMesh;
+    else if (selectedObj->type == ObjectType::Sphere) meshToDraw = sphereMesh;
+    else if (selectedObj->type == ObjectType::Capsule) meshToDraw = capsuleMesh;
+    else if (selectedObj->type == ObjectType::Plane) meshToDraw = planeMesh;
+    else if (selectedObj->type == ObjectType::Mirror) meshToDraw = planeMesh;
+    else if (selectedObj->type == ObjectType::Sprite) meshToDraw = planeMesh;
+    else if (selectedObj->type == ObjectType::Torus) meshToDraw = torusMesh;
+    else if (selectedObj->type == ObjectType::OBJMesh && selectedObj->meshId != -1) {
+        meshToDraw = g_objLoader.getMesh(selectedObj->meshId);
+    } else if (selectedObj->type == ObjectType::Model && selectedObj->meshId != -1) {
+        meshToDraw = getModelLoader().getMesh(selectedObj->meshId);
+    }
+    if (!meshToDraw) return;
+
+    GLint prevPoly[2] = { GL_FILL, GL_FILL };
+    glGetIntegerv(GL_POLYGON_MODE, prevPoly);
+    GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean depthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
+    GLint prevCullMode = GL_BACK;
+    glGetIntegerv(GL_CULL_FACE_MODE, &prevCullMode);
+    GLboolean stencilTest = glIsEnabled(GL_STENCIL_TEST);
+    GLint prevStencilFunc = GL_ALWAYS;
+    GLint prevStencilRef = 0;
+    GLint prevStencilValueMask = 0xFF;
+    GLint prevStencilFail = GL_KEEP;
+    GLint prevStencilZFail = GL_KEEP;
+    GLint prevStencilZPass = GL_KEEP;
+    GLint prevStencilWriteMask = 0xFF;
+    glGetIntegerv(GL_STENCIL_FUNC, &prevStencilFunc);
+    glGetIntegerv(GL_STENCIL_REF, &prevStencilRef);
+    glGetIntegerv(GL_STENCIL_VALUE_MASK, &prevStencilValueMask);
+    glGetIntegerv(GL_STENCIL_FAIL, &prevStencilFail);
+    glGetIntegerv(GL_STENCIL_PASS_DEPTH_FAIL, &prevStencilZFail);
+    glGetIntegerv(GL_STENCIL_PASS_DEPTH_PASS, &prevStencilZPass);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, &prevStencilWriteMask);
+    GLboolean prevColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+    glGetBooleanv(GL_COLOR_WRITEMASK, prevColorMask);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glViewport(0, 0, currentWidth, currentHeight);
+    glClearStencil(0);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    Shader* active = defaultShader;
+    active->use();
+    active->setMat4("view", camera.getViewMatrix());
+    active->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)currentWidth / (float)currentHeight, nearPlane, farPlane));
+    active->setVec3("viewPos", camera.position);
+    active->setBool("unlit", true);
+    active->setBool("hasOverlay", false);
+    active->setBool("hasNormalMap", false);
+    active->setInt("lightCount", 0);
+    active->setFloat("mixAmount", 0.0f);
+    active->setVec3("materialColor", glm::vec3(1.0f, 0.5f, 0.1f));
+    active->setFloat("ambientStrength", 1.0f);
+    active->setFloat("specularStrength", 0.0f);
+    active->setFloat("shininess", 1.0f);
+    active->setInt("texture1", 0);
+    active->setInt("overlayTex", 1);
+    active->setInt("normalMap", 2);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, debugWhiteTexture ? debugWhiteTexture : (texture1 ? texture1->GetID() : 0));
+
+    glm::mat4 baseModel = glm::mat4(1.0f);
+    baseModel = glm::translate(baseModel, selectedObj->position);
+    baseModel = glm::rotate(baseModel, glm::radians(selectedObj->rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    baseModel = glm::rotate(baseModel, glm::radians(selectedObj->rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    baseModel = glm::rotate(baseModel, glm::radians(selectedObj->rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    baseModel = glm::scale(baseModel, selectedObj->scale);
+
+    // Mark the object in the stencil buffer.
+    glEnable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    if (cullFace) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(prevCullMode);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+    active->setMat4("model", baseModel);
+    meshToDraw->draw();
+
+    // Draw the scaled outline where stencil is not marked.
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+    glStencilMask(0x00);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+
+    const float outlineScale = 1.03f;
+    glm::mat4 outlineModel = glm::scale(baseModel, glm::vec3(outlineScale));
+    active->setMat4("model", outlineModel);
+    meshToDraw->draw();
+
+    if (!cullFace) {
+        glDisable(GL_CULL_FACE);
+    } else {
+        glCullFace(prevCullMode);
+    }
+    glDepthMask(depthMask);
+    if (depthTest) glEnable(GL_DEPTH_TEST);
+    else glDisable(GL_DEPTH_TEST);
+    glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
+    glColorMask(prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
+    glStencilFunc(prevStencilFunc, prevStencilRef, prevStencilValueMask);
+    glStencilOp(prevStencilFail, prevStencilZFail, prevStencilZPass);
+    glStencilMask(prevStencilWriteMask);
+    if (!stencilTest) glDisable(GL_STENCIL_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void Renderer::endRender() {

@@ -8,6 +8,8 @@ struct ControllerState {
     float pitch = 0.0f;
     float yaw = 0.0f;
     float verticalVelocity = 0.0f;
+    glm::vec3 debugVelocity = glm::vec3(0.0f);
+    bool debugGrounded = false;
     bool initialized = false;
 };
 
@@ -38,23 +40,6 @@ void bindSettings(ScriptContext& ctx) {
     ctx.AutoSetting("enforceRigidbody", enforceRigidbody);
     ctx.AutoSetting("showDebug", showDebug);
 }
-
-void ensureComponents(ScriptContext& ctx, float height, float radius) {
-    if (!ctx.object) return;
-    if (enforceCollider) {
-        ctx.object->hasCollider = true;
-        ctx.object->collider.enabled = true;
-        ctx.object->collider.type = ColliderType::Capsule;
-        ctx.object->collider.convex = true;
-        ctx.object->collider.boxSize = glm::vec3(radius * 2.0f, height, radius * 2.0f);
-    }
-    if (enforceRigidbody) {
-        ctx.object->hasRigidbody = true;
-        ctx.object->rigidbody.enabled = true;
-        ctx.object->rigidbody.useGravity = true;
-        ctx.object->rigidbody.isKinematic = false;
-    }
-}
 } // namespace
 
 extern "C" void Script_OnInspector(ScriptContext& ctx) {
@@ -63,19 +48,24 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
     ImGui::TextUnformatted("Standalone Movement Controller");
     ImGui::Separator();
 
-    bool changed = false;
-    changed |= ImGui::DragFloat3("Walk/Run/Jump", &moveTuning.x, 0.05f, 0.0f, 25.0f, "%.2f");
-    changed |= ImGui::DragFloat2("Look Sens/Clamp", &lookTuning.x, 0.01f, 0.0f, 500.0f, "%.2f");
-    changed |= ImGui::DragFloat3("Height/Radius/Snap", &capsuleTuning.x, 0.02f, 0.0f, 5.0f, "%.2f");
-    changed |= ImGui::DragFloat3("Gravity/Probe/MaxFall", &gravityTuning.x, 0.05f, -50.0f, 50.0f, "%.2f");
-    changed |= ImGui::Checkbox("Enable Mouse Look", &enableMouseLook);
-    changed |= ImGui::Checkbox("Hold RMB to Look", &requireMouseButton);
-    changed |= ImGui::Checkbox("Force Collider", &enforceCollider);
-    changed |= ImGui::Checkbox("Force Rigidbody", &enforceRigidbody);
-    changed |= ImGui::Checkbox("Show Debug", &showDebug);
+    ImGui::DragFloat3("Walk/Run/Jump", &moveTuning.x, 0.05f, 0.0f, 25.0f, "%.2f");
+    ImGui::DragFloat2("Look Sens/Clamp", &lookTuning.x, 0.01f, 0.0f, 500.0f, "%.2f");
+    ImGui::DragFloat3("Height/Radius/Snap", &capsuleTuning.x, 0.02f, 0.0f, 5.0f, "%.2f");
+    ImGui::DragFloat3("Gravity/Probe/MaxFall", &gravityTuning.x, 0.05f, -50.0f, 50.0f, "%.2f");
+    ImGui::Checkbox("Enable Mouse Look", &enableMouseLook);
+    ImGui::Checkbox("Hold RMB to Look", &requireMouseButton);
+    ImGui::Checkbox("Force Collider", &enforceCollider);
+    ImGui::Checkbox("Force Rigidbody", &enforceRigidbody);
+    ImGui::Checkbox("Show Debug", &showDebug);
 
-    if (changed) {
-        ctx.SaveAutoSettings();
+    if (showDebug && ctx.object) {
+        auto it = g_states.find(ctx.object->id);
+        if (it != g_states.end()) {
+            const ControllerState& state = it->second;
+            ImGui::Separator();
+            ImGui::Text("Move (%.2f, %.2f, %.2f)", state.debugVelocity.x, state.debugVelocity.y, state.debugVelocity.z);
+            ImGui::Text("Grounded: %s", state.debugGrounded ? "yes" : "no");
+        }
     }
 }
 
@@ -89,14 +79,16 @@ void Begin(ScriptContext& ctx, float /*deltaTime*/) {
         state.verticalVelocity = 0.0f;
         state.initialized = true;
     }
-    ensureComponents(ctx, capsuleTuning.x, capsuleTuning.y);
+    if (enforceCollider) ctx.EnsureCapsuleCollider(capsuleTuning.x, capsuleTuning.y);
+    if (enforceRigidbody) ctx.EnsureRigidbody(true, false);
 }
 
 void TickUpdate(ScriptContext& ctx, float deltaTime) {
     if (!ctx.object) return;
 
     ControllerState& state = getState(ctx.object->id);
-    ensureComponents(ctx, capsuleTuning.x, capsuleTuning.y);
+    if (enforceCollider) ctx.EnsureCapsuleCollider(capsuleTuning.x, capsuleTuning.y);
+    if (enforceRigidbody) ctx.EnsureRigidbody(true, false);
 
     const float walkSpeed = moveTuning.x;
     const float runSpeed = moveTuning.y;
@@ -125,17 +117,9 @@ void TickUpdate(ScriptContext& ctx, float deltaTime) {
         }
     }
 
-    glm::quat q = glm::quat(glm::radians(glm::vec3(state.pitch, state.yaw, 0.0f)));
-    glm::vec3 forward = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
-    glm::vec3 right = glm::normalize(q * glm::vec3(1.0f, 0.0f, 0.0f));
-    glm::vec3 planarForward = glm::normalize(glm::vec3(forward.x, 0.0f, forward.z));
-    glm::vec3 planarRight = glm::normalize(glm::vec3(right.x, 0.0f, right.z));
-    if (!std::isfinite(planarForward.x) || glm::length(planarForward) < 1e-3f) {
-        planarForward = glm::vec3(0.0f, 0.0f, -1.0f);
-    }
-    if (!std::isfinite(planarRight.x) || glm::length(planarRight) < 1e-3f) {
-        planarRight = glm::vec3(1.0f, 0.0f, 0.0f);
-    }
+    glm::vec3 planarForward(0.0f);
+    glm::vec3 planarRight(0.0f);
+    ctx.GetPlanarYawPitchVectors(state.pitch, state.yaw, planarForward, planarRight);
 
     glm::vec3 move(0.0f);
     if (ImGui::IsKeyDown(ImGuiKey_W)) move += planarForward;
@@ -195,8 +179,8 @@ void TickUpdate(ScriptContext& ctx, float deltaTime) {
     }
 
     if (showDebug) {
-        ImGui::Text("Move (%.2f, %.2f, %.2f)", velocity.x, velocity.y, velocity.z);
-        ImGui::Text("Grounded: %s", grounded ? "yes" : "no");
+        state.debugVelocity = velocity;
+        state.debugGrounded = grounded;
     }
 }
 
