@@ -2624,23 +2624,41 @@ void Engine::renderDialogs() {
     }
 
     if (showCompilePopup) {
+        if (!compilePopupOpened) {
+            ImGui::OpenPopup("Script Compile");
+            compilePopupOpened = true;
+        }
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(520, 240), ImGuiCond_FirstUseEver);
-        ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
-        if (ImGui::Begin("Script Compile", &showCompilePopup, flags)) {
+        ImGui::SetNextWindowSize(ImVec2(520, 260), ImGuiCond_FirstUseEver);
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+        bool allowClose = !compileInProgress;
+        if (ImGui::BeginPopupModal("Script Compile", allowClose ? &showCompilePopup : nullptr, flags)) {
             ImGui::TextWrapped("%s", lastCompileStatus.c_str());
+            float t = static_cast<float>(glfwGetTime());
+            float pulse = 0.5f + 0.5f * std::sin(t * 2.5f);
+            ImGui::ProgressBar(compileInProgress ? pulse : 1.0f, ImVec2(-1, 0),
+                               compileInProgress ? "Working..." : "Done");
             ImGui::Separator();
             ImGui::BeginChild("CompileLog", ImVec2(0, -40), true);
-            ImGui::TextUnformatted(lastCompileLog.c_str());
+            if (lastCompileLog.empty() && compileInProgress) {
+                ImGui::TextUnformatted("Waiting for compiler output...");
+            } else {
+                ImGui::TextUnformatted(lastCompileLog.c_str());
+            }
             ImGui::EndChild();
             ImGui::Spacing();
-            if (ImGui::Button("Close", ImVec2(80, 0))) {
+            if (allowClose && ImGui::Button("Close", ImVec2(80, 0))) {
                 showCompilePopup = false;
+                ImGui::CloseCurrentPopup();
+                compilePopupOpened = false;
             }
+            ImGui::EndPopup();
         }
-        ImGui::End();
+    } else {
+        compilePopupOpened = false;
     }
 
     if (showSaveSceneAsDialog) {

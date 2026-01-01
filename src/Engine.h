@@ -14,6 +14,12 @@
 #include "PackageManager.h"
 #include "../include/Window/Window.h"
 #include <unordered_map>
+#include <unordered_set>
+#include <atomic>
+#include <deque>
+#include <future>
+#include <mutex>
+#include <thread>
 
 void window_size_callback(GLFWwindow* window, int width, int height);
 
@@ -113,8 +119,13 @@ private:
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
     bool gameViewportFocused = false;
-    bool showUITextOverlay = false;
+    bool showGameProfiler = true;
     bool showCanvasOverlay = false;
+    int gameViewportResolutionIndex = 0;
+    int gameViewportCustomWidth = 1920;
+    int gameViewportCustomHeight = 1080;
+    float gameViewportZoom = 1.0f;
+    bool gameViewportAutoFit = true;
     int activePlayerId = -1;
     MeshBuilder meshBuilder;
     char meshBuilderPath[260] = "";
@@ -135,9 +146,40 @@ private:
     PhysicsSystem physics;
     AudioSystem audio;
     bool showCompilePopup = false;
+    bool compilePopupOpened = false;
+    double compilePopupHideTime = 0.0;
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
     std::string lastCompileLog;
+    struct ScriptCompileJobResult {
+        bool success = false;
+        fs::path scriptPath;
+        fs::path binaryPath;
+        std::string compiledSource;
+        std::string compileLog;
+        std::string linkLog;
+        std::string error;
+    };
+    std::atomic<bool> compileInProgress = false;
+    std::atomic<bool> compileResultReady = false;
+    std::thread compileWorker;
+    std::mutex compileMutex;
+    ScriptCompileJobResult compileResult;
+    std::unordered_map<std::string, fs::file_time_type> scriptLastAutoCompileTime;
+    std::deque<fs::path> autoCompileQueue;
+    std::unordered_set<std::string> autoCompileQueued;
+    double scriptAutoCompileLastCheck = 0.0;
+    double scriptAutoCompileInterval = 0.5;
+    struct ProjectLoadResult {
+        bool success = false;
+        Project project;
+        std::string error;
+        std::string path;
+    };
+    bool projectLoadInProgress = false;
+    double projectLoadStartTime = 0.0;
+    std::string projectLoadPath;
+    std::future<ProjectLoadResult> projectLoadFuture;
     bool specMode = false;
     bool testMode = false;
     bool collisionWireframe = false;
@@ -190,11 +232,18 @@ private:
     void renderViewport();
     void renderGameViewportWindow();
     void renderDialogs();
+    void updateCompileJob();
     void renderProjectBrowserPanel();
     void renderScriptEditorWindows();
     void refreshScriptEditorWindows();
     Camera makeCameraFromObject(const SceneObject& obj) const;
     void compileScriptFile(const fs::path& scriptPath);
+    void updateAutoCompileScripts();
+    void processAutoCompileQueue();
+    void queueAutoCompile(const fs::path& scriptPath, const fs::file_time_type& sourceTime);
+    void startProjectLoad(const std::string& path);
+    void pollProjectLoad();
+    void finishProjectLoad(ProjectLoadResult& result);
     void updateScripts(float delta);
     void updatePlayerController(float delta);
     void updateRigidbody2D(float delta);

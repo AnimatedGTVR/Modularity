@@ -898,10 +898,34 @@ void Renderer::ensureQuad() {
 }
 
 void Renderer::drawFullscreenQuad() {
+    recordFullscreenDraw();
     if (quadVAO == 0) ensureQuad();
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+}
+
+void Renderer::resetStats(RenderStats& stats) {
+    stats.drawCalls = 0;
+    stats.meshDraws = 0;
+    stats.fullscreenDraws = 0;
+}
+
+void Renderer::recordDrawCall() {
+    if (!activeStats) return;
+    activeStats->drawCalls += 1;
+}
+
+void Renderer::recordMeshDraw() {
+    if (!activeStats) return;
+    activeStats->drawCalls += 1;
+    activeStats->meshDraws += 1;
+}
+
+void Renderer::recordFullscreenDraw() {
+    if (!activeStats) return;
+    activeStats->drawCalls += 1;
+    activeStats->fullscreenDraws += 1;
 }
 
 void Renderer::clearHistory() {
@@ -1303,6 +1327,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
 
         if (meshToDraw) {
+            recordMeshDraw();
             meshToDraw->draw();
         }
     }
@@ -1313,6 +1338,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                                         (float)width / height, 
                                         nearPlane, farPlane);
 
+        recordDrawCall();
         skybox->draw(glm::value_ptr(view), glm::value_ptr(proj));
     }
 
@@ -1474,6 +1500,8 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
 }
 
 void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane, bool drawColliders) {
+    resetStats(viewportStats);
+    activeStats = &viewportStats;
     updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
     if (drawColliders) {
@@ -1485,11 +1513,17 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     renderSelectionOutline(camera, sceneObjects, selectedId, fovDeg, nearPlane, farPlane);
     unsigned int result = applyPostProcessing(sceneObjects, viewportTexture, currentWidth, currentHeight, true);
     displayTexture = result ? result : viewportTexture;
+    activeStats = nullptr;
 }
 
 unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX) {
+    resetStats(previewStats);
+    activeStats = &previewStats;
     ensureRenderTarget(previewTarget, width, height);
-    if (previewTarget.fbo == 0) return 0;
+    if (previewTarget.fbo == 0) {
+        activeStats = nullptr;
+        return 0;
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, previewTarget.fbo);
     glViewport(0, 0, width, height);
@@ -1499,9 +1533,11 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     updateMirrorTargets(camera, sceneObjects, width, height, fovDeg, nearPlane, farPlane);
     renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
     if (!applyPostFX) {
+        activeStats = nullptr;
         return previewTarget.texture;
     }
     unsigned int processed = applyPostProcessing(sceneObjects, previewTarget.texture, width, height, false);
+    activeStats = nullptr;
     return processed ? processed : previewTarget.texture;
 }
 

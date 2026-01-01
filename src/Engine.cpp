@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <functional>
+#include <chrono>
 #include <unordered_set>
 #include <unordered_map>
 #include "ThirdParty/glm/gtc/constants.hpp"
@@ -439,6 +440,7 @@ void Engine::run() {
         deltaTime = std::min(deltaTime, 1.0f / 30.0f);
 
         glfwPollEvents();
+        pollProjectLoad();
 
         if (!showLauncher) {
             handleKeyboardShortcuts();
@@ -504,6 +506,10 @@ void Engine::run() {
             }
         }
         audio.update(sceneObjects, listenerCamera, audioShouldPlay);
+
+        updateCompileJob();
+        updateAutoCompileScripts();
+        processAutoCompileQueue();
 
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
@@ -611,6 +617,10 @@ void Engine::run() {
 void Engine::shutdown() {
     if (projectManager.currentProject.isLoaded && projectManager.currentProject.hasUnsavedChanges) {
         saveCurrentScene();
+    }
+
+    if (compileWorker.joinable()) {
+        compileWorker.join();
     }
 
     physics.onPlayStop();
@@ -1022,6 +1032,112 @@ void Engine::updateScripts(float delta) {
     }
 }
 
+void Engine::queueAutoCompile(const fs::path& scriptPath, const fs::file_time_type& sourceTime) {
+    std::error_code ec;
+    fs::path scriptAbs = fs::absolute(scriptPath, ec);
+    if (ec) scriptAbs = scriptPath;
+    std::string key = scriptAbs.lexically_normal().string();
+    if (!autoCompileQueued.insert(key).second) return;
+
+    autoCompileQueue.push_back(scriptAbs);
+    scriptLastAutoCompileTime[key] = sourceTime;
+}
+
+void Engine::updateAutoCompileScripts() {
+    if (!projectManager.currentProject.isLoaded) return;
+    if (showLauncher) return;
+
+    double now = glfwGetTime();
+    if (now - scriptAutoCompileLastCheck < scriptAutoCompileInterval) return;
+    scriptAutoCompileLastCheck = now;
+
+    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
+    if (configPath.empty()) {
+        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
+    }
+
+    ScriptBuildConfig config;
+    std::string error;
+    if (!scriptCompiler.loadConfig(configPath, config, error)) {
+        return;
+    }
+    packageManager.applyToBuildConfig(config);
+
+    std::unordered_set<std::string> sources;
+    auto addSource = [&](const fs::path& path) {
+        if (path.empty()) return;
+        std::error_code ec;
+        fs::path absPath = fs::absolute(path, ec);
+        if (ec) absPath = path;
+        sources.insert(absPath.lexically_normal().string());
+    };
+
+    for (const auto& obj : sceneObjects) {
+        for (const auto& sc : obj.scripts) {
+            if (sc.path.empty()) continue;
+            addSource(sc.path);
+        }
+    }
+
+    fs::path scriptsDir = config.scriptsDir;
+    if (!scriptsDir.is_absolute()) {
+        scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
+    }
+    std::error_code dirEc;
+    if (fs::exists(scriptsDir, dirEc)) {
+        for (auto it = fs::recursive_directory_iterator(scriptsDir, dirEc);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (it->is_directory()) continue;
+            std::string ext = it->path().extension().string();
+            if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") {
+                addSource(it->path());
+            }
+        }
+    }
+
+    for (const auto& sourceKey : sources) {
+        fs::path sourcePath = sourceKey;
+        std::error_code sourceEc;
+        if (!fs::exists(sourcePath, sourceEc)) continue;
+        auto sourceTime = fs::last_write_time(sourcePath, sourceEc);
+        if (sourceEc) continue;
+
+        ScriptBuildCommands commands;
+        if (!scriptCompiler.makeCommands(config, sourcePath, commands, error)) {
+            continue;
+        }
+
+        std::error_code binEc;
+        bool binaryExists = fs::exists(commands.binaryPath, binEc);
+        fs::file_time_type binaryTime{};
+        if (binaryExists && !binEc) {
+            binaryTime = fs::last_write_time(commands.binaryPath, binEc);
+        }
+
+        bool needsCompile = !binaryExists || (!binEc && sourceTime > binaryTime);
+        if (!needsCompile) continue;
+
+        auto it = scriptLastAutoCompileTime.find(sourceKey);
+        if (it != scriptLastAutoCompileTime.end() && sourceTime <= it->second) continue;
+
+        queueAutoCompile(sourcePath, sourceTime);
+    }
+}
+
+void Engine::processAutoCompileQueue() {
+    if (compileInProgress) return;
+    if (autoCompileQueue.empty()) return;
+
+    fs::path next = autoCompileQueue.front();
+    autoCompileQueue.pop_front();
+    std::error_code ec;
+    fs::path absPath = fs::absolute(next, ec);
+    if (ec) absPath = next;
+    autoCompileQueued.erase(absPath.lexically_normal().string());
+
+    compileScriptFile(next);
+}
+
 void Engine::updatePlayerController(float delta) {
     if (!isPlaying) return;
 
@@ -1327,49 +1443,98 @@ void Engine::updateHierarchyWorldTransforms() {
 
 #pragma region Project Lifecycle
 void Engine::OpenProjectPath(const std::string& path) {
-    try {
-        if (projectManager.loadProject(path)) {
-            // Make sure project folders exist even for older/minimal projects
-            if (!fs::exists(projectManager.currentProject.assetsPath)) {
-                fs::create_directories(projectManager.currentProject.assetsPath);
-            }
-            if (!fs::exists(projectManager.currentProject.scenesPath)) {
-                fs::create_directories(projectManager.currentProject.scenesPath);
-            }
+    startProjectLoad(path);
+}
 
-            packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+void Engine::startProjectLoad(const std::string& path) {
+    if (projectLoadInProgress) return;
+    projectManager.errorMessage.clear();
+    projectLoadInProgress = true;
+    projectLoadStartTime = glfwGetTime();
+    projectLoadPath = path;
+    showLauncher = true;
 
-            if (!initRenderer()) {
-                addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
-                showLauncher = true;
-                return;
+    projectLoadFuture = std::async(std::launch::async, [path]() {
+        ProjectLoadResult result;
+        result.path = path;
+        try {
+            Project project;
+            if (project.load(path)) {
+                result.success = true;
+                result.project = std::move(project);
+            } else {
+                result.error = "Failed to load project file";
             }
-
-            if (!physics.isReady() && !physics.init()) {
-                addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
-            }
-
-            loadRecentScenes();
-            fs::path contentRoot = projectManager.currentProject.usesNewLayout
-                ? projectManager.currentProject.assetsPath
-                : projectManager.currentProject.projectPath;
-            fileBrowser.setProjectRoot(contentRoot);
-            fileBrowser.currentPath = contentRoot;
-            fileBrowser.needsRefresh = true;
-            scriptEditorWindowsDirty = true;
-            scriptEditorWindows.clear();
-            showLauncher = false;
-            addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
-        } else {
-            addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
+        } catch (const std::exception& e) {
+            result.error = std::string("Exception opening project: ") + e.what();
+        } catch (...) {
+            result.error = "Unknown exception opening project";
         }
-    } catch (const std::exception& e) {
-        addConsoleMessage(std::string("Exception opening project: ") + e.what(), ConsoleMessageType::Error);
-        showLauncher = true;
-    } catch (...) {
-        addConsoleMessage("Unknown exception opening project", ConsoleMessageType::Error);
-        showLauncher = true;
+        return result;
+    });
+}
+
+void Engine::pollProjectLoad() {
+    if (!projectLoadInProgress) return;
+    if (!projectLoadFuture.valid()) {
+        projectLoadInProgress = false;
+        return;
     }
+
+    auto state = projectLoadFuture.wait_for(std::chrono::milliseconds(0));
+    if (state == std::future_status::ready) {
+        ProjectLoadResult result = projectLoadFuture.get();
+        projectLoadInProgress = false;
+        finishProjectLoad(result);
+    }
+}
+
+void Engine::finishProjectLoad(ProjectLoadResult& result) {
+    if (!result.success) {
+        projectManager.errorMessage = result.error.empty() ? "Failed to load project file" : result.error;
+        addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
+        showLauncher = true;
+        return;
+    }
+
+    projectManager.currentProject = std::move(result.project);
+    projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
+
+    // Make sure project folders exist even for older/minimal projects
+    if (!fs::exists(projectManager.currentProject.assetsPath)) {
+        fs::create_directories(projectManager.currentProject.assetsPath);
+    }
+    if (!fs::exists(projectManager.currentProject.scenesPath)) {
+        fs::create_directories(projectManager.currentProject.scenesPath);
+    }
+
+    packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+
+    if (!initRenderer()) {
+        addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
+        showLauncher = true;
+        return;
+    }
+
+    if (!physics.isReady() && !physics.init()) {
+        addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
+    }
+
+    loadRecentScenes();
+    fs::path contentRoot = projectManager.currentProject.usesNewLayout
+        ? projectManager.currentProject.assetsPath
+        : projectManager.currentProject.projectPath;
+    fileBrowser.setProjectRoot(contentRoot);
+    fileBrowser.currentPath = contentRoot;
+    fileBrowser.needsRefresh = true;
+    scriptEditorWindowsDirty = true;
+    scriptEditorWindows.clear();
+    scriptLastAutoCompileTime.clear();
+    autoCompileQueue.clear();
+    autoCompileQueued.clear();
+    scriptAutoCompileLastCheck = 0.0;
+    showLauncher = false;
+    addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
 }
 
 void Engine::createNewProject(const char* name, const char* location) {
@@ -1407,6 +1572,10 @@ void Engine::createNewProject(const char* name, const char* location) {
         fileBrowser.needsRefresh = true;
         scriptEditorWindowsDirty = true;
         scriptEditorWindows.clear();
+        scriptLastAutoCompileTime.clear();
+        autoCompileQueue.clear();
+        autoCompileQueued.clear();
+        scriptAutoCompileLastCheck = 0.0;
 
         showLauncher = false;
         firstFrame = true;
@@ -1882,70 +2051,120 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         return;
     }
 
+    if (compileInProgress) {
+        showCompilePopup = true;
+        lastCompileStatus = "Compile already in progress";
+        return;
+    }
+    if (compileWorker.joinable()) {
+        compileWorker.join();
+    }
+
     showCompilePopup = true;
+    compilePopupHideTime = 0.0;
     lastCompileLog.clear();
     lastCompileStatus = "Compiling " + scriptPath.filename().string();
+    lastCompileSuccess = false;
 
     fs::path configPath = projectManager.currentProject.scriptsConfigPath;
     if (configPath.empty()) {
         configPath = projectManager.currentProject.projectPath / "Scripts.modu";
     }
 
-    ScriptBuildConfig config;
-    std::string error;
-    if (!scriptCompiler.loadConfig(configPath, config, error)) {
-        lastCompileSuccess = false;
-        lastCompileLog = error;
-        addConsoleMessage("Script config error: " + error, ConsoleMessageType::Error);
-        return;
-    }
-
-    packageManager.applyToBuildConfig(config);
-
-    ScriptBuildCommands commands;
-    if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {
-        lastCompileSuccess = false;
-        lastCompileLog = error;
-        addConsoleMessage("Script build error: " + error, ConsoleMessageType::Error);
-        return;
-    }
-
-    ScriptCompileOutput output;
-    if (!scriptCompiler.compile(commands, output, error)) {
-        lastCompileSuccess = false;
-        lastCompileStatus = "Compile failed";
-        lastCompileLog = output.compileLog + output.linkLog + error;
-        addConsoleMessage("Compile failed: " + error, ConsoleMessageType::Error);
-        if (!output.compileLog.empty()) addConsoleMessage(output.compileLog, ConsoleMessageType::Info);
-        if (!output.linkLog.empty()) addConsoleMessage(output.linkLog, ConsoleMessageType::Info);
-        return;
-    }
-
-    scriptRuntime.unloadAll();
-
-    lastCompileSuccess = true;
-    lastCompileStatus = "Reloading EngineRoot";
-    lastCompileLog = output.compileLog + output.linkLog;
-    addConsoleMessage("Compiled script -> " + commands.binaryPath.string(), ConsoleMessageType::Success);
-    if (!output.compileLog.empty()) addConsoleMessage(output.compileLog, ConsoleMessageType::Info);
-    if (!output.linkLog.empty()) addConsoleMessage(output.linkLog, ConsoleMessageType::Info);
-
-    // Update any ScriptComponents that point to this source with the freshly built binary path.
-    std::string compiledSource = fs::absolute(scriptPath).lexically_normal().string();
-    for (auto& obj : sceneObjects) {
-        for (auto& sc : obj.scripts) {
-            std::error_code ec;
-            fs::path scAbs = fs::absolute(sc.path, ec);
-            std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
-            if (scPathNorm == compiledSource) {
-                sc.lastBinaryPath = commands.binaryPath.string();
+    compileInProgress = true;
+    compileResultReady = false;
+    compileWorker = std::thread([this, scriptPath, configPath]() {
+        ScriptCompileJobResult result;
+        result.scriptPath = scriptPath;
+        std::string error;
+        ScriptBuildConfig config;
+        if (!scriptCompiler.loadConfig(configPath, config, error)) {
+            result.error = error;
+        } else {
+            packageManager.applyToBuildConfig(config);
+            ScriptBuildCommands commands;
+            if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {
+                result.error = error;
+            } else {
+                ScriptCompileOutput output;
+                if (!scriptCompiler.compile(commands, output, error)) {
+                    result.compileLog = output.compileLog;
+                    result.linkLog = output.linkLog;
+                    result.error = error;
+                } else {
+                    result.success = true;
+                    result.compileLog = output.compileLog;
+                    result.linkLog = output.linkLog;
+                    result.binaryPath = commands.binaryPath;
+                    result.compiledSource = fs::absolute(scriptPath).lexically_normal().string();
+                }
             }
         }
+        std::lock_guard<std::mutex> lock(compileMutex);
+        compileResult = std::move(result);
+        compileResultReady = true;
+        compileInProgress = false;
+    });
+}
+
+void Engine::updateCompileJob() {
+    if (compileResultReady) {
+        if (compileWorker.joinable()) {
+            compileWorker.join();
+        }
+        ScriptCompileJobResult result;
+        {
+            std::lock_guard<std::mutex> lock(compileMutex);
+            result = compileResult;
+            compileResultReady = false;
+        }
+
+        if (!result.success) {
+            lastCompileSuccess = false;
+            lastCompileStatus = "Compile failed";
+            lastCompileLog = result.compileLog + result.linkLog + result.error;
+            if (!result.error.empty()) {
+                addConsoleMessage("Compile failed: " + result.error, ConsoleMessageType::Error);
+            } else {
+                addConsoleMessage("Compile failed", ConsoleMessageType::Error);
+            }
+            if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
+            if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
+        } else {
+            scriptRuntime.unloadAll();
+
+            lastCompileSuccess = true;
+            lastCompileStatus = "Reloading ModuCore";
+            lastCompileLog = result.compileLog + result.linkLog;
+            addConsoleMessage("Compiled script -> " + result.binaryPath.string(), ConsoleMessageType::Success);
+            if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
+            if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
+
+            for (auto& obj : sceneObjects) {
+                for (auto& sc : obj.scripts) {
+                    std::error_code ec;
+                    fs::path scAbs = fs::absolute(sc.path, ec);
+                    std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
+                    if (scPathNorm == result.compiledSource) {
+                        sc.lastBinaryPath = result.binaryPath.string();
+                    }
+                }
+            }
+
+            scriptEditorWindowsDirty = true;
+            refreshScriptEditorWindows();
+        }
+
+        compilePopupHideTime = glfwGetTime() + 1.0;
+        showCompilePopup = true;
     }
 
-    // Refresh scripted editor window registry in case new tabs were added by this build.
-    scriptEditorWindowsDirty = true;
-    refreshScriptEditorWindows();
+    if (!compileInProgress && showCompilePopup && compilePopupHideTime > 0.0 &&
+        glfwGetTime() >= compilePopupHideTime) {
+        showCompilePopup = false;
+        compilePopupOpened = false;
+        compilePopupHideTime = 0.0;
+    }
 }
 
 void Engine::refreshScriptEditorWindows() {

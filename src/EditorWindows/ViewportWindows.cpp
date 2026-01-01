@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <cfloat>
 #include <cmath>
 #include <functional>
@@ -261,9 +262,23 @@ void Engine::renderGameViewportWindow() {
     ImGui::Begin("Game Viewport", &showGameViewport, ImGuiWindowFlags_NoScrollbar);
 
     bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    int width = std::max(160, (int)avail.x);
-    int height = std::max(120, (int)avail.y);
+    struct GameResolutionOption {
+        const char* label;
+        int width;
+        int height;
+        bool useWindow;
+        bool custom;
+    };
+    static const std::array<GameResolutionOption, 5> kGameResolutions = {{
+        { "Window", 0, 0, true, false },
+        { "1920x1080 (1080p)", 1920, 1080, false, false },
+        { "1280x720 (720p)", 1280, 720, false, false },
+        { "2560x1440 (1440p)", 2560, 1440, false, false },
+        { "Custom", 0, 0, false, true }
+    }};
+    if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= (int)kGameResolutions.size()) {
+        gameViewportResolutionIndex = 0;
+    }
 
     SceneObject* playerCam = nullptr;
     for (auto& obj : sceneObjects) {
@@ -288,11 +303,68 @@ void Engine::renderGameViewportWindow() {
         ImGui::Checkbox("Post FX", &dummyToggle);
     }
     ImGui::SameLine();
-    ImGui::Checkbox("Text", &showUITextOverlay);
+    ImGui::Checkbox("Profiler", &showGameProfiler);
     ImGui::SameLine();
     ImGui::Checkbox("Canvas Guides", &showCanvasOverlay);
     ImGui::EndDisabled();
     ImGui::PopStyleColor(3);
+
+    ImGui::Spacing();
+    const GameResolutionOption& resOption = kGameResolutions[gameViewportResolutionIndex];
+    ImGui::SetNextItemWidth(180.0f);
+    if (ImGui::BeginCombo("Resolution", resOption.label)) {
+        for (int i = 0; i < (int)kGameResolutions.size(); ++i) {
+            bool selected = (i == gameViewportResolutionIndex);
+            if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
+                gameViewportResolutionIndex = i;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (kGameResolutions[gameViewportResolutionIndex].custom) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::DragInt("W", &gameViewportCustomWidth, 1.0f, 64, 8192);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::DragInt("H", &gameViewportCustomHeight, 1.0f, 64, 8192);
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto Fit", &gameViewportAutoFit);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(gameViewportAutoFit);
+    float zoomPercent = gameViewportZoom * 100.0f;
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("Zoom", &zoomPercent, 10.0f, 200.0f, "%.0f%%")) {
+        gameViewportZoom = zoomPercent / 100.0f;
+    }
+    ImGui::EndDisabled();
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    int renderWidth = 0;
+    int renderHeight = 0;
+    if (kGameResolutions[gameViewportResolutionIndex].useWindow) {
+        renderWidth = std::max(160, (int)avail.x);
+        renderHeight = std::max(120, (int)avail.y);
+    } else if (kGameResolutions[gameViewportResolutionIndex].custom) {
+        renderWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
+        renderHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
+    } else {
+        renderWidth = kGameResolutions[gameViewportResolutionIndex].width;
+        renderHeight = kGameResolutions[gameViewportResolutionIndex].height;
+    }
+    float zoom = gameViewportZoom;
+    if (gameViewportAutoFit) {
+        if (kGameResolutions[gameViewportResolutionIndex].useWindow) {
+            zoom = 1.0f;
+        } else {
+            float fitX = (renderWidth > 0) ? (avail.x / (float)renderWidth) : 1.0f;
+            float fitY = (renderHeight > 0) ? (avail.y / (float)renderHeight) : 1.0f;
+            zoom = std::min(1.0f, std::min(fitX, fitY));
+            zoom = std::max(0.01f, zoom);
+        }
+    }
 
     if (playerCam && postFxChanged) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -302,38 +374,68 @@ void Engine::renderGameViewportWindow() {
         gameViewCursorLocked = false;
     }
 
-        if (playerCam && rendererInitialized) {
+    if (playerCam && rendererInitialized) {
         unsigned int tex = renderer.renderScenePreview(
             makeCameraFromObject(*playerCam),
             sceneObjects,
-            width,
-            height,
+            renderWidth,
+            renderHeight,
             playerCam->camera.fov,
             playerCam->camera.nearClip,
             playerCam->camera.farClip,
             playerCam->camera.applyPostFX
         );
 
-        ImGui::Image((void*)(intptr_t)tex, ImVec2((float)width, (float)height), ImVec2(0, 1), ImVec2(1, 0));
+        ImVec2 imageSize(std::max(1.0f, renderWidth * zoom), std::max(1.0f, renderHeight * zoom));
+        ImVec2 cursorPos = ImGui::GetCursorPos();
+        float offsetX = std::max(0.0f, (avail.x - imageSize.x) * 0.5f);
+        float offsetY = std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
+        ImGui::SetCursorPos(ImVec2(cursorPos.x + offsetX, cursorPos.y + offsetY));
+        ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
         bool imageHovered = ImGui::IsItemHovered();
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
         ImDrawList* drawList = ImGui::GetWindowDrawList();
+        float uiScaleX = (renderWidth > 0) ? (imageSize.x / (float)renderWidth) : 1.0f;
+        float uiScaleY = (renderHeight > 0) ? (imageSize.y / (float)renderHeight) : 1.0f;
         if (showCanvasOverlay) {
             ImVec2 pad(8.0f, 8.0f);
             ImVec2 tl(imageMin.x + pad.x, imageMin.y + pad.y);
             ImVec2 br(imageMax.x - pad.x, imageMax.y - pad.y);
             drawList->AddRect(tl, br, IM_COL32(110, 170, 255, 180), 8.0f, 0, 2.0f);
         }
-        if (showUITextOverlay) {
-            const char* textLabel = "Text Overlay";
-            ImVec2 textPos(imageMin.x + 16.0f, imageMin.y + 16.0f);
-            ImVec2 size = ImGui::CalcTextSize(textLabel);
-            ImVec2 bgPad(6.0f, 4.0f);
-            ImVec2 bgMin(textPos.x - bgPad.x, textPos.y - bgPad.y);
-            ImVec2 bgMax(textPos.x + size.x + bgPad.x, textPos.y + size.y + bgPad.y);
-            drawList->AddRectFilled(bgMin, bgMax, IM_COL32(20, 20, 24, 200), 4.0f);
-            drawList->AddText(textPos, IM_COL32(235, 235, 245, 255), textLabel);
+        if (showGameProfiler) {
+            float fps = ImGui::GetIO().Framerate;
+            float frameMs = (fps > 0.0f) ? (1000.0f / fps) : 0.0f;
+            int zoomPercent = (int)std::round(zoom * 100.0f);
+            const Renderer::RenderStats& stats = renderer.getLastPreviewStats();
+
+            char line1[128];
+            char line2[128];
+            char line3[128];
+            char line4[128];
+            std::snprintf(line1, sizeof(line1), "FPS: %.0f (%.1f ms)", fps, frameMs);
+            std::snprintf(line2, sizeof(line2), "Batches: %d", stats.drawCalls);
+            std::snprintf(line3, sizeof(line3), "Meshes: %d", stats.meshDraws);
+            std::snprintf(line4, sizeof(line4), "Render: %dx%d @ %d%%", renderWidth, renderHeight, zoomPercent);
+
+            const char* lines[] = { line1, line2, line3, line4 };
+            float lineHeight = ImGui::GetFontSize() + 2.0f;
+            float maxWidth = 0.0f;
+            for (const char* line : lines) {
+                ImVec2 size = ImGui::CalcTextSize(line);
+                maxWidth = std::max(maxWidth, size.x);
+            }
+            ImVec2 pad(8.0f, 6.0f);
+            ImVec2 panelMin(imageMin.x + 14.0f, imageMin.y + 14.0f);
+            ImVec2 panelMax(panelMin.x + maxWidth + pad.x * 2.0f,
+                            panelMin.y + lineHeight * (float)(sizeof(lines) / sizeof(lines[0])) + pad.y * 2.0f);
+            drawList->AddRectFilled(panelMin, panelMax, IM_COL32(18, 18, 24, 210), 6.0f);
+            drawList->AddRect(panelMin, panelMax, IM_COL32(255, 255, 255, 40), 6.0f);
+            for (int i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); ++i) {
+                ImVec2 textPos(panelMin.x + pad.x, panelMin.y + pad.y + lineHeight * i);
+                drawList->AddText(textPos, IM_COL32(235, 235, 245, 255), lines[i]);
+            }
         }
         bool uiInteracting = false;
         auto isUIType = [](ObjectType type) {
@@ -401,9 +503,9 @@ void Engine::renderGameViewportWindow() {
                     *parentMin = regionMin;
                     *parentMax = regionMax;
                 }
-                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x), std::max(1.0f, node->ui.size.y));
+                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x * uiScaleX), std::max(1.0f, node->ui.size.y * uiScaleY));
                 ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
-                ImVec2 pivot(anchorPoint.x + node->ui.position.x, anchorPoint.y + node->ui.position.y);
+                ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX, anchorPoint.y + node->ui.position.y * uiScaleY);
                 ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
                 regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
                 regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
@@ -590,7 +692,8 @@ void Engine::renderGameViewportWindow() {
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 float scale = std::max(0.1f, obj.ui.textScale);
-                float fontSize = std::max(1.0f, ImGui::GetFontSize() * scale);
+                float scaleFactor = std::min(uiScaleX, uiScaleY);
+                float fontSize = std::max(1.0f, ImGui::GetFontSize() * scale * scaleFactor);
                 ImVec2 textPos = ImVec2(clippedMin.x + 4.0f, clippedMin.y + 2.0f);
                 ImGui::PushClipRect(clippedMin, clippedMax, true);
                 dl->AddText(ImGui::GetFont(), fontSize, textPos, ImGui::GetColorU32(tint), obj.ui.label.c_str());
@@ -630,12 +733,15 @@ void Engine::renderGameViewportWindow() {
                     DecomposeMatrix(model, pos, rot, scl);
                     (void)rot;
                     ImVec2 newMin(imageMin.x + pos.x, imageMin.y + pos.y);
-                    ImVec2 newSize(std::max(1.0f, scl.x), std::max(1.0f, scl.y));
-                    ImVec2 anchorPoint = anchorToPoint(selected->ui.anchor, parentMin, parentMax);
-                    ImVec2 pivotOffset = anchorToPivot(selected->ui.anchor, newSize);
-                    ImVec2 pivot(newMin.x + pivotOffset.x, newMin.y + pivotOffset.y);
-                    selected->ui.position = glm::vec2(pivot.x - anchorPoint.x, pivot.y - anchorPoint.y);
-                    selected->ui.size = glm::vec2(newSize.x, newSize.y);
+                ImVec2 newSize(std::max(1.0f, scl.x), std::max(1.0f, scl.y));
+                ImVec2 anchorPoint = anchorToPoint(selected->ui.anchor, parentMin, parentMax);
+                ImVec2 pivotOffset = anchorToPivot(selected->ui.anchor, newSize);
+                ImVec2 pivot(newMin.x + pivotOffset.x, newMin.y + pivotOffset.y);
+                    float invScaleX = (uiScaleX > 0.0f) ? 1.0f / uiScaleX : 1.0f;
+                    float invScaleY = (uiScaleY > 0.0f) ? 1.0f / uiScaleY : 1.0f;
+                    selected->ui.position = glm::vec2((pivot.x - anchorPoint.x) * invScaleX,
+                                                     (pivot.y - anchorPoint.y) * invScaleY);
+                    selected->ui.size = glm::vec2(newSize.x * invScaleX, newSize.y * invScaleY);
                     projectManager.currentProject.hasUnsavedChanges = true;
                     gizmoUsed = true;
                 }
@@ -656,7 +762,6 @@ void Engine::renderGameViewportWindow() {
         }
 
         gameViewportFocused = windowFocused && gameViewCursorLocked;
-        ImGui::TextDisabled(gameViewCursorLocked ? "Camera captured (ESC to release)" : "Click to capture");
     } else {
         ImGui::TextDisabled("No player camera found (Camera Type: Player).");
         gameViewportFocused = ImGui::IsWindowFocused();

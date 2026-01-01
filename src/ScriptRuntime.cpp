@@ -1,6 +1,7 @@
 #include "ScriptRuntime.h"
 #include "Engine.h"
 #include "SceneObject.h"
+#include "ThirdParty/imgui/imgui.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -192,6 +193,154 @@ void ScriptContext::GetPlanarYawPitchVectors(float pitchDeg, float yawDeg,
     }
     if (!std::isfinite(outRight.x) || glm::length(outRight) < 1e-3f) {
         outRight = glm::vec3(1.0f, 0.0f, 0.0f);
+    }
+}
+
+glm::vec3 ScriptContext::GetMoveInputWASD(float pitchDeg, float yawDeg) const {
+    glm::vec3 forward(0.0f);
+    glm::vec3 right(0.0f);
+    glm::vec3 move(0.0f);
+    GetPlanarYawPitchVectors(pitchDeg, yawDeg, forward, right);
+    if (ImGui::IsKeyDown(ImGuiKey_W)) move += forward;
+    if (ImGui::IsKeyDown(ImGuiKey_S)) move -= forward;
+    if (ImGui::IsKeyDown(ImGuiKey_D)) move += right;
+    if (ImGui::IsKeyDown(ImGuiKey_A)) move -= right;
+    if (glm::length(move) > 0.001f) move = glm::normalize(move);
+    return move;
+}
+
+bool ScriptContext::ApplyMouseLook(float& pitchDeg, float& yawDeg, float sensitivity, float maxDelta,
+                                   float deltaTime, bool requireMouseButton) const {
+    if (requireMouseButton && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) return false;
+    ImGuiIO& io = ImGui::GetIO();
+    glm::vec2 delta(io.MouseDelta.x, io.MouseDelta.y);
+    float len = glm::length(delta);
+    if (len > maxDelta) delta *= (maxDelta / len);
+    yawDeg -= delta.x * 50.0f * sensitivity * deltaTime;
+    pitchDeg -= delta.y * 50.0f * sensitivity * deltaTime;
+    pitchDeg = std::clamp(pitchDeg, -89.0f, 89.0f);
+    return true;
+}
+
+bool ScriptContext::IsSprintDown() const {
+    return ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+}
+
+bool ScriptContext::IsJumpDown() const {
+    return ImGui::IsKeyDown(ImGuiKey_Space);
+}
+
+bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
+                                  glm::vec3* outHitPos, bool* outHitGround) const {
+    if (!object) return false;
+    glm::vec3 hitPos(0.0f);
+    glm::vec3 hitNormal(0.0f, 1.0f, 0.0f);
+    float hitDist = 0.0f;
+    float probeDist = capsuleHalf + probeExtra;
+    glm::vec3 rayStart = object->position + glm::vec3(0.0f, 0.1f, 0.0f);
+    bool hitGround = RaycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
+                                    &hitPos, &hitNormal, &hitDist);
+    bool grounded = hitGround && hitNormal.y > 0.25f &&
+                    hitDist <= capsuleHalf + groundSnap &&
+                    verticalVelocity <= 0.35f;
+    if (!hitGround) {
+        grounded = object->position.y <= capsuleHalf + 0.12f && verticalVelocity <= 0.35f;
+    }
+    if (outHitPos) *outHitPos = hitPos;
+    if (outHitGround) *outHitGround = hitGround;
+    return grounded;
+}
+
+void ScriptContext::ApplyVelocity(const glm::vec3& velocity, float deltaTime) {
+    if (!object) return;
+    if (!SetRigidbodyVelocity(velocity)) {
+        object->position += velocity * deltaTime;
+    }
+}
+
+void ScriptContext::BindStandaloneMovementSettings(StandaloneMovementSettings& settings) {
+    AutoSetting("moveTuning", settings.moveTuning);
+    AutoSetting("lookTuning", settings.lookTuning);
+    AutoSetting("capsuleTuning", settings.capsuleTuning);
+    AutoSetting("gravityTuning", settings.gravityTuning);
+    AutoSetting("enableMouseLook", settings.enableMouseLook);
+    AutoSetting("requireMouseButton", settings.requireMouseButton);
+    AutoSetting("enforceCollider", settings.enforceCollider);
+    AutoSetting("enforceRigidbody", settings.enforceRigidbody);
+}
+
+void ScriptContext::DrawStandaloneMovementInspector(StandaloneMovementSettings& settings, bool* showDebug) {
+    BindStandaloneMovementSettings(settings);
+    ImGui::TextUnformatted("Standalone Movement Controller");
+    ImGui::Separator();
+    ImGui::DragFloat3("Walk/Run/Jump", &settings.moveTuning.x, 0.05f, 0.0f, 25.0f, "%.2f");
+    ImGui::DragFloat2("Look Sens/Clamp", &settings.lookTuning.x, 0.01f, 0.0f, 500.0f, "%.2f");
+    ImGui::DragFloat3("Height/Radius/Snap", &settings.capsuleTuning.x, 0.02f, 0.0f, 5.0f, "%.2f");
+    ImGui::DragFloat3("Gravity/Probe/MaxFall", &settings.gravityTuning.x, 0.05f, -50.0f, 50.0f, "%.2f");
+    ImGui::Checkbox("Enable Mouse Look", &settings.enableMouseLook);
+    ImGui::Checkbox("Hold RMB to Look", &settings.requireMouseButton);
+    ImGui::Checkbox("Force Collider", &settings.enforceCollider);
+    ImGui::Checkbox("Force Rigidbody", &settings.enforceRigidbody);
+    if (showDebug) {
+        AutoSetting("showDebug", *showDebug);
+        ImGui::Checkbox("Show Debug", showDebug);
+    }
+}
+
+void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, StandaloneMovementSettings& settings,
+                                           float deltaTime, StandaloneMovementDebug* debug) {
+    if (!object) return;
+    BindStandaloneMovementSettings(settings);
+    if (settings.enforceCollider) EnsureCapsuleCollider(settings.capsuleTuning.x, settings.capsuleTuning.y);
+    if (settings.enforceRigidbody) EnsureRigidbody(true, false);
+
+    const float walkSpeed = settings.moveTuning.x;
+    const float runSpeed = settings.moveTuning.y;
+    const float jumpStrength = settings.moveTuning.z;
+    const float lookSensitivity = settings.lookTuning.x;
+    const float maxMouseDelta = glm::max(5.0f, settings.lookTuning.y);
+    const float height = settings.capsuleTuning.x;
+    const float groundSnap = settings.capsuleTuning.z;
+    const float gravity = settings.gravityTuning.x;
+    const float probeExtra = settings.gravityTuning.y;
+    const float maxFall = glm::max(1.0f, settings.gravityTuning.z);
+
+    if (settings.enableMouseLook) {
+        ApplyMouseLook(state.pitch, state.yaw, lookSensitivity, maxMouseDelta, deltaTime, settings.requireMouseButton);
+    }
+
+    glm::vec3 move = GetMoveInputWASD(state.pitch, state.yaw);
+    float targetSpeed = IsSprintDown() ? runSpeed : walkSpeed;
+    glm::vec3 velocity = move * targetSpeed;
+    float capsuleHalf = std::max(0.1f, height * 0.5f);
+
+    glm::vec3 physVel;
+    bool havePhysVel = GetRigidbodyVelocity(physVel);
+    if (havePhysVel) state.verticalVelocity = physVel.y;
+
+    glm::vec3 hitPos(0.0f);
+    bool hitGround = false;
+    bool grounded = ResolveGround(capsuleHalf, probeExtra, groundSnap, state.verticalVelocity, &hitPos, &hitGround);
+    if (grounded) {
+        state.verticalVelocity = 0.0f;
+        if (!havePhysVel) {
+            object->position.y = hitGround ? std::max(object->position.y, hitPos.y + capsuleHalf) : capsuleHalf;
+        }
+        if (IsJumpDown()) state.verticalVelocity = jumpStrength;
+    } else {
+        state.verticalVelocity += gravity * deltaTime;
+    }
+
+    state.verticalVelocity = std::clamp(state.verticalVelocity, -maxFall, maxFall);
+    velocity.y = state.verticalVelocity;
+    glm::vec3 rotation(state.pitch, state.yaw, 0.0f);
+    SetRotation(rotation);
+    SetRigidbodyRotation(rotation);
+    ApplyVelocity(velocity, deltaTime);
+
+    if (debug) {
+        debug->velocity = velocity;
+        debug->grounded = grounded;
     }
 }
 

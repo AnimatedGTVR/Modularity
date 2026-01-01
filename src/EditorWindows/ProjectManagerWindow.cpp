@@ -364,6 +364,54 @@ void Engine::renderLauncher() {
         renderNewProjectDialog();
     if (projectManager.showOpenProjectDialog)
         renderOpenProjectDialog();
+
+    if (projectLoadInProgress) {
+        float elapsed = static_cast<float>(glfwGetTime() - projectLoadStartTime);
+        if (elapsed > 0.15f) {
+            ImGuiIO& io = ImGui::GetIO();
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.65f));
+            ImGui::Begin("ProjectLoadOverlay", nullptr,
+                         ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoInputs);
+            ImGui::End();
+            ImGui::PopStyleColor();
+
+            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(420, 160));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 20.0f));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.12f, 0.13f, 0.18f, 0.98f));
+            ImGui::Begin("ProjectLoadCard", nullptr,
+                         ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoSavedSettings);
+
+            ImGui::TextColored(ImVec4(0.88f, 0.90f, 0.96f, 1.0f), "Loading project...");
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", projectLoadPath.c_str());
+            ImGui::Spacing();
+            ImGui::Spinner("##project_load_spinner", 16.0f, 4, ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+            ImGui::SameLine();
+            ImGui::BufferingBar("##project_load_bar", std::fmod(elapsed * 0.25f, 1.0f),
+                                ImVec2(ImGui::GetContentRegionAvail().x - 40.0f, 8.0f),
+                                ImGui::GetColorU32(ImGuiCol_Button),
+                                ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+
+            ImGui::End();
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar(2);
+        }
+    }
 }
 #pragma endregion
 

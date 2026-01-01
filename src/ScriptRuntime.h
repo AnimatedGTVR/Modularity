@@ -40,6 +40,37 @@ struct ScriptContext {
     void SetRotation(const glm::vec3& rot);
     void SetScale(const glm::vec3& scl);
     void GetPlanarYawPitchVectors(float pitchDeg, float yawDeg, glm::vec3& outForward, glm::vec3& outRight) const;
+    glm::vec3 GetMoveInputWASD(float pitchDeg, float yawDeg) const;
+    bool ApplyMouseLook(float& pitchDeg, float& yawDeg, float sensitivity, float maxDelta, float deltaTime,
+                        bool requireMouseButton) const;
+    bool IsSprintDown() const;
+    bool IsJumpDown() const;
+    bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
+                       glm::vec3* outHitPos = nullptr, bool* outHitGround = nullptr) const;
+    void ApplyVelocity(const glm::vec3& velocity, float deltaTime);
+    struct StandaloneMovementSettings {
+        glm::vec3 moveTuning = glm::vec3(4.5f, 7.5f, 6.5f);
+        glm::vec3 lookTuning = glm::vec3(0.12f, 200.0f, 0.0f);
+        glm::vec3 capsuleTuning = glm::vec3(1.8f, 0.4f, 0.2f);
+        glm::vec3 gravityTuning = glm::vec3(-9.81f, 0.4f, 30.0f);
+        bool enableMouseLook = true;
+        bool requireMouseButton = false;
+        bool enforceCollider = true;
+        bool enforceRigidbody = true;
+    };
+    struct StandaloneMovementState {
+        float pitch = 0.0f;
+        float yaw = 0.0f;
+        float verticalVelocity = 0.0f;
+    };
+    struct StandaloneMovementDebug {
+        glm::vec3 velocity = glm::vec3(0.0f);
+        bool grounded = false;
+    };
+    void BindStandaloneMovementSettings(StandaloneMovementSettings& settings);
+    void DrawStandaloneMovementInspector(StandaloneMovementSettings& settings, bool* showDebug = nullptr);
+    void TickStandaloneMovement(StandaloneMovementState& state, StandaloneMovementSettings& settings,
+                                float deltaTime, StandaloneMovementDebug* debug = nullptr);
     // UI helpers
     bool IsUIButtonPressed() const;
     bool IsUIInteractable() const;

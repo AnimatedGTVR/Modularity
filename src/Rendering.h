@@ -61,6 +61,13 @@ public:
 class Camera;
 
 class Renderer {
+public:
+    struct RenderStats {
+        int drawCalls = 0;
+        int meshDraws = 0;
+        int fullscreenDraws = 0;
+    };
+
 private:
     unsigned int framebuffer = 0, viewportTexture = 0, rbo = 0;
     int currentWidth = 800, currentHeight = 600;
@@ -115,6 +122,9 @@ private:
     unsigned int displayTexture = 0;
     bool historyValid = false;
     std::unordered_map<int, RenderTarget> mirrorTargets;
+    RenderStats viewportStats;
+    RenderStats previewStats;
+    RenderStats* activeStats = nullptr;
 
     void setupFBO();
     void ensureRenderTarget(RenderTarget& target, int w, int h);
@@ -122,6 +132,10 @@ private:
     void updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void ensureQuad();
     void drawFullscreenQuad();
+    void resetStats(RenderStats& stats);
+    void recordDrawCall();
+    void recordMeshDraw();
+    void recordFullscreenDraw();
     void clearHistory();
     void clearTarget(RenderTarget& target);
     void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects);
@@ -154,4 +168,6 @@ public:
 
     Skybox* getSkybox() { return skybox; }
     unsigned int getViewportTexture() const { return displayTexture ? displayTexture : viewportTexture; }
+    const RenderStats& getLastViewportStats() const { return viewportStats; }
+    const RenderStats& getLastPreviewStats() const { return previewStats; }
 };
