@@ -95,9 +95,10 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
     if (ext == ".modu" || ext == ".scene") return FileCategory::Scene;
     
     // Model files
-    if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" || 
-        ext == ".dae" || ext == ".blend" || ext == ".3ds" || ext == ".ply" ||
-        ext == ".stl" || ext == ".x" || ext == ".md5mesh" || ext == ".rmesh") {
+    if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" ||
+        ext == ".dae" || ext == ".blend" || ext == ".3ds" || ext == ".b3d" ||
+        ext == ".ply" || ext == ".stl" || ext == ".x" || ext == ".md5mesh" ||
+        ext == ".rmesh") {
         return FileCategory::Model;
     }
     
@@ -189,6 +190,60 @@ bool FileBrowser::matchesFilter(const fs::directory_entry& entry) const {
 void applyModernTheme() {
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;
+    ImGuiIO& io = ImGui::GetIO();
+    const float fontSizeBase = 18.0f;
+    const float fontSizeOffset = -2.5f;
+    const float fontSize = std::max(1.0f, fontSizeBase + fontSizeOffset);
+    ImFont* editorFont = nullptr;
+    fs::path primaryFontPath;
+    const fs::path fontCandidates[] = {
+        fs::path("Resources") / "Fonts" / "TheSunset.ttf",
+        fs::path("Resources") / "Fonts" / "Thesunsethd-Regular (1).ttf",
+        fs::path("TheSunset.ttf"),
+        fs::path("Thesunsethd-Regular (1).ttf")
+    };
+    for (const auto& fontPath : fontCandidates) {
+        if (!fs::exists(fontPath)) {
+            continue;
+        }
+        const std::string fontPathStr = fontPath.string();
+        editorFont = io.Fonts->AddFontFromFileTTF(fontPathStr.c_str(), fontSize);
+        if (editorFont) {
+            primaryFontPath = fontPath;
+            io.FontDefault = editorFont;
+            break;
+        }
+    }
+    if (!editorFont) {
+        std::cerr << "[WARN] Failed to load editor font (TheSunset) from Resources/Fonts."
+                  << std::endl;
+    } else {
+        const fs::path fallbackCandidates[] = {
+            fs::path("Resources") / "Fonts" / "TheSunset.ttf",
+            fs::path("TheSunset.ttf")
+        };
+        if (primaryFontPath.filename() != "TheSunset.ttf") {
+            for (const auto& fallbackPath : fallbackCandidates) {
+                if (!fs::exists(fallbackPath)) {
+                    continue;
+                }
+                const std::string fallbackPathStr = fallbackPath.string();
+                ImFontConfig mergeConfig;
+                mergeConfig.MergeMode = true;
+                ImFont* fallbackFont = io.Fonts->AddFontFromFileTTF(
+                    fallbackPathStr.c_str(),
+                    fontSize,
+                    &mergeConfig,
+                    io.Fonts->GetGlyphRangesDefault()
+                );
+                if (!fallbackFont) {
+                    std::cerr << "[WARN] Failed to merge fallback font: "
+                              << fallbackPathStr << std::endl;
+                }
+                break;
+            }
+        }
+    }
 
     ImVec4 slate = ImVec4(0.10f, 0.11f, 0.16f, 1.00f);
     ImVec4 panel = ImVec4(0.14f, 0.15f, 0.21f, 1.00f);
@@ -253,25 +308,112 @@ void applyModernTheme() {
     colors[ImGuiCol_NavHighlight] = accent;
     colors[ImGuiCol_TableHeaderBg] = ImVec4(0.18f, 0.20f, 0.28f, 1.00f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.05f, 0.06f, 0.08f, 0.70f);
+    applyEditorLayoutPreset(style);
+}
 
-    style.WindowRounding = 10.0f;
+void applyEditorLayoutPreset(ImGuiStyle& style) {
+    style.WindowPadding = ImVec2(3.0f, 3.0f);
+    style.FramePadding = ImVec2(4.0f, 4.0f);
+    style.ItemSpacing = ImVec2(10.0f, 5.0f);
+    style.ItemInnerSpacing = ImVec2(2.0f, 2.0f);
+    style.CellPadding = ImVec2(4.0f, 2.0f);
+    style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
+    style.IndentSpacing = 11.0f;
+    style.GrabMinSize = 8.0f;
+
+    style.WindowBorderSize = 0.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+
+    style.WindowRounding = 12.0f;
     style.ChildRounding = 12.0f;
-    style.FrameRounding = 10.0f;
+    style.FrameRounding = 12.0f;
     style.PopupRounding = 12.0f;
+    style.GrabRounding = 12.0f;
+
+    style.ScrollbarSize = 11.0f;
     style.ScrollbarRounding = 10.0f;
-    style.GrabRounding = 8.0f;
+    style.ScrollbarPadding = 1.0f;
+
+    style.TabBorderSize = 1.0f;
+    style.TabBarBorderSize = 1.0f;
+    style.TabBarOverlineSize = 1.0f;
+    style.TabMinWidthBase = 1.0f;
+    style.TabMinWidthShrink = 80.0f;
+    style.TabCloseButtonMinWidthSelected = -1.0f;
+    style.TabCloseButtonMinWidthUnselected = 0.0f;
     style.TabRounding = 10.0f;
 
-    style.WindowPadding = ImVec2(12.0f, 12.0f);
-    style.FramePadding = ImVec2(10.0f, 6.0f);
-    style.ItemSpacing = ImVec2(10.0f, 8.0f);
-    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.IndentSpacing = 18.0f;
+    style.TableAngledHeadersAngle = 35.0f;
+    style.TableAngledHeadersTextAlign = ImVec2(0.50f, 0.00f);
+
+    style.TreeLinesFlags = ImGuiTreeNodeFlags_DrawLinesNone;
+    style.TreeLinesSize = 1.0f;
+    style.TreeLinesRounding = 0.0f;
+
+    style.WindowTitleAlign = ImVec2(0.50f, 0.50f);
+    style.WindowBorderHoverPadding = 6.0f;
+    style.WindowMenuButtonPosition = ImGuiDir_None;
+
+    style.ColorButtonPosition = ImGuiDir_Right;
+    style.ButtonTextAlign = ImVec2(0.50f, 0.50f);
+    style.SelectableTextAlign = ImVec2(0.00f, 0.00f);
+    style.SeparatorTextBorderSize = 2.0f;
+    style.SeparatorTextAlign = ImVec2(0.50f, 0.50f);
+    style.SeparatorTextPadding = ImVec2(4.0f, 0.0f);
+    style.LogSliderDeadzone = 4.0f;
+    style.ImageBorderSize = 0.0f;
+
+    style.DockingNodeHasCloseButton = true;
+    style.DockingSeparatorSize = 0.0f;
+
+    style.DisplayWindowPadding = ImVec2(19.0f, 19.0f);
+    style.DisplaySafeAreaPadding = ImVec2(0.0f, 0.0f);
+}
+
+void applyPixelStyle(ImGuiStyle& style) {
+    applyEditorLayoutPreset(style);
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 0.0f;
+    style.FrameRounding = 0.0f;
+    style.PopupRounding = 0.0f;
+    style.ScrollbarRounding = 0.0f;
+    style.GrabRounding = 0.0f;
+    style.TabRounding = 0.0f;
+
+    style.WindowPadding = ImVec2(8.0f, 6.0f);
+    style.FramePadding = ImVec2(6.0f, 4.0f);
+    style.ItemSpacing = ImVec2(6.0f, 4.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.IndentSpacing = 14.0f;
 
     style.WindowBorderSize = 1.0f;
     style.FrameBorderSize = 1.0f;
     style.PopupBorderSize = 1.0f;
     style.TabBorderSize = 1.0f;
+}
+
+void applySuperRoundStyle(ImGuiStyle& style) {
+    applyEditorLayoutPreset(style);
+    style.WindowRounding = 18.0f;
+    style.ChildRounding = 16.0f;
+    style.FrameRounding = 16.0f;
+    style.PopupRounding = 16.0f;
+    style.ScrollbarRounding = 16.0f;
+    style.GrabRounding = 14.0f;
+    style.TabRounding = 16.0f;
+
+    style.WindowPadding = ImVec2(14.0f, 10.0f);
+    style.FramePadding = ImVec2(12.0f, 8.0f);
+    style.ItemSpacing = ImVec2(10.0f, 8.0f);
+    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
+    style.IndentSpacing = 18.0f;
+
+    style.WindowBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.PopupBorderSize = 0.0f;
+    style.TabBorderSize = 0.0f;
 }
 #pragma endregion
 

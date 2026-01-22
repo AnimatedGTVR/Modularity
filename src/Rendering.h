@@ -19,14 +19,23 @@ std::vector<float> generateTorus(int segments = 32, int sides = 16);
 class Mesh {
 private:
     unsigned int VAO, VBO;
+    unsigned int boneVBO = 0;
     int vertexCount;
+    int strideFloats = 8;
+    bool dynamic = false;
+    bool hasBones = false;
 
 public:
     Mesh(const float* vertexData, size_t dataSizeBytes);
+    Mesh(const float* vertexData, size_t dataSizeBytes, bool dynamicUsage,
+         const void* boneData, size_t boneDataBytes);
     ~Mesh();
     
     void draw() const;
+    void updateVertices(const float* vertexData, size_t dataSizeBytes);
     int getVertexCount() const { return vertexCount; }
+    bool isDynamic() const { return dynamic; }
+    bool usesBones() const { return hasBones; }
 };
 
 class OBJLoader {
@@ -44,6 +53,12 @@ public:
         std::vector<glm::vec3> triangleVertices; // positions duplicated per-triangle for picking
         std::vector<glm::vec3> positions; // unique vertex positions for physics
         std::vector<uint32_t> triangleIndices; // triangle indices into positions
+        bool isSkinned = false;
+        std::vector<std::string> boneNames;
+        std::vector<glm::mat4> inverseBindMatrices;
+        std::vector<glm::ivec4> boneIds;
+        std::vector<glm::vec4> boneWeights;
+        std::vector<float> baseVertices;
     };
     
 private:
@@ -104,6 +119,7 @@ private:
     };
     std::unordered_map<std::string, ShaderEntry> shaderCache;
     std::string defaultVertPath = "Resources/Shaders/vert.glsl";
+    std::string skinnedVertPath = "Resources/Shaders/skinned_vert.glsl";
     std::string defaultFragPath = "Resources/Shaders/frag.glsl";
     std::string postVertPath = "Resources/Shaders/postfx_vert.glsl";
     std::string postFragPath = "Resources/Shaders/postfx_frag.glsl";

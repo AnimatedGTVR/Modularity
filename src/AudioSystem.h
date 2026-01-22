@@ -42,7 +42,51 @@ public:
     bool setObjectLoop(const SceneObject& obj, bool loop);
     bool setObjectVolume(const SceneObject& obj, float volume);
 
+    struct SimpleReverbNode {
+        ma_node_base baseNode;
+        int channels = 0;
+        int sampleRate = 0;
+        std::vector<std::vector<float>> combBuffers;
+        std::vector<size_t> combIndex;
+        std::vector<std::vector<float>> allpassBuffers;
+        std::vector<size_t> allpassIndex;
+        std::vector<float> preDelayBuffer;
+        size_t preDelayIndex = 0;
+        std::vector<float> reflectionsBuffer;
+        size_t reflectionsIndex = 0;
+        std::vector<float> lpState;
+        float wetGain = 0.0f;
+        float reflectionsGain = 0.0f;
+        float decayTime = 1.5f;
+        float decayHFRatio = 0.5f;
+        float diffusion = 100.0f;
+        float density = 100.0f;
+        float hfReference = 5000.0f;
+        float preDelaySeconds = 0.01f;
+        float reflectionsDelaySeconds = 0.01f;
+        size_t preDelayMaxFrames = 0;
+        size_t reflectionsMaxFrames = 0;
+    };
+
 private:
+    struct ReverbSettings {
+        float room = -10000.0f;
+        float roomHF = -10000.0f;
+        float roomLF = -10000.0f;
+        float decayTime = 1.5f;
+        float decayHFRatio = 0.5f;
+        float reflections = -10000.0f;
+        float reflectionsDelay = 0.01f;
+        float reverb = -10000.0f;
+        float reverbDelay = 0.01f;
+        float hfReference = 5000.0f;
+        float lfReference = 250.0f;
+        float roomRolloffFactor = 0.0f;
+        float diffusion = 100.0f;
+        float density = 100.0f;
+        float dry = 1.0f;
+    };
+
     struct ActiveSound {
         ma_sound sound;
         std::string clipPath;
@@ -56,6 +100,12 @@ private:
     std::unordered_map<std::string, AudioClipPreview> previewCache;
     std::unordered_set<std::string> missingClips;
 
+    SimpleReverbNode reverbNode{};
+    ma_splitter_node reverbSplitter{};
+    ma_sound_group reverbGroup{};
+    bool reverbReady = false;
+    ReverbSettings currentReverb{};
+
     ma_sound previewSound{};
     bool previewActive = false;
     std::string previewPath;
@@ -63,5 +113,10 @@ private:
     void destroyActiveSounds();
     bool ensureSoundFor(const SceneObject& obj);
     void refreshSoundParams(const SceneObject& obj, ActiveSound& snd);
+    float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos) const;
     AudioClipPreview loadPreview(const std::string& path);
+    void updateReverb(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos);
+    ReverbSettings getReverbTarget(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos, float& outBlend) const;
+    void applyReverbSettings(const ReverbSettings& target, float blend);
+    void shutdownReverbGraph();
 };

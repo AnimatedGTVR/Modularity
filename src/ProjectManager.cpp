@@ -1,6 +1,10 @@
 #include "ProjectManager.h"
 #include "Rendering.h"
 #include "ModelLoader.h"
+#include <cmath>
+#include <unordered_map>
+
+ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
 
 // Project implementation
 Project::Project(const std::string& projectName, const fs::path& basePath)
@@ -293,14 +297,16 @@ bool ProjectManager::loadProject(const std::string& path) {
 // SceneSerializer implementation
 bool SceneSerializer::saveScene(const fs::path& filePath,
                                 const std::vector<SceneObject>& objects,
-                                int nextId) {
+                                int nextId,
+                                float timeOfDay) {
     try {
         std::ofstream file(filePath);
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=11\n";
+        file << "version=17\n";
         file << "nextId=" << nextId << "\n";
+        file << "timeOfDay=" << timeOfDay << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
 
@@ -308,10 +314,18 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "[Object]\n";
             file << "id=" << obj.id << "\n";
             file << "name=" << obj.name << "\n";
-            file << "type=" << static_cast<int>(obj.type) << "\n";
+            ObjectType legacyType = GetLegacyTypeFromComponents(obj);
+            file << "type=" << static_cast<int>(legacyType) << "\n";
             file << "enabled=" << (obj.enabled ? 1 : 0) << "\n";
             file << "layer=" << obj.layer << "\n";
             file << "tag=" << obj.tag << "\n";
+            file << "hasRenderer=" << (obj.hasRenderer ? 1 : 0) << "\n";
+            file << "renderType=" << static_cast<int>(obj.renderType) << "\n";
+            file << "hasLight=" << (obj.hasLight ? 1 : 0) << "\n";
+            file << "hasCamera=" << (obj.hasCamera ? 1 : 0) << "\n";
+            file << "hasPostFX=" << (obj.hasPostFX ? 1 : 0) << "\n";
+            file << "hasUI=" << (obj.hasUI ? 1 : 0) << "\n";
+            file << "uiType=" << static_cast<int>(obj.ui.type) << "\n";
             file << "parentId=" << obj.parentId << "\n";
             file << "position=" << obj.localPosition.x << "," << obj.localPosition.y << "," << obj.localPosition.z << "\n";
             file << "rotation=" << obj.localRotation.x << "," << obj.localRotation.y << "," << obj.localRotation.z << "\n";
@@ -335,6 +349,36 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "rb2dGravityScale=" << obj.rigidbody2D.gravityScale << "\n";
                 file << "rb2dLinearDamping=" << obj.rigidbody2D.linearDamping << "\n";
                 file << "rb2dVelocity=" << obj.rigidbody2D.velocity.x << "," << obj.rigidbody2D.velocity.y << "\n";
+            }
+            file << "hasCollider2D=" << (obj.hasCollider2D ? 1 : 0) << "\n";
+            if (obj.hasCollider2D) {
+                file << "collider2dEnabled=" << (obj.collider2D.enabled ? 1 : 0) << "\n";
+                file << "collider2dType=" << static_cast<int>(obj.collider2D.type) << "\n";
+                file << "collider2dBox=" << obj.collider2D.boxSize.x << "," << obj.collider2D.boxSize.y << "\n";
+                file << "collider2dClosed=" << (obj.collider2D.closed ? 1 : 0) << "\n";
+                file << "collider2dEdgeThickness=" << obj.collider2D.edgeThickness << "\n";
+                file << "collider2dPoints=";
+                for (size_t i = 0; i < obj.collider2D.points.size(); ++i) {
+                    if (i > 0) file << ";";
+                    file << obj.collider2D.points[i].x << "," << obj.collider2D.points[i].y;
+                }
+                file << "\n";
+            }
+            file << "hasParallaxLayer2D=" << (obj.hasParallaxLayer2D ? 1 : 0) << "\n";
+            if (obj.hasParallaxLayer2D) {
+                file << "parallax2dEnabled=" << (obj.parallaxLayer2D.enabled ? 1 : 0) << "\n";
+                file << "parallax2dOrder=" << obj.parallaxLayer2D.order << "\n";
+                file << "parallax2dFactor=" << obj.parallaxLayer2D.factor << "\n";
+                file << "parallax2dRepeatX=" << (obj.parallaxLayer2D.repeatX ? 1 : 0) << "\n";
+                file << "parallax2dRepeatY=" << (obj.parallaxLayer2D.repeatY ? 1 : 0) << "\n";
+                file << "parallax2dSpacing=" << obj.parallaxLayer2D.repeatSpacing.x << "," << obj.parallaxLayer2D.repeatSpacing.y << "\n";
+            }
+            file << "hasCameraFollow2D=" << (obj.hasCameraFollow2D ? 1 : 0) << "\n";
+            if (obj.hasCameraFollow2D) {
+                file << "cameraFollow2dEnabled=" << (obj.cameraFollow2D.enabled ? 1 : 0) << "\n";
+                file << "cameraFollow2dTarget=" << obj.cameraFollow2D.targetId << "\n";
+                file << "cameraFollow2dOffset=" << obj.cameraFollow2D.offset.x << "," << obj.cameraFollow2D.offset.y << "\n";
+                file << "cameraFollow2dSmoothTime=" << obj.cameraFollow2D.smoothTime << "\n";
             }
             file << "hasCollider=" << (obj.hasCollider ? 1 : 0) << "\n";
             if (obj.hasCollider) {
@@ -362,6 +406,67 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "audioSpatial=" << (obj.audioSource.spatial ? 1 : 0) << "\n";
                 file << "audioMinDistance=" << obj.audioSource.minDistance << "\n";
                 file << "audioMaxDistance=" << obj.audioSource.maxDistance << "\n";
+                file << "audioRolloffMode=" << static_cast<int>(obj.audioSource.rolloffMode) << "\n";
+                file << "audioRolloff=" << obj.audioSource.rolloff << "\n";
+                file << "audioCustomMidDistance=" << obj.audioSource.customMidDistance << "\n";
+                file << "audioCustomMidGain=" << obj.audioSource.customMidGain << "\n";
+                file << "audioCustomEndGain=" << obj.audioSource.customEndGain << "\n";
+            }
+            file << "hasReverbZone=" << (obj.hasReverbZone ? 1 : 0) << "\n";
+            if (obj.hasReverbZone) {
+                file << "reverbEnabled=" << (obj.reverbZone.enabled ? 1 : 0) << "\n";
+                file << "reverbPreset=" << static_cast<int>(obj.reverbZone.preset) << "\n";
+                file << "reverbShape=" << static_cast<int>(obj.reverbZone.shape) << "\n";
+                file << "reverbBox=" << obj.reverbZone.boxSize.x << "," << obj.reverbZone.boxSize.y << "," << obj.reverbZone.boxSize.z << "\n";
+                file << "reverbRadius=" << obj.reverbZone.radius << "\n";
+                file << "reverbBlend=" << obj.reverbZone.blendDistance << "\n";
+                file << "reverbMinDistance=" << obj.reverbZone.minDistance << "\n";
+                file << "reverbMaxDistance=" << obj.reverbZone.maxDistance << "\n";
+                file << "reverbRoom=" << obj.reverbZone.room << "\n";
+                file << "reverbRoomHF=" << obj.reverbZone.roomHF << "\n";
+                file << "reverbRoomLF=" << obj.reverbZone.roomLF << "\n";
+                file << "reverbDecayTime=" << obj.reverbZone.decayTime << "\n";
+                file << "reverbDecayHFRatio=" << obj.reverbZone.decayHFRatio << "\n";
+                file << "reverbReflections=" << obj.reverbZone.reflections << "\n";
+                file << "reverbReflectionsDelay=" << obj.reverbZone.reflectionsDelay << "\n";
+                file << "reverbReverb=" << obj.reverbZone.reverb << "\n";
+                file << "reverbReverbDelay=" << obj.reverbZone.reverbDelay << "\n";
+                file << "reverbHFReference=" << obj.reverbZone.hfReference << "\n";
+                file << "reverbLFReference=" << obj.reverbZone.lfReference << "\n";
+                file << "reverbRoomRolloffFactor=" << obj.reverbZone.roomRolloffFactor << "\n";
+                file << "reverbDiffusion=" << obj.reverbZone.diffusion << "\n";
+                file << "reverbDensity=" << obj.reverbZone.density << "\n";
+            }
+            file << "hasAnimation=" << (obj.hasAnimation ? 1 : 0) << "\n";
+            if (obj.hasAnimation) {
+                file << "animEnabled=" << (obj.animation.enabled ? 1 : 0) << "\n";
+                file << "animClipLength=" << obj.animation.clipLength << "\n";
+                file << "animPlaySpeed=" << obj.animation.playSpeed << "\n";
+                file << "animLoop=" << (obj.animation.loop ? 1 : 0) << "\n";
+                file << "animApplyOnScrub=" << (obj.animation.applyOnScrub ? 1 : 0) << "\n";
+                file << "animKeyCount=" << obj.animation.keyframes.size() << "\n";
+                for (size_t ki = 0; ki < obj.animation.keyframes.size(); ++ki) {
+                    const auto& key = obj.animation.keyframes[ki];
+                    file << "animKey" << ki << "_time=" << key.time << "\n";
+                    file << "animKey" << ki << "_pos=" << key.position.x << "," << key.position.y << "," << key.position.z << "\n";
+                    file << "animKey" << ki << "_rot=" << key.rotation.x << "," << key.rotation.y << "," << key.rotation.z << "\n";
+                    file << "animKey" << ki << "_scale=" << key.scale.x << "," << key.scale.y << "," << key.scale.z << "\n";
+                    file << "animKey" << ki << "_interp=" << static_cast<int>(key.interpolation) << "\n";
+                    file << "animKey" << ki << "_curve=" << static_cast<int>(key.curveMode) << "\n";
+                    file << "animKey" << ki << "_in=" << key.bezierIn.x << "," << key.bezierIn.y << "\n";
+                    file << "animKey" << ki << "_out=" << key.bezierOut.x << "," << key.bezierOut.y << "\n";
+                }
+            }
+            file << "hasSkeletalAnimation=" << (obj.hasSkeletalAnimation ? 1 : 0) << "\n";
+            if (obj.hasSkeletalAnimation) {
+                file << "skelEnabled=" << (obj.skeletal.enabled ? 1 : 0) << "\n";
+                file << "skelUseGpu=" << (obj.skeletal.useGpuSkinning ? 1 : 0) << "\n";
+                file << "skelAllowCpuFallback=" << (obj.skeletal.allowCpuFallback ? 1 : 0) << "\n";
+                file << "skelUseAnimation=" << (obj.skeletal.useAnimation ? 1 : 0) << "\n";
+                file << "skelClipIndex=" << obj.skeletal.clipIndex << "\n";
+                file << "skelPlaySpeed=" << obj.skeletal.playSpeed << "\n";
+                file << "skelLoop=" << (obj.skeletal.loop ? 1 : 0) << "\n";
+                file << "skelMaxBones=" << obj.skeletal.maxBones << "\n";
             }
             file << "materialColor=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
             file << "materialAmbient=" << obj.material.ambientStrength << "\n";
@@ -383,6 +488,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             for (size_t si = 0; si < obj.scripts.size(); ++si) {
                 const auto& sc = obj.scripts[si];
                 file << "script" << si << "_path=" << sc.path << "\n";
+                file << "script" << si << "_lang=" << static_cast<int>(sc.language) << "\n";
+                file << "script" << si << "_type=" << sc.managedType << "\n";
                 file << "script" << si << "_enabled=" << (sc.enabled ? 1 : 0) << "\n";
                 file << "script" << si << "_settings=" << sc.settings.size() << "\n";
                 for (size_t k = 0; k < sc.settings.size(); ++k) {
@@ -390,6 +497,9 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 }
             }
             file << "lightColor=" << obj.light.color.r << "," << obj.light.color.g << "," << obj.light.color.b << "\n";
+            if (obj.hasLight) {
+                file << "lightType=" << static_cast<int>(obj.light.type) << "\n";
+            }
             file << "lightIntensity=" << obj.light.intensity << "\n";
             file << "lightRange=" << obj.light.range << "\n";
             file << "lightEdgeFade=" << obj.light.edgeFade << "\n";
@@ -402,8 +512,11 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "cameraNear=" << obj.camera.nearClip << "\n";
             file << "cameraFar=" << obj.camera.farClip << "\n";
             file << "cameraPostFX=" << (obj.camera.applyPostFX ? 1 : 0) << "\n";
+            file << "cameraUse2D=" << (obj.camera.use2D ? 1 : 0) << "\n";
+            file << "cameraPixelsPerUnit=" << obj.camera.pixelsPerUnit << "\n";
             file << "uiAnchor=" << static_cast<int>(obj.ui.anchor) << "\n";
             file << "uiPosition=" << obj.ui.position.x << "," << obj.ui.position.y << "\n";
+            file << "uiRotation=" << obj.ui.rotation << "\n";
             file << "uiSize=" << obj.ui.size.x << "," << obj.ui.size.y << "\n";
             file << "uiSliderValue=" << obj.ui.sliderValue << "\n";
             file << "uiSliderMin=" << obj.ui.sliderMin << "\n";
@@ -415,7 +528,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiButtonStyle=" << static_cast<int>(obj.ui.buttonStyle) << "\n";
             file << "uiStylePreset=" << obj.ui.stylePreset << "\n";
             file << "uiTextScale=" << obj.ui.textScale << "\n";
-            if (obj.type == ObjectType::PostFXNode) {
+            if (obj.hasPostFX) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
                 file << "postBloomThreshold=" << obj.postFx.bloomThreshold << "\n";
@@ -442,6 +555,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             for (size_t s = 0; s < obj.scripts.size(); ++s) {
                 const auto& sc = obj.scripts[s];
                 file << "script" << s << "_path=" << sc.path << "\n";
+                file << "script" << s << "_lang=" << static_cast<int>(sc.language) << "\n";
+                file << "script" << s << "_type=" << sc.managedType << "\n";
                 file << "script" << s << "_enabled=" << (sc.enabled ? 1 : 0) << "\n";
                 file << "script" << s << "_settingCount=" << sc.settings.size() << "\n";
                 for (size_t si = 0; si < sc.settings.size(); ++si) {
@@ -449,8 +564,13 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 }
             }
             
-            if ((obj.type == ObjectType::OBJMesh || obj.type == ObjectType::Model) && !obj.meshPath.empty()) {
+            if (obj.hasRenderer &&
+                (obj.renderType == RenderType::OBJMesh || obj.renderType == RenderType::Model) &&
+                !obj.meshPath.empty()) {
                 file << "meshPath=" << obj.meshPath << "\n";
+                if (obj.renderType == RenderType::Model && obj.meshSourceIndex >= 0) {
+                    file << "meshSourceIndex=" << obj.meshSourceIndex << "\n";
+                }
             }
 
             file << "children=";
@@ -469,10 +589,494 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
     }
 }
 
+namespace {
+template <typename Vec2T>
+void ParseVec2(const std::string& value, Vec2T& out) {
+    sscanf(value.c_str(), "%f,%f", &out.x, &out.y);
+}
+
+void ParseVec2List(const std::string& value, std::vector<glm::vec2>& out) {
+    out.clear();
+    std::stringstream ss(value);
+    std::string item;
+    while (std::getline(ss, item, ';')) {
+        if (item.empty()) continue;
+        glm::vec2 v(0.0f);
+        ParseVec2(item, v);
+        out.push_back(v);
+    }
+}
+
+template <typename Vec3T>
+void ParseVec3(const std::string& value, Vec3T& out) {
+    sscanf(value.c_str(), "%f,%f,%f", &out.x, &out.y, &out.z);
+}
+
+template <typename Vec4T>
+void ParseVec4(const std::string& value, Vec4T& out) {
+    sscanf(value.c_str(), "%f,%f,%f,%f", &out.x, &out.y, &out.z, &out.w);
+}
+
+bool g_deferSceneAssetLoading = false;
+
+bool IsDefaultTransform(const SceneObject& obj) {
+    auto nearZero = [](float v) { return std::abs(v) < 1e-4f; };
+    auto nearOne = [](float v) { return std::abs(v - 1.0f) < 1e-4f; };
+    return nearZero(obj.localPosition.x) &&
+           nearZero(obj.localPosition.y) &&
+           nearZero(obj.localPosition.z) &&
+           nearZero(obj.localRotation.x) &&
+           nearZero(obj.localRotation.y) &&
+           nearZero(obj.localRotation.z) &&
+           nearOne(obj.localScale.x) &&
+           nearOne(obj.localScale.y) &&
+           nearOne(obj.localScale.z);
+}
+
+void ApplyModelRootTransform(SceneObject& obj, const ModelSceneData& sceneData) {
+    if (sceneData.nodes.empty()) return;
+    if (obj.localInitialized && !IsDefaultTransform(obj)) return;
+    const auto& root = sceneData.nodes.front();
+    obj.localPosition = root.localPosition;
+    obj.localRotation = root.localRotation;
+    obj.localScale = root.localScale;
+    obj.localInitialized = true;
+    obj.position = obj.localPosition;
+    obj.rotation = obj.localRotation;
+    obj.scale = obj.localScale;
+}
+
+void ApplyLegacyTypePreset(SceneObject& obj, ObjectType legacyType) {
+    obj.type = legacyType;
+    switch (legacyType) {
+        case ObjectType::Cube:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Cube;
+            break;
+        case ObjectType::Sphere:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sphere;
+            break;
+        case ObjectType::Capsule:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Capsule;
+            break;
+        case ObjectType::OBJMesh:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::OBJMesh;
+            break;
+        case ObjectType::Model:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Model;
+            break;
+        case ObjectType::Mirror:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Mirror;
+            break;
+        case ObjectType::Plane:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Plane;
+            break;
+        case ObjectType::Torus:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Torus;
+            break;
+        case ObjectType::Sprite:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sprite;
+            break;
+        case ObjectType::DirectionalLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Directional;
+            break;
+        case ObjectType::PointLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Point;
+            break;
+        case ObjectType::SpotLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Spot;
+            break;
+        case ObjectType::AreaLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Area;
+            break;
+        case ObjectType::Camera:
+            obj.hasCamera = true;
+            obj.camera.type = SceneCameraType::Scene;
+            break;
+        case ObjectType::PostFXNode:
+            obj.hasPostFX = true;
+            break;
+        case ObjectType::Canvas:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Canvas;
+            break;
+        case ObjectType::UIImage:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Image;
+            break;
+        case ObjectType::UISlider:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Slider;
+            break;
+        case ObjectType::UIButton:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Button;
+            break;
+        case ObjectType::UIText:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Text;
+            break;
+        case ObjectType::Sprite2D:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Sprite2D;
+            break;
+        case ObjectType::Empty:
+        default:
+            break;
+    }
+}
+
+using KeyHandler = void (*)(SceneObject&, const std::string&);
+
+const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
+    static const std::unordered_map<std::string, KeyHandler> handlers = {
+        {"id", +[](SceneObject& obj, const std::string& value) { obj.id = std::stoi(value); }},
+        {"name", +[](SceneObject& obj, const std::string& value) { obj.name = value; }},
+        {"type", +[](SceneObject& obj, const std::string& value) {
+             ApplyLegacyTypePreset(obj, static_cast<ObjectType>(std::stoi(value)));
+         }},
+        {"enabled", +[](SceneObject& obj, const std::string& value) { obj.enabled = (std::stoi(value) != 0); }},
+        {"layer", +[](SceneObject& obj, const std::string& value) { obj.layer = std::stoi(value); }},
+        {"tag", +[](SceneObject& obj, const std::string& value) { obj.tag = value; }},
+        {"hasRenderer", +[](SceneObject& obj, const std::string& value) { obj.hasRenderer = std::stoi(value) != 0; }},
+        {"renderType", +[](SceneObject& obj, const std::string& value) {
+             obj.renderType = static_cast<RenderType>(std::stoi(value));
+             if (obj.renderType != RenderType::None) {
+                 obj.hasRenderer = true;
+             }
+         }},
+        {"hasLight", +[](SceneObject& obj, const std::string& value) { obj.hasLight = std::stoi(value) != 0; }},
+        {"hasCamera", +[](SceneObject& obj, const std::string& value) { obj.hasCamera = std::stoi(value) != 0; }},
+        {"hasPostFX", +[](SceneObject& obj, const std::string& value) { obj.hasPostFX = std::stoi(value) != 0; }},
+        {"hasUI", +[](SceneObject& obj, const std::string& value) { obj.hasUI = std::stoi(value) != 0; }},
+        {"uiType", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.type = static_cast<UIElementType>(std::stoi(value));
+             if (obj.ui.type != UIElementType::None) {
+                 obj.hasUI = true;
+             }
+         }},
+        {"parentId", +[](SceneObject& obj, const std::string& value) { obj.parentId = std::stoi(value); }},
+        {"position", +[](SceneObject& obj, const std::string& value) {
+             ParseVec3(value, obj.position);
+             obj.localPosition = obj.position;
+             obj.localInitialized = true;
+         }},
+        {"rotation", +[](SceneObject& obj, const std::string& value) {
+             ParseVec3(value, obj.rotation);
+             obj.rotation = NormalizeEulerDegrees(obj.rotation);
+             obj.localRotation = obj.rotation;
+             obj.localInitialized = true;
+         }},
+        {"scale", +[](SceneObject& obj, const std::string& value) {
+             ParseVec3(value, obj.scale);
+             obj.localScale = obj.scale;
+             obj.localInitialized = true;
+         }},
+        {"hasRigidbody", +[](SceneObject& obj, const std::string& value) { obj.hasRigidbody = std::stoi(value) != 0; }},
+        {"rbEnabled", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.enabled = std::stoi(value) != 0; }},
+        {"rbMass", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.mass = std::stof(value); }},
+        {"rbUseGravity", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.useGravity = std::stoi(value) != 0; }},
+        {"rbKinematic", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.isKinematic = std::stoi(value) != 0; }},
+        {"rbLinearDamping", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.linearDamping = std::stof(value); }},
+        {"rbAngularDamping", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.angularDamping = std::stof(value); }},
+        {"rbLockRotX", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.lockRotationX = std::stoi(value) != 0; }},
+        {"rbLockRotY", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.lockRotationY = std::stoi(value) != 0; }},
+        {"rbLockRotZ", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.lockRotationZ = std::stoi(value) != 0; }},
+        {"hasRigidbody2D", +[](SceneObject& obj, const std::string& value) { obj.hasRigidbody2D = std::stoi(value) != 0; }},
+        {"rb2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.enabled = std::stoi(value) != 0; }},
+        {"rb2dUseGravity", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.useGravity = std::stoi(value) != 0; }},
+        {"rb2dGravityScale", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.gravityScale = std::stof(value); }},
+        {"rb2dLinearDamping", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.linearDamping = std::stof(value); }},
+        {"rb2dVelocity", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.rigidbody2D.velocity); }},
+        {"hasCollider2D", +[](SceneObject& obj, const std::string& value) { obj.hasCollider2D = std::stoi(value) != 0; }},
+        {"collider2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.collider2D.enabled = std::stoi(value) != 0; }},
+        {"collider2dType", +[](SceneObject& obj, const std::string& value) { obj.collider2D.type = static_cast<Collider2DType>(std::stoi(value)); }},
+        {"collider2dBox", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.collider2D.boxSize); }},
+        {"collider2dClosed", +[](SceneObject& obj, const std::string& value) { obj.collider2D.closed = std::stoi(value) != 0; }},
+        {"collider2dEdgeThickness", +[](SceneObject& obj, const std::string& value) { obj.collider2D.edgeThickness = std::stof(value); }},
+        {"collider2dPoints", +[](SceneObject& obj, const std::string& value) { ParseVec2List(value, obj.collider2D.points); }},
+        {"hasParallaxLayer2D", +[](SceneObject& obj, const std::string& value) { obj.hasParallaxLayer2D = std::stoi(value) != 0; }},
+        {"parallax2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.enabled = std::stoi(value) != 0; }},
+        {"parallax2dOrder", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.order = std::stoi(value); }},
+        {"parallax2dFactor", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.factor = std::stof(value); }},
+        {"parallax2dRepeatX", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.repeatX = std::stoi(value) != 0; }},
+        {"parallax2dRepeatY", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.repeatY = std::stoi(value) != 0; }},
+        {"parallax2dSpacing", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.parallaxLayer2D.repeatSpacing); }},
+        {"hasCameraFollow2D", +[](SceneObject& obj, const std::string& value) { obj.hasCameraFollow2D = std::stoi(value) != 0; }},
+        {"cameraFollow2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.cameraFollow2D.enabled = std::stoi(value) != 0; }},
+        {"cameraFollow2dTarget", +[](SceneObject& obj, const std::string& value) { obj.cameraFollow2D.targetId = std::stoi(value); }},
+        {"cameraFollow2dOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.cameraFollow2D.offset); }},
+        {"cameraFollow2dSmoothTime", +[](SceneObject& obj, const std::string& value) { obj.cameraFollow2D.smoothTime = std::stof(value); }},
+        {"hasCollider", +[](SceneObject& obj, const std::string& value) { obj.hasCollider = std::stoi(value) != 0; }},
+        {"colliderEnabled", +[](SceneObject& obj, const std::string& value) { obj.collider.enabled = std::stoi(value) != 0; }},
+        {"colliderType", +[](SceneObject& obj, const std::string& value) { obj.collider.type = static_cast<ColliderType>(std::stoi(value)); }},
+        {"colliderBox", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.collider.boxSize); }},
+        {"colliderConvex", +[](SceneObject& obj, const std::string& value) { obj.collider.convex = std::stoi(value) != 0; }},
+        {"hasPlayerController", +[](SceneObject& obj, const std::string& value) { obj.hasPlayerController = std::stoi(value) != 0; }},
+        {"pcEnabled", +[](SceneObject& obj, const std::string& value) { obj.playerController.enabled = std::stoi(value) != 0; }},
+        {"pcMoveSpeed", +[](SceneObject& obj, const std::string& value) { obj.playerController.moveSpeed = std::stof(value); }},
+        {"pcLookSensitivity", +[](SceneObject& obj, const std::string& value) { obj.playerController.lookSensitivity = std::stof(value); }},
+        {"pcHeight", +[](SceneObject& obj, const std::string& value) { obj.playerController.height = std::stof(value); }},
+        {"pcRadius", +[](SceneObject& obj, const std::string& value) { obj.playerController.radius = std::stof(value); }},
+        {"pcJumpStrength", +[](SceneObject& obj, const std::string& value) { obj.playerController.jumpStrength = std::stof(value); }},
+        {"hasAudioSource", +[](SceneObject& obj, const std::string& value) { obj.hasAudioSource = std::stoi(value) != 0; }},
+        {"audioEnabled", +[](SceneObject& obj, const std::string& value) { obj.audioSource.enabled = std::stoi(value) != 0; }},
+        {"audioClip", +[](SceneObject& obj, const std::string& value) { obj.audioSource.clipPath = value; }},
+        {"audioVolume", +[](SceneObject& obj, const std::string& value) { obj.audioSource.volume = std::stof(value); }},
+        {"audioLoop", +[](SceneObject& obj, const std::string& value) { obj.audioSource.loop = std::stoi(value) != 0; }},
+        {"audioPlayOnStart", +[](SceneObject& obj, const std::string& value) { obj.audioSource.playOnStart = std::stoi(value) != 0; }},
+        {"audioSpatial", +[](SceneObject& obj, const std::string& value) { obj.audioSource.spatial = std::stoi(value) != 0; }},
+        {"audioMinDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.minDistance = std::stof(value); }},
+        {"audioMaxDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.maxDistance = std::stof(value); }},
+        {"audioRolloffMode", +[](SceneObject& obj, const std::string& value) { obj.audioSource.rolloffMode = static_cast<AudioRolloffMode>(std::stoi(value)); }},
+        {"audioRolloff", +[](SceneObject& obj, const std::string& value) { obj.audioSource.rolloff = std::stof(value); }},
+        {"audioCustomMidDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customMidDistance = std::stof(value); }},
+        {"audioCustomMidGain", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customMidGain = std::stof(value); }},
+        {"audioCustomEndGain", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customEndGain = std::stof(value); }},
+        {"hasReverbZone", +[](SceneObject& obj, const std::string& value) { obj.hasReverbZone = std::stoi(value) != 0; }},
+        {"reverbEnabled", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.enabled = std::stoi(value) != 0; }},
+        {"reverbPreset", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.preset = static_cast<ReverbPreset>(std::stoi(value)); }},
+        {"reverbShape", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.shape = static_cast<ReverbZoneShape>(std::stoi(value)); }},
+        {"reverbBox", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.reverbZone.boxSize); }},
+        {"reverbRadius", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.radius = std::stof(value); }},
+        {"reverbBlend", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.blendDistance = std::stof(value); }},
+        {"reverbMinDistance", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.minDistance = std::stof(value); }},
+        {"reverbMaxDistance", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.maxDistance = std::stof(value); }},
+        {"reverbRoom", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.room = std::stof(value); }},
+        {"reverbRoomHF", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.roomHF = std::stof(value); }},
+        {"reverbRoomLF", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.roomLF = std::stof(value); }},
+        {"reverbDecayTime", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.decayTime = std::stof(value); }},
+        {"reverbDecayHFRatio", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.decayHFRatio = std::stof(value); }},
+        {"reverbReflections", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.reflections = std::stof(value); }},
+        {"reverbReflectionsDelay", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.reflectionsDelay = std::stof(value); }},
+        {"reverbReverb", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.reverb = std::stof(value); }},
+        {"reverbReverbDelay", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.reverbDelay = std::stof(value); }},
+        {"reverbHFReference", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.hfReference = std::stof(value); }},
+        {"reverbLFReference", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.lfReference = std::stof(value); }},
+        {"reverbRoomRolloffFactor", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.roomRolloffFactor = std::stof(value); }},
+        {"reverbDiffusion", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.diffusion = std::stof(value); }},
+        {"reverbDensity", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.density = std::stof(value); }},
+        {"hasAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = std::stoi(value) != 0; }},
+        {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.animation.enabled = std::stoi(value) != 0; }},
+        {"animClipLength", +[](SceneObject& obj, const std::string& value) { obj.animation.clipLength = std::stof(value); }},
+        {"animPlaySpeed", +[](SceneObject& obj, const std::string& value) { obj.animation.playSpeed = std::stof(value); }},
+        {"animLoop", +[](SceneObject& obj, const std::string& value) { obj.animation.loop = std::stoi(value) != 0; }},
+        {"animApplyOnScrub", +[](SceneObject& obj, const std::string& value) { obj.animation.applyOnScrub = std::stoi(value) != 0; }},
+        {"animKeyCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.animation.keyframes.resize(std::max(0, count));
+         }},
+        {"hasSkeletalAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasSkeletalAnimation = std::stoi(value) != 0; }},
+        {"skelEnabled", +[](SceneObject& obj, const std::string& value) { obj.skeletal.enabled = std::stoi(value) != 0; }},
+        {"skelUseGpu", +[](SceneObject& obj, const std::string& value) { obj.skeletal.useGpuSkinning = std::stoi(value) != 0; }},
+        {"skelAllowCpuFallback", +[](SceneObject& obj, const std::string& value) { obj.skeletal.allowCpuFallback = std::stoi(value) != 0; }},
+        {"skelUseAnimation", +[](SceneObject& obj, const std::string& value) { obj.skeletal.useAnimation = std::stoi(value) != 0; }},
+        {"skelClipIndex", +[](SceneObject& obj, const std::string& value) { obj.skeletal.clipIndex = std::stoi(value); }},
+        {"skelPlaySpeed", +[](SceneObject& obj, const std::string& value) { obj.skeletal.playSpeed = std::stof(value); }},
+        {"skelLoop", +[](SceneObject& obj, const std::string& value) { obj.skeletal.loop = std::stoi(value) != 0; }},
+        {"skelMaxBones", +[](SceneObject& obj, const std::string& value) { obj.skeletal.maxBones = std::stoi(value); }},
+        {"materialColor", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.material.color); }},
+        {"materialAmbient", +[](SceneObject& obj, const std::string& value) { obj.material.ambientStrength = std::stof(value); }},
+        {"materialSpecular", +[](SceneObject& obj, const std::string& value) { obj.material.specularStrength = std::stof(value); }},
+        {"materialShininess", +[](SceneObject& obj, const std::string& value) { obj.material.shininess = std::stof(value); }},
+        {"materialTextureMix", +[](SceneObject& obj, const std::string& value) { obj.material.textureMix = std::stof(value); }},
+        {"materialPath", +[](SceneObject& obj, const std::string& value) { obj.materialPath = value; }},
+        {"albedoTex", +[](SceneObject& obj, const std::string& value) { obj.albedoTexturePath = value; }},
+        {"overlayTex", +[](SceneObject& obj, const std::string& value) { obj.overlayTexturePath = value; }},
+        {"normalMap", +[](SceneObject& obj, const std::string& value) { obj.normalMapPath = value; }},
+        {"vertexShader", +[](SceneObject& obj, const std::string& value) { obj.vertexShaderPath = value; }},
+        {"fragmentShader", +[](SceneObject& obj, const std::string& value) { obj.fragmentShaderPath = value; }},
+        {"useOverlay", +[](SceneObject& obj, const std::string& value) { obj.useOverlay = (std::stoi(value) != 0); }},
+        {"additionalMaterialCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.additionalMaterialPaths.resize(std::max(0, count));
+         }},
+        {"scripts", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.scripts.resize(std::max(0, count));
+         }},
+        {"scriptCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.scripts.resize(std::max(0, count));
+         }},
+        {"lightColor", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.light.color); }},
+        {"lightType", +[](SceneObject& obj, const std::string& value) {
+             obj.light.type = static_cast<LightType>(std::stoi(value));
+         }},
+        {"lightIntensity", +[](SceneObject& obj, const std::string& value) { obj.light.intensity = std::stof(value); }},
+        {"lightRange", +[](SceneObject& obj, const std::string& value) { obj.light.range = std::stof(value); }},
+        {"lightEdgeFade", +[](SceneObject& obj, const std::string& value) { obj.light.edgeFade = std::stof(value); }},
+        {"lightInner", +[](SceneObject& obj, const std::string& value) { obj.light.innerAngle = std::stof(value); }},
+        {"lightOuter", +[](SceneObject& obj, const std::string& value) { obj.light.outerAngle = std::stof(value); }},
+        {"lightSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.light.size); }},
+        {"lightEnabled", +[](SceneObject& obj, const std::string& value) { obj.light.enabled = (std::stoi(value) != 0); }},
+        {"cameraType", +[](SceneObject& obj, const std::string& value) { obj.camera.type = static_cast<SceneCameraType>(std::stoi(value)); }},
+        {"cameraFov", +[](SceneObject& obj, const std::string& value) { obj.camera.fov = std::stof(value); }},
+        {"cameraNear", +[](SceneObject& obj, const std::string& value) { obj.camera.nearClip = std::stof(value); }},
+        {"cameraFar", +[](SceneObject& obj, const std::string& value) { obj.camera.farClip = std::stof(value); }},
+        {"cameraPostFX", +[](SceneObject& obj, const std::string& value) { obj.camera.applyPostFX = (std::stoi(value) != 0); }},
+        {"cameraUse2D", +[](SceneObject& obj, const std::string& value) { obj.camera.use2D = (std::stoi(value) != 0); }},
+        {"cameraPixelsPerUnit", +[](SceneObject& obj, const std::string& value) { obj.camera.pixelsPerUnit = std::stof(value); }},
+        {"uiAnchor", +[](SceneObject& obj, const std::string& value) { obj.ui.anchor = static_cast<UIAnchor>(std::stoi(value)); }},
+        {"uiPosition", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.position); }},
+        {"uiRotation", +[](SceneObject& obj, const std::string& value) { obj.ui.rotation = std::stof(value); }},
+        {"uiSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.size); }},
+        {"uiSliderValue", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderValue = std::stof(value); }},
+        {"uiSliderMin", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderMin = std::stof(value); }},
+        {"uiSliderMax", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderMax = std::stof(value); }},
+        {"uiLabel", +[](SceneObject& obj, const std::string& value) { obj.ui.label = value; }},
+        {"uiColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.ui.color); }},
+        {"uiInteractable", +[](SceneObject& obj, const std::string& value) { obj.ui.interactable = (std::stoi(value) != 0); }},
+        {"uiSliderStyle", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderStyle = static_cast<UISliderStyle>(std::stoi(value)); }},
+        {"uiButtonStyle", +[](SceneObject& obj, const std::string& value) { obj.ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value)); }},
+        {"uiStylePreset", +[](SceneObject& obj, const std::string& value) { obj.ui.stylePreset = value; }},
+        {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
+        {"postEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.enabled = (std::stoi(value) != 0); }},
+        {"postBloomEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomEnabled = (std::stoi(value) != 0); }},
+        {"postBloomThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomThreshold = std::stof(value); }},
+        {"postBloomIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomIntensity = std::stof(value); }},
+        {"postBloomRadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomRadius = std::stof(value); }},
+        {"postColorAdjustEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.colorAdjustEnabled = (std::stoi(value) != 0); }},
+        {"postExposure", +[](SceneObject& obj, const std::string& value) { obj.postFx.exposure = std::stof(value); }},
+        {"postContrast", +[](SceneObject& obj, const std::string& value) { obj.postFx.contrast = std::stof(value); }},
+        {"postSaturation", +[](SceneObject& obj, const std::string& value) { obj.postFx.saturation = std::stof(value); }},
+        {"postColorFilter", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.postFx.colorFilter); }},
+        {"postMotionBlurEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurEnabled = (std::stoi(value) != 0); }},
+        {"postMotionBlurStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurStrength = std::stof(value); }},
+        {"postVignetteEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteEnabled = (std::stoi(value) != 0); }},
+        {"postVignetteIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteIntensity = std::stof(value); }},
+        {"postVignetteSmoothness", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteSmoothness = std::stof(value); }},
+        {"postChromaticEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.chromaticAberrationEnabled = (std::stoi(value) != 0); }},
+        {"postChromaticAmount", +[](SceneObject& obj, const std::string& value) { obj.postFx.chromaticAmount = std::stof(value); }},
+        {"postAOEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.ambientOcclusionEnabled = (std::stoi(value) != 0); }},
+        {"postAORadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoRadius = std::stof(value); }},
+        {"postAOStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoStrength = std::stof(value); }},
+        {"meshPath", +[](SceneObject& obj, const std::string& value) {
+             obj.meshPath = value;
+             if (g_deferSceneAssetLoading) {
+                 return;
+             }
+             if (!value.empty() && obj.hasRenderer && obj.renderType == RenderType::OBJMesh) {
+                 std::string err;
+                 obj.meshId = g_objLoader.loadOBJ(value, err);
+             } else if (!value.empty() && obj.hasRenderer && obj.renderType == RenderType::Model) {
+                 ModelSceneData sceneData;
+                 std::string err;
+                 if (getModelLoader().loadModelScene(value, sceneData, err)) {
+                    int sourceIndex = obj.meshSourceIndex;
+                     if (sourceIndex < 0 || sourceIndex >= (int)sceneData.meshIndices.size()) {
+                         sourceIndex = 0;
+                     }
+                     if (!sceneData.meshIndices.empty() &&
+                         sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                         obj.meshId = sceneData.meshIndices[sourceIndex];
+                     }
+                     ApplyModelRootTransform(obj, sceneData);
+                 } else {
+                     std::cerr << "Failed to load model from scene: " << err << std::endl;
+                     obj.meshId = -1;
+                 }
+             }
+         }},
+        {"meshSourceIndex", +[](SceneObject& obj, const std::string& value) {
+             obj.meshSourceIndex = std::stoi(value);
+             if (g_deferSceneAssetLoading) {
+                 return;
+             }
+             if (!obj.meshPath.empty() && obj.hasRenderer && obj.renderType == RenderType::Model) {
+                 ModelSceneData sceneData;
+                 std::string err;
+                 if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                     int sourceIndex = obj.meshSourceIndex;
+                     if (sourceIndex < 0 || sourceIndex >= (int)sceneData.meshIndices.size()) {
+                         sourceIndex = 0;
+                     }
+                     if (!sceneData.meshIndices.empty() &&
+                         sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                         obj.meshId = sceneData.meshIndices[sourceIndex];
+                     }
+                     ApplyModelRootTransform(obj, sceneData);
+                 } else {
+                     std::cerr << "Failed to load model from scene: " << err << std::endl;
+                 }
+             }
+         }},
+        {"children", +[](SceneObject& obj, const std::string& value) {
+             if (!value.empty()) {
+                 std::stringstream ss(value);
+                 std::string item;
+                 while (std::getline(ss, item, ',')) {
+                     if (!item.empty()) {
+                         obj.childIds.push_back(std::stoi(item));
+                     }
+                 }
+             }
+         }},
+    };
+    return handlers;
+}
+} // namespace
+
+ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
+    if (obj.hasRenderer) {
+        switch (obj.renderType) {
+            case RenderType::Cube: return ObjectType::Cube;
+            case RenderType::Sphere: return ObjectType::Sphere;
+            case RenderType::Capsule: return ObjectType::Capsule;
+            case RenderType::OBJMesh: return ObjectType::OBJMesh;
+            case RenderType::Model: return ObjectType::Model;
+            case RenderType::Mirror: return ObjectType::Mirror;
+            case RenderType::Plane: return ObjectType::Plane;
+            case RenderType::Torus: return ObjectType::Torus;
+            case RenderType::Sprite: return ObjectType::Sprite;
+            case RenderType::None: break;
+        }
+    }
+    if (obj.hasUI) {
+        switch (obj.ui.type) {
+            case UIElementType::Canvas: return ObjectType::Canvas;
+            case UIElementType::Image: return ObjectType::UIImage;
+            case UIElementType::Slider: return ObjectType::UISlider;
+            case UIElementType::Button: return ObjectType::UIButton;
+            case UIElementType::Text: return ObjectType::UIText;
+            case UIElementType::Sprite2D: return ObjectType::Sprite2D;
+            case UIElementType::None: break;
+        }
+    }
+    if (obj.hasLight) {
+        switch (obj.light.type) {
+            case LightType::Directional: return ObjectType::DirectionalLight;
+            case LightType::Point: return ObjectType::PointLight;
+            case LightType::Spot: return ObjectType::SpotLight;
+            case LightType::Area: return ObjectType::AreaLight;
+        }
+    }
+    if (obj.hasCamera) {
+        return ObjectType::Camera;
+    }
+    if (obj.hasPostFX) {
+        return ObjectType::PostFXNode;
+    }
+    return ObjectType::Empty;
+}
+
 bool SceneSerializer::loadScene(const fs::path& filePath,
                                std::vector<SceneObject>& objects,
                                int& nextId,
-                               int& outVersion) {
+                               int& outVersion,
+                               float* outTimeOfDay) {
     try {
         std::ifstream file(filePath);
         if (!file.is_open()) return false;
@@ -481,6 +1085,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         std::string line;
         SceneObject* currentObj = nullptr;
         int sceneVersion = 9;
+        float sceneTimeOfDay = -1.0f;
 
         while (std::getline(file, line)) {
             size_t first = line.find_first_not_of(" \t\r\n");
@@ -498,7 +1103,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
             if (line.empty() || line[0] == '#') continue;
 
             if (line == "[Object]") {
-                objects.push_back(SceneObject("", ObjectType::Cube, 0));
+                objects.push_back(SceneObject("", ObjectType::Empty, 0));
                 currentObj = &objects.back();
                 continue;
             }
@@ -513,167 +1118,57 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                 sceneVersion = std::stoi(value);
             } else if (key == "nextId") {
                 nextId = std::stoi(value);
+            } else if (key == "timeOfDay") {
+                sceneTimeOfDay = std::stof(value);
             } else if (currentObj) {
-                if (key == "id") {
-                    currentObj->id = std::stoi(value);
-                } else if (key == "name") {
-                    currentObj->name = value;
-                } else if (key == "type") {
-                    currentObj->type = static_cast<ObjectType>(std::stoi(value));
-                    if (currentObj->type == ObjectType::DirectionalLight) currentObj->light.type = LightType::Directional;
-                    else if (currentObj->type == ObjectType::PointLight) currentObj->light.type = LightType::Point;
-                    else if (currentObj->type == ObjectType::SpotLight) currentObj->light.type = LightType::Spot;
-                    else if (currentObj->type == ObjectType::AreaLight) currentObj->light.type = LightType::Area;
-                    else if (currentObj->type == ObjectType::Camera) {
-                        currentObj->camera.type = SceneCameraType::Scene;
+                const auto& handlers = GetSceneObjectKeyHandlers();
+                auto handlerIt = handlers.find(key);
+                if (handlerIt != handlers.end()) {
+                    handlerIt->second(*currentObj, value);
+                } else if (key.rfind("animKey", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 7) {
+                        int idx = std::stoi(key.substr(7, underscore - 7));
+                        if (idx >= 0 && idx < static_cast<int>(currentObj->animation.keyframes.size())) {
+                            std::string sub = key.substr(underscore + 1);
+                            auto& keyframe = currentObj->animation.keyframes[idx];
+                            if (sub == "time") {
+                                keyframe.time = std::stof(value);
+                            } else if (sub == "pos") {
+                                sscanf(value.c_str(), "%f,%f,%f",
+                                       &keyframe.position.x,
+                                       &keyframe.position.y,
+                                       &keyframe.position.z);
+                            } else if (sub == "rot") {
+                                sscanf(value.c_str(), "%f,%f,%f",
+                                       &keyframe.rotation.x,
+                                       &keyframe.rotation.y,
+                                       &keyframe.rotation.z);
+                            } else if (sub == "scale") {
+                                sscanf(value.c_str(), "%f,%f,%f",
+                                       &keyframe.scale.x,
+                                       &keyframe.scale.y,
+                                       &keyframe.scale.z);
+                            } else if (sub == "interp") {
+                                keyframe.interpolation = static_cast<AnimationInterpolation>(std::stoi(value));
+                            } else if (sub == "curve") {
+                                keyframe.curveMode = static_cast<AnimationCurveMode>(std::stoi(value));
+                            } else if (sub == "in") {
+                                sscanf(value.c_str(), "%f,%f",
+                                       &keyframe.bezierIn.x,
+                                       &keyframe.bezierIn.y);
+                            } else if (sub == "out") {
+                                sscanf(value.c_str(), "%f,%f",
+                                       &keyframe.bezierOut.x,
+                                       &keyframe.bezierOut.y);
+                            }
+                        }
                     }
-                } else if (key == "enabled") {
-                    currentObj->enabled = (std::stoi(value) != 0);
-                } else if (key == "layer") {
-                    currentObj->layer = std::stoi(value);
-                } else if (key == "tag") {
-                    currentObj->tag = value;
-                } else if (key == "parentId") {
-                    currentObj->parentId = std::stoi(value);
-                } else if (key == "position") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->position.x,
-                           &currentObj->position.y,
-                           &currentObj->position.z);
-                    currentObj->localPosition = currentObj->position;
-                    currentObj->localInitialized = true;
-                } else if (key == "rotation") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->rotation.x,
-                           &currentObj->rotation.y,
-                           &currentObj->rotation.z);
-                    currentObj->rotation = NormalizeEulerDegrees(currentObj->rotation);
-                    currentObj->localRotation = currentObj->rotation;
-                    currentObj->localInitialized = true;
-                } else if (key == "scale") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->scale.x,
-                           &currentObj->scale.y,
-                           &currentObj->scale.z);
-                    currentObj->localScale = currentObj->scale;
-                    currentObj->localInitialized = true;
-                } else if (key == "hasRigidbody") {
-                    currentObj->hasRigidbody = std::stoi(value) != 0;
-                } else if (key == "rbEnabled") {
-                    currentObj->rigidbody.enabled = std::stoi(value) != 0;
-                } else if (key == "rbMass") {
-                    currentObj->rigidbody.mass = std::stof(value);
-                } else if (key == "rbUseGravity") {
-                    currentObj->rigidbody.useGravity = std::stoi(value) != 0;
-                } else if (key == "rbKinematic") {
-                    currentObj->rigidbody.isKinematic = std::stoi(value) != 0;
-                } else if (key == "rbLinearDamping") {
-                    currentObj->rigidbody.linearDamping = std::stof(value);
-                } else if (key == "rbAngularDamping") {
-                    currentObj->rigidbody.angularDamping = std::stof(value);
-                } else if (key == "rbLockRotX") {
-                    currentObj->rigidbody.lockRotationX = std::stoi(value) != 0;
-                } else if (key == "rbLockRotY") {
-                    currentObj->rigidbody.lockRotationY = std::stoi(value) != 0;
-                } else if (key == "rbLockRotZ") {
-                    currentObj->rigidbody.lockRotationZ = std::stoi(value) != 0;
-                } else if (key == "hasRigidbody2D") {
-                    currentObj->hasRigidbody2D = std::stoi(value) != 0;
-                } else if (key == "rb2dEnabled") {
-                    currentObj->rigidbody2D.enabled = std::stoi(value) != 0;
-                } else if (key == "rb2dUseGravity") {
-                    currentObj->rigidbody2D.useGravity = std::stoi(value) != 0;
-                } else if (key == "rb2dGravityScale") {
-                    currentObj->rigidbody2D.gravityScale = std::stof(value);
-                } else if (key == "rb2dLinearDamping") {
-                    currentObj->rigidbody2D.linearDamping = std::stof(value);
-                } else if (key == "rb2dVelocity") {
-                    sscanf(value.c_str(), "%f,%f",
-                           &currentObj->rigidbody2D.velocity.x,
-                           &currentObj->rigidbody2D.velocity.y);
-                } else if (key == "hasCollider") {
-                    currentObj->hasCollider = std::stoi(value) != 0;
-                } else if (key == "colliderEnabled") {
-                    currentObj->collider.enabled = std::stoi(value) != 0;
-                } else if (key == "colliderType") {
-                    currentObj->collider.type = static_cast<ColliderType>(std::stoi(value));
-                } else if (key == "colliderBox") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->collider.boxSize.x,
-                           &currentObj->collider.boxSize.y,
-                           &currentObj->collider.boxSize.z);
-                } else if (key == "colliderConvex") {
-                    currentObj->collider.convex = std::stoi(value) != 0;
-                } else if (key == "hasPlayerController") {
-                    currentObj->hasPlayerController = std::stoi(value) != 0;
-                } else if (key == "pcEnabled") {
-                    currentObj->playerController.enabled = std::stoi(value) != 0;
-                } else if (key == "pcMoveSpeed") {
-                    currentObj->playerController.moveSpeed = std::stof(value);
-                } else if (key == "pcLookSensitivity") {
-                    currentObj->playerController.lookSensitivity = std::stof(value);
-                } else if (key == "pcHeight") {
-                    currentObj->playerController.height = std::stof(value);
-                } else if (key == "pcRadius") {
-                    currentObj->playerController.radius = std::stof(value);
-                } else if (key == "pcJumpStrength") {
-                    currentObj->playerController.jumpStrength = std::stof(value);
-                } else if (key == "hasAudioSource") {
-                    currentObj->hasAudioSource = std::stoi(value) != 0;
-                } else if (key == "audioEnabled") {
-                    currentObj->audioSource.enabled = std::stoi(value) != 0;
-                } else if (key == "audioClip") {
-                    currentObj->audioSource.clipPath = value;
-                } else if (key == "audioVolume") {
-                    currentObj->audioSource.volume = std::stof(value);
-                } else if (key == "audioLoop") {
-                    currentObj->audioSource.loop = std::stoi(value) != 0;
-                } else if (key == "audioPlayOnStart") {
-                    currentObj->audioSource.playOnStart = std::stoi(value) != 0;
-                } else if (key == "audioSpatial") {
-                    currentObj->audioSource.spatial = std::stoi(value) != 0;
-                } else if (key == "audioMinDistance") {
-                    currentObj->audioSource.minDistance = std::stof(value);
-                } else if (key == "audioMaxDistance") {
-                    currentObj->audioSource.maxDistance = std::stof(value);
-                } else if (key == "materialColor") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->material.color.r,
-                           &currentObj->material.color.g,
-                           &currentObj->material.color.b);
-                } else if (key == "materialAmbient") {
-                    currentObj->material.ambientStrength = std::stof(value);
-                } else if (key == "materialSpecular") {
-                    currentObj->material.specularStrength = std::stof(value);
-                } else if (key == "materialShininess") {
-                    currentObj->material.shininess = std::stof(value);
-                } else if (key == "materialTextureMix") {
-                    currentObj->material.textureMix = std::stof(value);
-                } else if (key == "materialPath") {
-                    currentObj->materialPath = value;
-                } else if (key == "albedoTex") {
-                    currentObj->albedoTexturePath = value;
-                } else if (key == "overlayTex") {
-                    currentObj->overlayTexturePath = value;
-                } else if (key == "normalMap") {
-                    currentObj->normalMapPath = value;
-                } else if (key == "vertexShader") {
-                    currentObj->vertexShaderPath = value;
-                } else if (key == "fragmentShader") {
-                    currentObj->fragmentShaderPath = value;
-                } else if (key == "useOverlay") {
-                    currentObj->useOverlay = (std::stoi(value) != 0);
-                } else if (key == "additionalMaterialCount") {
-                    int count = std::stoi(value);
-                    currentObj->additionalMaterialPaths.resize(std::max(0, count));
                 } else if (key.rfind("additionalMaterial", 0) == 0) {
                     int idx = std::stoi(key.substr(18)); // length of "additionalMaterial"
                     if (idx >= 0 && idx < (int)currentObj->additionalMaterialPaths.size()) {
                         currentObj->additionalMaterialPaths[idx] = value;
                     }
-                } else if (key == "scripts") {
-                    int count = std::stoi(value);
-                    currentObj->scripts.resize(std::max(0, count));
                 } else if (key.rfind("script", 0) == 0) {
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 6) {
@@ -683,6 +1178,13 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             ScriptComponent& sc = currentObj->scripts[idx];
                             if (sub == "path") {
                                 sc.path = value;
+                            } else if (sub == "lang" || sub == "language") {
+                                int langValue = std::stoi(value);
+                                sc.language = (langValue == static_cast<int>(ScriptLanguage::CSharp))
+                                    ? ScriptLanguage::CSharp
+                                    : ScriptLanguage::Cpp;
+                            } else if (sub == "type") {
+                                sc.managedType = value;
                             } else if (sub == "enabled") {
                                 sc.enabled = std::stoi(value) != 0;
                             } else if (sub == "settings" || sub == "settingCount") {
@@ -705,177 +1207,41 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             }
                         }
                     }
-                } else if (key == "lightColor") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->light.color.r,
-                           &currentObj->light.color.g,
-                           &currentObj->light.color.b);
-                } else if (key == "lightIntensity") {
-                    currentObj->light.intensity = std::stof(value);
-                } else if (key == "lightRange") {
-                    currentObj->light.range = std::stof(value);
-                } else if (key == "lightEdgeFade") {
-                    currentObj->light.edgeFade = std::stof(value);
-                } else if (key == "lightInner") {
-                    currentObj->light.innerAngle = std::stof(value);
-                } else if (key == "lightOuter") {
-                    currentObj->light.outerAngle = std::stof(value);
-                } else if (key == "lightSize") {
-                    sscanf(value.c_str(), "%f,%f",
-                           &currentObj->light.size.x,
-                           &currentObj->light.size.y);
-                } else if (key == "lightEnabled") {
-                    currentObj->light.enabled = (std::stoi(value) != 0);
-                } else if (key == "cameraType") {
-                    currentObj->camera.type = static_cast<SceneCameraType>(std::stoi(value));
-                } else if (key == "cameraFov") {
-                    currentObj->camera.fov = std::stof(value);
-                } else if (key == "cameraNear") {
-                    currentObj->camera.nearClip = std::stof(value);
-                } else if (key == "cameraFar") {
-                    currentObj->camera.farClip = std::stof(value);
-                } else if (key == "cameraPostFX") {
-                    currentObj->camera.applyPostFX = (std::stoi(value) != 0);
-                } else if (key == "uiAnchor") {
-                    currentObj->ui.anchor = static_cast<UIAnchor>(std::stoi(value));
-                } else if (key == "uiPosition") {
-                    sscanf(value.c_str(), "%f,%f",
-                           &currentObj->ui.position.x,
-                           &currentObj->ui.position.y);
-                } else if (key == "uiSize") {
-                    sscanf(value.c_str(), "%f,%f",
-                           &currentObj->ui.size.x,
-                           &currentObj->ui.size.y);
-                } else if (key == "uiSliderValue") {
-                    currentObj->ui.sliderValue = std::stof(value);
-                } else if (key == "uiSliderMin") {
-                    currentObj->ui.sliderMin = std::stof(value);
-                } else if (key == "uiSliderMax") {
-                    currentObj->ui.sliderMax = std::stof(value);
-                } else if (key == "uiLabel") {
-                    currentObj->ui.label = value;
-                } else if (key == "uiColor") {
-                    sscanf(value.c_str(), "%f,%f,%f,%f",
-                           &currentObj->ui.color.r,
-                           &currentObj->ui.color.g,
-                           &currentObj->ui.color.b,
-                           &currentObj->ui.color.a);
-                } else if (key == "uiInteractable") {
-                    currentObj->ui.interactable = (std::stoi(value) != 0);
-                } else if (key == "uiSliderStyle") {
-                    currentObj->ui.sliderStyle = static_cast<UISliderStyle>(std::stoi(value));
-                } else if (key == "uiButtonStyle") {
-                    currentObj->ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value));
-                } else if (key == "uiStylePreset") {
-                    currentObj->ui.stylePreset = value;
-                } else if (key == "uiTextScale") {
-                    currentObj->ui.textScale = std::stof(value);
-                } else if (key == "postEnabled") {
-                    currentObj->postFx.enabled = (std::stoi(value) != 0);
-                } else if (key == "postBloomEnabled") {
-                    currentObj->postFx.bloomEnabled = (std::stoi(value) != 0);
-                } else if (key == "postBloomThreshold") {
-                    currentObj->postFx.bloomThreshold = std::stof(value);
-                } else if (key == "postBloomIntensity") {
-                    currentObj->postFx.bloomIntensity = std::stof(value);
-                } else if (key == "postBloomRadius") {
-                    currentObj->postFx.bloomRadius = std::stof(value);
-                } else if (key == "postColorAdjustEnabled") {
-                    currentObj->postFx.colorAdjustEnabled = (std::stoi(value) != 0);
-                } else if (key == "postExposure") {
-                    currentObj->postFx.exposure = std::stof(value);
-                } else if (key == "postContrast") {
-                    currentObj->postFx.contrast = std::stof(value);
-                } else if (key == "postSaturation") {
-                    currentObj->postFx.saturation = std::stof(value);
-                } else if (key == "postColorFilter") {
-                    sscanf(value.c_str(), "%f,%f,%f",
-                           &currentObj->postFx.colorFilter.r,
-                           &currentObj->postFx.colorFilter.g,
-                           &currentObj->postFx.colorFilter.b);
-                } else if (key == "postMotionBlurEnabled") {
-                    currentObj->postFx.motionBlurEnabled = (std::stoi(value) != 0);
-                } else if (key == "postMotionBlurStrength") {
-                    currentObj->postFx.motionBlurStrength = std::stof(value);
-                } else if (key == "postVignetteEnabled") {
-                    currentObj->postFx.vignetteEnabled = (std::stoi(value) != 0);
-                } else if (key == "postVignetteIntensity") {
-                    currentObj->postFx.vignetteIntensity = std::stof(value);
-                } else if (key == "postVignetteSmoothness") {
-                    currentObj->postFx.vignetteSmoothness = std::stof(value);
-                } else if (key == "postChromaticEnabled") {
-                    currentObj->postFx.chromaticAberrationEnabled = (std::stoi(value) != 0);
-                } else if (key == "postChromaticAmount") {
-                    currentObj->postFx.chromaticAmount = std::stof(value);
-                } else if (key == "postAOEnabled") {
-                    currentObj->postFx.ambientOcclusionEnabled = (std::stoi(value) != 0);
-                } else if (key == "postAORadius") {
-                    currentObj->postFx.aoRadius = std::stof(value);
-                } else if (key == "postAOStrength") {
-                    currentObj->postFx.aoStrength = std::stof(value);
-                } else if (key == "scriptCount") {
-                    int count = std::stoi(value);
-                    currentObj->scripts.resize(std::max(0, count));
-                } else if (key.rfind("script", 0) == 0) {
-                    size_t underscore = key.find('_');
-                    if (underscore != std::string::npos && underscore > 6) {
-                        int idx = std::stoi(key.substr(6, underscore - 6));
-                        if (idx >= 0 && idx < (int)currentObj->scripts.size()) {
-                            std::string subKey = key.substr(underscore + 1);
-                            ScriptComponent& sc = currentObj->scripts[idx];
-                            if (subKey == "path") {
-                                sc.path = value;
-                            } else if (subKey == "enabled") {
-                                sc.enabled = std::stoi(value) != 0;
-                            } else if (subKey == "settingCount") {
-                                int cnt = std::stoi(value);
-                                sc.settings.resize(std::max(0, cnt));
-                            } else if (subKey.rfind("setting", 0) == 0) {
-                                int sIdx = std::stoi(subKey.substr(7));
-                                if (sIdx >= 0 && sIdx < (int)sc.settings.size()) {
-                                    size_t sep = value.find(':');
-                                    if (sep != std::string::npos) {
-                                        sc.settings[sIdx].key = value.substr(0, sep);
-                                        sc.settings[sIdx].value = value.substr(sep + 1);
-                                    } else {
-                                        sc.settings[sIdx].key.clear();
-                                        sc.settings[sIdx].value = value;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if (key == "meshPath") {
-                    currentObj->meshPath = value;
-                    if (!value.empty() && currentObj->type == ObjectType::OBJMesh) {
-                        std::string err;
-                        currentObj->meshId = g_objLoader.loadOBJ(value, err);
-                    } else if (!value.empty() && currentObj->type == ObjectType::Model) {
-                        ModelLoadResult result = getModelLoader().loadModel(value);
-                        if (result.success) {
-                            currentObj->meshId = result.meshIndex;
-                        } else {
-                            std::cerr << "Failed to load model from scene: " << result.errorMessage << std::endl;
-                            currentObj->meshId = -1;
-                        }
-                    }
-                } else if (key == "children" && !value.empty()) {
-                    std::stringstream ss(value);
-                    std::string item;
-                    while (std::getline(ss, item, ',')) {
-                        if (!item.empty()) {
-                            currentObj->childIds.push_back(std::stoi(item));
-                        }
-                    }
                 }
             }
         }
 
         file.close();
+        for (auto& obj : objects) {
+            obj.type = GetLegacyTypeFromComponents(obj);
+        }
         outVersion = sceneVersion;
+        if (outTimeOfDay) {
+            *outTimeOfDay = sceneTimeOfDay;
+        }
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load scene: " << e.what() << std::endl;
         return false;
     }
+}
+
+bool SceneSerializer::loadSceneDeferred(const fs::path& filePath,
+                                       std::vector<SceneObject>& objects,
+                                       int& nextId,
+                                       int& outVersion,
+                                       float* outTimeOfDay) {
+    struct DeferGuard {
+        bool previous = false;
+        explicit DeferGuard(bool enable) {
+            previous = g_deferSceneAssetLoading;
+            g_deferSceneAssetLoading = enable;
+        }
+        ~DeferGuard() {
+            g_deferSceneAssetLoading = previous;
+        }
+    };
+
+    DeferGuard guard(true);
+    return loadScene(filePath, objects, nextId, outVersion, outTimeOfDay);
 }

@@ -1,0 +1,11 @@
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.csproj.AssemblyReference.cache
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.GeneratedMSBuildEditorConfig.editorconfig
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.AssemblyInfoInputs.cache
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.AssemblyInfo.cs
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.csproj.CoreCompileInputs.cache
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.sourcelink.json
+/home/anemunt/Git-base/Modularity/Scripts/Managed/bin/Debug/netstandard2.0/ModuCPP.deps.json
+/home/anemunt/Git-base/Modularity/Scripts/Managed/bin/Debug/netstandard2.0/ModuCPP.dll
+/home/anemunt/Git-base/Modularity/Scripts/Managed/bin/Debug/netstandard2.0/ModuCPP.pdb
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.dll
+/home/anemunt/Git-base/Modularity/Scripts/Managed/obj/Debug/netstandard2.0/ModuCPP.pdb

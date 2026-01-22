@@ -173,6 +173,16 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         relToScripts.clear();
     }
 
+    auto hasDotDot = [](const fs::path& path) {
+        for (const auto& part : path) {
+            if (part == "..") return true;
+        }
+        return false;
+    };
+    if (relToScripts.empty() || relToScripts.is_absolute() || hasDotDot(relToScripts)) {
+        relToScripts.clear();
+    }
+
     fs::path relativeParent = relToScripts.has_parent_path() ? relToScripts.parent_path() : fs::path();
     std::string baseName = scriptAbs.stem().string();
     fs::path objectPath = config.outDir / relativeParent / (baseName + ".o");
@@ -246,10 +256,24 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     FunctionSpec testEditorSpec = detectFunction(scriptSource, "TestEditor");
     FunctionSpec updateSpec = detectFunction(scriptSource, "Update");
     FunctionSpec tickUpdateSpec = detectFunction(scriptSource, "TickUpdate");
+    FunctionSpec inspectorSpec = detectFunction(scriptSource, "Script_OnInspector");
+
+    auto hasExternCInspector = [&]() {
+        try {
+            std::regex direct(R"(extern\s+"C"\s+void\s+Script_OnInspector\s*\()");
+            if (std::regex_search(scriptSource, direct)) return true;
+            std::regex block(R"(extern\s+"C"\s*\{[\s\S]*?\bScript_OnInspector\b)");
+            return std::regex_search(scriptSource, block);
+        } catch (...) {
+            return false;
+        }
+    };
+    bool inspectorExtern = hasExternCInspector();
+    bool needsInspectorWrap = inspectorSpec.present && !inspectorExtern;
 
     fs::path wrapperPath;
     bool useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present
-                      || updateSpec.present || tickUpdateSpec.present;
+                      || updateSpec.present || tickUpdateSpec.present || needsInspectorWrap;
     fs::path sourceToCompile = scriptAbs;
 
     if (useWrapper) {
@@ -264,8 +288,15 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         }
 
         std::string includePath = scriptAbs.lexically_normal().generic_string();
+        if (needsInspectorWrap) {
+            wrapper << "#define Script_OnInspector Script_OnInspector_Impl\n";
+        }
         wrapper << "#include \"ScriptRuntime.h\"\n";
-        wrapper << "#include \"" << includePath << "\"\n\n";
+        wrapper << "#include \"" << includePath << "\"\n";
+        if (needsInspectorWrap) {
+            wrapper << "#undef Script_OnInspector\n";
+        }
+        wrapper << "\n";
         wrapper << "extern \"C\" {\n";
 
         auto emitWrapper = [&](const char* exportedName, const char* implName,
@@ -293,6 +324,16 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         emitWrapper("Script_TestEditor", "TestEditor", testEditorSpec);
         emitWrapper("Script_Update", "Update", updateSpec);
         emitWrapper("Script_TickUpdate", "TickUpdate", tickUpdateSpec);
+        if (needsInspectorWrap) {
+            wrapper << "void Script_OnInspector(ScriptContext& ctx) {\n";
+            if (inspectorSpec.takesContext) {
+                wrapper << "    Script_OnInspector_Impl(ctx);\n";
+            } else {
+                wrapper << "    (void)ctx;\n";
+                wrapper << "    Script_OnInspector_Impl();\n";
+            }
+            wrapper << "}\n\n";
+        }
 
         wrapper << "}\n";
         sourceToCompile = wrapperPath;

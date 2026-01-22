@@ -56,10 +56,18 @@ class SceneSerializer {
 public:
     static bool saveScene(const fs::path& filePath,
                          const std::vector<SceneObject>& objects,
-                         int nextId);
+                         int nextId,
+                         float timeOfDay);
 
     static bool loadScene(const fs::path& filePath,
                          std::vector<SceneObject>& objects,
                          int& nextId,
-                         int& outVersion);
+                         int& outVersion,
+                         float* outTimeOfDay = nullptr);
+
+    static bool loadSceneDeferred(const fs::path& filePath,
+                         std::vector<SceneObject>& objects,
+                         int& nextId,
+                         int& outVersion,
+                         float* outTimeOfDay = nullptr);
 };

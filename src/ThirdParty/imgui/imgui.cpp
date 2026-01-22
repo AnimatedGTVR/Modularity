@@ -1288,6 +1288,7 @@ static const float DOCKING_TRANSPARENT_PAYLOAD_ALPHA        = 0.50f;    // For u
 static void             SetCurrentWindow(ImGuiWindow* window);
 static ImGuiWindow*     CreateNewWindow(const char* name, ImGuiWindowFlags flags);
 static ImVec2           CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window);
+static float            DockAnimEaseSmooth(float t);
 
 static void             AddWindowToSortBuffer(ImVector<ImGuiWindow*>* out_sorted_windows, ImGuiWindow* window);
 
@@ -4603,6 +4604,12 @@ ImGuiWindow::ImGuiWindow(ImGuiContext* ctx, const char* name) : DrawListInst(NUL
     FontWindowScale = FontWindowScaleParents = 1.0f;
     SettingsOffset = -1;
     DockOrder = -1;
+    DockAnimStartTime = 0.0f;
+    DockAnimDuration = 0.0f;
+    DockAnimActive = false;
+    DockAnimOvershoot = false;
+    DockAnimGrabRatio = ImVec2(0.5f, 0.5f);
+    DockAnimOvershootStrength = 1.0f;
     DrawList = &DrawListInst;
     DrawList->_OwnerName = Name;
     DrawList->_SetDrawListSharedData(&Ctx->DrawListSharedData);
@@ -5252,6 +5259,12 @@ ImDrawListSharedData* ImGui::GetDrawListSharedData()
     return &GImGui->DrawListSharedData;
 }
 
+namespace ImGui
+{
+    ImGuiDockNode* DockContextProcessUndockNode(ImGuiContext* ctx, ImGuiDockNode* node);
+    void DockNodeStartMouseMovingWindow(ImGuiDockNode* node, ImGuiWindow* window);
+}
+
 void ImGui::StartMouseMovingWindow(ImGuiWindow* window)
 {
     // Set ActiveId even if the _NoMove flag is set. Without it, dragging away from a window with _NoMove would activate hover on other windows.
@@ -5294,7 +5307,12 @@ void ImGui::StartMouseMovingWindowOrNode(ImGuiWindow* window, ImGuiDockNode* nod
     const bool clicked = IsMouseClicked(0);
     const bool dragging = IsMouseDragging(0);
     if (can_undock_node && dragging)
-        DockContextQueueUndockNode(&g, node); // Will lead to DockNodeStartMouseMovingWindow() -> StartMouseMovingWindow() being called next frame
+    {
+        ImGuiDockNode* undocked = DockContextProcessUndockNode(&g, node);
+        if (undocked && undocked->Windows.Size > 0)
+            DockNodeStartMouseMovingWindow(undocked, undocked->Windows[0]);
+        return;
+    }
     else if (!can_undock_node && (clicked || dragging) && g.MovingWindow != window)
         StartMouseMovingWindow(window);
 }
@@ -5348,7 +5366,30 @@ void ImGui::UpdateMouseMovingWindowNewFrame()
         const bool window_disappeared = (!moving_window->WasActive && !moving_window->Active);
         if (g.IO.MouseDown[0] && IsMousePosValid(&g.IO.MousePos) && !window_disappeared)
         {
-            ImVec2 pos = g.IO.MousePos - g.ActiveIdClickOffset;
+            ImVec2 pos_target = g.IO.MousePos - g.ActiveIdClickOffset;
+            ImVec2 pos = pos_target;
+            if (moving_window->DockAnimActive && moving_window->DockAnimOvershoot)
+            {
+                const float elapsed = (float)(g.Time - moving_window->DockAnimStartTime);
+                const float duration = ImMax(0.001f, moving_window->DockAnimDuration);
+                float t = ImSaturate(elapsed / duration);
+                const float ease_out = DockAnimEaseSmooth(t);
+                const float s = 1.70158f * moving_window->DockAnimOvershootStrength;
+                const float t1 = t - 1.0f;
+                float ease_t = 1.0f + (t1 * t1) * ((s + 1.0f) * t1 + s);
+                ImVec2 anim_size = ImLerp(moving_window->DockAnimFromSize, moving_window->DockAnimToSize, ease_t);
+                if (anim_size.x > 0.0f && anim_size.y > 0.0f)
+                {
+                    moving_window->SizeFull = anim_size;
+                    moving_window->Size = anim_size;
+                    ImVec2 pos_target_anim = g.IO.MousePos - moving_window->DockAnimGrabRatio * anim_size;
+                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target_anim, ease_out);
+                }
+                else
+                {
+                    pos = ImLerp(moving_window->DockAnimFromPos, pos_target, ease_out);
+                }
+            }
             if (moving_window->Pos.x != pos.x || moving_window->Pos.y != pos.y)
             {
                 SetWindowPos(moving_window, pos, ImGuiCond_Always);
@@ -8140,6 +8181,29 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             }
         }
         window->Pos = ImTrunc(window->Pos);
+
+        if (window->DockAnimActive)
+        {
+            const float elapsed = (float)(g.Time - window->DockAnimStartTime);
+            const float duration = ImMax(0.001f, window->DockAnimDuration);
+            float t = ImSaturate(elapsed / duration);
+            float ease_t = DockAnimEaseSmooth(t);
+            if (window->DockAnimOvershoot)
+            {
+                const float s = 1.70158f * window->DockAnimOvershootStrength;
+                const float t1 = t - 1.0f;
+                ease_t = 1.0f + (t1 * t1) * ((s + 1.0f) * t1 + s);
+            }
+            const ImVec2 from_center = window->DockAnimFromPos + window->DockAnimFromSize * 0.5f;
+            const ImVec2 to_center = window->DockAnimToPos + window->DockAnimToSize * 0.5f;
+            const ImVec2 center = ImLerp(from_center, to_center, t);
+            const ImVec2 size = ImLerp(window->DockAnimFromSize, window->DockAnimToSize, ease_t);
+            window->SizeFull = size;
+            window->Pos = center - size * 0.5f;
+            window->Size = (window->Collapsed && !(flags & ImGuiWindowFlags_ChildWindow)) ? window->TitleBarRect().GetSize() : window->SizeFull;
+            if (t >= 1.0f)
+                window->DockAnimActive = false;
+        }
 
         // Lock window rounding for the frame (so that altering them doesn't cause inconsistencies)
         // Large values tend to lead to variety of artifacts and are not recommended.
@@ -17540,6 +17604,7 @@ namespace ImGui
     static void             DockContextRemoveNode(ImGuiContext* ctx, ImGuiDockNode* node, bool merge_sibling_into_parent_node);
     static void             DockContextQueueNotifyRemovedNode(ImGuiContext* ctx, ImGuiDockNode* node);
     static void             DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req);
+    ImGuiDockNode*          DockContextProcessUndockNode(ImGuiContext* ctx, ImGuiDockNode* node);
     static void             DockContextPruneUnusedSettingsNodes(ImGuiContext* ctx);
     static ImGuiDockNode*   DockContextBindNodeToWindow(ImGuiContext* ctx, ImGuiWindow* window);
     static void             DockContextBuildNodesFromSettings(ImGuiContext* ctx, ImGuiDockNodeSettings* node_settings_array, int node_settings_count);
@@ -17562,7 +17627,7 @@ namespace ImGui
     static void             DockNodeRemoveTabBar(ImGuiDockNode* node);
     static void             DockNodeWindowMenuUpdate(ImGuiDockNode* node, ImGuiTabBar* tab_bar);
     static void             DockNodeUpdateVisibleFlag(ImGuiDockNode* node);
-    static void             DockNodeStartMouseMovingWindow(ImGuiDockNode* node, ImGuiWindow* window);
+    void                    DockNodeStartMouseMovingWindow(ImGuiDockNode* node, ImGuiWindow* window);
     static bool             DockNodeIsDropAllowed(ImGuiWindow* host_window, ImGuiWindow* payload_window);
     static void             DockNodePreviewDockSetup(ImGuiWindow* host_window, ImGuiDockNode* host_node, ImGuiWindow* payload_window, ImGuiDockNode* payload_node, ImGuiDockPreviewData* preview_data, bool is_explicit_target, bool is_outer_docking);
     static void             DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDockNode* host_node, ImGuiWindow* payload_window, const ImGuiDockPreviewData* preview_data);
@@ -18003,6 +18068,27 @@ void ImGui::DockContextQueueNotifyRemovedNode(ImGuiContext* ctx, ImGuiDockNode* 
             req.Type = ImGuiDockRequestType_None;
 }
 
+static float DockAnimEaseSmooth(float t)
+{
+    t = ImSaturate(t);
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static void DockWindowQueueScaleAnim(ImGuiContext* ctx, ImGuiWindow* window, const ImVec2& from_pos, const ImVec2& from_size, const ImVec2& to_pos, const ImVec2& to_size, bool overshoot, float duration, float overshoot_strength)
+{
+    if (to_size.x <= 0.0f || to_size.y <= 0.0f)
+        return;
+    window->DockAnimFromPos = from_pos;
+    window->DockAnimFromSize = from_size;
+    window->DockAnimToPos = to_pos;
+    window->DockAnimToSize = to_size;
+    window->DockAnimStartTime = (float)ctx->Time;
+    window->DockAnimDuration = duration;
+    window->DockAnimActive = true;
+    window->DockAnimOvershoot = overshoot;
+    window->DockAnimOvershootStrength = overshoot_strength;
+}
+
 void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
 {
     IM_ASSERT((req->Type == ImGuiDockRequestType_Dock && req->DockPayload != NULL) || (req->Type == ImGuiDockRequestType_Split && req->DockPayload == NULL));
@@ -18014,6 +18100,15 @@ void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
     ImGuiWindow* payload_window = req->DockPayload;     // Optional
     ImGuiWindow* target_window = req->DockTargetWindow;
     ImGuiDockNode* node = req->DockTargetNode;
+    ImVector<ImGuiWindow*> payload_windows;
+    if (payload_window)
+    {
+        payload_windows.push_back(payload_window);
+    }
+    else if (req->DockTargetNode == NULL && req->DockTargetWindow != NULL && req->DockSplitDir != ImGuiDir_None)
+    {
+        // no-op, payload_node path handled below
+    }
     if (payload_window)
         IMGUI_DEBUG_LOG_DOCKING("[docking] DockContextProcessDock node 0x%08X target '%s' dock window '%s', split_dir %d\n", node ? node->ID : 0, target_window ? target_window->Name : "NULL", payload_window->Name, req->DockSplitDir);
     else
@@ -18030,6 +18125,11 @@ void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
             next_selected_id = payload_node->TabBar->NextSelectedTabId ? payload_node->TabBar->NextSelectedTabId : payload_node->TabBar->SelectedTabId;
         if (payload_node == NULL)
             next_selected_id = payload_window->TabId;
+        if (payload_node)
+        {
+            for (ImGuiWindow* window : payload_node->Windows)
+                payload_windows.push_back(window);
+        }
     }
 
     // FIXME-DOCK: When we are trying to dock an existing single-window node into a loose window, transfer Node ID as well
@@ -18138,6 +18238,24 @@ void ImGui::DockContextProcessDock(ImGuiContext* ctx, ImGuiDockRequest* req)
     // Update selection immediately
     if (ImGuiTabBar* tab_bar = node->TabBar)
         tab_bar->NextSelectedTabId = next_selected_id;
+    const ImVec2 target_pos = node->Pos;
+    const ImVec2 target_size = node->Size;
+    for (ImGuiWindow* window : payload_windows)
+    {
+        const ImVec2 from_pos = window->Pos;
+        const ImVec2 from_size = window->SizeFull;
+        const ImVec2 size_delta = target_size - from_size;
+        const ImVec2 pos_delta = target_pos - from_pos;
+        const float dist = size_delta.x * size_delta.x + size_delta.y * size_delta.y + pos_delta.x * pos_delta.x + pos_delta.y * pos_delta.y;
+        if (dist > 1.0f)
+            DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, target_pos, target_size, true, 0.20f, 0.75f);
+        else
+        {
+            const ImVec2 scaled = target_size * 0.92f;
+            const ImVec2 centered = target_pos + (target_size - scaled) * 0.5f;
+            DockWindowQueueScaleAnim(ctx, window, centered, scaled, target_pos, target_size, true, 0.20f, 0.75f);
+        }
+    }
     MarkIniSettingsDirty();
 }
 
@@ -18168,6 +18286,12 @@ void ImGui::DockContextProcessUndockWindow(ImGuiContext* ctx, ImGuiWindow* windo
 {
     ImGuiContext& g = *ctx;
     IMGUI_DEBUG_LOG_DOCKING("[docking] DockContextProcessUndockWindow window '%s', clear_persistent_docking_ref = %d\n", window->Name, clear_persistent_docking_ref);
+    const ImVec2 from_pos = window->Pos;
+    const ImVec2 from_size = window->SizeFull;
+    if (from_size.x > 0.0f && from_size.y > 0.0f)
+        window->DockAnimGrabRatio = g.ActiveIdClickOffset / from_size;
+    else
+        window->DockAnimGrabRatio = ImVec2(0.5f, 0.5f);
     if (window->DockNode)
         DockNodeRemoveWindow(window->DockNode, window, clear_persistent_docking_ref ? 0 : window->DockId);
     else
@@ -18176,11 +18300,17 @@ void ImGui::DockContextProcessUndockWindow(ImGuiContext* ctx, ImGuiWindow* windo
     window->DockIsActive = false;
     window->DockNodeIsVisible = window->DockTabIsVisible = false;
     window->Size = window->SizeFull = FixLargeWindowsWhenUndocking(window->SizeFull, window->Viewport);
+    ImVec2 to_pos = window->Pos;
+    ImVec2 to_size = window->SizeFull;
+    ImVec2 size_delta = to_size - from_size;
+    ImVec2 pos_delta = to_pos - from_pos;
+    const float dist = size_delta.x * size_delta.x + size_delta.y * size_delta.y + pos_delta.x * pos_delta.x + pos_delta.y * pos_delta.y;
+    DockWindowQueueScaleAnim(ctx, window, from_pos, from_size, to_pos, to_size, true, 0.28f, 1.05f);
 
     MarkIniSettingsDirty();
 }
 
-void ImGui::DockContextProcessUndockNode(ImGuiContext* ctx, ImGuiDockNode* node)
+ImGuiDockNode* ImGui::DockContextProcessUndockNode(ImGuiContext* ctx, ImGuiDockNode* node)
 {
     ImGuiContext& g = *ctx;
     IMGUI_DEBUG_LOG_DOCKING("[docking] DockContextProcessUndockNode node %08X\n", node->ID);
@@ -18219,6 +18349,7 @@ void ImGui::DockContextProcessUndockNode(ImGuiContext* ctx, ImGuiDockNode* node)
     node->Size = FixLargeWindowsWhenUndocking(node->Size, node->Windows[0]->Viewport);
     node->WantMouseMove = true;
     MarkIniSettingsDirty();
+    return node;
 }
 
 // This is mostly used for automation.
@@ -18669,7 +18800,7 @@ static void ImGui::DockNodeUpdateVisibleFlag(ImGuiDockNode* node)
     node->IsVisible = is_visible;
 }
 
-static void ImGui::DockNodeStartMouseMovingWindow(ImGuiDockNode* node, ImGuiWindow* window)
+void ImGui::DockNodeStartMouseMovingWindow(ImGuiDockNode* node, ImGuiWindow* window)
 {
     ImGuiContext& g = *GImGui;
     IM_ASSERT(node->WantMouseMove == true);
@@ -19711,7 +19842,9 @@ static void ImGui::DockNodePreviewDockRender(ImGuiWindow* host_window, ImGuiDock
         overlay_draw_lists[overlay_draw_lists_count++] = GetForegroundDrawList(root_payload->Viewport);
 
     // Draw main preview rectangle
-    const ImU32 overlay_col_main = GetColorU32(ImGuiCol_DockingPreview, is_transparent_payload ? 0.60f : 0.40f);
+    const float pulse = 0.5f + 0.5f * sinf((float)g.Time * 3.2f);
+    const float pulse_alpha = ImLerp(0.65f, 1.35f, pulse);
+    const ImU32 overlay_col_main = GetColorU32(ImGuiCol_DockingPreview, (is_transparent_payload ? 0.60f : 0.40f) * pulse_alpha);
     const ImU32 overlay_col_drop = GetColorU32(ImGuiCol_DockingPreview, is_transparent_payload ? 0.90f : 0.70f);
     const ImU32 overlay_col_drop_hovered = GetColorU32(ImGuiCol_DockingPreview, is_transparent_payload ? 1.20f : 1.00f);
     const ImU32 overlay_col_lines = GetColorU32(ImGuiCol_NavWindowingHighlight, is_transparent_payload ? 0.80f : 0.60f);

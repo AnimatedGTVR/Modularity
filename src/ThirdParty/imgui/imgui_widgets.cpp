@@ -9724,6 +9724,7 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
 {
     ImGuiContext& g = *GImGui;
     tab_bar->WantLayout = false;
+    const bool tab_bar_appearing = (tab_bar->PrevFrameVisible + 1 < g.FrameCount);
 
     // Track selected tab when resizing our parent down
     const bool scroll_to_selected_tab = (tab_bar->BarRectPrevWidth > tab_bar->BarRect.GetWidth());
@@ -9927,11 +9928,20 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
         section_tab_index += section->TabCount;
     }
 
+    const float anim_t = ImSaturate(g.IO.DeltaTime * 14.0f);
+    for (int tab_n = 0; tab_n < tab_bar->Tabs.Size; tab_n++)
+    {
+        ImGuiTabItem* tab = &tab_bar->Tabs[tab_n];
+        if (tab->OffsetAnim < 0.0f || tab_bar_appearing)
+            tab->OffsetAnim = tab->Offset;
+        else
+            tab->OffsetAnim = ImLerp(tab->OffsetAnim, tab->Offset, anim_t);
+    }
+
     // Clear name buffers
     tab_bar->TabsNames.Buf.resize(0);
 
     // If we have lost the selected tab, select the next most recently active one
-    const bool tab_bar_appearing = (tab_bar->PrevFrameVisible + 1 < g.FrameCount);
     if (found_selected_tab_id == false && !tab_bar_appearing)
         tab_bar->SelectedTabId = 0;
     if (tab_bar->SelectedTabId == 0 && tab_bar->NextSelectedTabId == 0 && most_recently_selected_tab != NULL)
@@ -10551,10 +10561,11 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
     // Layout
     const bool is_central_section = (tab->Flags & ImGuiTabItemFlags_SectionMask_) == 0;
     size.x = tab->Width;
+    const float render_offset = (tab->OffsetAnim >= 0.0f) ? tab->OffsetAnim : tab->Offset;
     if (is_central_section)
-        window->DC.CursorPos = tab_bar->BarRect.Min + ImVec2(IM_TRUNC(tab->Offset - tab_bar->ScrollingAnim), 0.0f);
+        window->DC.CursorPos = tab_bar->BarRect.Min + ImVec2(IM_TRUNC(render_offset - tab_bar->ScrollingAnim), 0.0f);
     else
-        window->DC.CursorPos = tab_bar->BarRect.Min + ImVec2(tab->Offset, 0.0f);
+        window->DC.CursorPos = tab_bar->BarRect.Min + ImVec2(render_offset, 0.0f);
     ImVec2 pos = window->DC.CursorPos;
     ImRect bb(pos, pos + size);
 

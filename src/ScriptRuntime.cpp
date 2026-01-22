@@ -43,13 +43,8 @@ std::string trimString(const std::string& input) {
     return input.substr(start, end - start);
 }
 
-bool isUIObjectType(ObjectType type) {
-    return type == ObjectType::Canvas ||
-           type == ObjectType::UIImage ||
-           type == ObjectType::UISlider ||
-           type == ObjectType::UIButton ||
-           type == ObjectType::UIText ||
-           type == ObjectType::Sprite2D;
+bool isUIObject(const SceneObject* obj) {
+    return obj && HasUIComponent(*obj);
 }
 }
 
@@ -345,7 +340,7 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
 }
 
 bool ScriptContext::IsUIButtonPressed() const {
-    return object && object->type == ObjectType::UIButton && object->ui.buttonPressed;
+    return object && object->hasUI && object->ui.type == UIElementType::Button && object->ui.buttonPressed;
 }
 
 bool ScriptContext::IsUIInteractable() const {
@@ -361,12 +356,12 @@ void ScriptContext::SetUIInteractable(bool interactable) {
 }
 
 float ScriptContext::GetUISliderValue() const {
-    if (!object || object->type != ObjectType::UISlider) return 0.0f;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Slider) return 0.0f;
     return object->ui.sliderValue;
 }
 
 void ScriptContext::SetUISliderValue(float value) {
-    if (!object || object->type != ObjectType::UISlider) return;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Slider) return;
     float clamped = std::clamp(value, object->ui.sliderMin, object->ui.sliderMax);
     if (object->ui.sliderValue != clamped) {
         object->ui.sliderValue = clamped;
@@ -375,7 +370,7 @@ void ScriptContext::SetUISliderValue(float value) {
 }
 
 void ScriptContext::SetUISliderRange(float minValue, float maxValue) {
-    if (!object || object->type != ObjectType::UISlider) return;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Slider) return;
     if (maxValue < minValue) std::swap(minValue, maxValue);
     object->ui.sliderMin = minValue;
     object->ui.sliderMax = maxValue;
@@ -400,12 +395,12 @@ void ScriptContext::SetUIColor(const glm::vec4& color) {
 }
 
 float ScriptContext::GetUITextScale() const {
-    if (!object || object->type != ObjectType::UIText) return 1.0f;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Text) return 1.0f;
     return object->ui.textScale;
 }
 
 void ScriptContext::SetUITextScale(float scale) {
-    if (!object || object->type != ObjectType::UIText) return;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Text) return;
     float clamped = std::max(0.1f, scale);
     if (object->ui.textScale != clamped) {
         object->ui.textScale = clamped;
@@ -414,7 +409,7 @@ void ScriptContext::SetUITextScale(float scale) {
 }
 
 void ScriptContext::SetUISliderStyle(UISliderStyle style) {
-    if (!object || object->type != ObjectType::UISlider) return;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Slider) return;
     if (object->ui.sliderStyle != style) {
         object->ui.sliderStyle = style;
         MarkDirty();
@@ -422,7 +417,7 @@ void ScriptContext::SetUISliderStyle(UISliderStyle style) {
 }
 
 void ScriptContext::SetUIButtonStyle(UIButtonStyle style) {
-    if (!object || object->type != ObjectType::UIButton) return;
+    if (!object || !object->hasUI || object->ui.type != UIElementType::Button) return;
     if (object->ui.buttonStyle != style) {
         object->ui.buttonStyle = style;
         MarkDirty();
@@ -454,7 +449,7 @@ bool ScriptContext::HasRigidbody() const {
 }
 
 bool ScriptContext::HasRigidbody2D() const {
-    return object && isUIObjectType(object->type) && object->hasRigidbody2D && object->rigidbody2D.enabled;
+    return isUIObject(object) && object->hasRigidbody2D && object->rigidbody2D.enabled;
 }
 
 bool ScriptContext::EnsureCapsuleCollider(float height, float radius) {

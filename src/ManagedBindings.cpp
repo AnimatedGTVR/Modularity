@@ -1,0 +1,145 @@
+#include "ManagedBindings.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+int modu_ctx_get_object_id(ScriptContext* ctx) {
+    return (ctx && ctx->object) ? ctx->object->id : -1;
+}
+
+void modu_ctx_get_position(ScriptContext* ctx, float* x, float* y, float* z) {
+    if (!ctx || !ctx->object || !x || !y || !z) return;
+    *x = ctx->object->position.x;
+    *y = ctx->object->position.y;
+    *z = ctx->object->position.z;
+}
+
+void modu_ctx_set_position(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return;
+    ctx->SetPosition(glm::vec3(x, y, z));
+}
+
+void modu_ctx_get_rotation(ScriptContext* ctx, float* x, float* y, float* z) {
+    if (!ctx || !ctx->object || !x || !y || !z) return;
+    *x = ctx->object->rotation.x;
+    *y = ctx->object->rotation.y;
+    *z = ctx->object->rotation.z;
+}
+
+void modu_ctx_set_rotation(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return;
+    ctx->SetRotation(glm::vec3(x, y, z));
+}
+
+void modu_ctx_get_scale(ScriptContext* ctx, float* x, float* y, float* z) {
+    if (!ctx || !ctx->object || !x || !y || !z) return;
+    *x = ctx->object->scale.x;
+    *y = ctx->object->scale.y;
+    *z = ctx->object->scale.z;
+}
+
+void modu_ctx_set_scale(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return;
+    ctx->SetScale(glm::vec3(x, y, z));
+}
+
+int modu_ctx_has_rigidbody(ScriptContext* ctx) {
+    return (ctx && ctx->HasRigidbody()) ? 1 : 0;
+}
+
+int modu_ctx_ensure_rigidbody(ScriptContext* ctx, int useGravity, int kinematic) {
+    if (!ctx) return 0;
+    return ctx->EnsureRigidbody(useGravity != 0, kinematic != 0) ? 1 : 0;
+}
+
+int modu_ctx_set_rigidbody_velocity(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return 0;
+    return ctx->SetRigidbodyVelocity(glm::vec3(x, y, z)) ? 1 : 0;
+}
+
+int modu_ctx_get_rigidbody_velocity(ScriptContext* ctx, float* x, float* y, float* z) {
+    if (!ctx || !x || !y || !z) return 0;
+    glm::vec3 velocity(0.0f);
+    if (!ctx->GetRigidbodyVelocity(velocity)) return 0;
+    *x = velocity.x;
+    *y = velocity.y;
+    *z = velocity.z;
+    return 1;
+}
+
+int modu_ctx_add_rigidbody_force(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return 0;
+    return ctx->AddRigidbodyForce(glm::vec3(x, y, z)) ? 1 : 0;
+}
+
+int modu_ctx_add_rigidbody_impulse(ScriptContext* ctx, float x, float y, float z) {
+    if (!ctx) return 0;
+    return ctx->AddRigidbodyImpulse(glm::vec3(x, y, z)) ? 1 : 0;
+}
+
+float modu_ctx_get_setting_float(ScriptContext* ctx, const char* key, float fallback) {
+    if (!ctx || !key) return fallback;
+    return ctx->GetSettingFloat(key, fallback);
+}
+
+int modu_ctx_get_setting_bool(ScriptContext* ctx, const char* key, int fallback) {
+    if (!ctx || !key) return fallback ? 1 : 0;
+    return ctx->GetSettingBool(key, fallback != 0) ? 1 : 0;
+}
+
+void modu_ctx_get_setting_string(ScriptContext* ctx, const char* key, const char* fallback,
+                                 char* outBuffer, int outBufferSize) {
+    if (!outBuffer || outBufferSize <= 0) return;
+    std::string value;
+    if (!ctx || !key) {
+        value = fallback ? fallback : "";
+    } else {
+        value = ctx->GetSetting(key, fallback ? fallback : "");
+    }
+    std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), "%s", value.c_str());
+}
+
+void modu_ctx_set_setting_float(ScriptContext* ctx, const char* key, float value) {
+    if (!ctx || !key) return;
+    ctx->SetSettingFloat(key, value);
+}
+
+void modu_ctx_set_setting_bool(ScriptContext* ctx, const char* key, int value) {
+    if (!ctx || !key) return;
+    ctx->SetSettingBool(key, value != 0);
+}
+
+void modu_ctx_set_setting_string(ScriptContext* ctx, const char* key, const char* value) {
+    if (!ctx || !key) return;
+    ctx->SetSetting(key, value ? value : "");
+}
+
+void modu_ctx_add_console_message(ScriptContext* ctx, const char* message, int type) {
+    if (!ctx || !message) return;
+    ctx->AddConsoleMessage(message, static_cast<ConsoleMessageType>(type));
+}
+
+ManagedNativeApi BuildManagedNativeApi() {
+    ManagedNativeApi api;
+    api.getObjectId = modu_ctx_get_object_id;
+    api.getPosition = modu_ctx_get_position;
+    api.setPosition = modu_ctx_set_position;
+    api.getRotation = modu_ctx_get_rotation;
+    api.setRotation = modu_ctx_set_rotation;
+    api.getScale = modu_ctx_get_scale;
+    api.setScale = modu_ctx_set_scale;
+    api.hasRigidbody = modu_ctx_has_rigidbody;
+    api.ensureRigidbody = modu_ctx_ensure_rigidbody;
+    api.setRigidbodyVelocity = modu_ctx_set_rigidbody_velocity;
+    api.getRigidbodyVelocity = modu_ctx_get_rigidbody_velocity;
+    api.addRigidbodyForce = modu_ctx_add_rigidbody_force;
+    api.addRigidbodyImpulse = modu_ctx_add_rigidbody_impulse;
+    api.getSettingFloat = modu_ctx_get_setting_float;
+    api.getSettingBool = modu_ctx_get_setting_bool;
+    api.getSettingString = modu_ctx_get_setting_string;
+    api.setSettingFloat = modu_ctx_set_setting_float;
+    api.setSettingBool = modu_ctx_set_setting_bool;
+    api.setSettingString = modu_ctx_set_setting_string;
+    api.addConsoleMessage = modu_ctx_add_console_message;
+    return api;
+}

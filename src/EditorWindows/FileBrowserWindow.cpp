@@ -501,6 +501,7 @@ void Engine::renderFileBrowserPanel() {
     static fs::path pendingDeletePath;
     static fs::path pendingRenamePath;
     static char renameName[256] = "";
+    bool settingsDirty = false;
 
     auto openEntry = [&](const fs::directory_entry& entry) {
         if (entry.is_directory()) {
@@ -534,6 +535,10 @@ void Engine::renderFileBrowserPanel() {
             std::string sceneName = entry.path().stem().string();
             loadScene(sceneName);
             logToConsole("Loaded scene: " + sceneName);
+            return;
+        }
+        if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+            openScriptInEditor(entry.path());
             return;
         }
         openPathInShell(entry.path());
@@ -622,6 +627,15 @@ void Engine::renderFileBrowserPanel() {
                               ConsoleMessageType::Error);
         }
         return false;
+    };
+
+    auto normalizePath = [](const fs::path& path) {
+        std::error_code ec;
+        fs::path canonical = fs::weakly_canonical(path, ec);
+        if (!ec) {
+            return canonical;
+        }
+        return path.lexically_normal();
     };
     
     // Get colors for categories
@@ -742,16 +756,24 @@ void Engine::renderFileBrowserPanel() {
         ImGui::TextDisabled("Size");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
-        ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.6f, 2.0f, "%.1fx");
+        if (ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.6f, 2.0f, "%.1fx")) {
+            settingsDirty = true;
+        }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Icon Size: %.1fx", fileBrowserIconScale);
         ImGui::SameLine();
     }
 
     if (ImGui::Button(isGridMode ? "Grid" : "List", ImVec2(54, 0))) {
         fileBrowser.viewMode = isGridMode ? FileBrowserViewMode::List : FileBrowserViewMode::Grid;
+        settingsDirty = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
     ImGui::SameLine();
+    if (ImGui::Button(showFileBrowserSidebar ? "Side" : "Side", ImVec2(52, 0))) {
+        showFileBrowserSidebar = !showFileBrowserSidebar;
+        settingsDirty = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle sidebar");
 
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
@@ -766,9 +788,162 @@ void Engine::renderFileBrowserPanel() {
     contentBg.z = std::min(contentBg.z + 0.01f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, contentBg);
     ImGui::BeginChild("FileContent", ImVec2(0, 0), true);
-    
+    if (showFileBrowserSidebar) {
+        float minSidebarWidth = 160.0f;
+        float maxSidebarWidth = std::max(minSidebarWidth, ImGui::GetContentRegionAvail().x * 0.5f);
+        fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, minSidebarWidth, maxSidebarWidth);
+
+        ImGui::BeginChild("FileSidebar", ImVec2(fileBrowserSidebarWidth, 0), true);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+        ImGui::TextDisabled("Favorites");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+")) {
+            fs::path current = normalizePath(fileBrowser.currentPath);
+            bool exists = false;
+            for (const auto& fav : fileBrowserFavorites) {
+                if (normalizePath(fav) == current) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                fileBrowserFavorites.push_back(current);
+                settingsDirty = true;
+            }
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add current folder");
+
+        fs::path baseRoot = fileBrowser.projectRoot.empty()
+            ? projectManager.currentProject.projectPath
+            : fileBrowser.projectRoot;
+        fs::path normalizedCurrent = normalizePath(fileBrowser.currentPath);
+
+        for (size_t i = 0; i < fileBrowserFavorites.size(); ++i) {
+            fs::path fav = fileBrowserFavorites[i];
+            std::string label;
+            std::error_code ec;
+            fs::path rel = fs::relative(fav, baseRoot, ec);
+            std::string relStr = rel.generic_string();
+            if (!ec && !rel.empty() && relStr.find("..") != 0) {
+                label = relStr;
+                if (label.empty() || label == ".") {
+                    label = "Project";
+                }
+            } else {
+                label = fav.filename().string();
+                if (label.empty()) {
+                    label = fav.string();
+                }
+            }
+
+            bool exists = fs::exists(fav);
+            ImGui::PushID(static_cast<int>(i));
+            if (!exists) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Selectable(label.c_str(), normalizePath(fav) == normalizedCurrent)) {
+                if (exists) {
+                    fileBrowser.navigateTo(fav);
+                }
+            }
+            if (!exists) {
+                ImGui::EndDisabled();
+            }
+            if (ImGui::BeginPopupContextItem("FavContext")) {
+                if (ImGui::MenuItem("Remove")) {
+                    fileBrowserFavorites.erase(fileBrowserFavorites.begin() + static_cast<int>(i));
+                    settingsDirty = true;
+                    ImGui::EndPopup();
+                    ImGui::PopID();
+                    break;
+                }
+                if (exists && ImGui::MenuItem("Open in File Explorer")) {
+                    openPathInFileManager(fav);
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Folders");
+        ImGui::BeginChild("FolderTree", ImVec2(0, 0), false);
+
+        auto drawFolderTree = [&](auto&& self, const fs::path& path) -> void {
+            if (!fs::exists(path)) {
+                return;
+            }
+            std::string name = path.filename().string();
+            if (name.empty()) {
+                name = "Project";
+            }
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                       ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                                       ImGuiTreeNodeFlags_SpanFullWidth;
+            if (fileBrowser.currentPath == path) {
+                flags |= ImGuiTreeNodeFlags_Selected;
+            }
+            ImGui::PushID(path.string().c_str());
+            bool open = ImGui::TreeNodeEx(name.c_str(), flags);
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                fileBrowser.navigateTo(path);
+            }
+            if (open) {
+                std::vector<fs::path> dirs;
+                std::error_code ec;
+                for (const auto& entry : fs::directory_iterator(path, ec)) {
+                    if (ec) {
+                        break;
+                    }
+                    if (!entry.is_directory()) {
+                        continue;
+                    }
+                    std::string dirName = entry.path().filename().string();
+                    if (!fileBrowser.showHiddenFiles && !dirName.empty() && dirName[0] == '.') {
+                        continue;
+                    }
+                    dirs.push_back(entry.path());
+                }
+                std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b) {
+                    return a.filename().string() < b.filename().string();
+                });
+                for (const auto& dir : dirs) {
+                    self(self, dir);
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        };
+
+        if (!baseRoot.empty()) {
+            drawFolderTree(drawFolderTree, baseRoot);
+        }
+
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+        float splitterHeight = ImGui::GetContentRegionAvail().y;
+        if (splitterHeight < 1.0f) {
+            splitterHeight = 1.0f;
+        }
+        ImGui::InvisibleButton("SidebarSplitter", ImVec2(4.0f, splitterHeight));
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+        if (ImGui::IsItemActive()) {
+            fileBrowserSidebarWidth += ImGui::GetIO().MouseDelta.x;
+            fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, minSidebarWidth, maxSidebarWidth);
+            settingsDirty = true;
+        }
+        ImGui::SameLine();
+    }
+
+    ImGui::BeginChild("FileMain", ImVec2(0, 0), false);
+
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    
+
     if (fileBrowser.viewMode == FileBrowserViewMode::Grid) {
         float baseIconSize = 64.0f;
         float iconSize = baseIconSize * fileBrowserIconScale;
@@ -776,10 +951,10 @@ void Engine::renderFileBrowserPanel() {
         float textHeight = 32.0f;  // Space for filename text
         float cellWidth = iconSize + padding * 2;
         float cellHeight = iconSize + padding * 2 + textHeight;
-        
+
         float windowWidth = ImGui::GetContentRegionAvail().x;
         int columns = std::max(1, (int)((windowWidth + padding) / (cellWidth + padding)));
-        
+
         // Use a table for consistent grid layout
         if (ImGui::BeginTable("FileGrid", columns, ImGuiTableFlags_NoPadInnerX)) {
             for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
@@ -787,44 +962,44 @@ void Engine::renderFileBrowserPanel() {
                 std::string filename = entry.path().filename().string();
                 FileCategory category = fileBrowser.getFileCategory(entry);
                 bool isSelected = fileBrowser.selectedFile == entry.path();
-                
+
                 ImGui::TableNextColumn();
                 ImGui::PushID(i);
-                
+
                 // Cell content area
                 ImVec2 cellStart = ImGui::GetCursorScreenPos();
                 ImVec2 cellEnd(cellStart.x + cellWidth, cellStart.y + cellHeight);
-                
+
                 // Invisible button for the entire cell
                 if (ImGui::InvisibleButton("##cell", ImVec2(cellWidth, cellHeight))) {
                     fileBrowser.selectedFile = entry.path();
                 }
                 bool hovered = ImGui::IsItemHovered();
                 bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(0);
-                
+
                 // Draw background
                 ImU32 bgColor = isSelected ? IM_COL32(70, 110, 160, 200) :
                                (hovered ? IM_COL32(60, 65, 75, 180) : IM_COL32(0, 0, 0, 0));
                 if (bgColor != IM_COL32(0, 0, 0, 0)) {
                     drawList->AddRectFilled(cellStart, cellEnd, bgColor, 6.0f);
                 }
-                
+
                 // Draw border on selection
                 if (isSelected) {
                     drawList->AddRect(cellStart, cellEnd, IM_COL32(100, 150, 220, 255), 6.0f, 0, 2.0f);
                 }
-                
+
                 // Draw icon centered in cell
                 ImVec2 iconPos(
                     cellStart.x + (cellWidth - iconSize) * 0.5f,
                     cellStart.y + padding
                 );
                 FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category));
-                
+
                 // Draw filename below icon (centered, with wrapping)
                 std::string displayName = filename;
                 float maxTextWidth = cellWidth - 4;
-                
+
                 // Truncate if too long
                 ImVec2 textSize = ImGui::CalcTextSize(displayName.c_str());
                 if (textSize.x > maxTextWidth) {
@@ -837,21 +1012,21 @@ void Engine::renderFileBrowserPanel() {
                     displayName += "...";
                     textSize = ImGui::CalcTextSize(displayName.c_str());
                 }
-                
+
                 ImVec2 textPos(
                     cellStart.x + (cellWidth - textSize.x) * 0.5f,
                     cellStart.y + padding + iconSize + 4
                 );
-                
+
                 // Text with subtle shadow for readability
                 drawList->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 100), displayName.c_str());
                 drawList->AddText(textPos, IM_COL32(230, 230, 230, 255), displayName.c_str());
-                
+
                 // Handle double click
                 if (doubleClicked) {
                     openEntry(entry);
                 }
-                
+
                 // Context menu
                 if (ImGui::BeginPopupContextItem("FileContextMenu")) {
                     if (ImGui::MenuItem("Open")) {
@@ -960,33 +1135,33 @@ void Engine::renderFileBrowserPanel() {
                     ImGui::Text("%s", filename.c_str());
                     ImGui::EndDragDropSource();
                 }
-                
+
                 ImGui::PopID();
             }
             ImGui::EndTable();
         }
-        
+
     } else {
         // List View
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));
-        
+
         for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
             const auto& entry = fileBrowser.entries[i];
             std::string filename = entry.path().filename().string();
             FileCategory category = fileBrowser.getFileCategory(entry);
             bool isSelected = fileBrowser.selectedFile == entry.path();
-            
+
             ImGui::PushID(i);
-            
+
             // Selectable row
             if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 20))) {
                 fileBrowser.selectedFile = entry.path();
-                
+
                 if (ImGui::IsMouseDoubleClicked(0)) {
                     openEntry(entry);
                 }
             }
-            
+
             // Context menu
             if (ImGui::BeginPopupContextItem("FileContextMenu")) {
                 if (ImGui::MenuItem("Open")) {
@@ -1098,15 +1273,15 @@ void Engine::renderFileBrowserPanel() {
                 ImGui::Text("%s", filename.c_str());
                 ImGui::EndDragDropSource();
             }
-            
+
             // Draw icon inline
             ImGui::SameLine(4);
             ImVec2 iconPos = ImGui::GetCursorScreenPos();
             iconPos.y -= 2;
             FileIcons::DrawIcon(drawList, category, iconPos, 16, getCategoryColor(category));
-            
+
             ImGui::SameLine(26);
-            
+
             // Color-coded filename
             ImVec4 textColor;
             switch (category) {
@@ -1118,10 +1293,10 @@ void Engine::renderFileBrowserPanel() {
                 default:                    textColor = ImVec4(0.85f, 0.85f, 0.85f, 1.0f); break;
             }
             ImGui::TextColored(textColor, "%s", filename.c_str());
-            
+
             ImGui::PopID();
         }
-        
+
         ImGui::PopStyleVar();
     }
 
@@ -1169,7 +1344,12 @@ void Engine::renderFileBrowserPanel() {
     }
 
     ImGui::EndChild();
+    ImGui::EndChild();
     ImGui::PopStyleColor();
+
+    if (settingsDirty) {
+        saveEditorUserSettings();
+    }
 
     if (triggerDeletePopup) {
         ImGui::OpenPopup("Confirm Delete");

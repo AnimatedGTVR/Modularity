@@ -4,6 +4,10 @@
 #include <fstream>
 #include <cstdint>
 #include <cstring>
+#include <unordered_set>
+#include <functional>
+#include <assimp/material.h>
+#include "ThirdParty/glm/gtc/quaternion.hpp"
 
 ModelLoader& ModelLoader::getInstance() {
     static ModelLoader instance;
@@ -11,6 +15,13 @@ ModelLoader& ModelLoader::getInstance() {
 }
 
 static void collectRawMeshData(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, RawMeshAsset& out);
+static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
+                             std::vector<OBJLoader::LoadedMesh>& loadedMeshes,
+                             ModelSceneData& out, std::string& errorMsg);
+static void buildSceneNodes(const aiScene* scene,
+                            const std::vector<int>& meshIndices,
+                            ModelSceneData& out);
+static glm::mat4 aiToGlm(const aiMatrix4x4& m);
 
 ModelLoader& getModelLoader() {
     return ModelLoader::getInstance();
@@ -91,6 +102,7 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
         if (loadedMeshes[i].path == filepath) {
             result.success = true;
             result.meshIndex = static_cast<int>(i);
+            result.meshIndices.push_back(result.meshIndex);
             const auto& mesh = loadedMeshes[i];
             result.vertexCount = mesh.vertexCount;
             result.faceCount = mesh.faceCount;
@@ -273,6 +285,92 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     return result;
 }
 
+bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& out, std::string& errorMsg) {
+    out = ModelSceneData();
+
+    if (!isSupported(filepath)) {
+        errorMsg = "Unsupported file format: " + fs::path(filepath).extension().string();
+        return false;
+    }
+
+    auto cached = cachedScenes.find(filepath);
+    if (cached != cachedScenes.end()) {
+        out = cached->second;
+        return true;
+    }
+
+    unsigned int importFlags =
+        aiProcess_Triangulate |
+        aiProcess_GenSmoothNormals |
+        aiProcess_FlipUVs |
+        aiProcess_CalcTangentSpace |
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_SortByPType |
+        aiProcess_ValidateDataStructure;
+
+    const aiScene* scene = importer.ReadFile(filepath, importFlags);
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+        errorMsg = "Assimp error: " + std::string(importer.GetErrorString());
+        return false;
+    }
+
+    if (!buildSceneMeshes(filepath, scene, loadedMeshes, out, errorMsg)) {
+        return false;
+    }
+
+    buildSceneNodes(scene, out.meshIndices, out);
+
+    out.animations.clear();
+    if (scene->mNumAnimations > 0) {
+        out.animations.reserve(scene->mNumAnimations);
+        for (unsigned int i = 0; i < scene->mNumAnimations; ++i) {
+            aiAnimation* anim = scene->mAnimations[i];
+            ModelSceneData::AnimationClip clip;
+            clip.name = anim->mName.C_Str();
+            if (clip.name.empty()) {
+                clip.name = "Clip_" + std::to_string(i);
+            }
+            clip.duration = anim->mDuration;
+            clip.ticksPerSecond = anim->mTicksPerSecond != 0.0 ? anim->mTicksPerSecond : 25.0;
+            clip.channels.reserve(anim->mNumChannels);
+            for (unsigned int c = 0; c < anim->mNumChannels; ++c) {
+                aiNodeAnim* ch = anim->mChannels[c];
+                ModelSceneData::AnimChannel channel;
+                channel.nodeName = ch->mNodeName.C_Str();
+                channel.positions.reserve(ch->mNumPositionKeys);
+                for (unsigned int k = 0; k < ch->mNumPositionKeys; ++k) {
+                    const auto& key = ch->mPositionKeys[k];
+                    ModelSceneData::AnimVecKey vk;
+                    vk.time = static_cast<float>(key.mTime);
+                    vk.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
+                    channel.positions.push_back(vk);
+                }
+                channel.rotations.reserve(ch->mNumRotationKeys);
+                for (unsigned int k = 0; k < ch->mNumRotationKeys; ++k) {
+                    const auto& key = ch->mRotationKeys[k];
+                    ModelSceneData::AnimQuatKey qk;
+                    qk.time = static_cast<float>(key.mTime);
+                    qk.value = glm::quat(key.mValue.w, key.mValue.x, key.mValue.y, key.mValue.z);
+                    channel.rotations.push_back(qk);
+                }
+                channel.scales.reserve(ch->mNumScalingKeys);
+                for (unsigned int k = 0; k < ch->mNumScalingKeys; ++k) {
+                    const auto& key = ch->mScalingKeys[k];
+                    ModelSceneData::AnimVecKey sk;
+                    sk.time = static_cast<float>(key.mTime);
+                    sk.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
+                    channel.scales.push_back(sk);
+                }
+                clip.channels.push_back(std::move(channel));
+            }
+            out.animations.push_back(std::move(clip));
+        }
+    }
+
+    cachedScenes[filepath] = out;
+    return true;
+}
+
 bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string& outputFile, std::string& errorMsg) {
     fs::path inPath(inputFile);
     if (!fs::exists(inPath)) {
@@ -350,17 +448,51 @@ bool ModelLoader::loadRawMesh(const std::string& filepath, RawMeshAsset& out, st
         return false;
     }
 
+    in.seekg(0, std::ios::end);
+    std::streamoff fileSize = in.tellg();
+    in.seekg(sizeof(header), std::ios::beg);
+
     in.read(reinterpret_cast<char*>(&out.boundsMin.x), sizeof(float) * 3);
     in.read(reinterpret_cast<char*>(&out.boundsMax.x), sizeof(float) * 3);
 
+    const std::streamoff payloadSize = fileSize - sizeof(header) - sizeof(float) * 6;
+    const std::streamoff positionsSize = static_cast<std::streamoff>(sizeof(glm::vec3)) * header.vertexCount;
+    const std::streamoff normalsSize = static_cast<std::streamoff>(sizeof(glm::vec3)) * header.vertexCount;
+    const std::streamoff uvsSize = static_cast<std::streamoff>(sizeof(glm::vec2)) * header.vertexCount;
+    const std::streamoff facesSize = static_cast<std::streamoff>(sizeof(glm::u32vec3)) * header.faceCount;
+
+    bool hasNormals = false;
+    bool hasUVs = false;
+    if (payloadSize == positionsSize + normalsSize + uvsSize + facesSize) {
+        hasNormals = true;
+        hasUVs = true;
+    } else if (payloadSize == positionsSize + normalsSize + facesSize) {
+        hasNormals = true;
+    } else if (payloadSize == positionsSize + uvsSize + facesSize) {
+        hasUVs = true;
+    } else if (payloadSize == positionsSize + facesSize) {
+        // legacy raw meshes without normals/uvs
+    } else if (payloadSize < positionsSize + facesSize) {
+        errorMsg = "Raw mesh data is truncated";
+        return false;
+    }
+
     out.positions.resize(header.vertexCount);
-    out.normals.resize(header.vertexCount);
-    out.uvs.resize(header.vertexCount);
     out.faces.resize(header.faceCount);
 
     in.read(reinterpret_cast<char*>(out.positions.data()), sizeof(glm::vec3) * out.positions.size());
-    in.read(reinterpret_cast<char*>(out.normals.data()), sizeof(glm::vec3) * out.normals.size());
-    in.read(reinterpret_cast<char*>(out.uvs.data()), sizeof(glm::vec2) * out.uvs.size());
+    if (hasNormals) {
+        out.normals.resize(header.vertexCount);
+        in.read(reinterpret_cast<char*>(out.normals.data()), sizeof(glm::vec3) * out.normals.size());
+    } else {
+        out.normals.assign(header.vertexCount, glm::vec3(0.0f));
+    }
+    if (hasUVs) {
+        out.uvs.resize(header.vertexCount);
+        in.read(reinterpret_cast<char*>(out.uvs.data()), sizeof(glm::vec2) * out.uvs.size());
+    } else {
+        out.uvs.assign(header.vertexCount, glm::vec2(0.0f));
+    }
     in.read(reinterpret_cast<char*>(out.faces.data()), sizeof(glm::u32vec3) * out.faces.size());
 
     if (!in.good()) {
@@ -435,6 +567,18 @@ bool ModelLoader::saveRawMesh(const RawMeshAsset& asset, const std::string& file
         outPath.replace_extension(".rmesh");
     }
 
+    std::vector<glm::vec3> normalsData;
+    normalsData.resize(asset.positions.size(), glm::vec3(0.0f));
+    if (asset.normals.size() == asset.positions.size()) {
+        normalsData = asset.normals;
+    }
+
+    std::vector<glm::vec2> uvsData;
+    uvsData.resize(asset.positions.size(), glm::vec2(0.0f));
+    if (asset.uvs.size() == asset.positions.size()) {
+        uvsData = asset.uvs;
+    }
+
     struct Header {
         char magic[6] = {'R','M','E','S','H','\0'};
         uint32_t version = 1;
@@ -455,8 +599,8 @@ bool ModelLoader::saveRawMesh(const RawMeshAsset& asset, const std::string& file
     out.write(reinterpret_cast<const char*>(&asset.boundsMin.x), sizeof(float) * 3);
     out.write(reinterpret_cast<const char*>(&asset.boundsMax.x), sizeof(float) * 3);
     out.write(reinterpret_cast<const char*>(asset.positions.data()), sizeof(glm::vec3) * asset.positions.size());
-    out.write(reinterpret_cast<const char*>(asset.normals.data()), sizeof(glm::vec3) * asset.normals.size());
-    out.write(reinterpret_cast<const char*>(asset.uvs.data()), sizeof(glm::vec2) * asset.uvs.size());
+    out.write(reinterpret_cast<const char*>(normalsData.data()), sizeof(glm::vec3) * normalsData.size());
+    out.write(reinterpret_cast<const char*>(uvsData.data()), sizeof(glm::vec2) * uvsData.size());
     out.write(reinterpret_cast<const char*>(asset.faces.data()), sizeof(glm::u32vec3) * asset.faces.size());
 
     if (!out.good()) {
@@ -544,6 +688,84 @@ bool ModelLoader::updateRawMesh(int meshIndex, const RawMeshAsset& asset, std::s
     return true;
 }
 
+int ModelLoader::addRawMesh(const RawMeshAsset& asset, const std::string& sourcePath,
+                            const std::string& name, std::string& errorMsg) {
+    if (asset.positions.empty() || asset.faces.empty()) {
+        errorMsg = "Raw mesh is empty";
+        return -1;
+    }
+
+    std::vector<float> vertices;
+    vertices.reserve(asset.faces.size() * 3 * 8);
+    std::vector<glm::vec3> triPositions;
+    triPositions.reserve(asset.faces.size() * 3);
+
+    auto getPos = [&](uint32_t idx) -> const glm::vec3& { return asset.positions[idx]; };
+    auto getNorm = [&](uint32_t idx) -> glm::vec3 {
+        if (idx < asset.normals.size()) return asset.normals[idx];
+        return glm::vec3(0.0f);
+    };
+    auto getUV = [&](uint32_t idx) -> glm::vec2 {
+        if (idx < asset.uvs.size()) return asset.uvs[idx];
+        return glm::vec2(0.0f);
+    };
+
+    for (const auto& face : asset.faces) {
+        const uint32_t idx[3] = { face.x, face.y, face.z };
+        glm::vec3 faceNormal(0.0f);
+        if (!asset.hasNormals) {
+            const glm::vec3& a = getPos(idx[0]);
+            const glm::vec3& b = getPos(idx[1]);
+            const glm::vec3& c = getPos(idx[2]);
+            faceNormal = glm::normalize(glm::cross(b - a, c - a));
+        }
+        for (int i = 0; i < 3; i++) {
+            glm::vec3 pos = getPos(idx[i]);
+            glm::vec3 n = asset.hasNormals ? getNorm(idx[i]) : faceNormal;
+            glm::vec2 uv = asset.hasUVs ? getUV(idx[i]) : glm::vec2(0.0f);
+
+            triPositions.push_back(pos);
+            vertices.push_back(pos.x);
+            vertices.push_back(pos.y);
+            vertices.push_back(pos.z);
+            vertices.push_back(n.x);
+            vertices.push_back(n.y);
+            vertices.push_back(n.z);
+            vertices.push_back(uv.x);
+            vertices.push_back(uv.y);
+        }
+    }
+
+    if (vertices.empty()) {
+        errorMsg = "No vertices generated for GPU upload";
+        return -1;
+    }
+
+    OBJLoader::LoadedMesh loaded;
+    loaded.path = sourcePath;
+    loaded.name = name.empty() ? "StaticBatch" : name;
+    loaded.mesh = std::make_unique<Mesh>(vertices.data(), vertices.size() * sizeof(float));
+    loaded.vertexCount = static_cast<int>(vertices.size() / 8);
+    loaded.faceCount = static_cast<int>(asset.faces.size());
+    loaded.hasNormals = asset.hasNormals;
+    loaded.hasTexCoords = asset.hasUVs;
+    loaded.boundsMin = asset.boundsMin;
+    loaded.boundsMax = asset.boundsMax;
+    loaded.triangleVertices = std::move(triPositions);
+    loaded.positions = asset.positions;
+    loaded.triangleIndices.clear();
+    loaded.triangleIndices.reserve(asset.faces.size() * 3);
+    for (const auto& face : asset.faces) {
+        loaded.triangleIndices.push_back(face.x);
+        loaded.triangleIndices.push_back(face.y);
+        loaded.triangleIndices.push_back(face.z);
+    }
+
+    int newIndex = static_cast<int>(loadedMeshes.size());
+    loadedMeshes.push_back(std::move(loaded));
+    return newIndex;
+}
+
 static glm::mat4 aiToGlm(const aiMatrix4x4& m) {
     return glm::mat4(
         m.a1, m.b1, m.c1, m.d1,
@@ -551,6 +773,303 @@ static glm::mat4 aiToGlm(const aiMatrix4x4& m) {
         m.a3, m.b3, m.c3, m.d3,
         m.a4, m.b4, m.c4, m.d4
     );
+}
+
+static glm::vec3 quatToEulerDegrees(const aiQuaternion& q) {
+    glm::quat gq(q.w, q.x, q.y, q.z);
+    glm::vec3 euler = glm::degrees(glm::eulerAngles(gq));
+    return euler;
+}
+
+static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
+                             std::vector<OBJLoader::LoadedMesh>& loadedMeshes,
+                             ModelSceneData& out, std::string& errorMsg) {
+    out.meshIndices.assign(scene->mNumMeshes, -1);
+    out.meshMaterialIndices.assign(scene->mNumMeshes, -1);
+
+    out.materials.clear();
+    out.materials.reserve(scene->mNumMaterials);
+    for (unsigned int i = 0; i < scene->mNumMaterials; ++i) {
+        aiMaterial* mat = scene->mMaterials[i];
+        ModelMaterialInfo info;
+        info.name = mat->GetName().C_Str();
+        if (info.name.empty()) {
+            info.name = "Material_" + std::to_string(i);
+        }
+
+        aiColor3D diffuse(1.0f, 1.0f, 1.0f);
+        if (AI_SUCCESS == mat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse)) {
+            info.props.color = glm::vec3(diffuse.r, diffuse.g, diffuse.b);
+        }
+
+        aiColor3D specular(0.0f, 0.0f, 0.0f);
+        if (AI_SUCCESS == mat->Get(AI_MATKEY_COLOR_SPECULAR, specular)) {
+            float avg = (specular.r + specular.g + specular.b) / 3.0f;
+            info.props.specularStrength = avg;
+        }
+
+        float shininess = info.props.shininess;
+        if (AI_SUCCESS == mat->Get(AI_MATKEY_SHININESS, shininess)) {
+            info.props.shininess = shininess;
+        }
+
+        aiString tex;
+        if (AI_SUCCESS == mat->GetTexture(aiTextureType_DIFFUSE, 0, &tex)) {
+            info.albedoPath = tex.C_Str();
+        }
+        if (AI_SUCCESS == mat->GetTexture(aiTextureType_NORMALS, 0, &tex)) {
+            info.normalPath = tex.C_Str();
+        } else if (AI_SUCCESS == mat->GetTexture(aiTextureType_HEIGHT, 0, &tex)) {
+            info.normalPath = tex.C_Str();
+        }
+
+        if (!info.albedoPath.empty()) {
+            info.props.textureMix = 1.0f;
+        }
+
+        out.materials.push_back(info);
+    }
+
+    for (unsigned int i = 0; i < scene->mNumMeshes; ++i) {
+        aiMesh* mesh = scene->mMeshes[i];
+        if (!mesh || mesh->mNumVertices == 0 || mesh->mNumFaces == 0) {
+            continue;
+        }
+
+        std::vector<float> vertices;
+        struct BoneVertex {
+            int ids[4];
+            float weights[4];
+        };
+        std::vector<BoneVertex> boneVertices;
+        std::vector<glm::ivec4> vertexBoneIds(mesh->mNumVertices, glm::ivec4(0));
+        std::vector<glm::vec4> vertexBoneWeights(mesh->mNumVertices, glm::vec4(0.0f));
+        std::vector<glm::vec3> triPositions;
+        std::vector<glm::vec3> positions;
+        std::vector<uint32_t> triangleIndices;
+        vertices.reserve(mesh->mNumFaces * 3 * 8);
+        boneVertices.reserve(mesh->mNumFaces * 3);
+        triPositions.reserve(mesh->mNumFaces * 3);
+        positions.reserve(mesh->mNumVertices);
+        triangleIndices.reserve(mesh->mNumFaces * 3);
+
+        glm::vec3 boundsMin(FLT_MAX);
+        glm::vec3 boundsMax(-FLT_MAX);
+
+        std::vector<std::string> boneNames;
+        std::vector<glm::mat4> inverseBindMatrices;
+        if (mesh->mNumBones > 0) {
+            boneNames.reserve(mesh->mNumBones);
+            inverseBindMatrices.reserve(mesh->mNumBones);
+            for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
+                aiBone* bone = mesh->mBones[b];
+                int boneIndex = static_cast<int>(boneNames.size());
+                boneNames.push_back(bone->mName.C_Str());
+                inverseBindMatrices.push_back(aiToGlm(bone->mOffsetMatrix));
+
+                for (unsigned int w = 0; w < bone->mNumWeights; ++w) {
+                    unsigned int vId = bone->mWeights[w].mVertexId;
+                    float weight = bone->mWeights[w].mWeight;
+                    if (vId >= vertexBoneWeights.size()) continue;
+
+                    glm::vec4& weights = vertexBoneWeights[vId];
+                    glm::ivec4& ids = vertexBoneIds[vId];
+                    int replaceIndex = -1;
+                    float minWeight = weight;
+                    for (int k = 0; k < 4; ++k) {
+                        if (weights[k] == 0.0f) {
+                            replaceIndex = k;
+                            break;
+                        }
+                        if (weights[k] < minWeight) {
+                            minWeight = weights[k];
+                            replaceIndex = k;
+                        }
+                    }
+                    if (replaceIndex >= 0) {
+                        weights[replaceIndex] = weight;
+                        ids[replaceIndex] = boneIndex;
+                    }
+                }
+            }
+        }
+
+        for (unsigned int v = 0; v < mesh->mNumVertices; ++v) {
+            glm::vec3 pos(mesh->mVertices[v].x, mesh->mVertices[v].y, mesh->mVertices[v].z);
+            positions.push_back(pos);
+            boundsMin.x = std::min(boundsMin.x, pos.x);
+            boundsMin.y = std::min(boundsMin.y, pos.y);
+            boundsMin.z = std::min(boundsMin.z, pos.z);
+            boundsMax.x = std::max(boundsMax.x, pos.x);
+            boundsMax.y = std::max(boundsMax.y, pos.y);
+            boundsMax.z = std::max(boundsMax.z, pos.z);
+        }
+
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+            const aiFace& face = mesh->mFaces[f];
+            if (face.mNumIndices != 3) continue;
+
+            triangleIndices.push_back(static_cast<uint32_t>(face.mIndices[0]));
+            triangleIndices.push_back(static_cast<uint32_t>(face.mIndices[1]));
+            triangleIndices.push_back(static_cast<uint32_t>(face.mIndices[2]));
+
+            for (unsigned int j = 0; j < 3; ++j) {
+                unsigned int index = face.mIndices[j];
+                glm::vec3 pos(mesh->mVertices[index].x,
+                              mesh->mVertices[index].y,
+                              mesh->mVertices[index].z);
+                vertices.push_back(pos.x);
+                vertices.push_back(pos.y);
+                vertices.push_back(pos.z);
+                triPositions.push_back(pos);
+
+                if (mesh->mNormals) {
+                    glm::vec3 n(mesh->mNormals[index].x,
+                                mesh->mNormals[index].y,
+                                mesh->mNormals[index].z);
+                    vertices.push_back(n.x);
+                    vertices.push_back(n.y);
+                    vertices.push_back(n.z);
+                } else {
+                    vertices.push_back(0.0f);
+                    vertices.push_back(1.0f);
+                    vertices.push_back(0.0f);
+                }
+
+                if (mesh->mTextureCoords[0]) {
+                    vertices.push_back(mesh->mTextureCoords[0][index].x);
+                    vertices.push_back(mesh->mTextureCoords[0][index].y);
+                } else {
+                    vertices.push_back(0.0f);
+                    vertices.push_back(0.0f);
+                }
+
+                BoneVertex bv{};
+                glm::ivec4 ids = vertexBoneIds[index];
+                glm::vec4 weights = vertexBoneWeights[index];
+                float weightSum = weights.x + weights.y + weights.z + weights.w;
+                if (weightSum > 0.0f) {
+                    weights /= weightSum;
+                }
+                bv.ids[0] = ids.x;
+                bv.ids[1] = ids.y;
+                bv.ids[2] = ids.z;
+                bv.ids[3] = ids.w;
+                bv.weights[0] = weights.x;
+                bv.weights[1] = weights.y;
+                bv.weights[2] = weights.z;
+                bv.weights[3] = weights.w;
+                boneVertices.push_back(bv);
+            }
+        }
+
+        if (vertices.empty()) {
+            continue;
+        }
+
+        OBJLoader::LoadedMesh loaded;
+        loaded.path = filepath;
+        loaded.name = mesh->mName.C_Str();
+        if (loaded.name.empty()) {
+            loaded.name = fs::path(filepath).stem().string() + "_mesh" + std::to_string(i);
+        }
+        bool isSkinned = mesh->mNumBones > 0 && boneVertices.size() == vertices.size() / 8;
+        if (isSkinned) {
+            loaded.mesh = std::make_unique<Mesh>(vertices.data(), vertices.size() * sizeof(float), true,
+                                                 boneVertices.data(), boneVertices.size() * sizeof(BoneVertex));
+        } else {
+            loaded.mesh = std::make_unique<Mesh>(vertices.data(), vertices.size() * sizeof(float));
+        }
+        loaded.vertexCount = static_cast<int>(vertices.size() / 8);
+        loaded.faceCount = static_cast<int>(mesh->mNumFaces);
+        loaded.hasNormals = mesh->mNormals != nullptr;
+        loaded.hasTexCoords = mesh->mTextureCoords[0] != nullptr;
+        loaded.boundsMin = boundsMin;
+        loaded.boundsMax = boundsMax;
+        loaded.triangleVertices = std::move(triPositions);
+        loaded.positions = std::move(positions);
+        loaded.triangleIndices = std::move(triangleIndices);
+        loaded.isSkinned = isSkinned;
+        loaded.boneNames = std::move(boneNames);
+        loaded.inverseBindMatrices = std::move(inverseBindMatrices);
+        if (isSkinned) {
+            loaded.boneIds.reserve(boneVertices.size());
+            loaded.boneWeights.reserve(boneVertices.size());
+            for (const auto& bv : boneVertices) {
+                loaded.boneIds.emplace_back(bv.ids[0], bv.ids[1], bv.ids[2], bv.ids[3]);
+                loaded.boneWeights.emplace_back(bv.weights[0], bv.weights[1], bv.weights[2], bv.weights[3]);
+            }
+            loaded.baseVertices = vertices;
+        }
+
+        out.meshMaterialIndices[i] = mesh->mMaterialIndex < (int)out.materials.size()
+            ? static_cast<int>(mesh->mMaterialIndex)
+            : -1;
+
+        out.meshIndices[i] = static_cast<int>(loadedMeshes.size());
+        loadedMeshes.push_back(std::move(loaded));
+    }
+
+    bool anyMesh = false;
+    for (int idx : out.meshIndices) {
+        if (idx >= 0) { anyMesh = true; break; }
+    }
+    if (!anyMesh) {
+        errorMsg = "No meshes found in model file";
+        return false;
+    }
+
+    return true;
+}
+
+static void buildSceneNodes(const aiScene* scene,
+                            const std::vector<int>& meshIndices,
+                            ModelSceneData& out) {
+    std::unordered_set<std::string> boneNames;
+    for (unsigned int i = 0; i < scene->mNumMeshes; ++i) {
+        aiMesh* mesh = scene->mMeshes[i];
+        for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
+            boneNames.insert(mesh->mBones[b]->mName.C_Str());
+        }
+    }
+
+    std::function<void(aiNode*, int)> walk = [&](aiNode* node, int parentIndex) {
+        ModelNodeInfo info;
+        info.name = node->mName.C_Str();
+        if (info.name.empty()) {
+            info.name = "Node_" + std::to_string(out.nodes.size());
+        }
+        info.parentIndex = parentIndex;
+        info.isBone = boneNames.find(info.name) != boneNames.end();
+
+        aiVector3D scaling(1.0f, 1.0f, 1.0f);
+        aiVector3D position(0.0f, 0.0f, 0.0f);
+        aiQuaternion rotation;
+        node->mTransformation.Decompose(scaling, rotation, position);
+
+        info.localPosition = glm::vec3(position.x, position.y, position.z);
+        info.localScale = glm::vec3(scaling.x, scaling.y, scaling.z);
+        info.localRotation = quatToEulerDegrees(rotation);
+
+        for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+            unsigned int meshIndex = node->mMeshes[i];
+            if (meshIndex < meshIndices.size()) {
+                info.meshIndices.push_back(static_cast<int>(meshIndex));
+            }
+        }
+
+        int thisIndex = static_cast<int>(out.nodes.size());
+        out.nodes.push_back(info);
+
+        for (unsigned int c = 0; c < node->mNumChildren; ++c) {
+            walk(node->mChildren[c], thisIndex);
+        }
+    };
+
+    out.nodes.clear();
+    if (scene->mRootNode) {
+        walk(scene->mRootNode, -1);
+    }
 }
 
 static void collectRawMeshData(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, RawMeshAsset& out) {
@@ -606,6 +1125,89 @@ static void collectRawMeshData(aiNode* node, const aiScene* scene, const aiMatri
     for (unsigned int c = 0; c < node->mNumChildren; c++) {
         collectRawMeshData(node->mChildren[c], scene, current, out);
     }
+}
+
+bool ModelLoader::buildRawMeshFromScene(const std::string& filepath, RawMeshAsset& out, std::string& errorMsg,
+                                        glm::vec3* outRootPos, glm::vec3* outRootRot, glm::vec3* outRootScale) {
+    out = RawMeshAsset();
+
+    fs::path inPath(filepath);
+    if (!fs::exists(inPath)) {
+        errorMsg = "File not found: " + filepath;
+        return false;
+    }
+    if (!isSupported(filepath)) {
+        errorMsg = "Unsupported file format for raw mesh build";
+        return false;
+    }
+
+    Assimp::Importer localImporter;
+    unsigned int importFlags =
+        aiProcess_Triangulate |
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_GenSmoothNormals |
+        aiProcess_FlipUVs;
+
+    const aiScene* scene = localImporter.ReadFile(filepath, importFlags);
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+        errorMsg = "Assimp error: " + std::string(localImporter.GetErrorString());
+        return false;
+    }
+
+    aiMatrix4x4 parent;
+    parent = aiMatrix4x4();
+    if (scene->mRootNode && (outRootPos || outRootRot || outRootScale)) {
+        aiVector3D scaling(1.0f, 1.0f, 1.0f);
+        aiVector3D position(0.0f, 0.0f, 0.0f);
+        aiQuaternion rotation;
+        scene->mRootNode->mTransformation.Decompose(scaling, rotation, position);
+        if (outRootPos) *outRootPos = glm::vec3(position.x, position.y, position.z);
+        if (outRootScale) *outRootScale = glm::vec3(scaling.x, scaling.y, scaling.z);
+        if (outRootRot) *outRootRot = quatToEulerDegrees(rotation);
+
+        aiMatrix4x4 rootTransform = scene->mRootNode->mTransformation;
+        rootTransform.Inverse();
+        parent = rootTransform;
+    }
+
+    collectRawMeshData(scene->mRootNode, scene, parent, out);
+
+    if (out.positions.empty() || out.faces.empty()) {
+        errorMsg = "No geometry found to build raw mesh";
+        return false;
+    }
+
+    out.hasNormals = false;
+    for (const auto& n : out.normals) {
+        if (glm::length(n) > 1e-4f) { out.hasNormals = true; break; }
+    }
+
+    out.hasUVs = false;
+    for (const auto& uv : out.uvs) {
+        if (std::abs(uv.x) > 1e-6f || std::abs(uv.y) > 1e-6f) { out.hasUVs = true; break; }
+    }
+
+    if (!out.hasNormals) {
+        out.normals.assign(out.positions.size(), glm::vec3(0.0f));
+        std::vector<glm::vec3> accum(out.positions.size(), glm::vec3(0.0f));
+        for (const auto& face : out.faces) {
+            const glm::vec3& a = out.positions[face.x];
+            const glm::vec3& b = out.positions[face.y];
+            const glm::vec3& c = out.positions[face.z];
+            glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+            accum[face.x] += n;
+            accum[face.y] += n;
+            accum[face.z] += n;
+        }
+        for (size_t i = 0; i < accum.size(); i++) {
+            if (glm::length(accum[i]) > 1e-6f) {
+                out.normals[i] = glm::normalize(accum[i]);
+            }
+        }
+        out.hasNormals = true;
+    }
+
+    return true;
 }
 
 void ModelLoader::processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform,
@@ -720,6 +1322,7 @@ const std::vector<OBJLoader::LoadedMesh>& ModelLoader::getAllMeshes() const {
 
 void ModelLoader::clear() {
     loadedMeshes.clear();
+    cachedScenes.clear();
 }
 
 size_t ModelLoader::getMeshCount() const {

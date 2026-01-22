@@ -51,11 +51,34 @@ endif()
 
 # ==================== Optional PhysX ====================
 option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
+option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
 
 # ==================== Third-party libraries ====================
 
 add_subdirectory(src/ThirdParty/glfw EXCLUDE_FROM_ALL)
 find_package(OpenGL REQUIRED)
+
+# ==================== Mono (managed scripting) ====================
+option(MODULARITY_USE_MONO "Enable Mono embedding for managed scripts" ON)
+
+if(MODULARITY_USE_MONO)
+    set(MONO_ROOT ${PROJECT_SOURCE_DIR}/src/ThirdParty/mono CACHE PATH "Mono root directory")
+    find_path(MONO_INCLUDE_DIR mono/jit/jit.h
+        HINTS
+            ${MONO_ROOT}/include/mono-2.0
+            ${MONO_ROOT}/include
+    )
+    find_library(MONO_LIBRARY
+        NAMES mono-2.0-sgen mono-2.0 monosgen-2.0
+        HINTS
+            ${MONO_ROOT}/lib
+            ${MONO_ROOT}/lib64
+    )
+    if(NOT MONO_INCLUDE_DIR OR NOT MONO_LIBRARY)
+        message(WARNING "Mono not found. Disabling MODULARITY_USE_MONO. Set MONO_ROOT to a Mono runtime with include/mono-2.0 and libmono-2.0-sgen.")
+        set(MODULARITY_USE_MONO OFF CACHE BOOL "Enable Mono embedding for managed scripts" FORCE)
+    endif()
+endif()
 
 # GLAD
 add_library(glad STATIC src/ThirdParty/glad/glad.c)
@@ -105,6 +128,7 @@ file(GLOB_RECURSE ENGINE_HEADERS CONFIGURE_DEPENDS
 
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main_player.cpp")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 
@@ -122,7 +146,28 @@ target_include_directories(core PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core PUBLIC glad glm imgui imguizmo)
+if(MODULARITY_USE_MONO)
+    target_include_directories(core PUBLIC ${MONO_INCLUDE_DIR})
+    target_link_libraries(core PUBLIC ${MONO_LIBRARY})
+endif()
+target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
 target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
+
+add_library(core_player STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
+target_compile_definitions(core_player PUBLIC MODULARITY_PLAYER)
+target_link_libraries(core_player PUBLIC assimp)
+target_include_directories(core_player PUBLIC
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
+)
+target_link_libraries(core_player PUBLIC glad glm imgui imguizmo)
+if(MODULARITY_USE_MONO)
+    target_include_directories(core_player PUBLIC ${MONO_INCLUDE_DIR})
+    target_link_libraries(core_player PUBLIC ${MONO_LIBRARY})
+endif()
+target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 if(MODULARITY_ENABLE_PHYSX)
     set(PHYSX_ROOT_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/PhysX/physx CACHE PATH "PhysX root directory")
@@ -134,19 +179,47 @@ if(MODULARITY_ENABLE_PHYSX)
     target_include_directories(core PUBLIC ${PHYSX_ROOT_DIR}/include)
     target_compile_definitions(core PUBLIC MODULARITY_ENABLE_PHYSX PX_PHYSX_STATIC_LIB)
     target_link_libraries(core PUBLIC PhysX PhysXCommon PhysXFoundation PhysXExtensions PhysXCooking)
+    target_include_directories(core_player PUBLIC ${PHYSX_ROOT_DIR}/include)
+    target_compile_definitions(core_player PUBLIC MODULARITY_ENABLE_PHYSX PX_PHYSX_STATIC_LIB)
+    target_link_libraries(core_player PUBLIC PhysX PhysXCommon PhysXFoundation PhysXExtensions PhysXCooking)
 endif()
 
 # ==================== Executable ====================
-add_executable(Modularity src/main.cpp)
-target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
+if(MODULARITY_BUILD_EDITOR)
+    add_executable(Modularity src/main.cpp)
+    target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
+endif()
+add_executable(ModularityPlayer src/main_player.cpp)
+target_compile_options(ModularityPlayer PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 # Link order matters on Linux
 if(NOT WIN32)
     find_package(X11 REQUIRED)
-    target_include_directories(Modularity PRIVATE ${X11_INCLUDE_DIR})
+    if(MODULARITY_BUILD_EDITOR)
+        target_include_directories(Modularity PRIVATE ${X11_INCLUDE_DIR})
+        target_link_libraries(Modularity PRIVATE
+            core
+            imgui
+            imguizmo
+            glad
+            glm
+            glfw
+            OpenGL::GL
+            pthread
+            dl
+            ${X11_LIBRARIES}
+            Xrandr
+            Xi
+            Xinerama
+            Xcursor
+        )
+        # Export symbols so runtime-loaded scripts can resolve ImGui/engine symbols.
+        target_link_options(Modularity PRIVATE "-rdynamic")
+    endif()
 
-    target_link_libraries(Modularity PRIVATE
-        core
+    target_include_directories(ModularityPlayer PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(ModularityPlayer PRIVATE
+        core_player
         imgui
         imguizmo
         glad
@@ -161,15 +234,25 @@ if(NOT WIN32)
         Xinerama
         Xcursor
     )
-    # Export symbols so runtime-loaded scripts can resolve ImGui/engine symbols.
-    target_link_options(Modularity PRIVATE "-rdynamic")
+    target_link_options(ModularityPlayer PRIVATE "-rdynamic")
 else()
-    target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
+    if(MODULARITY_BUILD_EDITOR)
+        target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
+    endif()
+    target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
 endif()
 
 # ==================== Copy Resources folder after build ====================
-add_custom_command(TARGET Modularity POST_BUILD
+if(MODULARITY_BUILD_EDITOR)
+    add_custom_command(TARGET Modularity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Resources
+            $<TARGET_FILE_DIR:Modularity>/Resources
+    )
+endif()
+
+add_custom_command(TARGET ModularityPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/Resources
-        $<TARGET_FILE_DIR:Modularity>/Resources
+        $<TARGET_FILE_DIR:ModularityPlayer>/Resources
 )

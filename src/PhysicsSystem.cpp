@@ -122,9 +122,9 @@ void PhysicsSystem::createGroundPlane() {
 
 bool PhysicsSystem::gatherMeshData(const SceneObject& obj, std::vector<PxVec3>& vertices, std::vector<uint32_t>& indices) const {
     const OBJLoader::LoadedMesh* meshInfo = nullptr;
-    if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+    if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
         meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-    } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+    } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
         meshInfo = getModelLoader().getMeshInfo(obj.meshId);
     }
     if (!meshInfo) {
@@ -215,21 +215,21 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         s->setRestOffset(rest);
     };
 
-    switch (obj.type) {
-        case ObjectType::Cube: {
+    switch (obj.renderType) {
+        case RenderType::Cube: {
             PxVec3 halfExtents = ToPxVec3(glm::max(obj.scale * 0.5f, glm::vec3(0.01f)));
             shape = mPhysics->createShape(PxBoxGeometry(halfExtents), *mDefaultMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
-        case ObjectType::Sphere: {
+        case RenderType::Sphere: {
             float radius = std::max({obj.scale.x, obj.scale.y, obj.scale.z}) * 0.5f;
             radius = std::max(radius, 0.01f);
             shape = mPhysics->createShape(PxSphereGeometry(radius), *mDefaultMaterial, true);
             tuneShape(shape, radius * 2.0f, isDynamic);
             break;
         }
-        case ObjectType::Capsule: {
+        case RenderType::Capsule: {
         float radius = std::max(obj.scale.x, obj.scale.z) * 0.5f;
         radius = std::max(radius, 0.01f);
         float cylHeight = std::max(0.05f, obj.scale.y - radius * 2.0f);
@@ -242,21 +242,21 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         tuneShape(shape, std::min(radius * 2.0f, halfHeight * 2.0f), isDynamic);
         break;
     }
-        case ObjectType::Plane: {
+        case RenderType::Plane: {
             glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
             halfExtents.z = std::max(halfExtents.z, 0.01f);
             shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
-        case ObjectType::Sprite: {
+        case RenderType::Sprite: {
             glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
             halfExtents.z = std::max(halfExtents.z, 0.01f);
             shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
-        case ObjectType::Torus: {
+        case RenderType::Torus: {
             float radius = std::max({obj.scale.x, obj.scale.y, obj.scale.z}) * 0.5f;
             radius = std::max(radius, 0.01f);
             shape = mPhysics->createShape(PxSphereGeometry(radius), *mDefaultMaterial, true);
@@ -302,9 +302,9 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
         minDim = std::min(radius * 2.0f, halfHeight * 2.0f);
     } else {
         const OBJLoader::LoadedMesh* meshInfo = nullptr;
-        if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+        if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
             meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-        } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+        } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
             meshInfo = getModelLoader().getMeshInfo(obj.meshId);
         }
         if (!meshInfo) {
@@ -491,7 +491,6 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     if (!isReady()) return;
 
     clearActors();
-    createGroundPlane();
 
     struct MeshCookInfo {
         std::string name;
@@ -506,9 +505,9 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
         if (!obj.enabled || !obj.hasCollider || !obj.collider.enabled) continue;
         if (obj.collider.type == ColliderType::Box || obj.collider.type == ColliderType::Capsule) continue;
         const OBJLoader::LoadedMesh* meshInfo = nullptr;
-        if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+        if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
             meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-        } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+        } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
             meshInfo = getModelLoader().getMeshInfo(obj.meshId);
         }
         if (!meshInfo) continue;

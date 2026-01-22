@@ -13,12 +13,12 @@ OBJLoader g_objLoader;
 // Cube vertex data
 float vertices[] = {
     // Back face (z = -0.5f)
-    -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
      0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
-     0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-     0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-    -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
     -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
+    -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
+     0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
+    -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
+     0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
 
     // Front face (z = 0.5f)
     -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
@@ -37,12 +37,12 @@ float vertices[] = {
     -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
 
     // Right face (x = 0.5f)
-     0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+     0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
      0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-     0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-     0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-     0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
      0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+     0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+     0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+     0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
 
     // Bottom face (y = -0.5f)
     -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
@@ -54,11 +54,11 @@ float vertices[] = {
 
     // Top face (y = 0.5f)
     -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
-     0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
-     0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-     0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
     -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
-    -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f
+     0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+    -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
+     0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+     0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f
 };
 
 float mirrorPlaneVertices[] = {
@@ -287,6 +287,7 @@ std::vector<float> generateTorus(int segments, int sides) {
 // Mesh implementation
 Mesh::Mesh(const float* vertexData, size_t dataSizeBytes) {
     vertexCount = dataSizeBytes / (8 * sizeof(float));
+    strideFloats = 8;
 
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
@@ -308,15 +309,108 @@ Mesh::Mesh(const float* vertexData, size_t dataSizeBytes) {
     glBindVertexArray(0);
 }
 
+Mesh::Mesh(const float* vertexData, size_t dataSizeBytes, bool dynamicUsage,
+           const void* boneData, size_t boneDataBytes) {
+    vertexCount = dataSizeBytes / (8 * sizeof(float));
+    strideFloats = 8;
+    dynamic = dynamicUsage;
+    hasBones = boneData && boneDataBytes > 0;
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, dataSizeBytes, vertexData, dynamicUsage ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, strideFloats * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, strideFloats * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, strideFloats * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+
+    if (hasBones) {
+        glGenBuffers(1, &boneVBO);
+        glBindBuffer(GL_ARRAY_BUFFER, boneVBO);
+        glBufferData(GL_ARRAY_BUFFER, boneDataBytes, boneData, GL_STATIC_DRAW);
+
+        glVertexAttribIPointer(3, 4, GL_INT, sizeof(int) * 4 + sizeof(float) * 4, (void*)0);
+        glEnableVertexAttribArray(3);
+
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(int) * 4 + sizeof(float) * 4,
+                              (void*)(sizeof(int) * 4));
+        glEnableVertexAttribArray(4);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+}
+
 Mesh::~Mesh() {
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
+    if (boneVBO) {
+        glDeleteBuffers(1, &boneVBO);
+    }
 }
 
 void Mesh::draw() const {
     glBindVertexArray(VAO);
     glDrawArrays(GL_TRIANGLES, 0, vertexCount);
     glBindVertexArray(0);
+}
+
+void Mesh::updateVertices(const float* vertexData, size_t dataSizeBytes) {
+    if (!dynamic) return;
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, dataSizeBytes, vertexData);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    vertexCount = dataSizeBytes / (strideFloats * sizeof(float));
+}
+
+static void applyCpuSkinning(OBJLoader::LoadedMesh& meshInfo, const std::vector<glm::mat4>& bones, int maxBones) {
+    if (!meshInfo.mesh || !meshInfo.isSkinned) return;
+    if (meshInfo.baseVertices.empty() || meshInfo.boneIds.empty() || meshInfo.boneWeights.empty()) return;
+    if (!meshInfo.mesh->isDynamic()) return;
+
+    size_t vertexCount = meshInfo.baseVertices.size() / 8;
+    if (vertexCount == 0 || meshInfo.boneIds.size() != vertexCount || meshInfo.boneWeights.size() != vertexCount) {
+        return;
+    }
+
+    std::vector<float> skinned = meshInfo.baseVertices;
+    int boneLimit = std::min<int>(static_cast<int>(bones.size()), maxBones);
+    for (size_t i = 0; i < vertexCount; ++i) {
+        glm::vec3 basePos(skinned[i * 8 + 0], skinned[i * 8 + 1], skinned[i * 8 + 2]);
+        glm::vec3 baseNorm(skinned[i * 8 + 3], skinned[i * 8 + 4], skinned[i * 8 + 5]);
+        glm::ivec4 ids = meshInfo.boneIds[i];
+        glm::vec4 weights = meshInfo.boneWeights[i];
+
+        glm::vec4 skinnedPos(0.0f);
+        glm::vec3 skinnedNorm(0.0f);
+        for (int k = 0; k < 4; ++k) {
+            int id = ids[k];
+            float w = weights[k];
+            if (w <= 0.0f || id < 0 || id >= boneLimit) continue;
+            const glm::mat4& m = bones[id];
+            skinnedPos += w * (m * glm::vec4(basePos, 1.0f));
+            skinnedNorm += w * glm::mat3(m) * baseNorm;
+        }
+        skinned[i * 8 + 0] = skinnedPos.x;
+        skinned[i * 8 + 1] = skinnedPos.y;
+        skinned[i * 8 + 2] = skinnedPos.z;
+        if (glm::length(skinnedNorm) > 1e-6f) {
+            skinnedNorm = glm::normalize(skinnedNorm);
+        }
+        skinned[i * 8 + 3] = skinnedNorm.x;
+        skinned[i * 8 + 4] = skinnedNorm.y;
+        skinned[i * 8 + 5] = skinnedNorm.z;
+    }
+
+    meshInfo.mesh->updateVertices(skinned.data(), skinned.size() * sizeof(float));
 }
 
 // OBJLoader implementation
@@ -821,7 +915,7 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
     };
 
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled || obj.type != ObjectType::Mirror) continue;
+        if (!obj.enabled || !obj.hasRenderer || obj.renderType != RenderType::Mirror) continue;
         active.insert(obj.id);
 
         RenderTarget& target = mirrorTargets[obj.id];
@@ -1017,7 +1111,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
-    shader->setBool("unlit", obj.type == ObjectType::Mirror || obj.type == ObjectType::Sprite);
+    shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite);
 
     Texture* baseTex = texture1;
     if (!obj.albedoTexturePath.empty()) {
@@ -1026,7 +1120,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     if (baseTex) baseTex->Bind(GL_TEXTURE0);
 
     bool overlayUsed = false;
-    if (obj.type == ObjectType::Mirror) {
+    if (obj.renderType == RenderType::Mirror) {
         auto it = mirrorTargets.find(obj.id);
         if (it != mirrorTargets.end() && it->second.texture != 0) {
             glActiveTexture(GL_TEXTURE1);
@@ -1054,29 +1148,29 @@ void Renderer::renderObject(const SceneObject& obj) {
     }
     shader->setBool("hasNormalMap", normalUsed);
 
-    switch (obj.type) {
-        case ObjectType::Cube:
+    switch (obj.renderType) {
+        case RenderType::Cube:
             cubeMesh->draw();
             break;
-        case ObjectType::Sphere:
+        case RenderType::Sphere:
             sphereMesh->draw();
             break;
-        case ObjectType::Capsule:
+        case RenderType::Capsule:
             capsuleMesh->draw();
             break;
-        case ObjectType::Plane:
+        case RenderType::Plane:
             if (planeMesh) planeMesh->draw();
             break;
-        case ObjectType::Mirror:
+        case RenderType::Mirror:
             if (planeMesh) planeMesh->draw();
             break;
-        case ObjectType::Sprite:
+        case RenderType::Sprite:
             if (planeMesh) planeMesh->draw();
             break;
-        case ObjectType::Torus:
+        case RenderType::Torus:
             if (torusMesh) torusMesh->draw();
             break;
-        case ObjectType::OBJMesh:
+        case RenderType::OBJMesh:
             if (obj.meshId >= 0) {
                 Mesh* objMesh = g_objLoader.getMesh(obj.meshId);
                 if (objMesh) {
@@ -1084,7 +1178,7 @@ void Renderer::renderObject(const SceneObject& obj) {
                 }
             }
             break;
-        case ObjectType::Model:
+        case RenderType::Model:
             if (obj.meshId >= 0) {
                 Mesh* modelMesh = getModelLoader().getMesh(obj.meshId);
                 if (modelMesh) {
@@ -1092,26 +1186,8 @@ void Renderer::renderObject(const SceneObject& obj) {
                 }
             }
             break;
-        case ObjectType::PointLight:
-        case ObjectType::SpotLight:
-        case ObjectType::AreaLight:
-            // Lights are not rendered as geometry
-            break;
-        case ObjectType::DirectionalLight:
-            // Not rendered as geometry
-            break;
-        case ObjectType::Camera:
-            // Cameras are editor helpers only
-            break;
-        case ObjectType::PostFXNode:
-            break;
-        case ObjectType::Sprite2D:
-        case ObjectType::Canvas:
-        case ObjectType::UIImage:
-        case ObjectType::UISlider:
-        case ObjectType::UIButton:
-        case ObjectType::UIText:
-            // UI types are rendered via ImGui, not here.
+        case RenderType::None:
+        default:
             break;
     }
 }
@@ -1157,8 +1233,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     candidates.reserve(sceneObjects.size());
 
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.light.enabled) continue;
-        if (obj.type == ObjectType::DirectionalLight) {
+        if (!obj.enabled || !obj.hasLight || !obj.light.enabled) continue;
+        if (obj.light.type == LightType::Directional) {
             LightUniform l;
             l.type = 0;
             l.dir = forwardFromRotation(obj);
@@ -1166,7 +1242,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.intensity = obj.light.intensity;
             lights.push_back(l);
             if (lights.size() >= kMaxLights) break;
-        } else if (obj.type == ObjectType::SpotLight) {
+        } else if (obj.light.type == LightType::Spot) {
             LightUniform l;
             l.type = 2;
             l.pos = obj.position;
@@ -1182,7 +1258,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             c.distSq = glm::dot(delta, delta);
             c.id = obj.id;
             candidates.push_back(c);
-        } else if (obj.type == ObjectType::PointLight) {
+        } else if (obj.light.type == LightType::Point) {
             LightUniform l;
             l.type = 1;
             l.pos = obj.position;
@@ -1195,7 +1271,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             c.distSq = glm::dot(delta, delta);
             c.id = obj.id;
             candidates.push_back(c);
-        } else if (obj.type == ObjectType::AreaLight) {
+        } else if (obj.light.type == LightType::Area) {
             LightUniform l;
             l.type = 3; // area
             l.pos = obj.position;
@@ -1227,23 +1303,48 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
     }
 
+    glm::mat4 view = camera.getViewMatrix();
+    glm::mat4 proj = glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane);
+
+    GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
+    GLint prevCullMode = GL_BACK;
+    glGetIntegerv(GL_CULL_FACE_MODE, &prevCullMode);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
     for (const auto& obj : sceneObjects) {
         if (!obj.enabled) continue;
-        if (!drawMirrorObjects && obj.type == ObjectType::Mirror) continue;
-        // Skip light gizmo-only types and camera helpers
-        if (obj.type == ObjectType::PointLight || obj.type == ObjectType::SpotLight || obj.type == ObjectType::AreaLight || obj.type == ObjectType::Camera || obj.type == ObjectType::PostFXNode || obj.type == ObjectType::Canvas || obj.type == ObjectType::UIImage || obj.type == ObjectType::UISlider || obj.type == ObjectType::UIButton || obj.type == ObjectType::UIText || obj.type == ObjectType::Sprite2D) {
-            continue;
-        }
+        if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
+        if (!HasRendererComponent(obj)) continue;
 
-        Shader* active = getShader(obj.vertexShaderPath, obj.fragmentShaderPath);
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, obj.position);
+        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, obj.scale);
+
+        std::string vertPath = obj.vertexShaderPath;
+        std::string fragPath = obj.fragmentShaderPath;
+        int boneLimit = obj.skeletal.maxBones;
+        int availableBones = static_cast<int>(obj.skeletal.finalMatrices.size());
+        bool needsFallback = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+                             obj.skeletal.allowCpuFallback &&
+                             boneLimit > 0 && availableBones > boneLimit;
+        bool wantsGpuSkinning = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+                                obj.skeletal.useGpuSkinning && !needsFallback;
+        if (vertPath.empty() && wantsGpuSkinning) {
+            vertPath = skinnedVertPath;
+        }
+        Shader* active = getShader(vertPath, fragPath);
         if (!active) continue;
         shader = active;
         shader->use();
 
-        shader->setMat4("view", camera.getViewMatrix());
-        shader->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane));
+        shader->setMat4("view", view);
+        shader->setMat4("projection", proj);
         shader->setVec3("viewPos", camera.position);
-        shader->setBool("unlit", obj.type == ObjectType::Mirror);
+        shader->setBool("unlit", obj.renderType == RenderType::Mirror);
         shader->setVec3("ambientColor", ambientColor);
         shader->setVec3("ambientColor", ambientColor);
 
@@ -1263,19 +1364,26 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
     }
 
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, obj.position);
-        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, obj.scale);
-
         shader->setMat4("model", model);
         shader->setVec3("materialColor", obj.material.color);
         shader->setFloat("ambientStrength", obj.material.ambientStrength);
         shader->setFloat("specularStrength", obj.material.specularStrength);
         shader->setFloat("shininess", obj.material.shininess);
         shader->setFloat("mixAmount", obj.material.textureMix);
+
+        if (obj.hasSkeletalAnimation && obj.skeletal.enabled) {
+            int safeLimit = std::max(0, boneLimit);
+            int boneCount = std::min<int>(availableBones, safeLimit);
+            if (wantsGpuSkinning && boneCount > 0) {
+                shader->setInt("boneCount", boneCount);
+                shader->setMat4Array("bones", obj.skeletal.finalMatrices.data(), boneCount);
+                shader->setBool("useSkinning", true);
+            } else {
+                shader->setBool("useSkinning", false);
+            }
+        } else {
+            shader->setBool("useSkinning", false);
+        }
 
         Texture* baseTex = texture1;
         if (!obj.albedoTexturePath.empty()) {
@@ -1284,7 +1392,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (baseTex) baseTex->Bind(GL_TEXTURE0);
 
         bool overlayUsed = false;
-        if (obj.type == ObjectType::Mirror) {
+        if (obj.renderType == RenderType::Mirror) {
             auto it = mirrorTargets.find(obj.id);
             if (it != mirrorTargets.end() && it->second.texture != 0) {
                 glActiveTexture(GL_TEXTURE1);
@@ -1313,17 +1421,35 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setBool("hasNormalMap", normalUsed);
 
         Mesh* meshToDraw = nullptr;
-        if (obj.type == ObjectType::Cube) meshToDraw = cubeMesh;
-        else if (obj.type == ObjectType::Sphere) meshToDraw = sphereMesh;
-        else if (obj.type == ObjectType::Capsule) meshToDraw = capsuleMesh;
-        else if (obj.type == ObjectType::Plane) meshToDraw = planeMesh;
-        else if (obj.type == ObjectType::Mirror) meshToDraw = planeMesh;
-        else if (obj.type == ObjectType::Sprite) meshToDraw = planeMesh;
-        else if (obj.type == ObjectType::Torus) meshToDraw = torusMesh;
-        else if (obj.type == ObjectType::OBJMesh && obj.meshId != -1) {
+        if (obj.renderType == RenderType::Cube) meshToDraw = cubeMesh;
+        else if (obj.renderType == RenderType::Sphere) meshToDraw = sphereMesh;
+        else if (obj.renderType == RenderType::Capsule) meshToDraw = capsuleMesh;
+        else if (obj.renderType == RenderType::Plane) meshToDraw = planeMesh;
+        else if (obj.renderType == RenderType::Mirror) meshToDraw = planeMesh;
+        else if (obj.renderType == RenderType::Sprite) meshToDraw = planeMesh;
+        else if (obj.renderType == RenderType::Torus) meshToDraw = torusMesh;
+        else if (obj.renderType == RenderType::OBJMesh && obj.meshId != -1) {
             meshToDraw = g_objLoader.getMesh(obj.meshId);
-        } else if (obj.type == ObjectType::Model && obj.meshId != -1) {
+        } else if (obj.renderType == RenderType::Model && obj.meshId != -1) {
             meshToDraw = getModelLoader().getMesh(obj.meshId);
+        }
+
+        if (obj.renderType == RenderType::Model && obj.meshId != -1 &&
+            obj.hasSkeletalAnimation && obj.skeletal.enabled && !wantsGpuSkinning) {
+            const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+            if (meshInfo) {
+                applyCpuSkinning(*const_cast<OBJLoader::LoadedMesh*>(meshInfo),
+                                 obj.skeletal.finalMatrices,
+                                 obj.skeletal.maxBones);
+            }
+        }
+
+        bool doubleSided = (obj.renderType == RenderType::Sprite || obj.renderType == RenderType::Mirror);
+        if (doubleSided) {
+            glDisable(GL_CULL_FACE);
+        } else {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
         }
 
         if (meshToDraw) {
@@ -1332,12 +1458,14 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
     }
 
-    if (skybox) {
-        glm::mat4 view = camera.getViewMatrix();
-        glm::mat4 proj = glm::perspective(glm::radians(fovDeg), 
-                                        (float)width / height, 
-                                        nearPlane, farPlane);
+    if (!cullFace) {
+        glDisable(GL_CULL_FACE);
+    } else {
+        glEnable(GL_CULL_FACE);
+        glCullFace(prevCullMode);
+    }
 
+    if (skybox) {
         recordDrawCall();
         skybox->draw(glm::value_ptr(view), glm::value_ptr(proj));
     }
@@ -1351,7 +1479,7 @@ PostFXSettings Renderer::gatherPostFX(const std::vector<SceneObject>& sceneObjec
     PostFXSettings combined;
     combined.enabled = false;
     for (const auto& obj : sceneObjects) {
-        if (obj.type != ObjectType::PostFXNode) continue;
+        if (!obj.hasPostFX) continue;
         if (!obj.postFx.enabled) continue;
         combined = obj.postFx; // Last enabled node wins for now
         combined.enabled = true;
@@ -1601,9 +1729,9 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
                     break;
                 case ColliderType::Mesh:
                 case ColliderType::ConvexMesh:
-                    if (obj.type == ObjectType::OBJMesh && obj.meshId >= 0) {
+                    if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
                         meshToDraw = g_objLoader.getMesh(obj.meshId);
-                    } else if (obj.type == ObjectType::Model && obj.meshId >= 0) {
+                    } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
                         meshToDraw = getModelLoader().getMesh(obj.meshId);
                     } else {
                         meshToDraw = nullptr;
@@ -1612,29 +1740,29 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
                     break;
             }
         } else {
-            switch (obj.type) {
-                case ObjectType::Cube:
+            switch (obj.renderType) {
+                case RenderType::Cube:
                     meshToDraw = cubeMesh;
                     break;
-                case ObjectType::Sphere:
+                case RenderType::Sphere:
                     meshToDraw = sphereMesh;
                     break;
-                case ObjectType::Capsule:
+                case RenderType::Capsule:
                     meshToDraw = capsuleMesh;
                     break;
-                case ObjectType::Plane:
+                case RenderType::Plane:
                     meshToDraw = planeMesh;
                     break;
-                case ObjectType::Sprite:
+                case RenderType::Sprite:
                     meshToDraw = planeMesh;
                     break;
-                case ObjectType::Torus:
+                case RenderType::Torus:
                     meshToDraw = sphereMesh;
                     break;
-                case ObjectType::OBJMesh:
+                case RenderType::OBJMesh:
                     if (obj.meshId >= 0) meshToDraw = g_objLoader.getMesh(obj.meshId);
                     break;
-                case ObjectType::Model:
+                case RenderType::Model:
                     if (obj.meshId >= 0) meshToDraw = getModelLoader().getMesh(obj.meshId);
                     break;
                 default:
@@ -1673,31 +1801,30 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     }
     if (!selectedObj || !selectedObj->enabled) return;
 
-    if (selectedObj->type == ObjectType::PointLight ||
-        selectedObj->type == ObjectType::SpotLight ||
-        selectedObj->type == ObjectType::AreaLight ||
-        selectedObj->type == ObjectType::Camera ||
-        selectedObj->type == ObjectType::PostFXNode ||
-        selectedObj->type == ObjectType::Canvas ||
-        selectedObj->type == ObjectType::UIImage ||
-        selectedObj->type == ObjectType::UISlider ||
-        selectedObj->type == ObjectType::UIButton ||
-        selectedObj->type == ObjectType::UIText ||
-        selectedObj->type == ObjectType::Sprite2D) {
+    if (!HasRendererComponent(*selectedObj)) {
         return;
     }
 
+    bool wantsGpuSkinning = selectedObj->hasSkeletalAnimation && selectedObj->skeletal.enabled &&
+                            selectedObj->skeletal.useGpuSkinning;
+    int boneLimit = selectedObj->skeletal.maxBones;
+    int availableBones = static_cast<int>(selectedObj->skeletal.finalMatrices.size());
+    if (selectedObj->hasSkeletalAnimation && selectedObj->skeletal.enabled &&
+        selectedObj->skeletal.allowCpuFallback && boneLimit > 0 && availableBones > boneLimit) {
+        wantsGpuSkinning = false;
+    }
+
     Mesh* meshToDraw = nullptr;
-    if (selectedObj->type == ObjectType::Cube) meshToDraw = cubeMesh;
-    else if (selectedObj->type == ObjectType::Sphere) meshToDraw = sphereMesh;
-    else if (selectedObj->type == ObjectType::Capsule) meshToDraw = capsuleMesh;
-    else if (selectedObj->type == ObjectType::Plane) meshToDraw = planeMesh;
-    else if (selectedObj->type == ObjectType::Mirror) meshToDraw = planeMesh;
-    else if (selectedObj->type == ObjectType::Sprite) meshToDraw = planeMesh;
-    else if (selectedObj->type == ObjectType::Torus) meshToDraw = torusMesh;
-    else if (selectedObj->type == ObjectType::OBJMesh && selectedObj->meshId != -1) {
+    if (selectedObj->renderType == RenderType::Cube) meshToDraw = cubeMesh;
+    else if (selectedObj->renderType == RenderType::Sphere) meshToDraw = sphereMesh;
+    else if (selectedObj->renderType == RenderType::Capsule) meshToDraw = capsuleMesh;
+    else if (selectedObj->renderType == RenderType::Plane) meshToDraw = planeMesh;
+    else if (selectedObj->renderType == RenderType::Mirror) meshToDraw = planeMesh;
+    else if (selectedObj->renderType == RenderType::Sprite) meshToDraw = planeMesh;
+    else if (selectedObj->renderType == RenderType::Torus) meshToDraw = torusMesh;
+    else if (selectedObj->renderType == RenderType::OBJMesh && selectedObj->meshId != -1) {
         meshToDraw = g_objLoader.getMesh(selectedObj->meshId);
-    } else if (selectedObj->type == ObjectType::Model && selectedObj->meshId != -1) {
+    } else if (selectedObj->renderType == RenderType::Model && selectedObj->meshId != -1) {
         meshToDraw = getModelLoader().getMesh(selectedObj->meshId);
     }
     if (!meshToDraw) return;
@@ -1763,6 +1890,16 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     baseModel = glm::rotate(baseModel, glm::radians(selectedObj->rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
     baseModel = glm::rotate(baseModel, glm::radians(selectedObj->rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, selectedObj->scale);
+
+    if (selectedObj->renderType == RenderType::Model && selectedObj->meshId != -1 &&
+        selectedObj->hasSkeletalAnimation && selectedObj->skeletal.enabled && !wantsGpuSkinning) {
+        const auto* meshInfo = getModelLoader().getMeshInfo(selectedObj->meshId);
+        if (meshInfo) {
+            applyCpuSkinning(*const_cast<OBJLoader::LoadedMesh*>(meshInfo),
+                             selectedObj->skeletal.finalMatrices,
+                             selectedObj->skeletal.maxBones);
+        }
+    }
 
     // Mark the object in the stencil buffer.
     glEnable(GL_STENCIL_TEST);

@@ -12,6 +12,7 @@ Scripts in Modularity are native C++ code compiled into shared libraries and loa
 
 ## Table of contents
 - [Quickstart](#quickstart)
+- [C# managed scripting (experimental)](#c-managed-scripting-experimental)
 - [Scripts.modu](#scriptsmodu)
 - [How compilation works](#how-compilation-works)
 - [Lifecycle hooks](#lifecycle-hooks)
@@ -35,6 +36,29 @@ Scripts in Modularity are native C++ code compiled into shared libraries and loa
    - In the File Browser, right-click the script file and choose **Compile Script**, or
    - In the Inspector’s script component menu, choose **Compile**.
 5. Implement a tick hook (`TickUpdate`) and observe behavior in play mode.
+
+## C# managed scripting (experimental)
+Modularity can host managed C# scripts via the .NET runtime. This is an early, minimal integration
+intended for movement/transform tests and simple Rigidbody control.
+
+1. Build the managed project (this now happens automatically when you compile a C# script):
+   - `dotnet build Scripts/Managed/ModuCPP.csproj`
+2. In the Inspector, add a Script component and set:
+   - `Language` = **C#**
+   - `Assembly Path` = `Scripts/Managed/bin/Debug/net10.0/ModuCPP.dll` (or point at `Scripts/Managed/SampleInspector.cs`)
+   - `Type` = `ModuCPP.SampleInspector`
+3. Enter play mode. The sample script will auto-rotate the object.
+
+Notes:
+- The `ModuCPP.runtimeconfig.json` produced by `dotnet build` must sit next to the DLL.
+- The managed host currently expects the script assembly to also contain `ModuCPP.Host`
+  (use the provided `Scripts/Managed/ModuCPP.csproj` as the entry assembly).
+- The managed API surface is tiny for now: position/rotation/scale, basic Rigidbody velocity/forces,
+  settings, and console logging.
+- Requires a local .NET runtime (Windows/Linux). If the runtime is missing, the engine will fail to
+  initialize managed scripts and report the error in the inspector.
+- Managed hooks should be exported as `Script_Begin`, `Script_TickUpdate`, etc. via
+  `[UnmanagedCallersOnly]` in the C# script class.
 
 ## Scripts.modu
 Each project has a `Scripts.modu` file (auto-created if missing). It controls compilation.

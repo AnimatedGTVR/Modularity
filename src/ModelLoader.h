@@ -3,6 +3,7 @@
 #include "Common.h"
 #include "Rendering.h"
 #include <cstdint>
+#include <unordered_map>
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -19,6 +20,7 @@ struct ModelFormat {
 struct ModelLoadResult {
     bool success = false;
     int meshIndex = -1;
+    std::vector<int> meshIndices;
     std::string errorMessage;
     int vertexCount = 0;
     int faceCount = 0;
@@ -41,6 +43,51 @@ struct RawMeshAsset {
     bool hasUVs = false;
 };
 
+struct ModelMaterialInfo {
+    std::string name;
+    MaterialProperties props;
+    std::string albedoPath;
+    std::string normalPath;
+};
+
+struct ModelNodeInfo {
+    std::string name;
+    int parentIndex = -1;
+    std::vector<int> meshIndices;
+    glm::vec3 localPosition = glm::vec3(0.0f);
+    glm::vec3 localRotation = glm::vec3(0.0f);
+    glm::vec3 localScale = glm::vec3(1.0f);
+    bool isBone = false;
+};
+
+struct ModelSceneData {
+    std::vector<ModelNodeInfo> nodes;
+    std::vector<ModelMaterialInfo> materials;
+    std::vector<int> meshIndices;
+    std::vector<int> meshMaterialIndices;
+    struct AnimVecKey {
+        float time = 0.0f;
+        glm::vec3 value = glm::vec3(0.0f);
+    };
+    struct AnimQuatKey {
+        float time = 0.0f;
+        glm::quat value = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    };
+    struct AnimChannel {
+        std::string nodeName;
+        std::vector<AnimVecKey> positions;
+        std::vector<AnimQuatKey> rotations;
+        std::vector<AnimVecKey> scales;
+    };
+    struct AnimationClip {
+        std::string name;
+        double duration = 0.0;
+        double ticksPerSecond = 0.0;
+        std::vector<AnimChannel> channels;
+    };
+    std::vector<AnimationClip> animations;
+};
+
 class ModelLoader {
 public:
     // Singleton access
@@ -48,6 +95,9 @@ public:
     
     // Load a model file (FBX, OBJ, GLTF, etc.)
     ModelLoadResult loadModel(const std::string& filepath);
+
+    // Load a model scene with node hierarchy and per-mesh materials
+    bool loadModelScene(const std::string& filepath, ModelSceneData& out, std::string& errorMsg);
     
     // Get mesh by index
     Mesh* getMesh(int index);
@@ -72,6 +122,16 @@ public:
 
     // Update an already-loaded raw mesh in GPU memory
     bool updateRawMesh(int meshIndex, const RawMeshAsset& asset, std::string& errorMsg);
+
+    // Build a raw mesh asset from a model scene without writing to disk
+    bool buildRawMeshFromScene(const std::string& filepath, RawMeshAsset& out, std::string& errorMsg,
+                               glm::vec3* outRootPos = nullptr,
+                               glm::vec3* outRootRot = nullptr,
+                               glm::vec3* outRootScale = nullptr);
+
+    // Add a raw mesh asset to the GPU cache and return its mesh index
+    int addRawMesh(const RawMeshAsset& asset, const std::string& sourcePath,
+                   const std::string& name, std::string& errorMsg);
     
     // Get list of supported formats
     static std::vector<ModelFormat> getSupportedFormats();
@@ -100,6 +160,7 @@ private:
     
     // Storage for loaded meshes (reusing OBJLoader::LoadedMesh structure)
     std::vector<OBJLoader::LoadedMesh> loadedMeshes;
+    std::unordered_map<std::string, ModelSceneData> cachedScenes;
     
     // Assimp importer (kept for resource management)
     Assimp::Importer importer;

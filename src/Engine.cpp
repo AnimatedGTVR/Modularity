@@ -4,8 +4,14 @@
 #include <fstream>
 #include <functional>
 #include <chrono>
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <iomanip>
 #include <unordered_set>
 #include <unordered_map>
+#include <cmath>
 #include "ThirdParty/glm/gtc/constants.hpp"
 
 #pragma region Material File IO Helpers
@@ -19,6 +25,57 @@ struct MaterialFileData {
     std::string vertexShader;
     std::string fragmentShader;
 };
+
+bool IsDefaultTransform(const SceneObject& obj) {
+    auto nearZero = [](float v) { return std::abs(v) < 1e-4f; };
+    auto nearOne = [](float v) { return std::abs(v - 1.0f) < 1e-4f; };
+    return nearZero(obj.localPosition.x) &&
+           nearZero(obj.localPosition.y) &&
+           nearZero(obj.localPosition.z) &&
+           nearZero(obj.localRotation.x) &&
+           nearZero(obj.localRotation.y) &&
+           nearZero(obj.localRotation.z) &&
+           nearOne(obj.localScale.x) &&
+           nearOne(obj.localScale.y) &&
+           nearOne(obj.localScale.z);
+}
+
+void ApplyModelRootTransform(SceneObject& obj, const ModelSceneData& sceneData) {
+    if (sceneData.nodes.empty()) return;
+    if (obj.localInitialized && !IsDefaultTransform(obj)) return;
+    const auto& root = sceneData.nodes.front();
+    obj.localPosition = root.localPosition;
+    obj.localRotation = root.localRotation;
+    obj.localScale = root.localScale;
+    obj.localInitialized = true;
+    obj.position = obj.localPosition;
+    obj.rotation = obj.localRotation;
+    obj.scale = obj.localScale;
+}
+
+std::string sanitizeMaterialName(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    for (char c : name) {
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '_' || c == '-') {
+            out.push_back(c);
+        } else if (c == ' ' || c == '.') {
+            out.push_back('_');
+        }
+    }
+    if (out.empty()) out = "Material";
+    return out;
+}
+
+std::string resolveTexturePath(const std::string& texPath, const fs::path& modelPath) {
+    if (texPath.empty() || texPath[0] == '*') return "";
+    fs::path p(texPath);
+    if (p.is_absolute()) return p.string();
+    return (modelPath.parent_path() / p).string();
+}
 
 bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
     std::ifstream f(path);
@@ -81,6 +138,136 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     return true;
 }
 
+void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
+    obj.type = preset;
+    obj.hasRenderer = false;
+    obj.renderType = RenderType::None;
+    obj.hasLight = false;
+    obj.hasCamera = false;
+    obj.hasPostFX = false;
+    obj.hasUI = false;
+    obj.ui.type = UIElementType::None;
+
+    switch (preset) {
+        case ObjectType::Cube:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Cube;
+            break;
+        case ObjectType::Sphere:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sphere;
+            break;
+        case ObjectType::Capsule:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Capsule;
+            break;
+        case ObjectType::OBJMesh:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::OBJMesh;
+            break;
+        case ObjectType::Model:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Model;
+            break;
+        case ObjectType::Mirror:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Mirror;
+            obj.useOverlay = true;
+            obj.material.textureMix = 1.0f;
+            obj.material.color = glm::vec3(1.0f);
+            obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
+            break;
+        case ObjectType::Plane:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Plane;
+            obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
+            break;
+        case ObjectType::Torus:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Torus;
+            break;
+        case ObjectType::Sprite:
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sprite;
+            obj.scale = glm::vec3(1.0f, 1.0f, 0.05f);
+            obj.material.ambientStrength = 1.0f;
+            break;
+        case ObjectType::DirectionalLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Directional;
+            break;
+        case ObjectType::PointLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Point;
+            obj.light.range = 12.0f;
+            obj.light.intensity = 2.0f;
+            break;
+        case ObjectType::SpotLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Spot;
+            obj.light.range = 15.0f;
+            obj.light.intensity = 2.5f;
+            break;
+        case ObjectType::AreaLight:
+            obj.hasLight = true;
+            obj.light.type = LightType::Area;
+            obj.light.range = 10.0f;
+            obj.light.intensity = 3.0f;
+            obj.light.size = glm::vec2(2.0f, 2.0f);
+            break;
+        case ObjectType::Camera:
+            obj.hasCamera = true;
+            obj.camera.type = SceneCameraType::Player;
+            obj.camera.fov = 60.0f;
+            break;
+        case ObjectType::PostFXNode:
+            obj.hasPostFX = true;
+            obj.postFx.enabled = true;
+            obj.postFx.bloomEnabled = true;
+            obj.postFx.colorAdjustEnabled = true;
+            break;
+        case ObjectType::Canvas:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Canvas;
+            obj.ui.label = "Canvas";
+            obj.ui.size = glm::vec2(600.0f, 400.0f);
+            break;
+        case ObjectType::UIImage:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Image;
+            obj.ui.label = "Image";
+            obj.ui.size = glm::vec2(200.0f, 200.0f);
+            break;
+        case ObjectType::UISlider:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Slider;
+            obj.ui.label = "Slider";
+            obj.ui.size = glm::vec2(240.0f, 32.0f);
+            break;
+        case ObjectType::UIButton:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Button;
+            obj.ui.label = "Button";
+            obj.ui.size = glm::vec2(160.0f, 40.0f);
+            break;
+        case ObjectType::UIText:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Text;
+            obj.ui.label = "Text";
+            obj.ui.size = glm::vec2(240.0f, 32.0f);
+            break;
+        case ObjectType::Sprite2D:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Sprite2D;
+            obj.ui.label = "Sprite2D";
+            obj.ui.size = glm::vec2(128.0f, 128.0f);
+            break;
+        case ObjectType::Empty:
+        default:
+            break;
+    }
+}
+
 RawMeshAsset buildCubeRMesh() {
     RawMeshAsset mesh;
     mesh.positions.reserve(24);
@@ -88,38 +275,56 @@ RawMeshAsset buildCubeRMesh() {
     mesh.uvs.reserve(24);
     mesh.faces.reserve(12);
 
-    struct Face {
-        glm::vec3 n;
-        glm::vec3 v[4];
-    };
-
     const float h = 0.5f;
-    Face faces[] = {
-        { glm::vec3(0, 0, 1),  { {-h,-h, h}, { h,-h, h}, { h, h, h}, {-h, h, h} } }, // +Z
-        { glm::vec3(0, 0,-1),  { { h,-h,-h}, {-h,-h,-h}, {-h, h,-h}, { h, h,-h} } }, // -Z
-        { glm::vec3(1, 0, 0),  { { h,-h, h}, { h,-h,-h}, { h, h,-h}, { h, h, h} } }, // +X
-        { glm::vec3(-1,0, 0),  { {-h,-h,-h}, {-h,-h, h}, {-h, h, h}, {-h, h,-h} } }, // -X
-        { glm::vec3(0, 1, 0),  { {-h, h, h}, { h, h, h}, { h, h,-h}, {-h, h,-h} } }, // +Y
-        { glm::vec3(0,-1, 0),  { {-h,-h,-h}, { h,-h,-h}, { h,-h, h}, {-h,-h, h} } }, // -Y
-    };
-
-    glm::vec2 uvs[4] = {
-        glm::vec2(0, 0),
-        glm::vec2(1, 0),
-        glm::vec2(1, 1),
-        glm::vec2(0, 1),
-    };
-
-    for (const auto& f : faces) {
+    auto pushFace = [&](const glm::vec3& n, const glm::vec3& uAxis, const glm::vec3& vAxis,
+                        const glm::vec3& v0, const glm::vec3& v1,
+                        const glm::vec3& v2, const glm::vec3& v3) {
         uint32_t base = static_cast<uint32_t>(mesh.positions.size());
-        for (int i = 0; i < 4; ++i) {
-            mesh.positions.push_back(f.v[i]);
-            mesh.normals.push_back(f.n);
-            mesh.uvs.push_back(uvs[i]);
-        }
+        mesh.positions.push_back(v0);
+        mesh.positions.push_back(v1);
+        mesh.positions.push_back(v2);
+        mesh.positions.push_back(v3);
+        mesh.normals.push_back(n);
+        mesh.normals.push_back(n);
+        mesh.normals.push_back(n);
+        mesh.normals.push_back(n);
+        auto toUv = [&](const glm::vec3& p) -> glm::vec2 {
+            float u = glm::dot(p, uAxis) / (2.0f * h) + 0.5f;
+            float v = glm::dot(p, vAxis) / (2.0f * h) + 0.5f;
+            return glm::vec2(u, v);
+        };
+        mesh.uvs.push_back(toUv(v0));
+        mesh.uvs.push_back(toUv(v1));
+        mesh.uvs.push_back(toUv(v2));
+        mesh.uvs.push_back(toUv(v3));
         mesh.faces.push_back(glm::u32vec3(base, base + 1, base + 2));
         mesh.faces.push_back(glm::u32vec3(base, base + 2, base + 3));
-    }
+    };
+
+    // +Z (front)
+    pushFace(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+             glm::vec3(-h, -h,  h), glm::vec3( h, -h,  h),
+             glm::vec3( h,  h,  h), glm::vec3(-h,  h,  h));
+    // -Z (back)
+    pushFace(glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+             glm::vec3( h, -h, -h), glm::vec3(-h, -h, -h),
+             glm::vec3(-h,  h, -h), glm::vec3( h,  h, -h));
+    // -X (left)
+    pushFace(glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+             glm::vec3(-h, -h, -h), glm::vec3(-h, -h,  h),
+             glm::vec3(-h,  h,  h), glm::vec3(-h,  h, -h));
+    // +X (right)
+    pushFace(glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+             glm::vec3( h, -h,  h), glm::vec3( h, -h, -h),
+             glm::vec3( h,  h, -h), glm::vec3( h,  h,  h));
+    // +Y (top)
+    pushFace(glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f),
+             glm::vec3(-h,  h,  h), glm::vec3( h,  h,  h),
+             glm::vec3( h,  h, -h), glm::vec3(-h,  h, -h));
+    // -Y (bottom)
+    pushFace(glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f),
+             glm::vec3(-h, -h, -h), glm::vec3( h, -h, -h),
+             glm::vec3( h, -h,  h), glm::vec3(-h, -h,  h));
 
     mesh.boundsMin = glm::vec3(-h);
     mesh.boundsMax = glm::vec3(h);
@@ -199,8 +404,298 @@ RawMeshAsset buildSphereRMesh(int slices = 24, int stacks = 16) {
 } // namespace
 #pragma endregion
 
+#pragma region Build Helpers
+namespace {
+bool runCommandCapture(const std::string& command, std::string& output) {
+    std::array<char, 256> buffer{};
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        output = "Failed to spawn process: " + command;
+        return false;
+    }
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+
+#ifdef _WIN32
+    int returnCode = _pclose(pipe);
+#else
+    int returnCode = pclose(pipe);
+#endif
+    if (returnCode != 0) {
+        return false;
+    }
+    return true;
+}
+
+bool runCommandStreaming(const std::string& command,
+                         const std::function<void(const std::string&)>& onChunk,
+                         int* exitCodeOut) {
+    std::array<char, 256> buffer{};
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        if (exitCodeOut) *exitCodeOut = -1;
+        return false;
+    }
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        if (onChunk) {
+            onChunk(buffer.data());
+        }
+    }
+
+#ifdef _WIN32
+    int returnCode = _pclose(pipe);
+#else
+    int returnCode = pclose(pipe);
+#endif
+    if (exitCodeOut) *exitCodeOut = returnCode;
+    return returnCode == 0;
+}
+
+fs::path resolveExecutablePath(const fs::path& buildRoot, const char* exeBaseName) {
+#ifdef _WIN32
+    std::string exeName = std::string(exeBaseName) + ".exe";
+#else
+    std::string exeName = exeBaseName;
+#endif
+
+    std::vector<fs::path> candidates;
+    candidates.push_back(buildRoot / exeName);
+    candidates.push_back(buildRoot / "Release" / exeName);
+    candidates.push_back(buildRoot / "RelWithDebInfo" / exeName);
+    candidates.push_back(buildRoot / "MinSizeRel" / exeName);
+    candidates.push_back(buildRoot / "Debug" / exeName);
+
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) return path;
+    }
+
+    for (const auto& entry : fs::recursive_directory_iterator(buildRoot)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().filename() == exeName) return entry.path();
+    }
+    return {};
+}
+
+fs::path findCMakeSourceRoot(const fs::path& start) {
+    std::error_code ec;
+    fs::path cur = fs::absolute(start, ec);
+    if (ec) return {};
+    while (!cur.empty()) {
+        fs::path candidate = cur / "CMakeLists.txt";
+        if (fs::exists(candidate)) return cur;
+        if (!cur.has_parent_path()) break;
+        fs::path parent = cur.parent_path();
+        if (parent == cur) break;
+        cur = parent;
+    }
+    return {};
+}
+
+bool copyDirectoryRecursive(const fs::path& from, const fs::path& to, std::string& error) {
+    std::error_code ec;
+    if (!fs::exists(from)) return true;
+    fs::create_directories(to, ec);
+    if (ec) {
+        error = "Failed to create directory: " + to.string();
+        return false;
+    }
+
+    for (const auto& entry : fs::recursive_directory_iterator(from)) {
+        const auto& src = entry.path();
+        fs::path rel = fs::relative(src, from, ec);
+        if (ec) {
+            error = "Failed to resolve relative path: " + src.string();
+            return false;
+        }
+        fs::path dst = to / rel;
+        if (entry.is_directory()) {
+            fs::create_directories(dst, ec);
+            if (ec) {
+                error = "Failed to create directory: " + dst.string();
+                return false;
+            }
+        } else if (entry.is_regular_file()) {
+            fs::create_directories(dst.parent_path(), ec);
+            if (ec) {
+                error = "Failed to create directory: " + dst.parent_path().string();
+                return false;
+            }
+            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                error = "Failed to copy file: " + src.string();
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, std::string& error) {
+    std::error_code ec;
+    if (!fs::exists(buildRoot)) return true;
+
+    if (fs::exists(outDir)) {
+        fs::remove_all(outDir, ec);
+        if (ec) {
+            error = "Failed to clear package cache: " + outDir.string();
+            return false;
+        }
+    }
+    fs::create_directories(outDir, ec);
+    if (ec) {
+        error = "Failed to create package folder: " + outDir.string();
+        return false;
+    }
+
+    const std::vector<std::string> exts = { ".a", ".so", ".dylib", ".lib", ".dll" };
+    for (const auto& entry : fs::recursive_directory_iterator(buildRoot)) {
+        if (!entry.is_regular_file()) continue;
+        fs::path src = entry.path();
+        std::string ext = src.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (std::find(exts.begin(), exts.end(), ext) == exts.end()) {
+            continue;
+        }
+
+        fs::path dst = outDir / src.filename();
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Failed to copy package binary: " + src.string();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool copyPrecompiledEnginePackages(const fs::path& buildRoot, const fs::path& outDir, std::string& error) {
+    std::error_code ec;
+    if (!fs::exists(buildRoot)) return true;
+
+    if (fs::exists(outDir)) {
+        fs::remove_all(outDir, ec);
+        if (ec) {
+            error = "Failed to clear engine package cache: " + outDir.string();
+            return false;
+        }
+    }
+    fs::create_directories(outDir, ec);
+    if (ec) {
+        error = "Failed to create engine package folder: " + outDir.string();
+        return false;
+    }
+
+    auto isEngineLib = [](const std::string& filename) {
+        std::string name = filename;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name.rfind("libcore", 0) == 0 ||
+               name.rfind("core_player", 0) == 0 ||
+               name.rfind("core.", 0) == 0 ||
+               name.rfind("core_player.", 0) == 0;
+    };
+
+    const std::vector<std::string> exts = { ".a", ".so", ".dylib", ".lib", ".dll" };
+    for (const auto& entry : fs::recursive_directory_iterator(buildRoot)) {
+        if (!entry.is_regular_file()) continue;
+        fs::path src = entry.path();
+        std::string ext = src.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (std::find(exts.begin(), exts.end(), ext) == exts.end()) {
+            continue;
+        }
+        if (!isEngineLib(src.filename().string())) {
+            continue;
+        }
+
+        fs::path dst = outDir / src.filename();
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Failed to copy engine binary: " + src.string();
+            return false;
+        }
+    }
+    return true;
+}
+
+void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std::string& error) {
+    std::error_code ec;
+#ifdef _WIN32
+    fs::path exePath = exportRoot / (std::string(exeBaseName) + ".exe");
+#else
+    fs::path exePath = exportRoot / exeBaseName;
+#endif
+    if (fs::exists(exePath)) {
+        fs::remove(exePath, ec);
+        if (ec) {
+            error = "Failed to remove existing executable.";
+            return;
+        }
+    }
+
+    fs::path projectDir = exportRoot / "Project";
+    if (fs::exists(projectDir)) {
+        fs::remove_all(projectDir, ec);
+        if (ec) {
+            error = "Failed to remove existing project files.";
+            return;
+        }
+    }
+
+    fs::path resourcesDir = exportRoot / "Resources";
+    if (fs::exists(resourcesDir)) {
+        fs::remove_all(resourcesDir, ec);
+        if (ec) {
+            error = "Failed to remove existing resources.";
+            return;
+        }
+    }
+
+    fs::path packagesDir = exportRoot / "Packages";
+    if (fs::exists(packagesDir)) {
+        fs::remove_all(packagesDir, ec);
+        if (ec) {
+            error = "Failed to remove existing packages.";
+            return;
+        }
+    }
+
+    fs::path autostart = exportRoot / "autostart.modu";
+    if (fs::exists(autostart)) {
+        fs::remove(autostart, ec);
+        if (ec) {
+            error = "Failed to remove existing autostart.modu.";
+            return;
+        }
+    }
+}
+
+void cleanEditorExecutable(const fs::path& buildRoot) {
+    std::error_code ec;
+#ifdef _WIN32
+    fs::path editorExe = buildRoot / "Modularity.exe";
+#else
+    fs::path editorExe = buildRoot / "Modularity";
+#endif
+    if (fs::exists(editorExe)) {
+        fs::remove(editorExe, ec);
+    }
+}
+} // namespace
+#pragma endregion
+
 #pragma region Window + Selection Utilities
 void window_size_callback(GLFWwindow* window, int width, int height) {
+    (void)window;
     glViewport(0, 0, width, height);
 }
 
@@ -285,6 +780,19 @@ glm::quat QuatFromEulerXYZ(const glm::vec3& deg) {
     m = glm::rotate(m, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
     m = glm::rotate(m, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
     return glm::quat_cast(glm::mat3(m));
+}
+
+fs::path findManagedProjectRoot(const fs::path& start) {
+    std::error_code ec;
+    fs::path current = start;
+    for (int depth = 0; depth < 6 && !current.empty(); ++depth) {
+        fs::path candidate = current / "Scripts" / "Managed" / "ModuCPP.csproj";
+        if (fs::exists(candidate, ec)) {
+            return current;
+        }
+        current = current.parent_path();
+    }
+    return {};
 }
 }
 
@@ -373,6 +881,18 @@ void Engine::redo() {
 }
 #pragma endregion
 
+fs::path resolveScriptsConfigPath(const Project& project) {
+    std::error_code ec;
+    if (!project.scriptsConfigPath.empty() && fs::exists(project.scriptsConfigPath, ec)) {
+        return project.scriptsConfigPath;
+    }
+    fs::path lower = project.projectPath / "scripts.modu";
+    if (fs::exists(lower, ec)) {
+        return lower;
+    }
+    return project.projectPath / "Scripts.modu";
+}
+
 #pragma region Engine Lifecycle
 bool Engine::init() {
     std::cerr << "[DEBUG] Creating window..." << std::endl;
@@ -409,6 +929,14 @@ bool Engine::init() {
     }
     
     logToConsole("Engine initialized - Waiting for project selection");
+    loadAutoStartConfig();
+#ifdef MODULARITY_PLAYER
+    playerMode = true;
+    autoStartPlayerMode = true;
+#endif
+    if (autoStartRequested && !autoStartProjectPath.empty()) {
+        startProjectLoad(autoStartProjectPath);
+    }
     return true;
 }
 
@@ -441,6 +969,7 @@ void Engine::run() {
 
         glfwPollEvents();
         pollProjectLoad();
+        pollSceneLoad();
 
         if (!showLauncher) {
             handleKeyboardShortcuts();
@@ -487,6 +1016,9 @@ void Engine::run() {
             updateRigidbody2D(deltaTime);
         }
 
+        updateCameraFollow2D(deltaTime);
+
+        updateSkeletalAnimations(deltaTime);
         updateHierarchyWorldTransforms();
 
         bool simulatePhysics = physics.isReady() && ((isPlaying && !isPaused) || (!isPlaying && specMode));
@@ -495,11 +1027,16 @@ void Engine::run() {
         }
 
         updateHierarchyWorldTransforms();
+        updateSkinningMatrices();
+
+        if (playerMode) {
+            syncPlayerCamera();
+        }
 
         bool audioShouldPlay = isPlaying || specMode || testMode;
         Camera listenerCamera = camera;
         for (const auto& obj : sceneObjects) {
-            if (obj.type == ObjectType::Camera && obj.camera.type == SceneCameraType::Player) {
+            if (obj.enabled && obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
                 listenerCamera = makeCameraFromObject(obj);
                 listenerCamera.position = obj.position;
                 break;
@@ -510,6 +1047,20 @@ void Engine::run() {
         updateCompileJob();
         updateAutoCompileScripts();
         processAutoCompileQueue();
+        pollExportBuild();
+
+        if (playerMode && !showLauncher) {
+            int displayW = 0;
+            int displayH = 0;
+            glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
+            if (displayW > 0 && displayH > 0) {
+                viewportWidth = displayW;
+                viewportHeight = displayH;
+                if (rendererInitialized) {
+                    renderer.resize(viewportWidth, viewportHeight);
+                }
+            }
+        }
 
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
@@ -530,6 +1081,15 @@ void Engine::run() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        if (pendingWorkspaceReload) {
+            ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
+            ImGui::DockBuilderRemoveNode(dockspaceId);
+            if (!pendingWorkspaceIniPath.empty() && fs::exists(pendingWorkspaceIniPath)) {
+                ImGui::LoadIniSettingsFromDisk(pendingWorkspaceIniPath.string().c_str());
+            }
+            pendingWorkspaceReload = false;
+        }
+
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame: ImGui NewFrame complete, rendering UI..." << std::endl;
         }
@@ -538,8 +1098,12 @@ void Engine::run() {
             if (firstFrame) {
                 std::cerr << "[DEBUG] First frame: calling renderLauncher()" << std::endl;
             }
+            #ifdef MODULARITY_PLAYER
+            renderPlayerViewport();
+            #else
             renderLauncher();
-        } else {
+            #endif
+        } else if (!playerMode) {
             setupDockspace([this]() { renderPlayControlsBar(); });
             renderMainMenuBar();
 
@@ -549,15 +1113,20 @@ void Engine::run() {
                 if (showFileBrowser) renderFileBrowserPanel();
                 if (showMeshBuilder) renderMeshBuilderPanel();
                 if (showConsole) renderConsolePanel();
+                if (showScriptingWindow) renderScriptingWindow();
                 if (showEnvironmentWindow) renderEnvironmentWindow();
                 if (showCameraWindow) renderCameraWindow();
+                if (showAnimationWindow) renderAnimationWindow();
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
+            if (showBuildSettings) renderBuildSettingsWindow();
             renderScriptEditorWindows();
             renderViewport();
             if (showGameViewport) renderGameViewportWindow();
             renderDialogs();
+        } else {
+            renderPlayerViewport();
         }
 
         if (firstFrame) {
@@ -649,7 +1218,10 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
     int id = nextObjectId++;
     std::string name = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
     
-    SceneObject obj(name, ObjectType::OBJMesh, id);
+    SceneObject obj(name, ObjectType::Empty, id);
+    obj.hasRenderer = true;
+    obj.renderType = RenderType::OBJMesh;
+    obj.type = ObjectType::OBJMesh;
     obj.meshPath = filepath;
     obj.meshId = meshId;
     
@@ -674,32 +1246,270 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
 void Engine::importModelToScene(const std::string& filepath, const std::string& objectName) {
     recordState("importModel");
     auto& modelLoader = getModelLoader();
-    ModelLoadResult result = modelLoader.loadModel(filepath);
-
-    if (!result.success) {
-        addConsoleMessage("Failed to load model: " + result.errorMessage, ConsoleMessageType::Error);
+    ModelSceneData sceneData;
+    std::string error;
+    if (!modelLoader.loadModelScene(filepath, sceneData, error)) {
+        ModelLoadResult fallback = modelLoader.loadModel(filepath);
+        if (!fallback.success) {
+            addConsoleMessage("Failed to load model: " + error, ConsoleMessageType::Error);
+            return;
+        }
+        int id = nextObjectId++;
+        std::string name = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
+        SceneObject obj(name, ObjectType::Empty, id);
+        obj.hasRenderer = true;
+        obj.renderType = RenderType::Model;
+        obj.type = ObjectType::Model;
+        obj.meshPath = filepath;
+        obj.meshId = fallback.meshIndex;
+        sceneObjects.push_back(obj);
+        setPrimarySelection(id);
+        if (projectManager.currentProject.isLoaded) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        addConsoleMessage(
+            "Imported model: " + name + " (" +
+            std::to_string(fallback.vertexCount) + " verts, " +
+            std::to_string(fallback.faceCount) + " faces, " +
+            std::to_string(fallback.meshCount) + " meshes)",
+            ConsoleMessageType::Success
+        );
         return;
     }
 
-    int id = nextObjectId++;
-    std::string name = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
+    std::string baseName = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
+    std::vector<std::string> materialPaths(sceneData.materials.size());
 
-    SceneObject obj(name, ObjectType::Model, id);
-    obj.meshPath = filepath;
-    obj.meshId = result.meshIndex;
+    if (projectManager.currentProject.isLoaded && !sceneData.materials.empty()) {
+        fs::path materialsDir = projectManager.currentProject.assetsPath / "Materials" / "Imported" / baseName;
+        std::error_code ec;
+        fs::create_directories(materialsDir, ec);
+        if (ec) {
+            addConsoleMessage("Failed to create materials folder: " + materialsDir.string(), ConsoleMessageType::Warning);
+        } else {
+            for (size_t i = 0; i < sceneData.materials.size(); ++i) {
+                const auto& mat = sceneData.materials[i];
+                std::string matName = sanitizeMaterialName(mat.name);
+                fs::path matPath = materialsDir / (matName + ".mat");
+                MaterialFileData data;
+                data.props = mat.props;
+                data.albedo = resolveTexturePath(mat.albedoPath, filepath);
+                data.overlay.clear();
+                data.normal = resolveTexturePath(mat.normalPath, filepath);
+                data.useOverlay = false;
+                data.vertexShader.clear();
+                data.fragmentShader.clear();
+                if (writeMaterialFile(data, matPath.string())) {
+                    materialPaths[i] = matPath.string();
+                }
+            }
+        }
+    }
 
-    sceneObjects.push_back(obj);
-    setPrimarySelection(id);
+    constexpr size_t kStaticBatchMeshThreshold = 16;
+    size_t validMeshCount = 0;
+    for (int meshId : sceneData.meshIndices) {
+        if (meshId >= 0) {
+            ++validMeshCount;
+        }
+    }
+
+    bool hasSkinnedMeshes = false;
+    for (int meshId : sceneData.meshIndices) {
+        if (meshId < 0) continue;
+        const auto* info = modelLoader.getMeshInfo(meshId);
+        if (info && info->isSkinned) {
+            hasSkinnedMeshes = true;
+            break;
+        }
+    }
+
+    bool hasAnimations = !sceneData.animations.empty();
+    bool singleMaterial = sceneData.materials.size() <= 1;
+    if (!singleMaterial && !sceneData.meshMaterialIndices.empty()) {
+        int firstMat = -2;
+        bool mixed = false;
+        for (int matIndex : sceneData.meshMaterialIndices) {
+            if (matIndex < 0) continue;
+            if (firstMat == -2) {
+                firstMat = matIndex;
+            } else if (matIndex != firstMat) {
+                mixed = true;
+                break;
+            }
+        }
+        singleMaterial = !mixed;
+    }
+
+    if (validMeshCount >= kStaticBatchMeshThreshold &&
+        !hasSkinnedMeshes && !hasAnimations && singleMaterial) {
+        RawMeshAsset raw;
+        glm::vec3 rootPos(0.0f);
+        glm::vec3 rootRot(0.0f);
+        glm::vec3 rootScale(1.0f);
+        if (modelLoader.buildRawMeshFromScene(filepath, raw, error, &rootPos, &rootRot, &rootScale)) {
+            std::string batchName = baseName + "_StaticBatch";
+            int batchMeshId = modelLoader.addRawMesh(raw, filepath, batchName, error);
+            if (batchMeshId >= 0) {
+                int id = nextObjectId++;
+                SceneObject obj(baseName, ObjectType::Empty, id);
+                obj.hasRenderer = true;
+                obj.renderType = RenderType::Model;
+                obj.type = ObjectType::Model;
+                obj.meshPath = filepath;
+                obj.meshId = batchMeshId;
+                obj.meshSourceIndex = -1;
+                obj.localPosition = rootPos;
+                obj.localRotation = rootRot;
+                obj.localScale = rootScale;
+                obj.localInitialized = true;
+                obj.position = obj.localPosition;
+                obj.rotation = obj.localRotation;
+                obj.scale = obj.localScale;
+
+                if (!materialPaths.empty() && !materialPaths[0].empty()) {
+                    obj.materialPath = materialPaths[0];
+                    loadMaterialFromFile(obj);
+                } else if (!sceneData.materials.empty()) {
+                    const auto& mat = sceneData.materials.front();
+                    obj.material = mat.props;
+                    obj.albedoTexturePath = resolveTexturePath(mat.albedoPath, filepath);
+                    obj.normalMapPath = resolveTexturePath(mat.normalPath, filepath);
+                }
+
+                sceneObjects.push_back(obj);
+                setPrimarySelection(id);
+                if (projectManager.currentProject.isLoaded) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+                addConsoleMessage(
+                    "Imported model (static batch): " + baseName + " (" +
+                    std::to_string(validMeshCount) + " meshes)",
+                    ConsoleMessageType::Success
+                );
+                return;
+            }
+        }
+    }
+
+    std::vector<int> nodeObjectIds(sceneData.nodes.size(), -1);
+    int rootSelectionId = -1;
+
+    for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
+        const auto& node = sceneData.nodes[i];
+        std::string nodeName = node.name.empty()
+            ? (baseName + "_Node" + std::to_string(i))
+            : node.name;
+        SceneObject obj(nodeName, ObjectType::Empty, nextObjectId++);
+        obj.localPosition = node.localPosition;
+        obj.localRotation = node.localRotation;
+        obj.localScale = node.localScale;
+        obj.localInitialized = true;
+        obj.position = obj.localPosition;
+        obj.rotation = obj.localRotation;
+        obj.scale = obj.localScale;
+        sceneObjects.push_back(obj);
+        nodeObjectIds[i] = obj.id;
+        if (rootSelectionId == -1) rootSelectionId = obj.id;
+    }
+
+    for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
+        int parentIndex = sceneData.nodes[i].parentIndex;
+        if (parentIndex < 0 || parentIndex >= (int)nodeObjectIds.size()) continue;
+        int parentId = nodeObjectIds[parentIndex];
+        int childId = nodeObjectIds[i];
+        if (parentId < 0 || childId < 0) continue;
+        SceneObject* parentObj = findObjectById(parentId);
+        SceneObject* childObj = findObjectById(childId);
+        if (!parentObj || !childObj) continue;
+        childObj->parentId = parentId;
+        parentObj->childIds.push_back(childId);
+    }
+
+    for (size_t nodeIndex = 0; nodeIndex < sceneData.nodes.size(); ++nodeIndex) {
+        const auto& node = sceneData.nodes[nodeIndex];
+        int parentId = nodeObjectIds[nodeIndex];
+        if (parentId < 0) continue;
+        for (int meshSourceIndex : node.meshIndices) {
+            if (meshSourceIndex < 0 || meshSourceIndex >= (int)sceneData.meshIndices.size()) continue;
+            int meshId = sceneData.meshIndices[meshSourceIndex];
+            if (meshId < 0) continue;
+
+            const auto* meshInfo = modelLoader.getMeshInfo(meshId);
+            std::string meshName = meshInfo && !meshInfo->name.empty()
+                ? meshInfo->name
+                : (baseName + "_Mesh");
+
+            SceneObject meshObj(meshName, ObjectType::Empty, nextObjectId++);
+            meshObj.hasRenderer = true;
+            meshObj.renderType = RenderType::Model;
+            meshObj.type = ObjectType::Model;
+            meshObj.meshPath = filepath;
+            meshObj.meshId = meshId;
+            meshObj.meshSourceIndex = meshSourceIndex;
+            meshObj.localPosition = glm::vec3(0.0f);
+            meshObj.localRotation = glm::vec3(0.0f);
+            meshObj.localScale = glm::vec3(1.0f);
+            meshObj.localInitialized = true;
+            meshObj.position = meshObj.localPosition;
+            meshObj.rotation = meshObj.localRotation;
+            meshObj.scale = meshObj.localScale;
+            meshObj.parentId = parentId;
+
+            if (meshInfo && meshInfo->isSkinned) {
+                meshObj.hasSkeletalAnimation = true;
+                meshObj.skeletal = SkeletalAnimationComponent{};
+                meshObj.skeletal.skeletonRootId = rootSelectionId;
+                meshObj.skeletal.boneNames = meshInfo->boneNames;
+                meshObj.skeletal.inverseBindMatrices = meshInfo->inverseBindMatrices;
+                meshObj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
+                meshObj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
+                for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
+                    for (size_t n = 0; n < sceneData.nodes.size(); ++n) {
+                        if (sceneData.nodes[n].name == meshInfo->boneNames[b]) {
+                            int nodeId = nodeObjectIds[n];
+                            if (nodeId >= 0) {
+                                meshObj.skeletal.boneNodeIds[b] = nodeId;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            int matIndex = (meshSourceIndex >= 0 && meshSourceIndex < (int)sceneData.meshMaterialIndices.size())
+                ? sceneData.meshMaterialIndices[meshSourceIndex]
+                : -1;
+            if (matIndex >= 0 && matIndex < (int)materialPaths.size() && !materialPaths[matIndex].empty()) {
+                meshObj.materialPath = materialPaths[matIndex];
+                loadMaterialFromFile(meshObj);
+            } else if (matIndex >= 0 && matIndex < (int)sceneData.materials.size()) {
+                const auto& mat = sceneData.materials[matIndex];
+                meshObj.material = mat.props;
+                meshObj.albedoTexturePath = resolveTexturePath(mat.albedoPath, filepath);
+                meshObj.normalMapPath = resolveTexturePath(mat.normalPath, filepath);
+            }
+
+            sceneObjects.push_back(meshObj);
+            if (SceneObject* parentObj = findObjectById(parentId)) {
+                parentObj->childIds.push_back(meshObj.id);
+            }
+        }
+    }
+
+    updateHierarchyWorldTransforms();
+    if (rootSelectionId != -1) {
+        setPrimarySelection(rootSelectionId);
+    }
 
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
 
     addConsoleMessage(
-        "Imported model: " + name + " (" +
-        std::to_string(result.vertexCount) + " verts, " +
-        std::to_string(result.faceCount) + " faces, " +
-        std::to_string(result.meshCount) + " meshes)",
+        "Imported model: " + baseName + " (" +
+        std::to_string(sceneData.meshIndices.size()) + " meshes, " +
+        std::to_string(sceneData.nodes.size()) + " nodes)",
         ConsoleMessageType::Success
     );
 }
@@ -746,14 +1556,22 @@ void Engine::createRMeshPrimitive(const std::string& primitiveName) {
     }
 
     fs::path filePath = root / (primitiveName + ".rmesh");
-    if (!fs::exists(filePath)) {
-        std::string error;
-        if (!getModelLoader().saveRawMesh(asset, filePath.string(), error)) {
-            addConsoleMessage("Failed to save RMesh primitive: " + error, ConsoleMessageType::Error);
-            return;
-        }
-        fileBrowser.needsRefresh = true;
+    if (fs::exists(filePath)) {
+        int suffix = 1;
+        fs::path candidate;
+        do {
+            candidate = root / (primitiveName + "_" + std::to_string(suffix) + ".rmesh");
+            ++suffix;
+        } while (fs::exists(candidate));
+        filePath = candidate;
     }
+
+    std::string error;
+    if (!getModelLoader().saveRawMesh(asset, filePath.string(), error)) {
+        addConsoleMessage("Failed to save RMesh primitive: " + error, ConsoleMessageType::Error);
+        return;
+    }
+    fileBrowser.needsRefresh = true;
 
     importModelToScene(filePath.string(), primitiveName);
 }
@@ -919,6 +1737,8 @@ void Engine::handleKeyboardShortcuts() {
     static bool ctrlSPressed = false;
     bool ctrlDown = glfwGetKey(editorWindow, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                    glfwGetKey(editorWindow, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+    bool shiftDown = glfwGetKey(editorWindow, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                     glfwGetKey(editorWindow, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
 
     if (ctrlDown && glfwGetKey(editorWindow, GLFW_KEY_S) == GLFW_PRESS && !ctrlSPressed) {
         if (projectManager.currentProject.isLoaded) {
@@ -988,7 +1808,7 @@ void Engine::handleKeyboardShortcuts() {
     }
 
     static bool undoPressed = false;
-    if (ctrlDown && glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_PRESS && !undoPressed) {
+    if (ctrlDown && !shiftDown && glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_PRESS && !undoPressed) {
         undo();
         undoPressed = true;
     }
@@ -997,11 +1817,17 @@ void Engine::handleKeyboardShortcuts() {
     }
 
     static bool redoPressed = false;
-    if (ctrlDown && glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_PRESS && !redoPressed) {
+    if (ctrlDown &&
+        ((glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_PRESS) ||
+         (shiftDown && glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_PRESS)) &&
+        !redoPressed)
+    {
         redo();
         redoPressed = true;
     }
-    if (glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_RELEASE) {
+    if (glfwGetKey(editorWindow, GLFW_KEY_Y) == GLFW_RELEASE &&
+        glfwGetKey(editorWindow, GLFW_KEY_Z) == GLFW_RELEASE)
+    {
         redoPressed = false;
     }
 
@@ -1020,14 +1846,19 @@ void Engine::updateScripts(float delta) {
         for (auto& sc : obj.scripts) {
             if (!sc.enabled) continue;
             if (sc.path.empty()) continue;
-            fs::path binary = resolveScriptBinary(sc.path);
-            if (binary.empty() || !fs::exists(binary)) continue;
             ScriptContext ctx;
             ctx.engine = this;
             ctx.object = &obj;
             ctx.script = &sc;
-
-            scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+            if (sc.language == ScriptLanguage::CSharp) {
+                fs::path assembly = resolveManagedAssembly(sc.path);
+                if (assembly.empty() || !fs::exists(assembly)) continue;
+                managedRuntime.tickModule(assembly, sc.managedType, ctx, delta, specMode, testMode);
+            } else {
+                fs::path binary = resolveScriptBinary(sc.path);
+                if (binary.empty() || !fs::exists(binary)) continue;
+                scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+            }
         }
     }
 }
@@ -1051,10 +1882,7 @@ void Engine::updateAutoCompileScripts() {
     if (now - scriptAutoCompileLastCheck < scriptAutoCompileInterval) return;
     scriptAutoCompileLastCheck = now;
 
-    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
-    if (configPath.empty()) {
-        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
-    }
+    fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
 
     ScriptBuildConfig config;
     std::string error;
@@ -1072,8 +1900,13 @@ void Engine::updateAutoCompileScripts() {
         sources.insert(absPath.lexically_normal().string());
     };
 
+    bool hasManagedScripts = false;
     for (const auto& obj : sceneObjects) {
         for (const auto& sc : obj.scripts) {
+            if (sc.language == ScriptLanguage::CSharp) {
+                hasManagedScripts = true;
+                continue;
+            }
             if (sc.path.empty()) continue;
             addSource(sc.path);
         }
@@ -1122,6 +1955,48 @@ void Engine::updateAutoCompileScripts() {
 
         queueAutoCompile(sourcePath, sourceTime);
     }
+
+    if (hasManagedScripts) {
+        fs::path managedProject = getManagedProjectPath();
+        fs::path managedOutput = getManagedOutputDll();
+        std::error_code managedEc;
+        if (fs::exists(managedProject, managedEc)) {
+            fs::file_time_type newestSource{};
+            bool hasSource = false;
+            fs::path managedDir = managedProject.parent_path();
+            if (fs::exists(managedDir, managedEc)) {
+                for (auto it = fs::recursive_directory_iterator(managedDir, managedEc);
+                     it != fs::recursive_directory_iterator(); ++it) {
+                    if (it->is_directory()) continue;
+                    if (it->path().extension() != ".cs") continue;
+                    auto sourceTime = fs::last_write_time(it->path(), managedEc);
+                    if (managedEc) continue;
+                    if (!hasSource || sourceTime > newestSource) {
+                        newestSource = sourceTime;
+                        hasSource = true;
+                    }
+                }
+            }
+
+            bool needsManaged = false;
+            if (!fs::exists(managedOutput, managedEc)) {
+                needsManaged = true;
+            } else if (hasSource && !managedEc) {
+                auto binaryTime = fs::last_write_time(managedOutput, managedEc);
+                if (!managedEc && newestSource > binaryTime) {
+                    needsManaged = true;
+                }
+            }
+
+            if (needsManaged) {
+                if (!compileInProgress) {
+                    compileManagedScripts();
+                } else {
+                    managedAutoCompileQueued = true;
+                }
+            }
+        }
+    }
 }
 
 void Engine::processAutoCompileQueue() {
@@ -1160,10 +2035,12 @@ void Engine::updatePlayerController(float delta) {
         pc.pitch = player->rotation.x;
         pc.yaw = player->rotation.y;
     }
+    glm::vec3 capsuleSize(pc.radius * 2.0f, pc.height, pc.radius * 2.0f);
     player->hasCollider = true;
     player->collider.type = ColliderType::Capsule;
     player->collider.convex = true;
-    player->collider.boxSize = glm::vec3(pc.radius * 2.0f, pc.height, pc.radius * 2.0f);
+    player->collider.boxSize = capsuleSize;
+    player->scale = capsuleSize;
     player->hasRigidbody = true;
     player->rigidbody.enabled = true;
     player->rigidbody.useGravity = true;
@@ -1251,31 +2128,492 @@ void Engine::updatePlayerController(float delta) {
 
 void Engine::updateRigidbody2D(float delta) {
     if (delta <= 0.0f) return;
-    const float gravityPx = -980.0f;
-    auto isUIType = [](ObjectType type) {
-        return type == ObjectType::Canvas ||
-               type == ObjectType::UIImage ||
-               type == ObjectType::UISlider ||
-               type == ObjectType::UIButton ||
-               type == ObjectType::UIText ||
-               type == ObjectType::Sprite2D;
+    const float gravity = -9.81f;
+    const float minEdgeThickness = 0.01f;
+    auto getParentOffset = [&](const SceneObject& obj) {
+        glm::vec2 offset(0.0f);
+        const SceneObject* current = &obj;
+        while (current && current->parentId >= 0) {
+            auto pit = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                [&](const SceneObject& o) { return o.id == current->parentId; });
+            if (pit == sceneObjects.end()) break;
+            current = &(*pit);
+            if (current->hasUI && current->ui.type != UIElementType::None) {
+                offset += glm::vec2(current->ui.position.x, current->ui.position.y);
+            }
+        }
+        return offset;
     };
+    auto rotatePoint = [](const glm::vec2& p, float c, float s) {
+        return glm::vec2(p.x * c - p.y * s, p.x * s + p.y * c);
+    };
+    auto buildHexagon = [](float radius, std::vector<glm::vec2>& out) {
+        out.clear();
+        for (int i = 0; i < 6; ++i) {
+            float ang = static_cast<float>(i) * (2.0f * PI / 6.0f);
+            out.emplace_back(std::cos(ang) * radius, std::sin(ang) * radius);
+        }
+    };
+    auto computeAabb = [](const std::vector<glm::vec2>& pts, glm::vec2& outMin, glm::vec2& outMax) {
+        if (pts.empty()) {
+            outMin = glm::vec2(0.0f);
+            outMax = glm::vec2(0.0f);
+            return;
+        }
+        outMin = pts[0];
+        outMax = pts[0];
+        for (const auto& p : pts) {
+            outMin.x = std::min(outMin.x, p.x);
+            outMin.y = std::min(outMin.y, p.y);
+            outMax.x = std::max(outMax.x, p.x);
+            outMax.y = std::max(outMax.y, p.y);
+        }
+    };
+    auto polyCenter = [](const std::vector<glm::vec2>& pts) {
+        glm::vec2 c(0.0f);
+        if (pts.empty()) return c;
+        for (const auto& p : pts) c += p;
+        return c / static_cast<float>(pts.size());
+    };
+    auto satOverlap = [&](const std::vector<glm::vec2>& a, const std::vector<glm::vec2>& b, glm::vec2& outAxis, float& outDepth) {
+        if (a.size() < 3 || b.size() < 3) return false;
+        auto testAxes = [&](const std::vector<glm::vec2>& poly, glm::vec2& axis, float& depth) {
+            for (size_t i = 0; i < poly.size(); ++i) {
+                glm::vec2 p0 = poly[i];
+                glm::vec2 p1 = poly[(i + 1) % poly.size()];
+                glm::vec2 edge = p1 - p0;
+                glm::vec2 n = glm::normalize(glm::vec2(-edge.y, edge.x));
+                float minA = FLT_MAX, maxA = -FLT_MAX;
+                float minB = FLT_MAX, maxB = -FLT_MAX;
+                for (const auto& p : a) {
+                    float d = glm::dot(p, n);
+                    minA = std::min(minA, d);
+                    maxA = std::max(maxA, d);
+                }
+                for (const auto& p : b) {
+                    float d = glm::dot(p, n);
+                    minB = std::min(minB, d);
+                    maxB = std::max(maxB, d);
+                }
+                float overlap = std::min(maxA, maxB) - std::max(minA, minB);
+                if (overlap <= 0.0f) return false;
+                if (overlap < depth) {
+                    depth = overlap;
+                    axis = n;
+                }
+            }
+            return true;
+        };
+        glm::vec2 axis(0.0f);
+        float depth = FLT_MAX;
+        if (!testAxes(a, axis, depth)) return false;
+        if (!testAxes(b, axis, depth)) return false;
+        glm::vec2 dir = polyCenter(b) - polyCenter(a);
+        if (glm::dot(axis, dir) < 0.0f) axis = -axis;
+        outAxis = axis;
+        outDepth = depth;
+        return true;
+    };
+    auto segmentRect = [minEdgeThickness](const glm::vec2& a, const glm::vec2& b, float thickness, std::vector<glm::vec2>& out) {
+        glm::vec2 dir = b - a;
+        float len = glm::length(dir);
+        if (len < 1e-4f) {
+            out.clear();
+            return;
+        }
+        glm::vec2 n = glm::vec2(-dir.y, dir.x) / len;
+        float half = std::max(minEdgeThickness, thickness) * 0.5f;
+        out.clear();
+        out.push_back(a + n * half);
+        out.push_back(b + n * half);
+        out.push_back(b - n * half);
+        out.push_back(a - n * half);
+    };
+    struct Body2DRef {
+        int index = -1;
+        bool dynamic = false;
+        glm::vec2 parentOffset = glm::vec2(0.0f);
+        glm::vec2 pivotWorld = glm::vec2(0.0f);
+        float rotationRad = 0.0f;
+        std::vector<glm::vec2> poly;
+        std::vector<std::pair<glm::vec2, glm::vec2>> segments;
+        float edgeThickness = 0.01f;
+        glm::vec2 aabbMin = glm::vec2(0.0f);
+        glm::vec2 aabbMax = glm::vec2(0.0f);
+        bool isEdge = false;
+    };
+    std::vector<Body2DRef> bodies;
+    bodies.reserve(sceneObjects.size());
     for (auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasRigidbody2D || !obj.rigidbody2D.enabled) continue;
-        if (!isUIType(obj.type)) continue;
-        glm::vec2 vel = obj.rigidbody2D.velocity;
-        if (obj.rigidbody2D.useGravity) {
-            vel.y += gravityPx * obj.rigidbody2D.gravityScale * delta;
+        if (!obj.enabled || !HasUIComponent(obj)) continue;
+        bool hasDynamic = obj.hasRigidbody2D && obj.rigidbody2D.enabled;
+        bool hasCollider2D = obj.hasCollider2D && obj.collider2D.enabled;
+        if (!hasDynamic && !hasCollider2D) continue;
+
+        if (hasDynamic) {
+            glm::vec2 vel = obj.rigidbody2D.velocity;
+            if (obj.rigidbody2D.useGravity) {
+                vel.y += gravity * obj.rigidbody2D.gravityScale * delta;
+            }
+            float damping = std::max(0.0f, obj.rigidbody2D.linearDamping);
+            if (damping > 0.0f) {
+                vel -= vel * std::min(1.0f, damping * delta);
+            }
+            obj.ui.position += vel * delta;
+            obj.rigidbody2D.velocity = vel;
         }
-        float damping = std::max(0.0f, obj.rigidbody2D.linearDamping);
-        if (damping > 0.0f) {
-            vel -= vel * std::min(1.0f, damping * delta);
+
+        Body2DRef body;
+        body.index = static_cast<int>(&obj - &sceneObjects[0]);
+        body.dynamic = hasDynamic;
+        body.parentOffset = getParentOffset(obj);
+        body.pivotWorld = body.parentOffset + obj.ui.position;
+        body.rotationRad = glm::radians(obj.ui.rotation);
+        float c = std::cos(body.rotationRad);
+        float s = std::sin(body.rotationRad);
+        glm::vec2 size = glm::vec2(std::max(1.0f, obj.ui.size.x), std::max(1.0f, obj.ui.size.y));
+        Collider2DType type = Collider2DType::Box;
+        glm::vec2 boxSize = size;
+        std::vector<glm::vec2> localPoints;
+        bool closed = false;
+        float edgeThickness = minEdgeThickness;
+        if (hasCollider2D) {
+            type = obj.collider2D.type;
+            boxSize = obj.collider2D.boxSize;
+            if (boxSize.x <= 0.0f || boxSize.y <= 0.0f) {
+                boxSize = size;
+            }
+            localPoints = obj.collider2D.points;
+            closed = obj.collider2D.closed;
+            edgeThickness = obj.collider2D.edgeThickness;
         }
-        obj.ui.position += vel * delta;
-        obj.rigidbody2D.velocity = vel;
+        if (type == Collider2DType::Box) {
+            glm::vec2 half = boxSize * 0.5f;
+            localPoints = {
+                glm::vec2(-half.x, -half.y),
+                glm::vec2( half.x, -half.y),
+                glm::vec2( half.x,  half.y),
+                glm::vec2(-half.x,  half.y)
+            };
+        } else if (type == Collider2DType::Polygon) {
+            if (localPoints.empty()) {
+                float radius = 0.5f * std::min(boxSize.x, boxSize.y);
+                buildHexagon(radius, localPoints);
+            }
+        } else if (type == Collider2DType::Edge) {
+            if (localPoints.size() < 2) {
+                float half = boxSize.x * 0.5f;
+                localPoints = { glm::vec2(-half, 0.0f), glm::vec2(half, 0.0f) };
+            }
+        }
+
+        if (type == Collider2DType::Edge) {
+            body.isEdge = true;
+            body.edgeThickness = edgeThickness;
+            for (size_t i = 0; i + 1 < localPoints.size(); ++i) {
+                glm::vec2 a = rotatePoint(localPoints[i], c, s) + body.pivotWorld;
+                glm::vec2 b = rotatePoint(localPoints[i + 1], c, s) + body.pivotWorld;
+                body.segments.emplace_back(a, b);
+            }
+            if (closed && localPoints.size() > 2) {
+                glm::vec2 a = rotatePoint(localPoints.back(), c, s) + body.pivotWorld;
+                glm::vec2 b = rotatePoint(localPoints.front(), c, s) + body.pivotWorld;
+                body.segments.emplace_back(a, b);
+            }
+        } else {
+            body.poly.reserve(localPoints.size());
+            for (const auto& p : localPoints) {
+                body.poly.push_back(rotatePoint(p, c, s) + body.pivotWorld);
+            }
+            computeAabb(body.poly, body.aabbMin, body.aabbMax);
+        }
+        bodies.push_back(body);
+    }
+
+    auto applySeparation = [&](Body2DRef& body, const glm::vec2& sep, const glm::vec2& normal) {
+        SceneObject& obj = sceneObjects[body.index];
+        if (body.dynamic) {
+            obj.ui.position += sep;
+            body.pivotWorld += sep;
+            if (!body.poly.empty()) {
+                for (auto& p : body.poly) p += sep;
+                body.aabbMin += sep;
+                body.aabbMax += sep;
+            }
+            if (!body.segments.empty()) {
+                for (auto& seg : body.segments) {
+                    seg.first += sep;
+                    seg.second += sep;
+                }
+            }
+            float vn = glm::dot(obj.rigidbody2D.velocity, normal);
+            if (vn < 0.0f) {
+                obj.rigidbody2D.velocity -= normal * vn;
+            }
+        }
+    };
+
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        for (size_t j = i + 1; j < bodies.size(); ++j) {
+            Body2DRef& a = bodies[i];
+            Body2DRef& b = bodies[j];
+            if (!a.dynamic && !b.dynamic) continue;
+
+            auto polyVsPoly = [&](Body2DRef& pA, Body2DRef& pB) {
+                if (pA.poly.empty() || pB.poly.empty()) return;
+                if (pA.aabbMax.x <= pB.aabbMin.x || pA.aabbMin.x >= pB.aabbMax.x ||
+                    pA.aabbMax.y <= pB.aabbMin.y || pA.aabbMin.y >= pB.aabbMax.y) {
+                    return;
+                }
+                glm::vec2 axis(0.0f);
+                float depth = 0.0f;
+                if (!satOverlap(pA.poly, pB.poly, axis, depth)) return;
+                glm::vec2 sep = axis * depth;
+                if (pA.dynamic && pB.dynamic) {
+                    applySeparation(pA, -sep * 0.5f, -axis);
+                    applySeparation(pB, sep * 0.5f, axis);
+                } else if (pA.dynamic) {
+                    applySeparation(pA, -sep, -axis);
+                } else if (pB.dynamic) {
+                    applySeparation(pB, sep, axis);
+                }
+            };
+
+            auto polyVsEdge = [&](Body2DRef& polyBody, Body2DRef& edgeBody) {
+                if (polyBody.poly.empty() || edgeBody.segments.empty()) return;
+                std::vector<glm::vec2> rect;
+                for (const auto& seg : edgeBody.segments) {
+                    segmentRect(seg.first, seg.second, edgeBody.edgeThickness, rect);
+                    if (rect.size() < 3) continue;
+                    glm::vec2 axis(0.0f);
+                    float depth = 0.0f;
+                    if (!satOverlap(polyBody.poly, rect, axis, depth)) continue;
+                    glm::vec2 sep = axis * depth;
+                    if (polyBody.dynamic && edgeBody.dynamic) {
+                        applySeparation(polyBody, -sep * 0.5f, -axis);
+                        applySeparation(edgeBody, sep * 0.5f, axis);
+                    } else if (polyBody.dynamic) {
+                        applySeparation(polyBody, -sep, -axis);
+                    } else if (edgeBody.dynamic) {
+                        applySeparation(edgeBody, sep, axis);
+                    }
+                }
+            };
+
+            if (!a.isEdge && !b.isEdge) {
+                polyVsPoly(a, b);
+            } else if (!a.isEdge && b.isEdge) {
+                polyVsEdge(a, b);
+            } else if (a.isEdge && !b.isEdge) {
+                polyVsEdge(b, a);
+            }
+        }
+    }
+}
+
+void Engine::updateCameraFollow2D(float delta) {
+    if (sceneObjects.empty()) return;
+
+    std::unordered_map<int, size_t> indexById;
+    indexById.reserve(sceneObjects.size());
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+        indexById[sceneObjects[i].id] = i;
+    }
+
+    auto getUiWorldPosition = [&](const SceneObject& target) {
+        glm::vec2 pos(target.ui.position.x, target.ui.position.y);
+        int parentId = target.parentId;
+        while (parentId >= 0) {
+            auto it = indexById.find(parentId);
+            if (it == indexById.end()) break;
+            const SceneObject& parent = sceneObjects[it->second];
+            if (parent.hasUI && parent.ui.type != UIElementType::None) {
+                pos += glm::vec2(parent.ui.position.x, parent.ui.position.y);
+            }
+            parentId = parent.parentId;
+        }
+        return pos;
+    };
+
+    for (auto& obj : sceneObjects) {
+        if (!obj.enabled || !obj.hasCamera || !obj.hasCameraFollow2D || !obj.cameraFollow2D.enabled) continue;
+        if (obj.cameraFollow2D.targetId < 0) continue;
+        auto targetIt = indexById.find(obj.cameraFollow2D.targetId);
+        if (targetIt == indexById.end()) continue;
+
+        const SceneObject& target = sceneObjects[targetIt->second];
+        glm::vec2 desired2D = (target.hasUI && target.ui.type != UIElementType::None)
+            ? getUiWorldPosition(target)
+            : glm::vec2(target.position.x, target.position.y);
+        desired2D += obj.cameraFollow2D.offset;
+        glm::vec3 desired(desired2D.x, desired2D.y, obj.position.z);
+
+        if (obj.cameraFollow2D.smoothTime > 0.0001f) {
+            float alpha = 1.0f - std::exp(-delta / obj.cameraFollow2D.smoothTime);
+            obj.position = glm::mix(obj.position, desired, alpha);
+        } else {
+            obj.position = desired;
+        }
+
+        if (obj.parentId == -1) {
+            obj.localPosition = obj.position;
+            obj.localInitialized = true;
+        } else {
+            auto parentIt = indexById.find(obj.parentId);
+            if (parentIt != indexById.end()) {
+                const SceneObject& parent = sceneObjects[parentIt->second];
+                updateLocalFromWorld(obj,
+                                     parent.position,
+                                     QuatFromEulerXYZ(parent.rotation),
+                                     parent.scale);
+            }
+        }
     }
 }
 #pragma endregion
+
+#pragma region Skeletal Animation
+namespace {
+glm::vec3 sampleVecKeys(const std::vector<ModelSceneData::AnimVecKey>& keys, float time, const glm::vec3& fallback) {
+    if (keys.empty()) return fallback;
+    if (time <= keys.front().time) return keys.front().value;
+    if (time >= keys.back().time) return keys.back().value;
+    for (size_t i = 0; i + 1 < keys.size(); ++i) {
+        if (time >= keys[i].time && time <= keys[i + 1].time) {
+            float span = keys[i + 1].time - keys[i].time;
+            float t = span > 0.0f ? (time - keys[i].time) / span : 0.0f;
+            return glm::mix(keys[i].value, keys[i + 1].value, t);
+        }
+    }
+    return keys.back().value;
+}
+
+glm::quat sampleQuatKeys(const std::vector<ModelSceneData::AnimQuatKey>& keys, float time, const glm::quat& fallback) {
+    if (keys.empty()) return fallback;
+    if (time <= keys.front().time) return keys.front().value;
+    if (time >= keys.back().time) return keys.back().value;
+    for (size_t i = 0; i + 1 < keys.size(); ++i) {
+        if (time >= keys[i].time && time <= keys[i + 1].time) {
+            float span = keys[i + 1].time - keys[i].time;
+            float t = span > 0.0f ? (time - keys[i].time) / span : 0.0f;
+            return glm::slerp(keys[i].value, keys[i + 1].value, t);
+        }
+    }
+    return keys.back().value;
+}
+}
+
+void Engine::updateSkeletalAnimations(float delta) {
+    for (auto& obj : sceneObjects) {
+        if (!obj.enabled || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
+        if (!obj.skeletal.useAnimation) continue;
+        if (obj.meshPath.empty()) continue;
+
+        ModelSceneData sceneData;
+        std::string err;
+        if (!getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) continue;
+        if (obj.skeletal.clipIndex < 0 || obj.skeletal.clipIndex >= (int)sceneData.animations.size()) continue;
+
+        const auto& clip = sceneData.animations[obj.skeletal.clipIndex];
+        double tps = clip.ticksPerSecond != 0.0 ? clip.ticksPerSecond : 25.0;
+        obj.skeletal.time += delta * obj.skeletal.playSpeed;
+        double timeTicks = obj.skeletal.time * tps;
+        if (clip.duration > 0.0) {
+            if (obj.skeletal.loop) {
+                timeTicks = std::fmod(timeTicks, clip.duration);
+                if (timeTicks < 0.0) timeTicks += clip.duration;
+            } else {
+                timeTicks = std::clamp(timeTicks, 0.0, clip.duration);
+            }
+        }
+        float time = static_cast<float>(timeTicks);
+
+        for (size_t b = 0; b < obj.skeletal.boneNames.size(); ++b) {
+            int boneId = obj.skeletal.boneNodeIds.size() > b ? obj.skeletal.boneNodeIds[b] : -1;
+            if (boneId < 0) continue;
+            SceneObject* boneObj = findObjectById(boneId);
+            if (!boneObj) continue;
+
+            const ModelSceneData::AnimChannel* channel = nullptr;
+            for (const auto& ch : clip.channels) {
+                if (ch.nodeName == obj.skeletal.boneNames[b]) {
+                    channel = &ch;
+                    break;
+                }
+            }
+            if (!channel) continue;
+
+            glm::vec3 pos = sampleVecKeys(channel->positions, time, boneObj->localPosition);
+            glm::quat rot = sampleQuatKeys(channel->rotations, time, QuatFromEulerXYZ(boneObj->localRotation));
+            glm::vec3 scale = sampleVecKeys(channel->scales, time, boneObj->localScale);
+
+            boneObj->localPosition = pos;
+            boneObj->localRotation = NormalizeEulerDegrees(glm::degrees(glm::eulerAngles(rot)));
+            boneObj->localScale = scale;
+            boneObj->localInitialized = true;
+        }
+    }
+}
+
+void Engine::updateSkinningMatrices() {
+    for (auto& obj : sceneObjects) {
+        if (!obj.enabled || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
+        if (obj.skeletal.inverseBindMatrices.empty()) continue;
+
+        glm::mat4 meshWorld = ComposeTransform(obj.position, obj.rotation, obj.scale);
+        glm::mat4 invMesh = glm::inverse(meshWorld);
+
+        size_t boneCount = obj.skeletal.inverseBindMatrices.size();
+        if (obj.skeletal.finalMatrices.size() != boneCount) {
+            obj.skeletal.finalMatrices.assign(boneCount, glm::mat4(1.0f));
+        }
+
+        for (size_t b = 0; b < boneCount; ++b) {
+            int boneId = obj.skeletal.boneNodeIds.size() > b ? obj.skeletal.boneNodeIds[b] : -1;
+            if (boneId < 0) {
+                obj.skeletal.finalMatrices[b] = glm::mat4(1.0f);
+                continue;
+            }
+            SceneObject* boneObj = findObjectById(boneId);
+            if (!boneObj) continue;
+            glm::mat4 boneWorld = ComposeTransform(boneObj->position, boneObj->rotation, boneObj->scale);
+            obj.skeletal.finalMatrices[b] = invMesh * boneWorld * obj.skeletal.inverseBindMatrices[b];
+        }
+    }
+}
+#pragma endregion
+
+void Engine::rebuildSkeletalBindings() {
+    std::unordered_map<std::string, int> nameToId;
+    nameToId.reserve(sceneObjects.size());
+    for (const auto& obj : sceneObjects) {
+        if (!obj.name.empty()) {
+            nameToId[obj.name] = obj.id;
+        }
+    }
+
+    for (auto& obj : sceneObjects) {
+        if (!obj.hasRenderer || obj.renderType != RenderType::Model || obj.meshId < 0) continue;
+        const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+        if (!meshInfo || !meshInfo->isSkinned) continue;
+
+        if (!obj.hasSkeletalAnimation) {
+            obj.skeletal = SkeletalAnimationComponent{};
+            obj.hasSkeletalAnimation = true;
+        }
+        obj.skeletal.skeletonRootId = obj.parentId;
+        obj.skeletal.boneNames = meshInfo->boneNames;
+        obj.skeletal.inverseBindMatrices = meshInfo->inverseBindMatrices;
+        obj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
+        obj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
+        for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
+            auto it = nameToId.find(meshInfo->boneNames[b]);
+            if (it != nameToId.end()) {
+                obj.skeletal.boneNodeIds[b] = it->second;
+            }
+        }
+    }
+}
 
 #pragma region Transform Hierarchy
 void Engine::updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
@@ -1489,6 +2827,153 @@ void Engine::pollProjectLoad() {
     }
 }
 
+void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
+    if (sceneLoadInProgress || !projectManager.currentProject.isLoaded) return;
+
+    sceneObjects.clear();
+    clearSelection();
+    nextObjectId = 0;
+    undoStack.clear();
+    redoStack.clear();
+
+    sceneLoadInProgress = true;
+    sceneLoadProgress = 0.0f;
+    sceneLoadStatus = "Reading scene...";
+    sceneLoadSceneName = sceneName;
+    sceneLoadObjects.clear();
+    sceneLoadAssetIndices.clear();
+    sceneLoadAssetsDone = 0;
+    sceneLoadNextId = 0;
+    sceneLoadVersion = 9;
+    sceneLoadTimeOfDay = -1.0f;
+    showLauncher = true;
+    projectLoadStartTime = glfwGetTime();
+
+    fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
+    if (!fs::exists(scenePath)) {
+        sceneLoadInProgress = false;
+        addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
+        addObject(ObjectType::Cube, "Cube");
+        showLauncher = false;
+        return;
+    }
+
+    if (!SceneSerializer::loadSceneDeferred(scenePath, sceneLoadObjects, sceneLoadNextId, sceneLoadVersion, &sceneLoadTimeOfDay)) {
+        sceneLoadInProgress = false;
+        addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
+        addObject(ObjectType::Cube, "Cube");
+        showLauncher = false;
+        return;
+    }
+
+    for (size_t i = 0; i < sceneLoadObjects.size(); ++i) {
+        const auto& obj = sceneLoadObjects[i];
+        if (!obj.hasRenderer) continue;
+        if ((obj.renderType == RenderType::OBJMesh || obj.renderType == RenderType::Model) &&
+            !obj.meshPath.empty()) {
+            sceneLoadAssetIndices.push_back(i);
+        }
+    }
+
+    if (sceneLoadAssetIndices.empty()) {
+        sceneLoadProgress = 1.0f;
+        sceneLoadStatus = "Finalizing scene...";
+        finalizeDeferredSceneLoad();
+    } else {
+        sceneLoadProgress = 0.0f;
+        sceneLoadStatus = "Loading scene assets...";
+    }
+}
+
+void Engine::pollSceneLoad() {
+    if (!sceneLoadInProgress) return;
+
+    if (sceneLoadAssetIndices.empty()) {
+        return;
+    }
+
+    constexpr size_t kAssetsPerFrame = 1;
+    size_t processed = 0;
+    while (sceneLoadAssetsDone < sceneLoadAssetIndices.size() && processed < kAssetsPerFrame) {
+        size_t objIndex = sceneLoadAssetIndices[sceneLoadAssetsDone];
+        SceneObject& obj = sceneLoadObjects[objIndex];
+
+        if (obj.renderType == RenderType::OBJMesh) {
+            std::string err;
+            obj.meshId = g_objLoader.loadOBJ(obj.meshPath, err);
+            if (obj.meshId < 0 && !err.empty()) {
+                std::cerr << "Failed to load OBJ: " << err << std::endl;
+            }
+        } else if (obj.renderType == RenderType::Model) {
+            ModelSceneData sceneData;
+            std::string err;
+            if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                int sourceIndex = obj.meshSourceIndex;
+                if (sourceIndex < 0 || sourceIndex >= (int)sceneData.meshIndices.size()) {
+                    sourceIndex = 0;
+                }
+                if (!sceneData.meshIndices.empty() &&
+                    sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                    obj.meshId = sceneData.meshIndices[sourceIndex];
+                }
+                ApplyModelRootTransform(obj, sceneData);
+            } else {
+                std::cerr << "Failed to load model from scene: " << err << std::endl;
+                obj.meshId = -1;
+            }
+        }
+
+        ++sceneLoadAssetsDone;
+        ++processed;
+    }
+
+    float total = static_cast<float>(sceneLoadAssetIndices.size());
+    sceneLoadProgress = total > 0.0f ? (static_cast<float>(sceneLoadAssetsDone) / total) : 1.0f;
+    sceneLoadStatus = "Loading scene assets (" + std::to_string(sceneLoadAssetsDone) + "/" +
+                      std::to_string(sceneLoadAssetIndices.size()) + ")";
+
+    if (sceneLoadAssetsDone >= sceneLoadAssetIndices.size()) {
+        sceneLoadStatus = "Finalizing scene...";
+        finalizeDeferredSceneLoad();
+    }
+}
+
+void Engine::finalizeDeferredSceneLoad() {
+    if (!sceneLoadInProgress) return;
+
+    sceneObjects = std::move(sceneLoadObjects);
+    nextObjectId = sceneLoadNextId;
+
+    initializeLocalTransformsFromWorld(sceneLoadVersion);
+    rebuildSkeletalBindings();
+
+    projectManager.currentProject.currentSceneName = sceneLoadSceneName;
+    projectManager.currentProject.hasUnsavedChanges = false;
+    projectManager.currentProject.saveProjectFile();
+    clearSelection();
+
+    bool hasAnyLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
+        return o.hasLight;
+    });
+    if (!hasAnyLight) {
+        addObject(ObjectType::DirectionalLight, "Directional Light");
+    }
+
+    recordState("sceneLoaded");
+    addConsoleMessage("Loaded scene: " + sceneLoadSceneName, ConsoleMessageType::Success);
+    if (sceneLoadTimeOfDay >= 0.0f) {
+        if (Skybox* skybox = renderer.getSkybox()) {
+            skybox->setTimeOfDay(sceneLoadTimeOfDay);
+        }
+    }
+
+    sceneLoadInProgress = false;
+    sceneLoadProgress = 1.0f;
+    sceneLoadStatus.clear();
+    sceneLoadAssetIndices.clear();
+    showLauncher = false;
+}
+
 void Engine::finishProjectLoad(ProjectLoadResult& result) {
     if (!result.success) {
         projectManager.errorMessage = result.error.empty() ? "Failed to load project file" : result.error;
@@ -1520,12 +3005,18 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
         addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
     }
 
-    loadRecentScenes();
+    loadBuildSettings();
+    if (autoStartRequested && !autoStartSceneName.empty()) {
+        beginDeferredSceneLoad(autoStartSceneName);
+    } else {
+        loadRecentScenes();
+    }
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
         : projectManager.currentProject.projectPath;
     fileBrowser.setProjectRoot(contentRoot);
     fileBrowser.currentPath = contentRoot;
+    loadEditorUserSettings();
     fileBrowser.needsRefresh = true;
     scriptEditorWindowsDirty = true;
     scriptEditorWindows.clear();
@@ -1533,8 +3024,638 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     autoCompileQueue.clear();
     autoCompileQueued.clear();
     scriptAutoCompileLastCheck = 0.0;
-    showLauncher = false;
+    if (!sceneLoadInProgress) {
+        showLauncher = false;
+    }
+    #ifdef MODULARITY_PLAYER
+    applyAutoStartMode();
+    #else
+    if (autoStartRequested && autoStartPlayerMode) {
+        applyAutoStartMode();
+    } else {
+        playerMode = false;
+    }
+    #endif
+    if (playerMode) {
+        syncPlayerCamera();
+    }
     addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
+}
+
+void Engine::syncPlayerCamera() {
+    SceneObject* playerCamObj = nullptr;
+    for (auto& obj : sceneObjects) {
+        if (obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
+            playerCamObj = &obj;
+            break;
+        }
+    }
+    if (!playerCamObj) {
+        return;
+    }
+    Camera cam = makeCameraFromObject(*playerCamObj);
+    cam.position = playerCamObj->position;
+    cam.firstMouse = true;
+    camera = cam;
+}
+
+void Engine::loadAutoStartConfig() {
+    autoStartRequested = false;
+    autoStartPlayerMode = false;
+    autoStartProjectPath.clear();
+    autoStartSceneName.clear();
+
+    fs::path configPath = fs::current_path() / "autostart.modu";
+    if (!fs::exists(configPath)) return;
+
+    std::ifstream file(configPath);
+    if (!file.is_open()) return;
+
+    auto trim = [](std::string& s) {
+        auto start = s.find_first_not_of(" \t\r\n");
+        auto end = s.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos || end == std::string::npos) {
+            s.clear();
+            return;
+        }
+        s = s.substr(start, end - start + 1);
+    };
+
+    std::string line;
+    bool modeSpecified = false;
+    bool sawKey = false;
+    while (std::getline(file, line)) {
+        trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        auto pos = line.find('=');
+        if (pos == std::string::npos) {
+            if (!sawKey && autoStartProjectPath.empty()) {
+                autoStartProjectPath = line;
+            }
+            continue;
+        }
+        std::string key = line.substr(0, pos);
+        std::string value = line.substr(pos + 1);
+        trim(key);
+        trim(value);
+        sawKey = true;
+        if (key == "project") {
+            autoStartProjectPath = value;
+        } else if (key == "scene") {
+            autoStartSceneName = value;
+        } else if (key == "mode") {
+            autoStartPlayerMode = (value == "player");
+            modeSpecified = true;
+        }
+    }
+
+    if (!autoStartProjectPath.empty()) {
+        fs::path path = autoStartProjectPath;
+        if (path.is_relative()) {
+            path = fs::current_path() / path;
+        }
+        autoStartProjectPath = path.lexically_normal().string();
+        autoStartRequested = true;
+        if (!modeSpecified) {
+            autoStartPlayerMode = true;
+        }
+    }
+}
+
+void Engine::applyAutoStartMode() {
+    playerMode = true;
+    isPlaying = true;
+    specMode = false;
+    testMode = false;
+    gameViewCursorLocked = true;
+    gameViewportFocused = true;
+    showHierarchy = false;
+    showInspector = false;
+    showFileBrowser = false;
+    showConsole = false;
+    showProjectBrowser = false;
+    showMeshBuilder = false;
+    showEnvironmentWindow = false;
+    showCameraWindow = false;
+    showAnimationWindow = false;
+    showViewOutput = false;
+    showSceneGizmos = false;
+    showGameViewport = false;
+    showBuildSettings = false;
+    viewportFullscreen = true;
+    physics.onPlayStart(sceneObjects);
+    audio.onPlayStart(sceneObjects);
+}
+
+void Engine::resetBuildSettings() {
+#ifdef _WIN32
+    buildSettings.platform = BuildPlatform::Windows;
+#else
+    buildSettings.platform = BuildPlatform::Linux;
+#endif
+    buildSettings.architecture = "x86_64";
+    buildSettings.developmentBuild = false;
+    buildSettings.autoConnectProfiler = false;
+    buildSettings.scriptDebugging = false;
+    buildSettings.deepProfiling = false;
+    buildSettings.scriptsOnlyBuild = false;
+    buildSettings.serverBuild = false;
+    buildSettings.compressionMethod = "Default";
+    buildSettings.scenes.clear();
+    buildSettingsSelectedIndex = -1;
+    buildSettingsDirty = false;
+}
+
+bool Engine::addSceneToBuildSettings(const std::string& sceneName, bool enabled) {
+    if (sceneName.empty()) return false;
+    for (const auto& entry : buildSettings.scenes) {
+        if (entry.name == sceneName) return false;
+    }
+    buildSettings.scenes.push_back({sceneName, enabled});
+    buildSettingsDirty = true;
+    return true;
+}
+
+void Engine::loadBuildSettings() {
+    resetBuildSettings();
+    if (!projectManager.currentProject.isLoaded) return;
+
+    fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
+    if (!fs::exists(buildPath)) {
+        if (!projectManager.currentProject.currentSceneName.empty()) {
+            addSceneToBuildSettings(projectManager.currentProject.currentSceneName, true);
+        }
+        saveBuildSettings();
+        return;
+    }
+
+    auto trim = [](std::string& s) {
+        auto start = s.find_first_not_of(" \t\r\n");
+        auto end = s.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos || end == std::string::npos) {
+            s.clear();
+            return;
+        }
+        s = s.substr(start, end - start + 1);
+    };
+
+    std::ifstream file(buildPath);
+    std::string line;
+    while (std::getline(file, line)) {
+        trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        if (line.rfind("platform=", 0) == 0) {
+            std::string value = line.substr(9);
+            trim(value);
+            if (value == "Windows") buildSettings.platform = BuildPlatform::Windows;
+            else if (value == "Linux") buildSettings.platform = BuildPlatform::Linux;
+            else if (value == "Android") buildSettings.platform = BuildPlatform::Android;
+        } else if (line.rfind("architecture=", 0) == 0) {
+            buildSettings.architecture = line.substr(13);
+            trim(buildSettings.architecture);
+        } else if (line.rfind("developmentBuild=", 0) == 0) {
+            buildSettings.developmentBuild = line.substr(17) == "1";
+        } else if (line.rfind("autoConnectProfiler=", 0) == 0) {
+            buildSettings.autoConnectProfiler = line.substr(20) == "1";
+        } else if (line.rfind("scriptDebugging=", 0) == 0) {
+            buildSettings.scriptDebugging = line.substr(16) == "1";
+        } else if (line.rfind("deepProfiling=", 0) == 0) {
+            buildSettings.deepProfiling = line.substr(14) == "1";
+        } else if (line.rfind("scriptsOnlyBuild=", 0) == 0) {
+            buildSettings.scriptsOnlyBuild = line.substr(17) == "1";
+        } else if (line.rfind("serverBuild=", 0) == 0) {
+            buildSettings.serverBuild = line.substr(12) == "1";
+        } else if (line.rfind("compressionMethod=", 0) == 0) {
+            buildSettings.compressionMethod = line.substr(18);
+            trim(buildSettings.compressionMethod);
+        } else if (line.rfind("scene=", 0) == 0) {
+            std::string value = line.substr(6);
+            trim(value);
+            size_t comma = value.find(',');
+            if (comma != std::string::npos) {
+                std::string name = value.substr(0, comma);
+                std::string enabledStr = value.substr(comma + 1);
+                trim(name);
+                trim(enabledStr);
+                if (!name.empty()) {
+                    buildSettings.scenes.push_back({name, enabledStr == "1"});
+                }
+            }
+        }
+    }
+
+    if (buildSettings.scenes.empty() && !projectManager.currentProject.currentSceneName.empty()) {
+        addSceneToBuildSettings(projectManager.currentProject.currentSceneName, true);
+    }
+    buildSettingsDirty = false;
+}
+
+void Engine::saveBuildSettings() {
+    if (!projectManager.currentProject.isLoaded) return;
+    fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
+    std::ofstream file(buildPath);
+    file << "# build.modu\n";
+    const char* platformName = "Windows";
+    if (buildSettings.platform == BuildPlatform::Linux) platformName = "Linux";
+    else if (buildSettings.platform == BuildPlatform::Android) platformName = "Android";
+    file << "platform=" << platformName << "\n";
+    file << "architecture=" << buildSettings.architecture << "\n";
+    file << "developmentBuild=" << (buildSettings.developmentBuild ? "1" : "0") << "\n";
+    file << "autoConnectProfiler=" << (buildSettings.autoConnectProfiler ? "1" : "0") << "\n";
+    file << "scriptDebugging=" << (buildSettings.scriptDebugging ? "1" : "0") << "\n";
+    file << "deepProfiling=" << (buildSettings.deepProfiling ? "1" : "0") << "\n";
+    file << "scriptsOnlyBuild=" << (buildSettings.scriptsOnlyBuild ? "1" : "0") << "\n";
+    file << "serverBuild=" << (buildSettings.serverBuild ? "1" : "0") << "\n";
+    file << "compressionMethod=" << buildSettings.compressionMethod << "\n";
+    for (const auto& scene : buildSettings.scenes) {
+        file << "scene=" << scene.name << "," << (scene.enabled ? "1" : "0") << "\n";
+    }
+    buildSettingsDirty = false;
+}
+
+void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("No project loaded for export", ConsoleMessageType::Warning);
+        return;
+    }
+    if (exportJob.active) return;
+
+    if (projectManager.currentProject.hasUnsavedChanges) {
+        saveCurrentScene();
+    } else {
+        projectManager.currentProject.saveProjectFile();
+    }
+
+    std::error_code ec;
+    fs::path normalizedOut = fs::absolute(outputDir, ec);
+    if (ec) {
+        addConsoleMessage("Export failed: invalid output path.", ConsoleMessageType::Error);
+        return;
+    }
+    fs::create_directories(normalizedOut, ec);
+    if (ec) {
+        addConsoleMessage("Export failed: unable to create output folder.", ConsoleMessageType::Error);
+        return;
+    }
+
+    std::string startScene = projectManager.currentProject.currentSceneName;
+    if (startScene.empty()) {
+        for (const auto& scene : buildSettings.scenes) {
+            if (scene.enabled) {
+                startScene = scene.name;
+                break;
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        exportJob = ExportJobState{};
+        exportJob.active = true;
+        exportJob.runAfter = runAfter;
+        exportJob.progress = 0.02f;
+        exportJob.status = "Preparing export...";
+        exportJob.outputDir = normalizedOut;
+    }
+    exportCancelRequested = false;
+
+    fs::path sourceRoot = findCMakeSourceRoot(fs::current_path());
+    if (sourceRoot.empty()) {
+        addConsoleMessage("Export failed: could not locate CMakeLists.txt.", ConsoleMessageType::Error);
+        return;
+    }
+    fs::path projectRoot = projectManager.currentProject.projectPath;
+    bool usesNewLayout = projectManager.currentProject.usesNewLayout;
+    fs::path scenesPath = projectManager.currentProject.scenesPath;
+    fs::path scriptsPath = projectManager.currentProject.scriptsPath;
+    auto future = std::async(std::launch::async, [this, normalizedOut, sourceRoot, projectRoot, startScene, usesNewLayout, scenesPath, scriptsPath]() {
+        ExportJobResult result;
+        result.outputDir = normalizedOut;
+
+        auto setStatus = [this](float value, const std::string& status) {
+            std::lock_guard<std::mutex> lock(exportMutex);
+            exportJob.progress = value;
+            exportJob.status = status;
+        };
+        auto appendLog = [this](const std::string& text) {
+            std::lock_guard<std::mutex> lock(exportMutex);
+            exportJob.log += text;
+            if (!exportJob.log.empty() && exportJob.log.back() != '\n') {
+                exportJob.log += '\n';
+            }
+        };
+
+        std::error_code ec;
+        if (exportCancelRequested.load()) {
+            result.message = "Export cancelled.";
+            result.success = false;
+            return result;
+        }
+        fs::create_directories(normalizedOut, ec);
+        if (ec) {
+            result.message = "Failed to create export directory.";
+            return result;
+        }
+
+        setStatus(0.05f, "Cleaning export output...");
+        std::string cleanError;
+        cleanExportOutput(normalizedOut, "ModularityPlayer", cleanError);
+        if (!cleanError.empty()) {
+            result.message = cleanError;
+            return result;
+        }
+
+        fs::path sharedBuildRoot = sourceRoot / "build" / "player-cache";
+        bool useSharedBuild = fs::exists(sharedBuildRoot / "CMakeCache.txt");
+        fs::path buildRoot = useSharedBuild ? sharedBuildRoot : (normalizedOut / "_build");
+        if (!useSharedBuild) {
+            fs::create_directories(buildRoot, ec);
+            if (ec) {
+                result.message = "Failed to create build directory.";
+                return result;
+            }
+        }
+        cleanEditorExecutable(buildRoot);
+
+        setStatus(0.1f, useSharedBuild ? "Configuring cached build..." : "Configuring build...");
+        int configureExit = 0;
+        std::string configureCmd = "cmake -S \"" + sourceRoot.string() + "\" -B \"" +
+                                   buildRoot.string() + "\" -DCMAKE_BUILD_TYPE=Release -DMODULARITY_BUILD_EDITOR=OFF";
+        appendLog("Running: " + configureCmd);
+        if (!runCommandStreaming(configureCmd + " 2>&1", appendLog, &configureExit)) {
+            result.message = "CMake configure failed (exit code " + std::to_string(configureExit) + ").";
+            return result;
+        }
+
+        if (exportCancelRequested.load()) {
+            result.message = "Export cancelled.";
+            result.success = false;
+            return result;
+        }
+
+        setStatus(0.45f, "Building...");
+        int buildExit = 0;
+        std::string buildCmd = "cmake --build \"" + buildRoot.string() + "\" --config Release --target ModularityPlayer";
+        appendLog("Running: " + buildCmd);
+        auto onBuildChunk = [this, &appendLog](const std::string& chunk) {
+            appendLog(chunk);
+            // Parse lines like: "[ 17%] Building CXX object ..."
+            size_t open = chunk.find('[');
+            size_t pct = chunk.find('%');
+            if (open != std::string::npos && pct != std::string::npos && pct > open) {
+                std::string num = chunk.substr(open + 1, pct - open - 1);
+                num.erase(0, num.find_first_not_of(" \t"));
+                num.erase(num.find_last_not_of(" \t") + 1);
+                int value = std::atoi(num.c_str());
+                if (value >= 0 && value <= 100) {
+                    float progress = 0.45f + (value / 100.0f) * 0.25f;
+                    std::string label = "Building (" + std::to_string(value) + "%)";
+                    std::lock_guard<std::mutex> lock(exportMutex);
+                    exportJob.progress = progress;
+                    exportJob.status = label;
+                }
+            }
+        };
+        if (!runCommandStreaming(buildCmd + " 2>&1", onBuildChunk, &buildExit)) {
+            result.message = "CMake build failed (exit code " + std::to_string(buildExit) + ").";
+            return result;
+        }
+
+        if (exportCancelRequested.load()) {
+            result.message = "Export cancelled.";
+            result.success = false;
+            return result;
+        }
+
+        setStatus(0.7f, "Copying runtime...");
+        fs::path exePath = resolveExecutablePath(buildRoot, "ModularityPlayer");
+        if (exePath.empty()) {
+            result.message = "Built executable not found.";
+            return result;
+        }
+
+        fs::path exportRoot = normalizedOut;
+        fs::create_directories(exportRoot, ec);
+        if (ec) {
+            result.message = "Failed to create export root.";
+            return result;
+        }
+
+        fs::path destExe = exportRoot / exePath.filename();
+        fs::copy_file(exePath, destExe, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            result.message = "Failed to copy executable.";
+            return result;
+        }
+
+        std::string copyError;
+        if (!copyDirectoryRecursive(sourceRoot / "Resources", exportRoot / "Resources", copyError)) {
+            result.message = copyError;
+            return result;
+        }
+
+        setStatus(0.78f, "Collecting precompiled packages...");
+        if (!copyPrecompiledPackages(buildRoot, exportRoot / "Packages" / "ThirdParty", copyError)) {
+            result.message = copyError;
+            return result;
+        }
+
+        setStatus(0.82f, "Collecting engine cache...");
+        if (!copyPrecompiledEnginePackages(buildRoot, exportRoot / "Packages" / "Engine", copyError)) {
+            result.message = copyError;
+            return result;
+        }
+
+        setStatus(0.85f, "Copying project...");
+        fs::path projectOut = exportRoot / "Project";
+        if (fs::exists(projectRoot / "Assets")) {
+            if (!copyDirectoryRecursive(projectRoot / "Assets", projectOut / "Assets", copyError)) {
+                result.message = copyError;
+                return result;
+            }
+        }
+        if (!usesNewLayout) {
+            if (fs::exists(scenesPath)) {
+                if (!copyDirectoryRecursive(scenesPath, projectOut / "Scenes", copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+            if (fs::exists(scriptsPath)) {
+                if (!copyDirectoryRecursive(scriptsPath, projectOut / "Scripts", copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+        }
+        fs::path compiledScriptsSrc;
+        fs::path compiledScriptsDst;
+        {
+            ScriptBuildConfig scriptConfig;
+            std::string configError;
+            fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
+            if (scriptCompiler.loadConfig(configPath, scriptConfig, configError)) {
+                compiledScriptsSrc = scriptConfig.outDir;
+                if (!compiledScriptsSrc.is_absolute()) {
+                    compiledScriptsSrc = projectRoot / compiledScriptsSrc;
+                }
+                std::error_code relEc;
+                fs::path relOutDir = fs::relative(compiledScriptsSrc, projectRoot, relEc);
+                if (!relEc && !relOutDir.empty()) {
+                    bool hasDotDot = false;
+                    for (const auto& part : relOutDir) {
+                        if (part == "..") {
+                            hasDotDot = true;
+                            break;
+                        }
+                    }
+                    if (!hasDotDot) {
+                        compiledScriptsDst = projectOut / relOutDir;
+                    }
+                }
+                if (compiledScriptsDst.empty()) {
+                    compiledScriptsDst = projectOut / "Library" / "CompiledScripts";
+                }
+            }
+        }
+        if (compiledScriptsSrc.empty()) {
+            compiledScriptsSrc = projectRoot / "Library" / "CompiledScripts";
+            compiledScriptsDst = projectOut / "Library" / "CompiledScripts";
+        }
+        if (fs::exists(compiledScriptsSrc)) {
+            if (!copyDirectoryRecursive(compiledScriptsSrc, compiledScriptsDst, copyError)) {
+                result.message = copyError;
+                return result;
+            }
+        }
+        if (fs::exists(projectRoot / "Library" / "InstalledPackages")) {
+            if (!copyDirectoryRecursive(projectRoot / "Library" / "InstalledPackages",
+                                        projectOut / "Library" / "InstalledPackages", copyError)) {
+                result.message = copyError;
+                return result;
+            }
+        }
+
+        std::vector<fs::path> projectFiles = {
+            projectRoot / "project.modu",
+            projectRoot / "scripts.modu",
+            projectRoot / "packages.modu"
+        };
+        for (const auto& src : projectFiles) {
+            if (!fs::exists(src)) continue;
+            fs::path dst = projectOut / src.filename();
+            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                result.message = "Failed to copy project file: " + src.filename().string();
+                return result;
+            }
+        }
+
+        if (!startScene.empty()) {
+            fs::path srcScene = scenesPath / (startScene + ".scene");
+            fs::path dstScene = usesNewLayout
+                ? (projectOut / "Assets" / "Scenes" / (startScene + ".scene"))
+                : (projectOut / "Scenes" / (startScene + ".scene"));
+            if (fs::exists(srcScene)) {
+                fs::create_directories(dstScene.parent_path(), ec);
+                if (!ec) {
+                    fs::copy_file(srcScene, dstScene, fs::copy_options::overwrite_existing, ec);
+                }
+                if (ec) {
+                    result.message = "Failed to copy scene: " + srcScene.filename().string();
+                    return result;
+                }
+            }
+        }
+
+        fs::path autoStartPath = exportRoot / "autostart.modu";
+        std::ofstream autoStart(autoStartPath);
+        if (!autoStart.is_open()) {
+            result.message = "Failed to write autostart.modu.";
+            return result;
+        }
+        autoStart << "project=Project/project.modu\n";
+        if (!startScene.empty()) {
+            autoStart << "scene=" << startScene << "\n";
+        }
+        autoStart << "mode=player\n";
+        autoStart.close();
+
+        fs::path buildAutoStartPath = buildRoot / "autostart.modu";
+        std::ofstream buildAutoStart(buildAutoStartPath);
+        if (buildAutoStart.is_open()) {
+            buildAutoStart << "project=" << (exportRoot / "Project" / "project.modu").string() << "\n";
+            if (!startScene.empty()) {
+                buildAutoStart << "scene=" << startScene << "\n";
+            }
+            buildAutoStart << "mode=player\n";
+            buildAutoStart.close();
+        }
+
+        setStatus(1.0f, "Export complete.");
+        result.success = true;
+        result.message = "Export complete.";
+        return result;
+    });
+
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        exportJob.future = std::move(future);
+    }
+}
+
+void Engine::pollExportBuild() {
+    if (!exportJob.active) return;
+    if (!exportJob.future.valid()) {
+        exportJob.active = false;
+        return;
+    }
+    auto state = exportJob.future.wait_for(std::chrono::milliseconds(0));
+    if (state != std::future_status::ready) return;
+
+    ExportJobResult result = exportJob.future.get();
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        exportJob.done = true;
+        exportJob.active = false;
+        exportJob.success = result.success;
+        exportJob.status = result.message;
+        exportJob.outputDir = result.outputDir;
+        exportJob.cancelled = exportCancelRequested.load() && !result.success;
+    }
+
+    bool runAfter = false;
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        runAfter = exportJob.runAfter;
+    }
+
+    if (result.success) {
+        addConsoleMessage("Export finished: " + result.outputDir.string(), ConsoleMessageType::Success);
+        if (runAfter) {
+            fs::path exePath = result.outputDir /
+#ifdef _WIN32
+                "ModularityPlayer.exe";
+#else
+                "ModularityPlayer";
+#endif
+            if (fs::exists(exePath)) {
+#ifdef _WIN32
+                std::string runCmd = "start \"\" \"" + exePath.string() + "\"";
+#else
+                std::string runCmd = "\"" + exePath.string() + "\" &";
+#endif
+                std::string runOut;
+                runCommandCapture(runCmd + " 2>&1", runOut);
+            } else {
+                addConsoleMessage("Export finished, but executable was not found to run.", ConsoleMessageType::Warning);
+            }
+        }
+    } else if (exportJob.cancelled) {
+        addConsoleMessage("Export cancelled.", ConsoleMessageType::Warning);
+    } else {
+        addConsoleMessage("Export failed: " + result.message, ConsoleMessageType::Error);
+    }
 }
 
 void Engine::createNewProject(const char* name, const char* location) {
@@ -1584,6 +3705,7 @@ void Engine::createNewProject(const char* name, const char* location) {
         addConsoleMessage("Project location: " + newProject.projectPath.string(), ConsoleMessageType::Info);
 
         saveCurrentScene();
+        loadBuildSettings();
     } else {
         projectManager.errorMessage = "Failed to create project directory";
     }
@@ -1600,19 +3722,13 @@ void Engine::loadRecentScenes() {
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
     if (fs::exists(scenePath)) {
-        int sceneVersion = 9;
-        if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion)) {
-            initializeLocalTransformsFromWorld(sceneVersion);
-            addConsoleMessage("Loaded scene: " + projectManager.currentProject.currentSceneName, ConsoleMessageType::Success);
-        } else {
-            addConsoleMessage("Warning: Failed to load scene, starting fresh", ConsoleMessageType::Warning);
-            addObject(ObjectType::Cube, "Cube");
-        }
+        beginDeferredSceneLoad(projectManager.currentProject.currentSceneName);
+        return;
     } else {
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
         addObject(ObjectType::Cube, "Cube");
+        recordState("sceneLoaded");
     }
-    recordState("sceneLoaded");
 
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
@@ -1626,7 +3742,11 @@ void Engine::saveCurrentScene() {
     if (!projectManager.currentProject.isLoaded) return;
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
-    if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId)) {
+    float timeOfDay = 0.0f;
+    if (Skybox* skybox = renderer.getSkybox()) {
+        timeOfDay = skybox->getTimeOfDay();
+    }
+    if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay)) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
         addConsoleMessage("Saved scene: " + projectManager.currentProject.currentSceneName, ConsoleMessageType::Success);
@@ -1644,22 +3764,29 @@ void Engine::loadScene(const std::string& sceneName) {
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     int sceneVersion = 9;
-    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion)) {
+    float loadedTimeOfDay = -1.0f;
+    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion, &loadedTimeOfDay)) {
         initializeLocalTransformsFromWorld(sceneVersion);
+        rebuildSkeletalBindings();
         undoStack.clear();
         redoStack.clear();
         projectManager.currentProject.currentSceneName = sceneName;
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
         clearSelection();
-        bool hasDirLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
-            return o.type == ObjectType::DirectionalLight;
+        bool hasAnyLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
+            return o.hasLight;
         });
-        if (!hasDirLight) {
+        if (!hasAnyLight) {
             addObject(ObjectType::DirectionalLight, "Directional Light");
         }
         recordState("sceneLoaded");
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
+        if (loadedTimeOfDay >= 0.0f) {
+            if (Skybox* skybox = renderer.getSkybox()) {
+                skybox->setTimeOfDay(loadedTimeOfDay);
+            }
+        }
     } else {
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
     }
@@ -1695,61 +3822,13 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
     recordState("addObject");
     int id = nextObjectId++;
     std::string name = baseName + " " + std::to_string(id);
-    sceneObjects.push_back(SceneObject(name, type, id));
-    // Light defaults
-    if (type == ObjectType::PointLight) {
-        sceneObjects.back().light.type = LightType::Point;
-        sceneObjects.back().light.range = 12.0f;
-        sceneObjects.back().light.intensity = 2.0f;
-    } else if (type == ObjectType::SpotLight) {
-        sceneObjects.back().light.type = LightType::Spot;
-        sceneObjects.back().light.range = 15.0f;
-        sceneObjects.back().light.intensity = 2.5f;
-    } else if (type == ObjectType::AreaLight) {
-        sceneObjects.back().light.type = LightType::Area;
-        sceneObjects.back().light.range = 10.0f;
-        sceneObjects.back().light.intensity = 3.0f;
-        sceneObjects.back().light.size = glm::vec2(2.0f, 2.0f);
-    } else if (type == ObjectType::PostFXNode) {
-        sceneObjects.back().postFx.enabled = true;
-        sceneObjects.back().postFx.bloomEnabled = true;
-        sceneObjects.back().postFx.colorAdjustEnabled = true;
-    } else if (type == ObjectType::Camera) {
-        sceneObjects.back().camera.type = SceneCameraType::Player;
-        sceneObjects.back().camera.fov = 60.0f;
-    } else if (type == ObjectType::Mirror) {
-        sceneObjects.back().useOverlay = true;
-        sceneObjects.back().material.textureMix = 1.0f;
-        sceneObjects.back().material.color = glm::vec3(1.0f);
-        sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
-    } else if (type == ObjectType::Plane) {
-        sceneObjects.back().scale = glm::vec3(2.0f, 2.0f, 0.05f);
-    } else if (type == ObjectType::Sprite) {
-        sceneObjects.back().scale = glm::vec3(1.0f, 1.0f, 0.05f);
-        sceneObjects.back().material.ambientStrength = 1.0f;
-    } else if (type == ObjectType::Canvas) {
-        sceneObjects.back().ui.label = "Canvas";
-        sceneObjects.back().ui.size = glm::vec2(600.0f, 400.0f);
-    } else if (type == ObjectType::UIImage) {
-        sceneObjects.back().ui.label = "Image";
-        sceneObjects.back().ui.size = glm::vec2(200.0f, 200.0f);
-    } else if (type == ObjectType::UISlider) {
-        sceneObjects.back().ui.label = "Slider";
-        sceneObjects.back().ui.size = glm::vec2(240.0f, 32.0f);
-    } else if (type == ObjectType::UIButton) {
-        sceneObjects.back().ui.label = "Button";
-        sceneObjects.back().ui.size = glm::vec2(160.0f, 40.0f);
-    } else if (type == ObjectType::UIText) {
-        sceneObjects.back().ui.label = "Text";
-        sceneObjects.back().ui.size = glm::vec2(240.0f, 32.0f);
-    } else if (type == ObjectType::Sprite2D) {
-        sceneObjects.back().ui.label = "Sprite2D";
-        sceneObjects.back().ui.size = glm::vec2(128.0f, 128.0f);
-    }
-    sceneObjects.back().localPosition = sceneObjects.back().position;
-    sceneObjects.back().localRotation = NormalizeEulerDegrees(sceneObjects.back().rotation);
-    sceneObjects.back().localScale = sceneObjects.back().scale;
-    sceneObjects.back().localInitialized = true;
+    SceneObject obj(name, ObjectType::Empty, id);
+    ApplyObjectPreset(obj, type);
+    obj.localPosition = obj.position;
+    obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+    obj.localScale = obj.scale;
+    obj.localInitialized = true;
+    sceneObjects.push_back(obj);
     setPrimarySelection(id);
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -1764,12 +3843,20 @@ void Engine::duplicateSelected() {
     if (it != sceneObjects.end()) {
         recordState("duplicate");
         int id = nextObjectId++;
-        SceneObject newObj(it->name + " (Copy)", it->type, id);
+        SceneObject newObj(it->name + " (Copy)", ObjectType::Empty, id);
+        newObj.type = it->type;
         newObj.position = it->position + glm::vec3(1.0f, 0.0f, 0.0f);
         newObj.rotation = it->rotation;
         newObj.scale = it->scale;
+        newObj.hasRenderer = it->hasRenderer;
+        newObj.renderType = it->renderType;
+        newObj.hasLight = it->hasLight;
+        newObj.hasCamera = it->hasCamera;
+        newObj.hasPostFX = it->hasPostFX;
+        newObj.hasUI = it->hasUI;
         newObj.meshPath = it->meshPath;
         newObj.meshId = it->meshId;
+        newObj.meshSourceIndex = it->meshSourceIndex;
         newObj.material = it->material;
         newObj.materialPath = it->materialPath;
         newObj.albedoTexturePath = it->albedoTexturePath;
@@ -1785,6 +3872,12 @@ void Engine::duplicateSelected() {
         newObj.rigidbody = it->rigidbody;
         newObj.hasRigidbody2D = it->hasRigidbody2D;
         newObj.rigidbody2D = it->rigidbody2D;
+        newObj.hasCollider2D = it->hasCollider2D;
+        newObj.collider2D = it->collider2D;
+        newObj.hasParallaxLayer2D = it->hasParallaxLayer2D;
+        newObj.parallaxLayer2D = it->parallaxLayer2D;
+        newObj.hasCameraFollow2D = it->hasCameraFollow2D;
+        newObj.cameraFollow2D = it->cameraFollow2D;
         newObj.hasCollider = it->hasCollider;
         newObj.collider = it->collider;
         newObj.hasPlayerController = it->hasPlayerController;
@@ -1795,6 +3888,12 @@ void Engine::duplicateSelected() {
         newObj.localInitialized = true;
         newObj.hasAudioSource = it->hasAudioSource;
         newObj.audioSource = it->audioSource;
+        newObj.hasReverbZone = it->hasReverbZone;
+        newObj.reverbZone = it->reverbZone;
+        newObj.hasAnimation = it->hasAnimation;
+        newObj.animation = it->animation;
+        newObj.hasSkeletalAnimation = it->hasSkeletalAnimation;
+        newObj.skeletal = it->skeletal;
         newObj.ui = it->ui;
         
         sceneObjects.push_back(newObj);
@@ -1807,13 +3906,64 @@ void Engine::duplicateSelected() {
 }
 
 void Engine::deleteSelected() {
+    if (selectedObjectId < 0 && selectedObjectIds.empty()) {
+        return;
+    }
+
     recordState("delete");
+
+    std::unordered_map<int, SceneObject*> idLookup;
+    idLookup.reserve(sceneObjects.size());
+    for (auto& obj : sceneObjects) {
+        idLookup.emplace(obj.id, &obj);
+    }
+
+    std::unordered_set<int> toDelete;
+    std::vector<int> stack;
+    if (!selectedObjectIds.empty()) {
+        for (int id : selectedObjectIds) {
+            if (id >= 0 && toDelete.insert(id).second) {
+                stack.push_back(id);
+            }
+        }
+    } else if (selectedObjectId >= 0) {
+        toDelete.insert(selectedObjectId);
+        stack.push_back(selectedObjectId);
+    }
+
+    while (!stack.empty()) {
+        int currentId = stack.back();
+        stack.pop_back();
+        auto it = idLookup.find(currentId);
+        if (it == idLookup.end() || !it->second) continue;
+
+        for (int childId : it->second->childIds) {
+            if (childId >= 0 && toDelete.insert(childId).second) {
+                stack.push_back(childId);
+            }
+        }
+
+        for (const auto& obj : sceneObjects) {
+            if (obj.parentId == currentId && toDelete.insert(obj.id).second) {
+                stack.push_back(obj.id);
+            }
+        }
+    }
+
     auto it = std::remove_if(sceneObjects.begin(), sceneObjects.end(),
-        [this](const SceneObject& obj) { return obj.id == selectedObjectId; });
+        [&toDelete](const SceneObject& obj) { return toDelete.count(obj.id) > 0; });
 
     if (it != sceneObjects.end()) {
-        logToConsole("Deleted object");
         sceneObjects.erase(it, sceneObjects.end());
+        for (auto& obj : sceneObjects) {
+            if (toDelete.count(obj.parentId) > 0) {
+                obj.parentId = -1;
+            }
+            obj.childIds.erase(std::remove_if(obj.childIds.begin(), obj.childIds.end(),
+                [&toDelete](int id) { return toDelete.count(id) > 0; }), obj.childIds.end());
+        }
+        updateHierarchyWorldTransforms();
+        logToConsole("Deleted object");
         clearSelection();
         if (projectManager.currentProject.isLoaded) {
             projectManager.currentProject.hasUnsavedChanges = true;
@@ -1918,17 +4068,151 @@ SceneObject* Engine::findObjectById(int id) {
 fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
     ScriptBuildConfig config;
     std::string error;
-    fs::path cfg = projectManager.currentProject.scriptsConfigPath.empty()
-        ? projectManager.currentProject.projectPath / "Scripts.modu"
-        : projectManager.currentProject.scriptsConfigPath;
+    fs::path cfg = resolveScriptsConfigPath(projectManager.currentProject);
     if (!scriptCompiler.loadConfig(cfg, config, error)) {
         return {};
     }
-    ScriptBuildCommands cmds;
-    if (!scriptCompiler.makeCommands(config, sourcePath, cmds, error)) {
+    auto resolveSource = [&](const fs::path& input) -> fs::path {
+        if (input.empty()) return {};
+        std::error_code ec;
+        fs::path abs = fs::absolute(input, ec);
+        if (ec) abs = input;
+        if (fs::exists(abs)) return abs;
+
+        fs::path scriptsDir = config.scriptsDir;
+        if (!scriptsDir.is_absolute()) {
+            scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
+        }
+
+        if (input.is_relative()) {
+            fs::path candidate = projectManager.currentProject.projectPath / input;
+            if (fs::exists(candidate)) return candidate;
+        }
+
+        auto remapSuffix = [&](const fs::path& marker) -> fs::path {
+            std::vector<fs::path> parts;
+            for (const auto& p : abs) parts.push_back(p);
+            std::vector<fs::path> markerParts;
+            for (const auto& p : marker) markerParts.push_back(p);
+            if (markerParts.empty()) return {};
+            for (size_t i = 0; i + markerParts.size() <= parts.size(); ++i) {
+                bool match = true;
+                for (size_t k = 0; k < markerParts.size(); ++k) {
+                    if (parts[i + k] != markerParts[k]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    fs::path suffix;
+                    for (size_t j = i + markerParts.size(); j < parts.size(); ++j) {
+                        suffix /= parts[j];
+                    }
+                    if (!suffix.empty()) {
+                        fs::path candidate = scriptsDir / suffix;
+                        if (fs::exists(candidate)) return candidate;
+                    }
+                    break;
+                }
+            }
+            return {};
+        };
+
+        fs::path remapped = remapSuffix(fs::path("Assets") / "Scripts");
+        if (!remapped.empty()) return remapped;
+        remapped = remapSuffix("Scripts");
+        if (!remapped.empty()) return remapped;
+
+        if (!abs.filename().empty()) {
+            fs::path candidate = scriptsDir / abs.filename();
+            if (fs::exists(candidate)) return candidate;
+        }
         return {};
+    };
+
+    fs::path resolvedSource = resolveSource(sourcePath);
+    if (!resolvedSource.empty()) {
+        ScriptBuildCommands cmds;
+        if (scriptCompiler.makeCommands(config, resolvedSource, cmds, error)) {
+            return cmds.binaryPath;
+        }
     }
-    return cmds.binaryPath;
+
+    fs::path compiledDir = config.outDir;
+    if (!compiledDir.is_absolute()) {
+        compiledDir = projectManager.currentProject.projectPath / compiledDir;
+    }
+    std::string stem = sourcePath.stem().string();
+    if (!stem.empty() && fs::exists(compiledDir)) {
+        std::error_code dirEc;
+        for (auto it = fs::recursive_directory_iterator(compiledDir, dirEc);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (it->is_directory()) continue;
+            fs::path p = it->path();
+#ifdef _WIN32
+            if (p.stem() == stem && p.extension() == ".dll") return p;
+#else
+            if (p.stem() == stem && p.extension() == ".so") return p;
+#endif
+        }
+    }
+
+    return {};
+}
+
+fs::path Engine::resolveManagedAssembly(const fs::path& sourcePath) {
+    if (sourcePath.empty()) return {};
+    std::error_code ec;
+    std::string ext = sourcePath.extension().string();
+    if (ext == ".cs" || ext == ".csproj") {
+        fs::path output = getManagedOutputDll();
+        if (fs::exists(output)) return output;
+    }
+    fs::path abs = fs::absolute(sourcePath, ec);
+    if (!ec && fs::exists(abs)) return abs;
+    fs::path candidate = projectManager.currentProject.projectPath / sourcePath;
+    if (fs::exists(candidate)) return candidate;
+    return {};
+}
+
+fs::path Engine::getManagedProjectPath() const {
+    fs::path root = findManagedProjectRoot(fs::current_path());
+    if (root.empty() && projectManager.currentProject.isLoaded) {
+        root = findManagedProjectRoot(projectManager.currentProject.projectPath);
+    }
+#if defined(__linux__)
+    if (root.empty()) {
+        std::error_code ec;
+        fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            root = findManagedProjectRoot(exe.parent_path());
+        }
+    }
+#endif
+    if (root.empty()) {
+        return fs::current_path() / "Scripts" / "Managed" / "ModuCPP.csproj";
+    }
+    return root / "Scripts" / "Managed" / "ModuCPP.csproj";
+}
+
+fs::path Engine::getManagedOutputDll() const {
+    fs::path root = findManagedProjectRoot(fs::current_path());
+    if (root.empty() && projectManager.currentProject.isLoaded) {
+        root = findManagedProjectRoot(projectManager.currentProject.projectPath);
+    }
+#if defined(__linux__)
+    if (root.empty()) {
+        std::error_code ec;
+        fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            root = findManagedProjectRoot(exe.parent_path());
+        }
+    }
+#endif
+    if (root.empty()) {
+        root = fs::current_path();
+    }
+    return root / "Scripts" / "Managed" / "bin" / "Debug" / "netstandard2.0" / "ModuCPP.dll";
 }
 
 void Engine::markProjectDirty() {
@@ -2051,6 +4335,12 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         return;
     }
 
+    std::string ext = scriptPath.extension().string();
+    if (ext == ".cs" || ext == ".csproj") {
+        compileManagedScripts();
+        return;
+    }
+
     if (compileInProgress) {
         showCompilePopup = true;
         lastCompileStatus = "Compile already in progress";
@@ -2065,15 +4355,22 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     lastCompileLog.clear();
     lastCompileStatus = "Compiling " + scriptPath.filename().string();
     lastCompileSuccess = false;
-
-    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
-    if (configPath.empty()) {
-        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
+    {
+        std::lock_guard<std::mutex> lock(compileMutex);
+        compileProgress = 0.05f;
+        compileStage = "Preparing";
     }
+
+    fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
 
     compileInProgress = true;
     compileResultReady = false;
     compileWorker = std::thread([this, scriptPath, configPath]() {
+        auto setProgress = [this](float value, const char* stage) {
+            std::lock_guard<std::mutex> lock(compileMutex);
+            compileProgress = value;
+            compileStage = stage;
+        };
         ScriptCompileJobResult result;
         result.scriptPath = scriptPath;
         std::string error;
@@ -2086,20 +4383,114 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
             if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {
                 result.error = error;
             } else {
+                setProgress(0.15f, "Compiling");
                 ScriptCompileOutput output;
                 if (!scriptCompiler.compile(commands, output, error)) {
                     result.compileLog = output.compileLog;
                     result.linkLog = output.linkLog;
                     result.error = error;
+                    setProgress(0.9f, "Finalizing");
                 } else {
                     result.success = true;
                     result.compileLog = output.compileLog;
                     result.linkLog = output.linkLog;
                     result.binaryPath = commands.binaryPath;
                     result.compiledSource = fs::absolute(scriptPath).lexically_normal().string();
+                    setProgress(0.85f, "Reloading");
                 }
             }
         }
+        std::lock_guard<std::mutex> lock(compileMutex);
+        compileResult = std::move(result);
+        compileResultReady = true;
+        compileInProgress = false;
+    });
+}
+
+void Engine::compileManagedScripts() {
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("No project is loaded", ConsoleMessageType::Warning);
+        return;
+    }
+
+    if (compileInProgress) {
+        showCompilePopup = true;
+        lastCompileStatus = "Compile already in progress";
+        return;
+    }
+    if (compileWorker.joinable()) {
+        compileWorker.join();
+    }
+
+    fs::path managedProject = getManagedProjectPath();
+    if (!fs::exists(managedProject)) {
+        addConsoleMessage("Managed project not found: " + managedProject.string(), ConsoleMessageType::Error);
+        return;
+    }
+
+    showCompilePopup = true;
+    compilePopupHideTime = 0.0;
+    lastCompileLog.clear();
+    lastCompileStatus = "Compiling managed scripts";
+    lastCompileSuccess = false;
+    {
+        std::lock_guard<std::mutex> lock(compileMutex);
+        compileProgress = 0.05f;
+        compileStage = "Preparing";
+    }
+
+    compileInProgress = true;
+    compileResultReady = false;
+    compileWorker = std::thread([this, managedProject]() {
+        auto setProgress = [this](float value, const char* stage) {
+            std::lock_guard<std::mutex> lock(compileMutex);
+            compileProgress = value;
+            compileStage = stage;
+        };
+
+        ScriptCompileJobResult result;
+        result.isManaged = true;
+        result.scriptPath = managedProject;
+
+        setProgress(0.2f, "Building");
+
+        std::string command = "dotnet build \"" + managedProject.string() + "\" -c Debug 2>&1";
+        std::string output;
+        int exitCode = -1;
+
+        auto runCommand = [&]() -> bool {
+#if defined(_WIN32)
+            FILE* pipe = _popen(command.c_str(), "r");
+#else
+            FILE* pipe = popen(command.c_str(), "r");
+#endif
+            if (!pipe) return false;
+            char buffer[256];
+            while (fgets(buffer, sizeof(buffer), pipe)) {
+                output += buffer;
+            }
+#if defined(_WIN32)
+            exitCode = _pclose(pipe);
+#else
+            exitCode = pclose(pipe);
+#endif
+            return true;
+        };
+
+        if (!runCommand()) {
+            result.error = "Failed to launch dotnet build";
+            result.compileLog = output;
+        } else if (exitCode != 0) {
+            result.error = "dotnet build failed";
+            result.compileLog = output;
+        } else {
+            result.success = true;
+            result.compileLog = output;
+            result.binaryPath = getManagedOutputDll();
+            result.compiledSource = managedProject.string();
+            setProgress(0.85f, "Reloading");
+        }
+
         std::lock_guard<std::mutex> lock(compileMutex);
         compileResult = std::move(result);
         compileResultReady = true;
@@ -2131,22 +4522,35 @@ void Engine::updateCompileJob() {
             if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
             if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
         } else {
-            scriptRuntime.unloadAll();
+            if (result.isManaged) {
+                managedRuntime.unloadAll();
+            } else {
+                scriptRuntime.unloadAll();
+            }
 
             lastCompileSuccess = true;
-            lastCompileStatus = "Reloading ModuCore";
+            lastCompileStatus = result.isManaged ? "Reloading ModuCPP" : "Reloading ModuCore";
             lastCompileLog = result.compileLog + result.linkLog;
             addConsoleMessage("Compiled script -> " + result.binaryPath.string(), ConsoleMessageType::Success);
             if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
             if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
 
-            for (auto& obj : sceneObjects) {
-                for (auto& sc : obj.scripts) {
-                    std::error_code ec;
-                    fs::path scAbs = fs::absolute(sc.path, ec);
-                    std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
-                    if (scPathNorm == result.compiledSource) {
+            if (result.isManaged) {
+                for (auto& obj : sceneObjects) {
+                    for (auto& sc : obj.scripts) {
+                        if (sc.language != ScriptLanguage::CSharp) continue;
                         sc.lastBinaryPath = result.binaryPath.string();
+                    }
+                }
+            } else {
+                for (auto& obj : sceneObjects) {
+                    for (auto& sc : obj.scripts) {
+                        std::error_code ec;
+                        fs::path scAbs = fs::absolute(sc.path, ec);
+                        std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
+                        if (scPathNorm == result.compiledSource) {
+                            sc.lastBinaryPath = result.binaryPath.string();
+                        }
                     }
                 }
             }
@@ -2155,6 +4559,11 @@ void Engine::updateCompileJob() {
             refreshScriptEditorWindows();
         }
 
+        {
+            std::lock_guard<std::mutex> lock(compileMutex);
+            compileProgress = 1.0f;
+            compileStage = lastCompileSuccess ? "Done" : "Failed";
+        }
         compilePopupHideTime = glfwGetTime() + 1.0;
         showCompilePopup = true;
     }
@@ -2164,6 +4573,11 @@ void Engine::updateCompileJob() {
         showCompilePopup = false;
         compilePopupOpened = false;
         compilePopupHideTime = 0.0;
+    }
+
+    if (!compileInProgress && managedAutoCompileQueued) {
+        managedAutoCompileQueued = false;
+        compileManagedScripts();
     }
 }
 
@@ -2213,10 +4627,7 @@ void Engine::refreshScriptEditorWindows() {
     }
 
     // Also scan the configured script output directory for standalone editor tabs.
-    fs::path configPath = projectManager.currentProject.scriptsConfigPath;
-    if (configPath.empty()) {
-        configPath = projectManager.currentProject.projectPath / "Scripts.modu";
-    }
+    fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
     ScriptBuildConfig config;
     std::string error;
     if (scriptCompiler.loadConfig(configPath, config, error)) {
@@ -2287,6 +4698,7 @@ void Engine::setupImGui() {
     #ifndef __linux__
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     #endif
+    io.IniFilename = nullptr;
 
     std::cerr << "[DEBUG] setupImGui: applying theme..." << std::endl;
     applyModernTheme();
@@ -2323,20 +4735,33 @@ void Engine::initUIStylePresets() {
     current.builtin = true;
     uiStylePresets.push_back(current);
 
-    UIStylePreset editor;
-    editor.name = "Editor Style";
-    editor.style = ImGui::GetStyle();
-    editor.builtin = true;
-    uiStylePresets.push_back(editor);
-
     UIStylePreset imguiDefault;
-    imguiDefault.name = "ImGui Default";
+    imguiDefault.name = "Imgui Default";
     imguiDefault.style = ImGui::GetStyle();
     ImGui::StyleColorsDark(&imguiDefault.style);
+    applyEditorLayoutPreset(imguiDefault.style);
     imguiDefault.builtin = true;
     uiStylePresets.push_back(imguiDefault);
 
-    uiStylePresetIndex = 0;
+    UIStylePreset pixel;
+    pixel.name = "Pixel";
+    pixel.style = ImGui::GetStyle();
+    applyPixelStyle(pixel.style);
+    pixel.builtin = true;
+    uiStylePresets.push_back(pixel);
+
+    UIStylePreset superRound;
+    superRound.name = "Super Round";
+    superRound.style = ImGui::GetStyle();
+    applySuperRoundStyle(superRound.style);
+    superRound.builtin = true;
+    uiStylePresets.push_back(superRound);
+
+    uiStylePresetIndex = findUIStylePreset(uiStylePresetName);
+    if (uiStylePresetIndex < 0) {
+        uiStylePresetIndex = 0;
+        uiStylePresetName = uiStylePresets[0].name;
+    }
 }
 
 int Engine::findUIStylePreset(const std::string& name) const {
@@ -2370,4 +4795,257 @@ void Engine::registerUIStylePreset(const std::string& name, const ImGuiStyle& st
 
 void Engine::registerUIStylePresetFromScript(const std::string& name, const ImGuiStyle& style, bool replace) {
     registerUIStylePreset(name, style, replace);
+}
+
+bool Engine::applyUIStylePresetByName(const std::string& name) {
+    int idx = findUIStylePreset(name);
+    if (idx < 0) {
+        return false;
+    }
+    ImVec4 preservedColors[ImGuiCol_COUNT];
+    ImGuiStyle& currentStyle = ImGui::GetStyle();
+    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+        preservedColors[i] = currentStyle.Colors[i];
+    }
+    uiStylePresetIndex = idx;
+    uiStylePresetName = uiStylePresets[idx].name;
+    currentStyle = uiStylePresets[idx].style;
+    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+        currentStyle.Colors[i] = preservedColors[i];
+    }
+    return true;
+}
+
+fs::path Engine::getEditorUserSettingsPath() const {
+    if (!projectManager.currentProject.isLoaded) {
+        return fs::path();
+    }
+    fs::path settingsDir = projectManager.currentProject.projectPath / "ProjectUserSettings";
+    return settingsDir / "EditorUI.ini";
+}
+
+fs::path Engine::getEditorLayoutPath() const {
+    return getWorkspaceLayoutPath(WorkspaceMode::Default);
+}
+
+fs::path Engine::getWorkspaceLayoutPath(WorkspaceMode mode) const {
+    fs::path settingsDir = fs::path("Resources");
+    const char* filename = "imgui.ini";
+    if (mode == WorkspaceMode::Animation) {
+        filename = "anim.ini";
+    } else if (mode == WorkspaceMode::Scripting) {
+        filename = "scripter.ini";
+    }
+    return settingsDir / filename;
+}
+
+void Engine::loadEditorUserSettings() {
+    if (!projectManager.currentProject.isLoaded) {
+        return;
+    }
+    fs::path settingsPath = getEditorUserSettingsPath();
+    if (settingsPath.empty() || !fs::exists(settingsPath)) {
+        return;
+    }
+
+    auto trim = [](std::string& s) {
+        size_t start = s.find_first_not_of(" \t\r\n");
+        size_t end = s.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos || end == std::string::npos) {
+            s.clear();
+            return;
+        }
+        s = s.substr(start, end - start + 1);
+    };
+
+    fileBrowserFavorites.clear();
+    std::vector<ImVec4> loadedColors(ImGuiCol_COUNT);
+    std::vector<bool> hasColor(ImGuiCol_COUNT, false);
+    static std::unordered_map<std::string, int> colorIndex;
+    if (colorIndex.empty()) {
+        for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+            colorIndex.emplace(ImGui::GetStyleColorName(i), i);
+        }
+    }
+
+    std::ifstream file(settingsPath);
+    std::string line;
+    while (std::getline(file, line)) {
+        trim(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        std::string key = line.substr(0, eq);
+        std::string value = line.substr(eq + 1);
+        trim(key);
+        trim(value);
+        if (key == "uiStyle") {
+            uiStylePresetName = value;
+        } else if (key == "uiAnimationMode") {
+            if (value == "Fluid") {
+                uiAnimationMode = UIAnimationMode::Fluid;
+            } else if (value == "Snappy") {
+                uiAnimationMode = UIAnimationMode::Snappy;
+            } else {
+                uiAnimationMode = UIAnimationMode::Off;
+            }
+        } else if (key == "workspace") {
+            if (value == "Animation") {
+                currentWorkspace = WorkspaceMode::Animation;
+            } else if (value == "Scripting") {
+                currentWorkspace = WorkspaceMode::Scripting;
+            } else {
+                currentWorkspace = WorkspaceMode::Default;
+            }
+        } else if (key == "fileBrowserIconScale") {
+            try {
+                fileBrowserIconScale = std::stof(value);
+            } catch (...) {
+            }
+        } else if (key == "fileBrowserViewMode") {
+            if (value == "List") {
+                fileBrowser.viewMode = FileBrowserViewMode::List;
+            } else {
+                fileBrowser.viewMode = FileBrowserViewMode::Grid;
+            }
+        } else if (key == "fileBrowserSidebarWidth") {
+            try {
+                fileBrowserSidebarWidth = std::stof(value);
+            } catch (...) {
+            }
+        } else if (key == "fileBrowserSidebarVisible") {
+            showFileBrowserSidebar = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "consoleWrapText") {
+            consoleWrapText = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showAnimationWindow") {
+            showAnimationWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key.rfind("color.", 0) == 0) {
+            std::string name = key.substr(6);
+            auto it = colorIndex.find(name);
+            if (it != colorIndex.end()) {
+                std::string parseValue = value;
+                std::replace(parseValue.begin(), parseValue.end(), ',', ' ');
+                std::stringstream ss(parseValue);
+                float r = 0.0f;
+                float g = 0.0f;
+                float b = 0.0f;
+                float a = 1.0f;
+                if (ss >> r >> g >> b >> a) {
+                    loadedColors[it->second] = ImVec4(r, g, b, a);
+                    hasColor[it->second] = true;
+                }
+            }
+        } else if (key == "favorite") {
+            if (value.empty()) {
+                continue;
+            }
+            fs::path favPath = fs::path(value);
+            fs::path baseRoot = fileBrowser.projectRoot.empty()
+                ? projectManager.currentProject.projectPath
+                : fileBrowser.projectRoot;
+            if (favPath.is_relative()) {
+                favPath = baseRoot / favPath;
+            }
+            std::error_code ec;
+            fs::path canonical = fs::weakly_canonical(favPath, ec);
+            if (!ec) {
+                favPath = canonical;
+            }
+            fileBrowserFavorites.push_back(favPath);
+        }
+    }
+
+    fileBrowserIconScale = std::clamp(fileBrowserIconScale, 0.6f, 2.0f);
+    fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, 160.0f, 360.0f);
+
+    applyUIStylePresetByName(uiStylePresetName);
+    ImGuiStyle& style = ImGui::GetStyle();
+    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+        if (hasColor[i]) {
+            style.Colors[i] = loadedColors[i];
+        }
+    }
+
+    applyWorkspacePreset(currentWorkspace, false);
+    scriptingFilesDirty = true;
+}
+
+void Engine::saveEditorUserSettings() const {
+    if (!projectManager.currentProject.isLoaded) {
+        return;
+    }
+    fs::path settingsPath = getEditorUserSettingsPath();
+    if (settingsPath.empty()) {
+        return;
+    }
+    fs::create_directories(settingsPath.parent_path());
+
+    std::ofstream file(settingsPath);
+    if (!file.is_open()) {
+        return;
+    }
+
+    file << "# Editor UI settings\n";
+    file << std::fixed << std::setprecision(4);
+    file << "uiStyle=" << uiStylePresetName << "\n";
+    const char* animMode = "Off";
+    if (uiAnimationMode == UIAnimationMode::Fluid) {
+        animMode = "Fluid";
+    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+        animMode = "Snappy";
+    }
+    file << "uiAnimationMode=" << animMode << "\n";
+    const char* workspaceName = "Default";
+    if (currentWorkspace == WorkspaceMode::Animation) {
+        workspaceName = "Animation";
+    } else if (currentWorkspace == WorkspaceMode::Scripting) {
+        workspaceName = "Scripting";
+    }
+    file << "workspace=" << workspaceName << "\n";
+    file << "fileBrowserIconScale=" << fileBrowserIconScale << "\n";
+    file << "fileBrowserViewMode=" << (fileBrowser.viewMode == FileBrowserViewMode::List ? "List" : "Grid") << "\n";
+    file << "fileBrowserSidebarWidth=" << fileBrowserSidebarWidth << "\n";
+    file << "fileBrowserSidebarVisible=" << (showFileBrowserSidebar ? "1" : "0") << "\n";
+    file << "consoleWrapText=" << (consoleWrapText ? "1" : "0") << "\n";
+    file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
+    const ImGuiStyle& style = ImGui::GetStyle();
+    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+        const ImVec4& c = style.Colors[i];
+        file << "color." << ImGui::GetStyleColorName(i) << "="
+             << c.x << "," << c.y << "," << c.z << "," << c.w << "\n";
+    }
+
+    fs::path baseRoot = fileBrowser.projectRoot.empty()
+        ? projectManager.currentProject.projectPath
+        : fileBrowser.projectRoot;
+    for (const auto& fav : fileBrowserFavorites) {
+        fs::path stored = fav;
+        std::error_code ec;
+        fs::path rel = fs::relative(fav, baseRoot, ec);
+        std::string relStr = rel.generic_string();
+        if (!ec && !rel.empty() && relStr.find("..") != 0) {
+            stored = rel;
+        }
+        file << "favorite=" << stored.generic_string() << "\n";
+    }
+}
+
+void Engine::exportEditorThemeLayout() {
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("No project loaded to export UI settings", ConsoleMessageType::Warning);
+        return;
+    }
+    saveEditorUserSettings();
+    fs::path layoutPath = getEditorLayoutPath();
+    if (layoutPath.empty()) {
+        addConsoleMessage("Failed to resolve layout export path", ConsoleMessageType::Error);
+        return;
+    }
+    fs::create_directories(layoutPath.parent_path());
+    ImGui::SaveIniSettingsToDisk(layoutPath.string().c_str());
+    addConsoleMessage("Exported UI layout to: " + layoutPath.string(), ConsoleMessageType::Success);
 }

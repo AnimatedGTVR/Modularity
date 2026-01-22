@@ -103,6 +103,34 @@ bool Spinner(const char* label, float radius, int thickness, const ImU32& color)
     return true;
 }
 
+bool ProgressCircle(const char* label, float radius, float thickness, float value,
+                    const ImU32& color, const ImU32& bgColor) {
+    ImGuiWindow* window = GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+    const ImGuiID id = window->GetID(label);
+
+    ImVec2 pos = window->DC.CursorPos;
+    ImVec2 size((radius) * 2, (radius + style.FramePadding.y) * 2);
+    const ImRect bb(pos, ImVec2(pos.x + size.x, pos.y + size.y));
+    ItemSize(bb, style.FramePadding.y);
+    if (!ItemAdd(bb, id))
+        return false;
+
+    ImVec2 centre = ImVec2(pos.x + radius, pos.y + radius + style.FramePadding.y);
+    float startAngle = -IM_PI * 0.5f;
+    float endAngle = startAngle + IM_PI * 2.0f * ImClamp(value, 0.0f, 1.0f);
+
+    window->DrawList->AddCircle(centre, radius, bgColor, 32, thickness);
+    window->DrawList->PathClear();
+    window->DrawList->PathArcTo(centre, radius, startAngle, endAngle, 32);
+    window->DrawList->PathStroke(color, false, thickness);
+    return true;
+}
+
 } // namespace ImGui
 #pragma endregion
 
@@ -188,7 +216,7 @@ void Engine::renderLauncher() {
         ImGui::SetWindowFontScale(1.4f);
         ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.0f), "Modularity");
         ImGui::SetWindowFontScale(1.0f);
-        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Beta V1.0");
+        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Beta V6.3");
 
 
         ImGui::EndChild();
@@ -352,7 +380,7 @@ void Engine::renderLauncher() {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::TextDisabled("Modularity Engine - Beta V1.0");
+        ImGui::TextDisabled("Modularity Engine - Beta V6.3");
         ImGui::EndChild();
     }
 
@@ -365,7 +393,7 @@ void Engine::renderLauncher() {
     if (projectManager.showOpenProjectDialog)
         renderOpenProjectDialog();
 
-    if (projectLoadInProgress) {
+    if (projectLoadInProgress || sceneLoadInProgress) {
         float elapsed = static_cast<float>(glfwGetTime() - projectLoadStartTime);
         if (elapsed > 0.15f) {
             ImGuiIO& io = ImGui::GetIO();
@@ -396,16 +424,32 @@ void Engine::renderLauncher() {
                          ImGuiWindowFlags_NoCollapse |
                          ImGuiWindowFlags_NoSavedSettings);
 
-            ImGui::TextColored(ImVec4(0.88f, 0.90f, 0.96f, 1.0f), "Loading project...");
+            const char* headline = sceneLoadInProgress ? "Loading scene..." : "Loading project...";
+            ImGui::TextColored(ImVec4(0.88f, 0.90f, 0.96f, 1.0f), "%s", headline);
             ImGui::Spacing();
-            ImGui::TextDisabled("%s", projectLoadPath.c_str());
+            if (sceneLoadInProgress && !sceneLoadStatus.empty()) {
+                ImGui::TextDisabled("%s", sceneLoadStatus.c_str());
+            } else if (!projectLoadPath.empty()) {
+                ImGui::TextDisabled("%s", projectLoadPath.c_str());
+            }
             ImGui::Spacing();
-            ImGui::Spinner("##project_load_spinner", 16.0f, 4, ImGui::GetColorU32(ImGuiCol_ButtonHovered));
-            ImGui::SameLine();
-            ImGui::BufferingBar("##project_load_bar", std::fmod(elapsed * 0.25f, 1.0f),
-                                ImVec2(ImGui::GetContentRegionAvail().x - 40.0f, 8.0f),
-                                ImGui::GetColorU32(ImGuiCol_Button),
-                                ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+            if (sceneLoadInProgress) {
+                ImGui::ProgressCircle("##project_load_circle", 16.0f, 4.0f, sceneLoadProgress,
+                                      ImGui::GetColorU32(ImGuiCol_ButtonHovered),
+                                      ImGui::GetColorU32(ImGuiCol_Button));
+                ImGui::SameLine();
+                ImGui::BufferingBar("##project_load_bar", sceneLoadProgress,
+                                    ImVec2(ImGui::GetContentRegionAvail().x - 40.0f, 8.0f),
+                                    ImGui::GetColorU32(ImGuiCol_Button),
+                                    ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+            } else {
+                ImGui::Spinner("##project_load_spinner", 16.0f, 4, ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+                ImGui::SameLine();
+                ImGui::BufferingBar("##project_load_bar", std::fmod(elapsed * 0.25f, 1.0f),
+                                    ImVec2(ImGui::GetContentRegionAvail().x - 40.0f, 8.0f),
+                                    ImGui::GetColorU32(ImGuiCol_Button),
+                                    ImGui::GetColorU32(ImGuiCol_ButtonHovered));
+            }
 
             ImGui::End();
             ImGui::PopStyleColor();

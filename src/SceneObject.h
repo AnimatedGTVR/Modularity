@@ -23,7 +23,31 @@ enum class ObjectType {
     UIImage = 17,
     UISlider = 18,
     UIButton = 19,
-    UIText = 20
+    UIText = 20,
+    Empty = 21
+};
+
+enum class RenderType {
+    None = 0,
+    Cube = 1,
+    Sphere = 2,
+    Capsule = 3,
+    OBJMesh = 4,
+    Model = 5,
+    Mirror = 6,
+    Plane = 7,
+    Torus = 8,
+    Sprite = 9
+};
+
+enum class UIElementType {
+    None = 0,
+    Canvas = 1,
+    Image = 2,
+    Slider = 3,
+    Button = 4,
+    Text = 5,
+    Sprite2D = 6
 };
 
 struct MaterialProperties {
@@ -60,6 +84,76 @@ enum class UIButtonStyle {
     Outline = 1
 };
 
+enum class ReverbPreset {
+    Room = 0,
+    LivingRoom = 1,
+    Hall = 2,
+    Forest = 3,
+    Custom = 4
+};
+
+enum class ReverbZoneShape {
+    Box = 0,
+    Sphere = 1
+};
+
+enum class AudioRolloffMode {
+    Logarithmic = 0,
+    Linear = 1,
+    Exponential = 2,
+    Custom = 3
+};
+
+enum class AnimationInterpolation {
+    Linear = 0,
+    SmoothStep = 1,
+    EaseIn = 2,
+    EaseOut = 3,
+    EaseInOut = 4
+};
+
+enum class AnimationCurveMode {
+    Preset = 0,
+    Bezier = 1
+};
+
+struct AnimationKeyframe {
+    float time = 0.0f;
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 rotation = glm::vec3(0.0f);
+    glm::vec3 scale = glm::vec3(1.0f);
+    AnimationInterpolation interpolation = AnimationInterpolation::SmoothStep;
+    AnimationCurveMode curveMode = AnimationCurveMode::Preset;
+    glm::vec2 bezierIn = glm::vec2(0.25f, 0.0f);
+    glm::vec2 bezierOut = glm::vec2(0.75f, 1.0f);
+};
+
+struct AnimationComponent {
+    bool enabled = true;
+    float clipLength = 2.0f;
+    float playSpeed = 1.0f;
+    bool loop = true;
+    bool applyOnScrub = true;
+    std::vector<AnimationKeyframe> keyframes;
+};
+
+struct SkeletalAnimationComponent {
+    bool enabled = true;
+    bool useGpuSkinning = true;
+    bool allowCpuFallback = true;
+    bool useAnimation = true;
+    int clipIndex = 0;
+    float time = 0.0f;
+    float playSpeed = 1.0f;
+    bool loop = true;
+    int skeletonRootId = -1;
+    int maxBones = 128;
+    std::vector<std::string> boneNames;
+    std::vector<int> boneNodeIds;
+    std::vector<glm::mat4> inverseBindMatrices;
+    std::vector<glm::mat4> finalMatrices;
+};
+
 struct LightComponent {
     LightType type = LightType::Point;
     glm::vec3 color = glm::vec3(1.0f);
@@ -85,6 +179,8 @@ struct CameraComponent {
     float nearClip = NEAR_PLANE;
     float farClip = FAR_PLANE;
     bool applyPostFX = true;
+    bool use2D = false;
+    float pixelsPerUnit = 100.0f;
 };
 
 struct PostFXSettings {
@@ -122,9 +218,16 @@ struct ScriptSetting {
     std::string value;
 };
 
+enum class ScriptLanguage {
+    Cpp = 0,
+    CSharp = 1
+};
+
 struct ScriptComponent {
     bool enabled = true;
+    ScriptLanguage language = ScriptLanguage::Cpp;
     std::string path;
+    std::string managedType;
     std::vector<ScriptSetting> settings;
     std::string lastBinaryPath;
     std::vector<void*> activeIEnums; // function pointers registered via IEnum_Start
@@ -169,9 +272,11 @@ struct PlayerControllerComponent {
 };
 
 struct UIElementComponent {
+    UIElementType type = UIElementType::None;
     UIAnchor anchor = UIAnchor::Center;
     glm::vec2 position = glm::vec2(0.0f); // offset in pixels from anchor
     glm::vec2 size = glm::vec2(160.0f, 40.0f);
+    float rotation = 0.0f;
     float sliderValue = 0.5f;
     float sliderMin = 0.0f;
     float sliderMax = 1.0f;
@@ -193,6 +298,37 @@ struct Rigidbody2DComponent {
     glm::vec2 velocity = glm::vec2(0.0f);
 };
 
+enum class Collider2DType {
+    Box = 0,
+    Polygon = 1,
+    Edge = 2
+};
+
+struct Collider2DComponent {
+    bool enabled = true;
+    Collider2DType type = Collider2DType::Box;
+    glm::vec2 boxSize = glm::vec2(1.0f);
+    std::vector<glm::vec2> points;
+    bool closed = false;
+    float edgeThickness = 0.05f;
+};
+
+struct ParallaxLayer2DComponent {
+    bool enabled = true;
+    int order = 0;
+    float factor = 1.0f; // 1 = world locked, 0 = camera locked
+    bool repeatX = false;
+    bool repeatY = false;
+    glm::vec2 repeatSpacing = glm::vec2(0.0f);
+};
+
+struct CameraFollow2DComponent {
+    bool enabled = true;
+    int targetId = -1;
+    glm::vec2 offset = glm::vec2(0.0f);
+    float smoothTime = 0.0f; // seconds; 0 snaps to target
+};
+
 struct AudioSourceComponent {
     bool enabled = true;
     std::string clipPath;
@@ -202,6 +338,36 @@ struct AudioSourceComponent {
     bool spatial = true;
     float minDistance = 1.0f;
     float maxDistance = 25.0f;
+    AudioRolloffMode rolloffMode = AudioRolloffMode::Logarithmic;
+    float rolloff = 1.0f;
+    float customMidDistance = 0.5f;
+    float customMidGain = 0.6f;
+    float customEndGain = 0.0f;
+};
+
+struct ReverbZoneComponent {
+    bool enabled = true;
+    ReverbPreset preset = ReverbPreset::Room;
+    ReverbZoneShape shape = ReverbZoneShape::Box;
+    glm::vec3 boxSize = glm::vec3(6.0f);
+    float radius = 6.0f;
+    float blendDistance = 1.0f;
+    float minDistance = 1.0f;
+    float maxDistance = 15.0f;
+    float room = -1000.0f;          // dB
+    float roomHF = -100.0f;         // dB
+    float roomLF = 0.0f;            // dB
+    float decayTime = 1.49f;        // s
+    float decayHFRatio = 0.83f;     // 0.1..2
+    float reflections = -2602.0f;   // dB
+    float reflectionsDelay = 0.007f; // s
+    float reverb = 200.0f;          // dB
+    float reverbDelay = 0.011f;     // s
+    float hfReference = 5000.0f;    // Hz
+    float lfReference = 250.0f;     // Hz
+    float roomRolloffFactor = 0.0f;
+    float diffusion = 100.0f;       // 0..100
+    float density = 100.0f;         // 0..100
 };
 
 class SceneObject {
@@ -211,6 +377,12 @@ public:
     bool enabled = true;
     int layer = 0;
     std::string tag = "Untagged";
+    bool hasRenderer = false;
+    RenderType renderType = RenderType::None;
+    bool hasLight = false;
+    bool hasCamera = false;
+    bool hasPostFX = false;
+    bool hasUI = false;
     glm::vec3 position;
     glm::vec3 rotation;
     glm::vec3 scale;
@@ -224,6 +396,7 @@ public:
     bool isExpanded = true;
     std::string meshPath;  // Path to imported model file
     int meshId = -1;       // Index into loaded mesh caches (OBJLoader / ModelLoader)
+    int meshSourceIndex = -1; // Source mesh index for multi-mesh models
     MaterialProperties material;
     std::string materialPath;       // Optional external material asset
     std::string albedoTexturePath;
@@ -241,12 +414,24 @@ public:
     RigidbodyComponent rigidbody;
     bool hasRigidbody2D = false;
     Rigidbody2DComponent rigidbody2D;
+    bool hasCollider2D = false;
+    Collider2DComponent collider2D;
+    bool hasParallaxLayer2D = false;
+    ParallaxLayer2DComponent parallaxLayer2D;
+    bool hasCameraFollow2D = false;
+    CameraFollow2DComponent cameraFollow2D;
     bool hasCollider = false;
     ColliderComponent collider;
     bool hasPlayerController = false;
     PlayerControllerComponent playerController;
     bool hasAudioSource = false;
     AudioSourceComponent audioSource;
+    bool hasReverbZone = false;
+    ReverbZoneComponent reverbZone;
+    bool hasAnimation = false;
+    AnimationComponent animation;
+    bool hasSkeletalAnimation = false;
+    SkeletalAnimationComponent skeletal;
     UIElementComponent ui;
 
     SceneObject(const std::string& name, ObjectType type, int id)
@@ -261,3 +446,11 @@ public:
           localInitialized(true),
           id(id) {}
 };
+
+inline bool HasRendererComponent(const SceneObject& obj) {
+    return obj.hasRenderer && obj.renderType != RenderType::None;
+}
+
+inline bool HasUIComponent(const SceneObject& obj) {
+    return obj.hasUI && obj.ui.type != UIElementType::None;
+}
