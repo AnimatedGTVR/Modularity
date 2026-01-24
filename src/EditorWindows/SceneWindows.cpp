@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
+#include <cctype>
 #include <functional>
 #include <sstream>
 #include <unordered_set>
@@ -21,6 +22,7 @@
 #pragma region Hierarchy Helpers
 namespace {
     ImU32 GetHierarchyTypeColor(const SceneObject& obj) {
+        if (!obj.scripts.empty()) return IM_COL32(255, 175, 90, 235);
         if (obj.hasCamera) return IM_COL32(110, 175, 235, 220);
         if (obj.hasLight) return IM_COL32(255, 200, 90, 220);
         if (obj.hasPostFX) return IM_COL32(200, 140, 230, 220);
@@ -96,35 +98,338 @@ namespace {
         target.type = ObjectType::Empty;
     }
 
-    void DrawFileOutlineIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float w = size * 0.78f;
-        float h = size * 0.95f;
-        float offsetX = (size - w) * 0.5f;
-        float offsetY = (size - h) * 0.5f;
-        float corner = w * 0.28f;
-        ImVec2 min(pos.x + offsetX, pos.y + offsetY);
-        ImVec2 max(pos.x + offsetX + w, pos.y + offsetY + h);
-        ImVec2 foldA(max.x - corner, min.y);
-        ImVec2 foldB(max.x, min.y + corner);
-        ImVec2 foldC(max.x - corner, min.y + corner);
-        drawList->AddRect(min, max, color, size * 0.12f, 0, 1.2f);
-        drawList->AddTriangle(foldA, foldB, foldC, color, 1.2f);
-        drawList->AddLine(ImVec2(foldA.x, foldA.y), ImVec2(foldC.x, foldC.y), color, 1.2f);
+    struct SvgPathSpec {
+        const char* d;
+        bool stroke;
+    };
+
+    struct SvgIconSpec {
+        float viewW;
+        float viewH;
+        const SvgPathSpec* paths;
+        int pathCount;
+    };
+
+    struct SvgSubpath {
+        std::vector<ImVec2> points;
+        bool closed = false;
+        bool stroke = false;
+    };
+
+    struct SvgIconCache {
+        bool built = false;
+        std::vector<SvgSubpath> subpaths;
+    };
+
+    static bool IsCommandChar(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     }
 
-    void DrawCubeOutlineIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        float inset = size * 0.18f;
-        float backOffset = size * 0.16f;
-        ImVec2 frontMin(pos.x + inset, pos.y + inset + backOffset);
-        ImVec2 frontMax(pos.x + size - inset, pos.y + size - inset + backOffset);
-        ImVec2 backMin(pos.x + inset + backOffset, pos.y + inset);
-        ImVec2 backMax(pos.x + size - inset + backOffset, pos.y + size - inset);
-        drawList->AddRect(frontMin, frontMax, color, 0.0f, 0, 1.2f);
-        drawList->AddRect(backMin, backMax, color, 0.0f, 0, 1.2f);
-        drawList->AddLine(frontMin, backMin, color, 1.2f);
-        drawList->AddLine(ImVec2(frontMax.x, frontMin.y), ImVec2(backMax.x, backMin.y), color, 1.2f);
-        drawList->AddLine(ImVec2(frontMin.x, frontMax.y), ImVec2(backMin.x, backMax.y), color, 1.2f);
-        drawList->AddLine(frontMax, backMax, color, 1.2f);
+    static void SkipSvgSeparators(const char*& s) {
+        while (*s) {
+            if (*s == ' ' || *s == '\n' || *s == '\t' || *s == '\r' || *s == ',') {
+                ++s;
+                continue;
+            }
+            break;
+        }
+    }
+
+    static bool ParseSvgNumber(const char*& s, float& out) {
+        SkipSvgSeparators(s);
+        if (!*s) return false;
+        char* end = nullptr;
+        out = strtof(s, &end);
+        if (end == s) return false;
+        s = end;
+        return true;
+    }
+
+    static ImVec2 SvgLerp(const ImVec2& a, const ImVec2& b, float t) {
+        return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    }
+
+    static ImVec2 SvgCubic(const ImVec2& p0, const ImVec2& p1, const ImVec2& p2, const ImVec2& p3, float t) {
+        ImVec2 a = SvgLerp(p0, p1, t);
+        ImVec2 b = SvgLerp(p1, p2, t);
+        ImVec2 c = SvgLerp(p2, p3, t);
+        ImVec2 d = SvgLerp(a, b, t);
+        ImVec2 e = SvgLerp(b, c, t);
+        return SvgLerp(d, e, t);
+    }
+
+    static void AppendSvgCubic(std::vector<ImVec2>& pts, const ImVec2& p0, const ImVec2& p1,
+                               const ImVec2& p2, const ImVec2& p3, int segments) {
+        for (int i = 1; i <= segments; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(segments);
+            pts.push_back(SvgCubic(p0, p1, p2, p3, t));
+        }
+    }
+
+    static float SvgVectorAngle(const ImVec2& u, const ImVec2& v) {
+        float dot = u.x * v.x + u.y * v.y;
+        float det = u.x * v.y - u.y * v.x;
+        return std::atan2(det, dot);
+    }
+
+    static void AppendSvgArc(std::vector<ImVec2>& pts, const ImVec2& start, const ImVec2& end,
+                             float rx, float ry, float xAxisRotationDeg, bool largeArc, bool sweep) {
+        if (rx == 0.0f || ry == 0.0f) {
+            pts.push_back(end);
+            return;
+        }
+
+        float phi = xAxisRotationDeg * (IM_PI / 180.0f);
+        float cosPhi = std::cos(phi);
+        float sinPhi = std::sin(phi);
+
+        float dx2 = (start.x - end.x) * 0.5f;
+        float dy2 = (start.y - end.y) * 0.5f;
+        float x1p = cosPhi * dx2 + sinPhi * dy2;
+        float y1p = -sinPhi * dx2 + cosPhi * dy2;
+
+        rx = std::fabs(rx);
+        ry = std::fabs(ry);
+
+        float lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+        if (lambda > 1.0f) {
+            float s = std::sqrt(lambda);
+            rx *= s;
+            ry *= s;
+        }
+
+        float rx2 = rx * rx;
+        float ry2 = ry * ry;
+        float x1p2 = x1p * x1p;
+        float y1p2 = y1p * y1p;
+
+        float denom = (rx2 * y1p2 + ry2 * x1p2);
+        float num = rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2;
+        float coef = 0.0f;
+        if (denom > 0.0f) {
+            float sign = (largeArc == sweep) ? -1.0f : 1.0f;
+            coef = sign * std::sqrt(std::max(0.0f, num / denom));
+        }
+
+        float cxp = coef * (rx * y1p / ry);
+        float cyp = coef * (-ry * x1p / rx);
+
+        float cx = cosPhi * cxp - sinPhi * cyp + (start.x + end.x) * 0.5f;
+        float cy = sinPhi * cxp + cosPhi * cyp + (start.y + end.y) * 0.5f;
+
+        ImVec2 v1((x1p - cxp) / rx, (y1p - cyp) / ry);
+        ImVec2 v2((-x1p - cxp) / rx, (-y1p - cyp) / ry);
+
+        float startAngle = std::atan2(v1.y, v1.x);
+        float deltaAngle = SvgVectorAngle(v1, v2);
+        if (!sweep && deltaAngle > 0.0f) deltaAngle -= 2.0f * IM_PI;
+        if (sweep && deltaAngle < 0.0f) deltaAngle += 2.0f * IM_PI;
+
+        float absDelta = std::fabs(deltaAngle);
+        int segments = std::max(4, static_cast<int>(std::ceil(absDelta / (IM_PI / 8.0f))));
+        for (int i = 1; i <= segments; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(segments);
+            float angle = startAngle + deltaAngle * t;
+            float cosA = std::cos(angle);
+            float sinA = std::sin(angle);
+            float x = cx + cosPhi * rx * cosA - sinPhi * ry * sinA;
+            float y = cy + sinPhi * rx * cosA + cosPhi * ry * sinA;
+            pts.push_back(ImVec2(x, y));
+        }
+    }
+
+    static void FinalizeSvgSubpath(std::vector<SvgSubpath>& out, std::vector<ImVec2>& current, bool closed, bool stroke) {
+        if (current.size() < 2) {
+            current.clear();
+            return;
+        }
+        if (closed && current.size() > 2) {
+            if (current.front().x != current.back().x || current.front().y != current.back().y) {
+                current.push_back(current.front());
+            }
+        }
+        SvgSubpath sub;
+        sub.points = std::move(current);
+        sub.closed = closed;
+        sub.stroke = stroke;
+        out.push_back(std::move(sub));
+        current.clear();
+    }
+
+    static void ParseSvgPathData(const char* d, std::vector<SvgSubpath>& out, bool stroke) {
+        const char* s = d;
+        char cmd = 0;
+        ImVec2 cur(0, 0);
+        ImVec2 start(0, 0);
+        ImVec2 lastCtrl(0, 0);
+        bool hasCtrl = false;
+        std::vector<ImVec2> current;
+
+        while (*s) {
+            SkipSvgSeparators(s);
+            if (!*s) break;
+            if (IsCommandChar(*s)) {
+                cmd = *s++;
+            } else if (!cmd) {
+                break;
+            }
+
+            bool relative = (cmd >= 'a' && cmd <= 'z');
+            char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(cmd)));
+
+            if (upper == 'M') {
+                float x, y;
+                if (!ParseSvgNumber(s, x) || !ParseSvgNumber(s, y)) break;
+                if (relative) {
+                    cur.x += x;
+                    cur.y += y;
+                } else {
+                    cur = ImVec2(x, y);
+                }
+                FinalizeSvgSubpath(out, current, false, stroke);
+                current.push_back(cur);
+                start = cur;
+                hasCtrl = false;
+
+                while (ParseSvgNumber(s, x) && ParseSvgNumber(s, y)) {
+                    ImVec2 p = relative ? ImVec2(cur.x + x, cur.y + y) : ImVec2(x, y);
+                    cur = p;
+                    current.push_back(cur);
+                }
+                continue;
+            }
+
+            if (upper == 'Z') {
+                FinalizeSvgSubpath(out, current, true, stroke);
+                cur = start;
+                hasCtrl = false;
+                continue;
+            }
+
+            if (upper == 'L') {
+                float x, y;
+                while (ParseSvgNumber(s, x) && ParseSvgNumber(s, y)) {
+                    cur = relative ? ImVec2(cur.x + x, cur.y + y) : ImVec2(x, y);
+                    current.push_back(cur);
+                }
+                hasCtrl = false;
+                continue;
+            }
+
+            if (upper == 'H') {
+                float x;
+                while (ParseSvgNumber(s, x)) {
+                    cur.x = relative ? cur.x + x : x;
+                    current.push_back(cur);
+                }
+                hasCtrl = false;
+                continue;
+            }
+
+            if (upper == 'V') {
+                float y;
+                while (ParseSvgNumber(s, y)) {
+                    cur.y = relative ? cur.y + y : y;
+                    current.push_back(cur);
+                }
+                hasCtrl = false;
+                continue;
+            }
+
+            if (upper == 'C') {
+                float x1, y1, x2, y2, x, y;
+                while (ParseSvgNumber(s, x1) && ParseSvgNumber(s, y1) &&
+                       ParseSvgNumber(s, x2) && ParseSvgNumber(s, y2) &&
+                       ParseSvgNumber(s, x) && ParseSvgNumber(s, y)) {
+                    ImVec2 p1 = relative ? ImVec2(cur.x + x1, cur.y + y1) : ImVec2(x1, y1);
+                    ImVec2 p2 = relative ? ImVec2(cur.x + x2, cur.y + y2) : ImVec2(x2, y2);
+                    ImVec2 p3 = relative ? ImVec2(cur.x + x, cur.y + y) : ImVec2(x, y);
+                    AppendSvgCubic(current, cur, p1, p2, p3, 12);
+                    cur = p3;
+                    lastCtrl = p2;
+                    hasCtrl = true;
+                }
+                continue;
+            }
+
+            if (upper == 'S') {
+                float x2, y2, x, y;
+                while (ParseSvgNumber(s, x2) && ParseSvgNumber(s, y2) &&
+                       ParseSvgNumber(s, x) && ParseSvgNumber(s, y)) {
+                    ImVec2 p1 = hasCtrl ? ImVec2(cur.x * 2.0f - lastCtrl.x, cur.y * 2.0f - lastCtrl.y) : cur;
+                    ImVec2 p2 = relative ? ImVec2(cur.x + x2, cur.y + y2) : ImVec2(x2, y2);
+                    ImVec2 p3 = relative ? ImVec2(cur.x + x, cur.y + y) : ImVec2(x, y);
+                    AppendSvgCubic(current, cur, p1, p2, p3, 12);
+                    cur = p3;
+                    lastCtrl = p2;
+                    hasCtrl = true;
+                }
+                continue;
+            }
+
+            if (upper == 'A') {
+                float rx, ry, xRot, largeFlag, sweepFlag, x, y;
+                while (ParseSvgNumber(s, rx) && ParseSvgNumber(s, ry) &&
+                       ParseSvgNumber(s, xRot) && ParseSvgNumber(s, largeFlag) &&
+                       ParseSvgNumber(s, sweepFlag) && ParseSvgNumber(s, x) &&
+                       ParseSvgNumber(s, y)) {
+                    ImVec2 end = relative ? ImVec2(cur.x + x, cur.y + y) : ImVec2(x, y);
+                    AppendSvgArc(current, cur, end, rx, ry, xRot, largeFlag != 0.0f, sweepFlag != 0.0f);
+                    cur = end;
+                    hasCtrl = false;
+                }
+                continue;
+            }
+
+            hasCtrl = false;
+        }
+
+        FinalizeSvgSubpath(out, current, false, stroke);
+    }
+
+    static void BuildSvgIconCache(const SvgIconSpec& spec, SvgIconCache& cache) {
+        if (cache.built) return;
+        for (int i = 0; i < spec.pathCount; ++i) {
+            ParseSvgPathData(spec.paths[i].d, cache.subpaths, spec.paths[i].stroke);
+        }
+        cache.built = true;
+    }
+
+    static ImVec2 SvgTransformPoint(const ImVec2& p, const ImVec2& min, const ImVec2& max,
+                                    float viewW, float viewH, float scaleFactor) {
+        float size = std::min(max.x - min.x, max.y - min.y) * scaleFactor;
+        ImVec2 center = ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+        float scale = size / std::max(viewW, viewH);
+        ImVec2 offset = ImVec2(center.x - (viewW * scale) * 0.5f, center.y - (viewH * scale) * 0.5f);
+        return ImVec2(offset.x + p.x * scale, offset.y + p.y * scale);
+    }
+
+    static void DrawSvgIcon(ImDrawList* drawList, const SvgIconSpec& spec, SvgIconCache& cache,
+                            const ImVec2& min, const ImVec2& max, ImU32 color, float strokeScale, float scaleFactor) {
+        BuildSvgIconCache(spec, cache);
+        for (const SvgSubpath& sub : cache.subpaths) {
+            if (sub.points.size() < 2) continue;
+            drawList->PathClear();
+            for (const ImVec2& p : sub.points) {
+                drawList->PathLineTo(SvgTransformPoint(p, min, max, spec.viewW, spec.viewH, scaleFactor));
+            }
+            ImDrawFlags flags = sub.closed ? ImDrawFlags_Closed : 0;
+            drawList->PathStroke(color, flags, strokeScale);
+        }
+    }
+
+    static const SvgPathSpec kEmptyObjectSvgPaths[] = {
+        { "M 10.005859 0.5 A 0.50083746 0.50083746 0 0 0 9.7539062 0.56445312 L 1.7539062 5.0644531 A 0.50083746 0.50083746 0 0 0 1.5 5.5 L 1.5 14.5 A 0.50083746 0.50083746 0 0 0 1.7539062 14.935547 L 9.7539062 19.435547 A 0.50083746 0.50083746 0 0 0 10.246094 19.435547 L 18.246094 14.935547 A 0.50083746 0.50083746 0 0 0 18.5 14.5 L 18.5 5.5 A 0.50083746 0.50083746 0 0 0 18.246094 5.0644531 L 10.246094 0.56445312 A 0.50083746 0.50083746 0 0 0 10.005859 0.5 z M 10 1.5742188 L 16.978516 5.5 L 10 9.4257812 L 3.0214844 5.5 L 10 1.5742188 z M 2.5 6.3554688 L 9.5 10.292969 L 9.5 18.144531 L 2.5 14.207031 L 2.5 6.3554688 z M 17.5 6.3554688 L 17.5 14.207031 L 10.5 18.144531 L 10.5 10.292969 L 17.5 6.3554688 z", true }
+    };
+
+    static const SvgIconSpec kEmptyObjectSvg = { 20.0f, 20.0f, kEmptyObjectSvgPaths, 1 };
+    static SvgIconCache gEmptyObjectSvgCache;
+
+    void DrawEmptyObjectIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        ImVec2 min(pos.x, pos.y);
+        ImVec2 max(pos.x + size, pos.y + size);
+        float stroke = std::max(1.0f, size * 0.055f);
+        DrawSvgIcon(drawList, kEmptyObjectSvg, gEmptyObjectSvgCache, min, max, color, stroke, 0.9f);
     }
 
     void DrawHierarchyLines(ImDrawList* drawList, const ImVec2& itemMin, const ImVec2& itemMax,
@@ -456,11 +761,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     float labelStart = itemMin.x + ImGui::GetTreeNodeToLabelSpacing();
     ImVec2 iconPos(labelStart, itemMin.y + (lineHeight - iconSize) * 0.5f);
     ImU32 iconColor = GetHierarchyTypeColor(obj);
-    if (obj.parentId == -1) {
-        DrawCubeOutlineIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
-    } else {
-        DrawFileOutlineIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
-    }
+    DrawEmptyObjectIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
