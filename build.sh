@@ -2,6 +2,7 @@
 set -euo pipefail
 
 start_time=$(date +%s)
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 finish() {
     local exit_code=$?
@@ -24,13 +25,22 @@ trap finish EXIT
 echo -e "================================\n   Modularity - Native Linux Builder\n================================"
 
 clean_build=0
+build_type="Release"
 for arg in "$@"; do
     if [ "$arg" = "--clean" ]; then
         clean_build=1
+    elif [[ "$arg" == --build-type=* ]]; then
+        build_type="${arg#*=}"
     fi
 done
 
 git submodule update --init --recursive
+
+if command -v ccache >/dev/null 2>&1; then
+    export CCACHE_BASEDIR="$script_dir"
+    export CCACHE_NOHASHDIR=1
+    echo -e "[i]: ccache detected. Normalizing paths for cross-build cache hits."
+fi
 
 if [ -d "build" ] && [ $clean_build -eq 1 ]; then
     echo -e "[i]: Cleaning existing build directory..."
@@ -40,7 +50,7 @@ fi
 
 mkdir -p build
 cd build
-cmake .. -DMONO_ROOT=/usr
+cmake .. -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type"
 cmake --build . -- -j"$(nproc)"
 
 mkdir -p Packages/ThirdParty
@@ -60,7 +70,7 @@ if [ $clean_build -eq 1 ] && [ -d "$player_cache_dir" ]; then
 fi
 
 mkdir -p "$player_cache_dir"
-cmake -S . -B "$player_cache_dir" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE=Release -DMODULARITY_BUILD_EDITOR=OFF
+cmake -S . -B "$player_cache_dir" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type" -DMODULARITY_BUILD_EDITOR=OFF
 cmake --build "$player_cache_dir" --target ModularityPlayer -- -j"$(nproc)"
 
 mkdir -p "$player_cache_dir/Packages/ThirdParty"
