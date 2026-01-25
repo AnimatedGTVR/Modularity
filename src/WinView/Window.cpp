@@ -5,6 +5,8 @@
 int width, height, channels;
 
 namespace {
+constexpr int kAnyProfile = 0;
+
 void glfwErrorCallback(int code, const char* description) {
   std::cerr << "GLFW error (" << code << "): "
             << (description ? description : "unknown") << "\n";
@@ -14,7 +16,7 @@ GLFWwindow* tryCreateWindow(int major, int minor, int profile) {
   glfwDefaultWindowHints();
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, major);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minor);
-  if (profile != GLFW_ANY_PROFILE) {
+  if (profile != kAnyProfile) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, profile);
   }
   return glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
@@ -47,15 +49,15 @@ GLFWwindow *Window::makeWindow() {
   GLFWwindow *window = tryCreateWindow(3, 3, GLFW_OPENGL_CORE_PROFILE);
   if (!window) {
     std::cerr << "Failed to create GLFW window (OpenGL 3.3 core). Retrying...\n";
-    window = tryCreateWindow(3, 3, GLFW_ANY_PROFILE);
+    window = tryCreateWindow(3, 3, kAnyProfile);
   }
   if (!window) {
     std::cerr << "Failed to create GLFW window (OpenGL 3.3 any). Retrying...\n";
-    window = tryCreateWindow(3, 0, GLFW_ANY_PROFILE);
+    window = tryCreateWindow(3, 0, kAnyProfile);
   }
   if (!window) {
     std::cerr << "Failed to create GLFW window (OpenGL 3.0 any). Retrying...\n";
-    window = tryCreateWindow(2, 1, GLFW_ANY_PROFILE);
+    window = tryCreateWindow(2, 1, kAnyProfile);
   }
   if (!window) {
     std::cerr << "Failed to create GLFW window\n";
