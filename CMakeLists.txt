@@ -171,7 +171,20 @@ target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 if(MODULARITY_ENABLE_PHYSX)
     set(PHYSX_ROOT_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/PhysX/physx CACHE PATH "PhysX root directory")
-    set(TARGET_BUILD_PLATFORM "linux" CACHE STRING "PhysX build platform (linux/windows)")
+    if(WIN32)
+    set(TARGET_BUILD_PLATFORM "windows" CACHE STRING "PhysX build platform" FORCE)
+    else()
+    set(TARGET_BUILD_PLATFORM "linux" CACHE STRING "PhysX build platform" FORCE)
+    endif()
+    # ---- PhysX hard disables (must be BEFORE add_subdirectory) ----
+    set(PX_SUPPORT_GLUT OFF CACHE BOOL "" FORCE)
+    set(PX_USE_GLUT OFF CACHE BOOL "" FORCE)
+    set(PX_ENABLE_GLUT OFF CACHE BOOL "" FORCE)
+    set(PX_BUILDSNIPPETS OFF CACHE BOOL "" FORCE)
+    set(PX_BUILDPUBLICSAMPLES OFF CACHE BOOL "" FORCE)
+    set(PX_BUILDTESTS OFF CACHE BOOL "" FORCE)
+    set(PX_BUILDFASTXML OFF CACHE BOOL "" FORCE)
+
     # PhysX build system expects output locations when using the GameWorks layout.
     set(PX_OUTPUT_LIB_DIR ${CMAKE_BINARY_DIR}/physx CACHE PATH "PhysX output lib directory")
     set(PX_OUTPUT_BIN_DIR ${CMAKE_BINARY_DIR}/physx/bin CACHE PATH "PhysX output bin directory")
