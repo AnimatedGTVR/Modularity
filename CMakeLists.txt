@@ -287,4 +287,31 @@ add_custom_command(TARGET ModularityPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/Resources
         $<TARGET_FILE_DIR:ModularityPlayer>/Resources
-)	
+)
+
+# ==================== Copy PhysX DLLs (Windows) ====================
+if(WIN32 AND MODULARITY_ENABLE_PHYSX)
+    set(PHYSX_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyPhysXDLLs.cmake)
+    if(MODULARITY_BUILD_EDITOR)
+        add_custom_command(TARGET Modularity POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                -D SRC_DIR=${PX_OUTPUT_BIN_DIR}
+                -D DST_DIR=$<TARGET_FILE_DIR:Modularity>
+                -P ${PHYSX_COPY_SCRIPT}
+            COMMAND ${CMAKE_COMMAND}
+                -D SRC_DIR=${CMAKE_BINARY_DIR}/physx/sdk_source_bin
+                -D DST_DIR=$<TARGET_FILE_DIR:Modularity>
+                -P ${PHYSX_COPY_SCRIPT}
+        )
+    endif()
+    add_custom_command(TARGET ModularityPlayer POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -D SRC_DIR=${PX_OUTPUT_BIN_DIR}
+            -D DST_DIR=$<TARGET_FILE_DIR:ModularityPlayer>
+            -P ${PHYSX_COPY_SCRIPT}
+        COMMAND ${CMAKE_COMMAND}
+            -D SRC_DIR=${CMAKE_BINARY_DIR}/physx/sdk_source_bin
+            -D DST_DIR=$<TARGET_FILE_DIR:ModularityPlayer>
+            -P ${PHYSX_COPY_SCRIPT}
+    )
+endif()

@@ -51,19 +51,6 @@ namespace {
         return output;
     }
 
-    std::string escapeForCmd(const std::string& value) {
-        std::string out;
-        out.reserve(value.size());
-        for (char c : value) {
-            if (c == '"') {
-                out += "\"\"";
-            } else {
-                out += c;
-            }
-        }
-        return out;
-    }
-
     std::string findVsDevCmd() {
         std::string vsInstall = getEnvValue("VSINSTALLDIR");
         if (!vsInstall.empty()) {
@@ -146,7 +133,7 @@ namespace {
         wrapped << "cmd /c \"\""
                 << vsDevCmd
                 << "\" -arch=x64 -host_arch=x64 >nul && "
-                << escapeForCmd(command)
+                << command
                 << "\"";
         return wrapped.str();
     }
