@@ -31,7 +31,11 @@ namespace GizmoToolbar {
         Universal,
         Mesh,
         GizmoToggle,
-        GridToggle
+        GridToggle,
+        SnapToggle,
+        LocalMode,
+        WorldMode,
+        UiWorldToggle
     };
 
     static ImVec4 ScaleColor(const ImVec4& c, float s) {
@@ -499,11 +503,30 @@ namespace GizmoToolbar {
     };
 
     static const SvgPathSpec kGizmoToggleSvgPaths[] = {
-        { "M2 17h1v5h5v1H2zm21 0h-1v5h-5v1h6zM3 3h5V2H2v6h1zm20-1h-6v1h5v5h1zm-9.75 12h-1.5a.75.75 0 0 1-.75-.75v-1.5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-.75.75zM13 12h-1v1h1zm7 0h-5v1h5zm-10 0H5v1h5zm3 8v-5h-1v5zm-1-10h1V5h-1z", true }
+        { "M2 17h1v5h5v1H2zm21 0h-1v5h-5v1h6zM3 3h5V2H2v6h1zm20-1h-6v1h5v5h1zm-9.75 12h-1.5a.75.75 0 0 1-.75-.75v-1.5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-.75.75zM13 12h-1v1h1zm7 0h-5v1h5zm-10 0H5v1h5zm3 8v-5h-1v5zm-1-10h1V5h-1z", false }
     };
 
     static const SvgPathSpec kGridToggleSvgPaths[] = {
         { "M47.547,63.547V448.453a16,16,0,0,0,16,16H448.453a16,16,0,0,0,16-16V63.547a16,16,0,0,0-16-16H63.547A16,16,0,0,0,47.547,63.547Zm288.6,16h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Zm-128.3-256.6h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Zm-128.3-256.6h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Zm0,128.3h96.3v96.3h-96.3Z", true }
+    };
+
+    static const SvgPathSpec kSnapToggleSvgPaths[] = {
+        { "M13.3,7.7l8.1,8.1c1.5,1.5,1.5,3.9,0,5.4c-1.5,1.5-3.9,1.5-5.4,0l-8.1-8.1l-4.7,4.7l8.1,8.1 c4.1,4.1,10.7,4.1,14.8,0s4.1-10.7,0-14.8L18,3L13.3,7.7z", true }
+    };
+
+    static const SvgPathSpec kLocalModeSvgPaths[] = {
+        { "M8 10C9.10457 10 10 9.10457 10 8C10 6.89543 9.10457 6 8 6C6.89543 6 6 6.89543 6 8C6 9.10457 6.89543 10 8 10Z", false },
+        { "M2.08296 7C2.50448 4.48749 4.48749 2.50448 7 2.08296V0H9V2.08296C11.5125 2.50448 13.4955 4.48749 13.917 7H16V9H13.917C13.4955 11.5125 11.5125 13.4955 9 13.917V16H7V13.917C4.48749 13.4955 2.50448 11.5125 2.08296 9H0V7H2.08296ZM4 8C4 5.79086 5.79086 4 8 4C10.2091 4 12 5.79086 12 8C12 10.2091 10.2091 12 8 12C5.79086 12 4 10.2091 4 8Z", false }
+    };
+
+    static const SvgPathSpec kWorldModeSvgPaths[] = {
+        { "M19.5 6L18.0333 7.1C17.6871 7.35964 17.2661 7.5 16.8333 7.5H13.475C12.8775 7.5 12.3312 7.83761 12.064 8.37206V8.37206C11.7342 9.03161 11.9053 9.83161 12.476 10.2986L14.476 11.9349C16.0499 13.2227 16.8644 15.22 16.6399 17.2412L16.6199 17.4206C16.5403 18.1369 16.3643 18.8392 16.0967 19.5083L15.5 21", true },
+        { "M2.5 10.5L5.7381 9.96032C7.09174 9.73471 8.26529 10.9083 8.03968 12.2619L7.90517 13.069C7.66434 14.514 8.3941 15.9471 9.70437 16.6022V16.6022C10.7535 17.1268 11.2976 18.3097 11.0131 19.4476L10.5 21.5", true },
+        { "M12 2.5C6.75329 2.5 2.5 6.75329 2.5 12C2.5 17.2467 6.75329 21.5 12 21.5C17.2467 21.5 21.5 17.2467 21.5 12C21.5 6.75329 17.2467 2.5 12 2.5Z", true }
+    };
+
+    static const SvgPathSpec kUiWorldToggleSvgPaths[] = {
+        { "M1 1 L17 1 L17 17 L1 17 L1 1 Z M20 7 L23 7 L23 23 L7 23 L7 20 L7 20", true }
     };
 
     static const SvgIconSpec kTranslateSvg = { 24.0f, 24.0f, kTranslateSvgPaths, 4 };
@@ -513,6 +536,10 @@ namespace GizmoToolbar {
     static const SvgIconSpec kMeshSvg = { 512.0f, 512.0f, kMeshSvgPaths, 1 };
     static const SvgIconSpec kGizmoToggleSvg = { 20.0f, 20.0f, kGizmoToggleSvgPaths, 1 };
     static const SvgIconSpec kGridToggleSvg = { 512.0f, 512.0f, kGridToggleSvgPaths, 1 };
+    static const SvgIconSpec kSnapToggleSvg = { 32.0f, 32.0f, kSnapToggleSvgPaths, 1 };
+    static const SvgIconSpec kLocalModeSvg = { 16.0f, 16.0f, kLocalModeSvgPaths, 1 };
+    static const SvgIconSpec kWorldModeSvg = { 24.0f, 24.0f, kWorldModeSvgPaths, 3 };
+    static const SvgIconSpec kUiWorldToggleSvg = { 24.0f, 24.0f, kUiWorldToggleSvgPaths, 1 };
 
     static SvgIconCache gTranslateSvgCache;
     static SvgIconCache gRotateSvgCache;
@@ -521,6 +548,10 @@ namespace GizmoToolbar {
     static SvgIconCache gMeshSvgCache;
     static SvgIconCache gGizmoToggleSvgCache;
     static SvgIconCache gGridToggleSvgCache;
+    static SvgIconCache gSnapToggleSvgCache;
+    static SvgIconCache gLocalModeSvgCache;
+    static SvgIconCache gWorldModeSvgCache;
+    static SvgIconCache gUiWorldToggleSvgCache;
 
     static void DrawTranslateIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
         (void)accentColor;
@@ -556,12 +587,139 @@ namespace GizmoToolbar {
 
     static void DrawGizmoToggleIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
         (void)accentColor;
-        DrawSvgIcon(drawList, kGizmoToggleSvg, gGizmoToggleSvgCache, min, max, lineColor, 0.9f, 0.84f);
+        ImVec2 iconMin, iconMax;
+        GetIconBounds(min, max, iconMin, iconMax);
+        float size = iconMax.x - iconMin.x;
+        float thickness = std::max(1.0f, size * 0.08f);
+
+        auto T = [&](float x, float y) {
+            return ImVec2(iconMin.x + (x / 24.0f) * size, iconMin.y + (y / 24.0f) * size);
+        };
+
+        // Corner brackets
+        drawList->AddLine(T(2, 2), T(8, 2), lineColor, thickness);
+        drawList->AddLine(T(2, 2), T(2, 8), lineColor, thickness);
+        drawList->AddLine(T(16, 2), T(22, 2), lineColor, thickness);
+        drawList->AddLine(T(22, 2), T(22, 8), lineColor, thickness);
+        drawList->AddLine(T(2, 22), T(8, 22), lineColor, thickness);
+        drawList->AddLine(T(2, 16), T(2, 22), lineColor, thickness);
+        drawList->AddLine(T(16, 22), T(22, 22), lineColor, thickness);
+        drawList->AddLine(T(22, 16), T(22, 22), lineColor, thickness);
+
+        // Crosshair
+        drawList->AddLine(T(5, 12), T(10, 12), lineColor, thickness);
+        drawList->AddLine(T(14, 12), T(19, 12), lineColor, thickness);
+        drawList->AddLine(T(12, 5), T(12, 10), lineColor, thickness);
+        drawList->AddLine(T(12, 14), T(12, 19), lineColor, thickness);
+
+        // Center square
+        float half = 1.1f;
+        ImVec2 c = T(12, 12);
+        drawList->AddRectFilled(ImVec2(c.x - (half / 24.0f) * size, c.y - (half / 24.0f) * size),
+                                ImVec2(c.x + (half / 24.0f) * size, c.y + (half / 24.0f) * size),
+                                lineColor, 1.5f);
     }
 
     static void DrawGridToggleIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
         (void)accentColor;
-        DrawSvgIcon(drawList, kGridToggleSvg, gGridToggleSvgCache, min, max, lineColor, 0.85f, 0.78f);
+        DrawSvgIcon(drawList, kGridToggleSvg, gGridToggleSvgCache, min, max, lineColor, 0.8f, 0.72f);
+    }
+
+    static void DrawSnapToggleIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        (void)accentColor;
+        ImVec2 iconMin, iconMax;
+        GetIconBounds(min, max, iconMin, iconMax);
+        float size = iconMax.x - iconMin.x;
+        float thickness = std::max(1.0f, size * 0.075f);
+        DrawSvgIcon(drawList, kSnapToggleSvg, gSnapToggleSvgCache, min, max, lineColor, thickness, 0.78f);
+
+        auto T = [&](float x, float y) {
+            return ImVec2(iconMin.x + (x / 32.0f) * size, iconMin.y + (y / 32.0f) * size);
+        };
+        auto DrawRotRect = [&](float cx, float cy, float w, float h) {
+            float hx = w * 0.5f;
+            float hy = h * 0.5f;
+            float c = 0.70710678f;
+            float s = 0.70710678f;
+            ImVec2 corners[4] = {
+                ImVec2(-hx, -hy),
+                ImVec2(hx, -hy),
+                ImVec2(hx, hy),
+                ImVec2(-hx, hy)
+            };
+            drawList->PathClear();
+            for (int i = 0; i < 4; ++i) {
+                float rx = corners[i].x * c - corners[i].y * s;
+                float ry = corners[i].x * s + corners[i].y * c;
+                drawList->PathLineTo(T(cx + rx, cy + ry));
+            }
+            drawList->PathStroke(lineColor, ImDrawFlags_Closed, thickness);
+        };
+
+        DrawRotRect(6.95f, 16.8f, 6.7f, 3.8f);
+        DrawRotRect(17.05f, 6.7f, 6.7f, 3.8f);
+    }
+
+    static void DrawLocalModeIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        (void)accentColor;
+        ImVec2 iconMin, iconMax;
+        GetIconBounds(min, max, iconMin, iconMax);
+        ImVec2 center = ImVec2((iconMin.x + iconMax.x) * 0.5f, (iconMin.y + iconMax.y) * 0.5f);
+        float size = iconMax.x - iconMin.x;
+        float outerR = size * 0.36f;
+        float innerR = size * 0.2f;
+        float dotR = size * 0.08f;
+        float thickness = std::max(1.0f, size * 0.08f);
+
+        drawList->AddCircle(center, outerR, lineColor, 28, thickness);
+        drawList->AddCircleFilled(center, dotR, lineColor, 12);
+
+        const float tickLen = size * 0.12f;
+        const float tickR = outerR + tickLen * 0.5f;
+        for (int i = 0; i < 4; ++i) {
+            float angle = (IM_PI * 0.5f) * static_cast<float>(i);
+            ImVec2 dir(std::cos(angle), std::sin(angle));
+            ImVec2 a = ImVec2(center.x + dir.x * (outerR - tickLen * 0.2f),
+                              center.y + dir.y * (outerR - tickLen * 0.2f));
+            ImVec2 b = ImVec2(center.x + dir.x * (outerR + tickLen),
+                              center.y + dir.y * (outerR + tickLen));
+            drawList->AddLine(a, b, lineColor, thickness);
+        }
+    }
+
+    static void DrawWorldModeIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        (void)accentColor;
+        DrawSvgIcon(drawList, kWorldModeSvg, gWorldModeSvgCache, min, max, lineColor, 1.0f, 0.8f);
+    }
+
+    static void DrawUiWorldToggleIcon(ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
+        (void)accentColor;
+        DrawSvgIcon(drawList, kUiWorldToggleSvg, gUiWorldToggleSvgCache, min, max, lineColor, 0.9f, 0.8f);
+
+        ImVec2 iconMin, iconMax;
+        GetIconBounds(min, max, iconMin, iconMax);
+        float size = iconMax.x - iconMin.x;
+        auto T = [&](float x, float y) {
+            return ImVec2(iconMin.x + (x / 24.0f) * size, iconMin.y + (y / 24.0f) * size);
+        };
+
+        ImVec2 boxMin = T(1, 1);
+        ImVec2 boxMax = T(17, 17);
+        float fontSize = size * 0.38f;
+        ImVec2 textSize = ImGui::CalcTextSize("2D");
+        float textScale = fontSize / ImGui::GetFontSize();
+        ImVec2 scaledTextSize(textSize.x * textScale, textSize.y * textScale);
+        ImVec2 textPos(boxMin.x + (boxMax.x - boxMin.x - scaledTextSize.x) * 0.5f,
+                       boxMin.y + (boxMax.y - boxMin.y - scaledTextSize.y) * 0.5f - size * 0.02f);
+
+        ImFont* font = ImGui::GetFont();
+        const ImVec2 offsets[] = {
+            ImVec2(-0.6f, 0.0f), ImVec2(0.6f, 0.0f),
+            ImVec2(0.0f, -0.6f), ImVec2(0.0f, 0.6f)
+        };
+        for (const ImVec2& off : offsets) {
+            drawList->AddText(font, fontSize, ImVec2(textPos.x + off.x, textPos.y + off.y), lineColor, "2D");
+        }
     }
 
     static void DrawIcon(Icon icon, ImDrawList* drawList, const ImVec2& min, const ImVec2& max, ImU32 lineColor, ImU32 accentColor) {
@@ -574,6 +732,10 @@ namespace GizmoToolbar {
             case Icon::Mesh:      DrawMeshIcon(drawList, min, max, lineColor, accentColor);      break;
             case Icon::GizmoToggle: DrawGizmoToggleIcon(drawList, min, max, lineColor, accentColor); break;
             case Icon::GridToggle:  DrawGridToggleIcon(drawList, min, max, lineColor, accentColor);  break;
+            case Icon::SnapToggle:  DrawSnapToggleIcon(drawList, min, max, lineColor, accentColor);  break;
+            case Icon::LocalMode:   DrawLocalModeIcon(drawList, min, max, lineColor, accentColor);   break;
+            case Icon::WorldMode:   DrawWorldModeIcon(drawList, min, max, lineColor, accentColor);   break;
+            case Icon::UiWorldToggle: DrawUiWorldToggleIcon(drawList, min, max, lineColor, accentColor); break;
         }
     }
 
@@ -712,9 +874,29 @@ void Engine::renderGameViewportWindow() {
         ImGui::Spacing();
     }
     const GameResolutionOption& resOption = kGameResolutions[gameViewportResolutionIndex];
+    float comboAnimSpeed = 0.0f;
+    if (uiAnimationMode == UIAnimationMode::Fluid) {
+        comboAnimSpeed = 8.0f;
+    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+        comboAnimSpeed = 18.0f;
+    }
+    float comboAnimStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
+        : (1.0f - std::exp(-comboAnimSpeed * ImGui::GetIO().DeltaTime));
+
     if (!isPlaying && showGameViewportToolbar) {
         ImGui::SetNextItemWidth(180.0f);
+        ImGuiID comboId = ImGui::GetID("Resolution");
+        UIAnimationState& comboAnim = editorUiAnimationStates[comboId];
+        bool comboOpen = ImGui::IsPopupOpen(comboId, ImGuiPopupFlags_None);
+        if (uiAnimationMode == UIAnimationMode::Off) {
+            comboAnim.active = comboOpen ? 1.0f : 0.0f;
+        } else {
+            float target = comboOpen ? 1.0f : 0.0f;
+            comboAnim.active += (target - comboAnim.active) * comboAnimStep;
+        }
+        ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(comboAnim.active, 0.0f, 1.0f));
         if (ImGui::BeginCombo("Resolution", resOption.label)) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::clamp(comboAnim.active, 0.0f, 1.0f));
             for (int i = 0; i < (int)kGameResolutions.size(); ++i) {
                 bool selected = (i == gameViewportResolutionIndex);
                 if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
@@ -722,6 +904,7 @@ void Engine::renderGameViewportWindow() {
                 }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
+            ImGui::PopStyleVar();
             ImGui::EndCombo();
         }
         if (kGameResolutions[gameViewportResolutionIndex].custom) {
@@ -1533,6 +1716,25 @@ void Engine::renderPlayControlsBar() {
     const char* playLabel = isPlaying ? "Stop" : "Play";
     const char* pauseLabel = isPaused ? "Resume" : "Pause";
     const char* specLabel = specMode ? "Spec On" : "Spec Mode";
+    auto brighten = [](ImVec4 color, float scale) {
+        return ImVec4(
+            std::min(1.0f, color.x * scale),
+            std::min(1.0f, color.y * scale),
+            std::min(1.0f, color.z * scale),
+            color.w
+        );
+    };
+    ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+    ImVec4 accentHover = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+    ImVec4 accentActive = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    float animSpeed = 0.0f;
+    if (uiAnimationMode == UIAnimationMode::Fluid) {
+        animSpeed = 8.0f;
+    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+        animSpeed = 18.0f;
+    }
+    float animStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
+        : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
 
     auto buttonWidth = [&](const char* label) {
         ImVec2 textSize = ImGui::CalcTextSize(label);
@@ -1555,13 +1757,46 @@ void Engine::renderPlayControlsBar() {
     ImVec2 cursor = ImGui::GetCursorPos();
     ImGui::SetCursorPos(ImVec2(startX, cursor.y));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, buttonPadding);
-    bool playPressed = ImGui::Button(playLabel);
+    auto animatedButton = [&](const char* label, const ImVec2& baseSize) -> bool {
+        ImGuiID id = ImGui::GetID(label);
+        UIAnimationState& st = editorUiAnimationStates[id];
+        float scale = 1.0f + st.hover * 0.08f + st.active * 0.14f;
+        ImVec2 size(baseSize.x * scale, baseSize.y * scale);
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        bool pressed = ImGui::InvisibleButton(label, size);
+        bool hovered = ImGui::IsItemHovered();
+        bool active = ImGui::IsItemActive();
+        if (uiAnimationMode == UIAnimationMode::Off) {
+            st.hover = hovered ? 1.0f : 0.0f;
+            st.active = active ? 1.0f : 0.0f;
+        } else {
+            float hoverTarget = hovered ? 1.0f : 0.0f;
+            float activeTarget = active ? 1.0f : 0.0f;
+            st.hover += (hoverTarget - st.hover) * animStep;
+            st.active += (activeTarget - st.active) * animStep;
+        }
+        ImVec4 col = accent;
+        if (active) col = accentActive;
+        else if (hovered) col = accentHover;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 max(pos.x + size.x, pos.y + size.y);
+        dl->AddRectFilled(pos, max, ImGui::GetColorU32(col), 6.0f);
+        ImVec2 textSize = ImGui::CalcTextSize(label);
+        ImVec2 textPos(pos.x + (size.x - textSize.x) * 0.5f,
+                       pos.y + (size.y - textSize.y) * 0.5f);
+        dl->AddText(textPos, ImGui::GetColorU32(ImGui::GetStyleColorVec4(ImGuiCol_Text)), label);
+        return pressed;
+    };
+
+    ImVec2 basePlay(playWidth, ImGui::GetFrameHeight());
+    ImVec2 basePause(pauseWidth, ImGui::GetFrameHeight());
+    ImVec2 baseSpec(specWidth, ImGui::GetFrameHeight());
+
+    bool playPressed = animatedButton(playLabel, basePlay);
     ImGui::SameLine(0.0f, spacing);
-    bool pausePressed = ImGui::Button(pauseLabel);
+    bool pausePressed = animatedButton(pauseLabel, basePause);
     ImGui::SameLine(0.0f, spacing);
-    bool specPressed = ImGui::Button(specLabel);
-    ImGui::PopStyleVar();
+    bool specPressed = animatedButton(specLabel, baseSpec);
 
     if (playPressed) {
         bool newState = !isPlaying;
@@ -4360,17 +4595,27 @@ void Engine::renderViewport() {
         gizmoButton("##gizmo_universal", GizmoToolbar::Icon::Universal, ImGuizmo::UNIVERSAL, "Universal");
 
         ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
-        ImVec2 modeSize(56.0f, 24.0f);
-        if (GizmoToolbar::ModeButton("Local", mCurrentGizmoMode == ImGuizmo::LOCAL, modeSize, baseCol, accentCol, textCol)) {
+        if (GizmoToolbar::IconButton("##mode_local", GizmoToolbar::Icon::LocalMode, mCurrentGizmoMode == ImGuizmo::LOCAL, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
             mCurrentGizmoMode = ImGuizmo::LOCAL;
         }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Local");
+        }
         ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::ModeButton("World", mCurrentGizmoMode == ImGuizmo::WORLD, modeSize, baseCol, accentCol, textCol)) {
+        if (GizmoToolbar::IconButton("##mode_world", GizmoToolbar::Icon::WorldMode, mCurrentGizmoMode == ImGuizmo::WORLD, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
             mCurrentGizmoMode = ImGuizmo::WORLD;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("World");
         }
 
         ImGui::SameLine(0.0f, toolbarSpacing);
-        ImGui::Checkbox("Snap", &useSnap);
+        if (GizmoToolbar::IconButton("##snap_toggle", GizmoToolbar::Icon::SnapToggle, useSnap, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+            useSnap = !useSnap;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Snap");
+        }
 
         if (useSnap) {
             ImGui::SameLine();
@@ -4398,7 +4643,7 @@ void Engine::renderViewport() {
             ImGui::SetTooltip("Toggle 3D grid");
         }
         ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::ModeButton("UI World", uiWorldMode, ImVec2(76, 24), baseCol, accentCol, textCol)) {
+        if (GizmoToolbar::IconButton("##ui_world_toggle", GizmoToolbar::Icon::UiWorldToggle, uiWorldMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
             uiWorldMode = !uiWorldMode;
         }
         if (ImGui::IsItemHovered()) {
@@ -4703,7 +4948,26 @@ void Engine::renderViewport() {
                     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
                     ImGui::BeginChild("ViewOutputOverlay", overlaySize, true, ImGuiWindowFlags_NoScrollbar);
                     ImGui::TextDisabled("View Output");
+                    ImGuiID comboId = ImGui::GetID("##ViewOutputCamera");
+                    UIAnimationState& comboAnim = editorUiAnimationStates[comboId];
+                    float comboAnimSpeed = 0.0f;
+                    if (uiAnimationMode == UIAnimationMode::Fluid) {
+                        comboAnimSpeed = 8.0f;
+                    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+                        comboAnimSpeed = 18.0f;
+                    }
+                    float comboAnimStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
+                        : (1.0f - std::exp(-comboAnimSpeed * ImGui::GetIO().DeltaTime));
+                    bool comboOpen = ImGui::IsPopupOpen(comboId, ImGuiPopupFlags_None);
+                    if (uiAnimationMode == UIAnimationMode::Off) {
+                        comboAnim.active = comboOpen ? 1.0f : 0.0f;
+                    } else {
+                        float target = comboOpen ? 1.0f : 0.0f;
+                        comboAnim.active += (target - comboAnim.active) * comboAnimStep;
+                    }
+                    ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(comboAnim.active, 0.0f, 1.0f));
                     if (ImGui::BeginCombo("##ViewOutputCamera", previewCam->name.c_str())) {
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::clamp(comboAnim.active, 0.0f, 1.0f));
                         for (const auto* cam : playerCams) {
                             bool selected = cam->id == previewCameraId;
                             if (ImGui::Selectable(cam->name.c_str(), selected)) {
@@ -4711,6 +4975,7 @@ void Engine::renderViewport() {
                             }
                             if (selected) ImGui::SetItemDefaultFocus();
                         }
+                        ImGui::PopStyleVar();
                         ImGui::EndCombo();
                     }
                     ImGui::Image((void*)(intptr_t)previewTex, ImVec2((float)previewWidth, (float)previewHeight), ImVec2(0, 1), ImVec2(1, 0));

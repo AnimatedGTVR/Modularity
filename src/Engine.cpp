@@ -12,7 +12,9 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <cmath>
+#include <cstring>
 #include "ThirdParty/glm/gtc/constants.hpp"
+#include "ThirdParty/glfw/deps/stb_image_write.h"
 
 #pragma region Material File IO Helpers
 namespace {
@@ -2791,6 +2793,12 @@ void Engine::startProjectLoad(const std::string& path) {
     projectLoadStartTime = glfwGetTime();
     projectLoadPath = path;
     showLauncher = true;
+    launcherTransitionPendingHide = false;
+    launcherLoadingPreviewPath.clear();
+    fs::path previewPath = getProjectPreviewPath(path);
+    if (!previewPath.empty() && fs::exists(previewPath)) {
+        launcherLoadingPreviewPath = previewPath.string();
+    }
 
     projectLoadFuture = std::async(std::launch::async, [path]() {
         ProjectLoadResult result;
@@ -2848,6 +2856,11 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     sceneLoadTimeOfDay = -1.0f;
     showLauncher = true;
     projectLoadStartTime = glfwGetTime();
+    launcherLoadingPreviewPath.clear();
+    fs::path previewPath = getProjectPreviewPath(projectManager.currentProject.projectPath);
+    if (!previewPath.empty() && fs::exists(previewPath)) {
+        launcherLoadingPreviewPath = previewPath.string();
+    }
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     if (!fs::exists(scenePath)) {
@@ -2971,7 +2984,12 @@ void Engine::finalizeDeferredSceneLoad() {
     sceneLoadProgress = 1.0f;
     sceneLoadStatus.clear();
     sceneLoadAssetIndices.clear();
-    showLauncher = false;
+    if (launcherTransitionActive) {
+        launcherTransitionPendingHide = true;
+        showLauncher = true;
+    } else {
+        showLauncher = false;
+    }
 }
 
 void Engine::finishProjectLoad(ProjectLoadResult& result) {
@@ -3025,7 +3043,12 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     autoCompileQueued.clear();
     scriptAutoCompileLastCheck = 0.0;
     if (!sceneLoadInProgress) {
-        showLauncher = false;
+        if (launcherTransitionActive) {
+            launcherTransitionPendingHide = true;
+            showLauncher = true;
+        } else {
+            showLauncher = false;
+        }
     }
     #ifdef MODULARITY_PLAYER
     applyAutoStartMode();
@@ -3738,6 +3761,38 @@ void Engine::loadRecentScenes() {
     fileBrowser.needsRefresh = true;
 }
 
+fs::path Engine::getProjectPreviewPath(const fs::path& projectPathOrFile) const {
+    if (projectPathOrFile.empty()) return {};
+    fs::path root = projectPathOrFile;
+    if (root.extension() == ".modu") {
+        root = root.parent_path();
+    }
+    return root / "ProjectUserSettings" / "ProjectPreview.png";
+}
+
+void Engine::saveProjectPreview() {
+    if (!projectManager.currentProject.isLoaded || !rendererInitialized) return;
+    int width = renderer.getWidth();
+    int height = renderer.getHeight();
+    if (width <= 0 || height <= 0) return;
+
+    unsigned int texId = renderer.getViewportTexture();
+    if (!texId) return;
+
+    fs::path previewPath = getProjectPreviewPath(projectManager.currentProject.projectPath);
+    if (previewPath.empty()) return;
+    fs::create_directories(previewPath.parent_path());
+
+    std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 4);
+    glBindTexture(GL_TEXTURE_2D, texId);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    stbi_write_png(previewPath.string().c_str(), width, height, 4, pixels.data(),
+                   static_cast<int>(rowBytes));
+}
+
 void Engine::saveCurrentScene() {
     if (!projectManager.currentProject.isLoaded) return;
 
@@ -3749,6 +3804,7 @@ void Engine::saveCurrentScene() {
     if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay)) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
+        saveProjectPreview();
         addConsoleMessage("Saved scene: " + projectManager.currentProject.currentSceneName, ConsoleMessageType::Success);
     } else {
         addConsoleMessage("Error: Failed to save scene!", ConsoleMessageType::Error);
@@ -4969,6 +5025,12 @@ void Engine::loadEditorUserSettings() {
             style.Colors[i] = loadedColors[i];
         }
     }
+    style.Colors[ImGuiCol_Button] = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.30f, 0.36f, 1.00f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.30f, 0.34f, 0.40f, 1.00f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.19f, 0.26f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.24f, 0.26f, 0.34f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.30f, 0.36f, 1.00f);
 
     applyWorkspacePreset(currentWorkspace, false);
     scriptingFilesDirty = true;

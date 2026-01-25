@@ -147,6 +147,74 @@ struct PackageTaskState {
     std::string label;
     std::future<PackageTaskResult> future;
 };
+
+static void ComputeCoverUV(int texW, int texH, const ImVec2& targetSize, ImVec2& uv0, ImVec2& uv1) {
+    uv0 = ImVec2(0.0f, 0.0f);
+    uv1 = ImVec2(1.0f, 1.0f);
+    if (texW <= 0 || texH <= 0 || targetSize.x <= 0.0f || targetSize.y <= 0.0f) return;
+
+    const float texAspect = static_cast<float>(texW) / static_cast<float>(texH);
+    const float targetAspect = targetSize.x / targetSize.y;
+
+    if (texAspect > targetAspect) {
+        const float newW = static_cast<float>(texH) * targetAspect;
+        const float xOffset = (static_cast<float>(texW) - newW) * 0.5f;
+        uv0.x = xOffset / static_cast<float>(texW);
+        uv1.x = (xOffset + newW) / static_cast<float>(texW);
+    } else if (texAspect < targetAspect) {
+        const float newH = static_cast<float>(texW) / targetAspect;
+        const float yOffset = (static_cast<float>(texH) - newH) * 0.5f;
+        uv0.y = yOffset / static_cast<float>(texH);
+        uv1.y = (yOffset + newH) / static_cast<float>(texH);
+    }
+}
+
+static void DrawImageCover(ImDrawList* list, ImTextureID texId, const ImVec2& min,
+                           const ImVec2& max, int texW, int texH, ImU32 tint, float rounding) {
+    ImVec2 uv0, uv1;
+    ComputeCoverUV(texW, texH, ImVec2(max.x - min.x, max.y - min.y), uv0, uv1);
+    if (rounding > 0.0f) {
+        list->AddImageRounded(texId, min, max, uv0, uv1, tint, rounding);
+    } else {
+        list->AddImage(texId, min, max, uv0, uv1, tint);
+    }
+}
+
+static void DrawBlurredImageCover(ImDrawList* list, ImTextureID texId, const ImVec2& min,
+                                  const ImVec2& max, int texW, int texH, float alpha, float radius) {
+    const ImVec2 offsets[] = {
+        ImVec2(0.0f, 0.0f),
+        ImVec2(radius, 0.0f),
+        ImVec2(-radius, 0.0f),
+        ImVec2(0.0f, radius),
+        ImVec2(0.0f, -radius),
+        ImVec2(radius * 0.7f, radius * 0.7f),
+        ImVec2(-radius * 0.7f, radius * 0.7f),
+        ImVec2(radius * 0.7f, -radius * 0.7f),
+        ImVec2(-radius * 0.7f, -radius * 0.7f),
+        ImVec2(radius * 1.8f, 0.0f),
+        ImVec2(-radius * 1.8f, 0.0f),
+        ImVec2(0.0f, radius * 1.8f),
+        ImVec2(0.0f, -radius * 1.8f)
+    };
+    const float weights[] = {
+        0.227027f,
+        0.1945946f, 0.1945946f, 0.1945946f, 0.1945946f,
+        0.1216216f, 0.1216216f, 0.1216216f, 0.1216216f,
+        0.054054f, 0.054054f, 0.054054f, 0.054054f
+    };
+    float total = 0.0f;
+    for (float w : weights) total += w;
+
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+        float w = weights[i] / total;
+        ImU32 tint = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, alpha * w));
+        DrawImageCover(list, texId,
+                       ImVec2(min.x + offsets[i].x, min.y + offsets[i].y),
+                       ImVec2(max.x + offsets[i].x, max.y + offsets[i].y),
+                       texW, texH, tint, 0.0f);
+    }
+}
 } // namespace
 #pragma endregion
 
@@ -154,12 +222,63 @@ struct PackageTaskState {
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 displaySize = io.DisplaySize;
+    const double now = glfwGetTime();
+    if (!launcherIntroStarted) {
+        launcherIntroStarted = true;
+        launcherIntroStartTime = now;
+    }
+    if (!launcherIntroSoundPlayed) {
+        if (audio.isReady()) {
+            audio.playPreview("Resources/Sounds/ModuIntro.mp3", 0.85f, false);
+        }
+        launcherIntroSoundPlayed = true;
+    }
+
+    const float introFadeIn = 0.6f;
+    const float introHold = 0.5f;
+    const float introFadeOut = 0.7f;
+    const float introSlide = 0.8f;
+    const float introSlideStart = introFadeIn + introHold + introFadeOut;
+    const float introTotal = introSlideStart + introSlide;
+    const double introElapsedRaw = launcherIntroFinished ? introTotal : (now - launcherIntroStartTime);
+    const float introElapsed = static_cast<float>(introElapsedRaw);
+
+    float textAlpha = 0.0f;
+    if (!launcherIntroFinished) {
+        if (introElapsed < introFadeIn) {
+            textAlpha = introElapsed / introFadeIn;
+        } else if (introElapsed < introFadeIn + introHold) {
+            textAlpha = 1.0f;
+        } else if (introElapsed < introSlideStart) {
+            textAlpha = 1.0f - (introElapsed - (introFadeIn + introHold)) / introFadeOut;
+        }
+    }
+
+    float slideT = 1.0f;
+    if (!launcherIntroFinished) {
+        slideT = ImClamp((introElapsed - introSlideStart) / introSlide, 0.0f, 1.0f);
+        if (slideT >= 1.0f) {
+            launcherIntroFinished = true;
+        }
+    }
+    const float slideEase = 1.0f - std::pow(1.0f - slideT, 3.0f);
+    const float contentAlpha = launcherIntroFinished ? 1.0f : slideEase;
+    const float contentOffsetY = (1.0f - slideEase) * 48.0f;
+
+    const float transitionDuration = 0.45f;
+    float transitionT = 0.0f;
+    if (launcherTransitionActive) {
+        transitionT = ImClamp(static_cast<float>((now - launcherTransitionStartTime) / transitionDuration), 0.0f, 1.0f);
+    }
+    const float transitionEase = 1.0f - std::pow(1.0f - transitionT, 3.0f);
+    const float transitionAlpha = 1.0f - transitionEase;
+    const float uiScale = 1.0f + 0.06f * transitionEase;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 24.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 18.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f * uiScale, 24.0f * uiScale));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f * uiScale);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 18.0f * uiScale);
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
@@ -177,8 +296,8 @@ void Engine::renderLauncher() {
 
     if (ImGui::Begin("Launcher", nullptr, flags))
     {
-        const float leftPanelWidth = 300.0f;
-        const float heroHeight = 120.0f;
+        const float leftPanelWidth = 300.0f * uiScale;
+        const float heroHeight = 120.0f * uiScale;
         const ImVec4 bgTopLeft = ImVec4(0.10f, 0.11f, 0.16f, 1.0f);
         const ImVec4 bgTopRight = ImVec4(0.15f, 0.16f, 0.22f, 1.0f);
         const ImVec4 bgBottomRight = ImVec4(0.07f, 0.08f, 0.12f, 1.0f);
@@ -191,14 +310,60 @@ void Engine::renderLauncher() {
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
+
+        Texture* previewTexture = nullptr;
+        if ((projectLoadInProgress || sceneLoadInProgress || launcherTransitionActive || launcherTransitionPendingHide) &&
+            !launcherLoadingPreviewPath.empty()) {
+            fs::path previewPath = launcherLoadingPreviewPath;
+            if (fs::exists(previewPath)) {
+                previewTexture = renderer.getTexture(previewPath.string());
+            }
+        }
+
+        if (previewTexture) {
+            DrawBlurredImageCover(drawList,
+                                  (ImTextureID)(intptr_t)previewTexture->GetID(),
+                                  windowPos,
+                                  ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
+                                  previewTexture->GetWidth(),
+                                  previewTexture->GetHeight(),
+                                  0.55f,
+                                  10.0f * uiScale);
+        }
+
+        const float bgAlpha = previewTexture ? 0.60f : 1.0f;
+        ImVec4 gradTL = bgTopLeft; gradTL.w = bgAlpha;
+        ImVec4 gradTR = bgTopRight; gradTR.w = bgAlpha;
+        ImVec4 gradBR = bgBottomRight; gradBR.w = bgAlpha;
+        ImVec4 gradBL = bgBottomLeft; gradBL.w = bgAlpha;
+
         drawList->AddRectFilledMultiColor(
             windowPos,
             ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
-            ImGui::GetColorU32(bgTopLeft),
-            ImGui::GetColorU32(bgTopRight),
-            ImGui::GetColorU32(bgBottomRight),
-            ImGui::GetColorU32(bgBottomLeft)
+            ImGui::GetColorU32(gradTL),
+            ImGui::GetColorU32(gradTR),
+            ImGui::GetColorU32(gradBR),
+            ImGui::GetColorU32(gradBL)
         );
+
+        if (launcherTransitionActive) {
+            ImVec2 focus = launcherTransitionFocus;
+            if (focus.x <= 0.0f && focus.y <= 0.0f) {
+                focus = ImVec2(windowPos.x + windowSize.x * 0.5f, windowPos.y + windowSize.y * 0.5f);
+            }
+            const float maxRadius = std::sqrt(windowSize.x * windowSize.x + windowSize.y * windowSize.y);
+            const float radius = ImLerp(64.0f * uiScale, maxRadius, transitionEase);
+            const float overlayAlpha = 0.18f * transitionEase;
+            drawList->AddCircleFilled(focus, radius, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, overlayAlpha)), 64);
+        }
+
+        ImVec2 contentStart = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + contentOffsetY * uiScale));
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, contentAlpha * transitionAlpha);
+        ImGui::SetWindowFontScale(uiScale);
+        if (!launcherIntroFinished) {
+            ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        }
 
         ImGui::BeginChild("LauncherHero", ImVec2(0, heroHeight), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
@@ -207,15 +372,15 @@ void Engine::renderLauncher() {
         ImVec2 heroPos = ImGui::GetWindowPos();
         ImVec2 heroSize = ImGui::GetWindowSize();
         heroDraw->AddRectFilled(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
-                                ImGui::GetColorU32(cardBg), 18.0f);
+                                ImGui::GetColorU32(cardBg), 18.0f * uiScale);
         heroDraw->AddRect(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
-                          ImGui::GetColorU32(cardBg), 18.0f);
+                          ImGui::GetColorU32(cardBg), 18.0f * uiScale);
 
-        ImGui::SetCursorPos(ImVec2(28.0f, 24.0f));
+        ImGui::SetCursorPos(ImVec2(28.0f * uiScale, 24.0f * uiScale));
         ImGui::TextDisabled("Project Manager");
-        ImGui::SetWindowFontScale(1.4f);
+        ImGui::SetWindowFontScale(1.4f * uiScale);
         ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.0f), "Modularity");
-        ImGui::SetWindowFontScale(1.0f);
+        ImGui::SetWindowFontScale(1.0f * uiScale);
         ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Beta V6.3");
 
 
@@ -235,7 +400,7 @@ void Engine::renderLauncher() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.43f, 0.30f, 0.70f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.26f, 0.60f, 1.0f));
 
-        if (ImGui::Button("New Project", ImVec2(-1, 40.0f)))
+        if (ImGui::Button("New Project", ImVec2(-1, 40.0f * uiScale)))
         {
             projectManager.showNewProjectDialog = true;
             projectManager.errorMessage.clear();
@@ -258,7 +423,7 @@ void Engine::renderLauncher() {
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Open Project", ImVec2(-1, 40.0f)))
+        if (ImGui::Button("Open Project", ImVec2(-1, 40.0f * uiScale)))
         {
             projectManager.showOpenProjectDialog = true;
             projectManager.errorMessage.clear();
@@ -277,7 +442,7 @@ void Engine::renderLauncher() {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.30f, 0.42f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
 
-        if (ImGui::Button("Documentation", ImVec2(-1, 34.0f)))
+        if (ImGui::Button("Documentation", ImVec2(-1, 34.0f * uiScale)))
         {
             #ifdef _WIN32
             system("start https://docs.shockinteractive.xyz");
@@ -286,7 +451,7 @@ void Engine::renderLauncher() {
             #endif
         }
 
-        if (ImGui::Button("Exit", ImVec2(-1, 34.0f)))
+        if (ImGui::Button("Exit", ImVec2(-1, 34.0f * uiScale)))
         {
             glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
         }
@@ -317,7 +482,7 @@ void Engine::renderLauncher() {
                 const auto& rp = projectManager.recentProjects[i];
                 ImGui::PushID(static_cast<int>(i));
 
-                const ImVec2 cardSize(availWidth, 72.0f);
+                const ImVec2 cardSize(availWidth, 72.0f * uiScale);
                 const ImVec2 cardPos = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton("RecentCard", cardSize);
                 bool hovered = ImGui::IsItemHovered();
@@ -328,6 +493,15 @@ void Engine::renderLauncher() {
                 {
                     if (ImGui::MenuItem("Open"))
                     {
+                        launcherTransitionActive = true;
+                        launcherTransitionPendingHide = false;
+                        launcherTransitionStartTime = glfwGetTime();
+                        launcherTransitionFocus = ImVec2(cardPos.x + cardSize.x * 0.5f,
+                                                         cardPos.y + cardSize.y * 0.5f);
+                        fs::path previewPath = getProjectPreviewPath(rp.path);
+                        if (!previewPath.empty() && fs::exists(previewPath)) {
+                            launcherLoadingPreviewPath = previewPath.string();
+                        }
                         OpenProjectPath(rp.path);
                     }
 
@@ -345,29 +519,60 @@ void Engine::renderLauncher() {
                     ImGui::EndPopup();
                 }
 
-                ImU32 cardCol = ImGui::GetColorU32(hovered ? ImVec4(0.18f, 0.19f, 0.27f, 1.0f)
-                                                          : ImVec4(0.16f, 0.17f, 0.24f, 1.0f));
                 ImDrawList* list = ImGui::GetWindowDrawList();
-                list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardCol, 14.0f);
+                Texture* previewTex = nullptr;
+                fs::path previewPath = getProjectPreviewPath(rp.path);
+                if (!previewPath.empty() && fs::exists(previewPath)) {
+                    previewTex = renderer.getTexture(previewPath.string());
+                }
+                if (previewTex) {
+                    DrawImageCover(list,
+                                   (ImTextureID)(intptr_t)previewTex->GetID(),
+                                   cardPos,
+                                   ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
+                                   previewTex->GetWidth(),
+                                   previewTex->GetHeight(),
+                                   ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)),
+                                   14.0f * uiScale);
+                    ImVec4 overlayCol = hovered ? ImVec4(0.08f, 0.09f, 0.13f, 0.55f)
+                                                : ImVec4(0.08f, 0.09f, 0.13f, 0.65f);
+                    list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
+                                        ImGui::GetColorU32(overlayCol), 14.0f * uiScale);
+                } else {
+                    ImU32 cardCol = ImGui::GetColorU32(hovered ? ImVec4(0.18f, 0.19f, 0.27f, 1.0f)
+                                                              : ImVec4(0.16f, 0.17f, 0.24f, 1.0f));
+                    list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
+                                        cardCol, 14.0f * uiScale);
+                }
                 list->AddRect(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                              ImGui::GetColorU32(cardOutline), 14.0f);
+                              ImGui::GetColorU32(cardOutline), 14.0f * uiScale);
 
-                ImVec2 textPos = ImVec2(cardPos.x + 16.0f, cardPos.y + 14.0f);
+                ImVec2 textPos = ImVec2(cardPos.x + 16.0f * uiScale, cardPos.y + 14.0f * uiScale);
                 ImGui::SetCursorScreenPos(textPos);
                 ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.96f, 1.0f), "%s", rp.name.c_str());
-                ImGui::SetCursorScreenPos(ImVec2(textPos.x, textPos.y + 22.0f));
+                ImGui::SetCursorScreenPos(ImVec2(textPos.x, textPos.y + 22.0f * uiScale));
                 ImGui::TextDisabled("%s", rp.path.c_str());
 
-                const float buttonWidth = 88.0f;
-                ImGui::SetCursorScreenPos(ImVec2(cardPos.x + cardSize.x - buttonWidth - 16.0f, cardPos.y + 20.0f));
+                const float buttonWidth = 88.0f * uiScale;
+                ImGui::SetCursorScreenPos(ImVec2(cardPos.x + cardSize.x - buttonWidth - 16.0f * uiScale,
+                                                 cardPos.y + 20.0f * uiScale));
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.32f, 0.38f, 0.55f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.35f, 0.50f, 1.0f));
-                bool openClicked = ImGui::Button("Open", ImVec2(buttonWidth, 30.0f));
+                bool openClicked = ImGui::Button("Open", ImVec2(buttonWidth, 30.0f * uiScale));
                 ImGui::PopStyleColor(3);
 
                 if ((clicked && !openClicked) || openClicked)
                 {
+                    launcherTransitionActive = true;
+                    launcherTransitionPendingHide = false;
+                    launcherTransitionStartTime = glfwGetTime();
+                    launcherTransitionFocus = ImVec2(cardPos.x + cardSize.x * 0.5f,
+                                                     cardPos.y + cardSize.y * 0.5f);
+                    fs::path previewPath = getProjectPreviewPath(rp.path);
+                    if (!previewPath.empty() && fs::exists(previewPath)) {
+                        launcherLoadingPreviewPath = previewPath.string();
+                    }
                     OpenProjectPath(rp.path);
                 }
 
@@ -382,11 +587,44 @@ void Engine::renderLauncher() {
         ImGui::Spacing();
         ImGui::TextDisabled("Modularity Engine - Beta V6.3");
         ImGui::EndChild();
+
+        if (!launcherIntroFinished) {
+            ImGui::PopItemFlag();
+        }
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleVar();
+
+        if (textAlpha > 0.001f) {
+            ImDrawList* overlay = ImGui::GetWindowDrawList();
+            const char* title = "Modularity";
+            ImFont* font = ImGui::GetFont();
+            const float baseFontSize = ImGui::GetFontSize();
+            float fontSize = baseFontSize * 2.6f;
+            ImVec2 textSize = ImGui::CalcTextSize(title);
+            ImVec2 center = ImVec2(displaySize.x * 0.5f, displaySize.y * 0.38f);
+            const float scale = baseFontSize > 0.0f ? (fontSize / baseFontSize) : 1.0f;
+            ImVec2 textPos = ImVec2(center.x - (textSize.x * 0.5f) * scale,
+                                    center.y - (textSize.y * 0.5f) * scale);
+            ImU32 textCol = ImGui::GetColorU32(ImVec4(0.95f, 0.96f, 0.98f, textAlpha));
+            overlay->AddText(font, fontSize, textPos, textCol, title);
+        }
     }
 
     ImGui::End();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(5);
+
+    if (launcherTransitionActive && transitionT >= 1.0f) {
+        launcherTransitionActive = false;
+        if (launcherTransitionPendingHide || (!projectLoadInProgress && !sceneLoadInProgress)) {
+            launcherTransitionPendingHide = false;
+            showLauncher = false;
+        }
+    } else if (!launcherTransitionActive && launcherTransitionPendingHide &&
+               !projectLoadInProgress && !sceneLoadInProgress) {
+        launcherTransitionPendingHide = false;
+        showLauncher = false;
+    }
 
     if (projectManager.showNewProjectDialog)
         renderNewProjectDialog();

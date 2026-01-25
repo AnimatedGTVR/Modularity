@@ -10,6 +10,7 @@
 #include <functional>
 #include <sstream>
 #include <unordered_set>
+#include <unordered_map>
 #include <optional>
 #include <future>
 #include <chrono>
@@ -539,6 +540,15 @@ void Engine::renderHierarchyPanel() {
     ImGui::Begin("Hierarchy", &showHierarchy);
 
     static char searchBuffer[128] = "";
+    float animSpeed = 0.0f;
+    if (uiAnimationMode == UIAnimationMode::Fluid) {
+        animSpeed = 8.0f;
+    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+        animSpeed = 18.0f;
+    }
+    float animStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
+        : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
+
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4 headerBg = style.Colors[ImGuiCol_MenuBarBg];
     headerBg.x = std::min(headerBg.x + 0.02f, 1.0f);
@@ -564,8 +574,28 @@ void Engine::renderHierarchyPanel() {
     const char* filterOptions[] = { "Bilinear", "Nearest" };
     int filterIndex = hierarchyPreviewNearest ? 1 : 0;
     ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::Combo("##HierarchyTexFilter", &filterIndex, filterOptions, IM_ARRAYSIZE(filterOptions))) {
-        hierarchyPreviewNearest = (filterIndex == 1);
+    ImGuiID comboId = ImGui::GetID("##HierarchyTexFilter");
+    UIAnimationState& comboAnim = editorUiAnimationStates[comboId];
+    bool comboOpen = ImGui::IsPopupOpen(comboId, ImGuiPopupFlags_None);
+    float comboT = (uiAnimationMode == UIAnimationMode::Off) ? (comboOpen ? 1.0f : 0.0f) : comboAnim.active;
+    if (uiAnimationMode != UIAnimationMode::Off) {
+        float target = comboOpen ? 1.0f : 0.0f;
+        comboAnim.active += (target - comboAnim.active) * animStep;
+        comboT = comboAnim.active;
+    }
+    ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(comboT, 0.0f, 1.0f));
+    if (ImGui::BeginCombo("##HierarchyTexFilter", filterOptions[filterIndex])) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::clamp(comboT, 0.0f, 1.0f));
+        for (int i = 0; i < IM_ARRAYSIZE(filterOptions); ++i) {
+            bool selected = (i == filterIndex);
+            if (ImGui::Selectable(filterOptions[i], selected)) {
+                filterIndex = i;
+                hierarchyPreviewNearest = (filterIndex == 1);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::PopStyleVar();
+        ImGui::EndCombo();
     }
     ImGui::EndDisabled();
     ImGui::EndChild();
@@ -630,7 +660,7 @@ void Engine::renderHierarchyPanel() {
     std::vector<bool> ancestorHasNext;
     for (size_t i = 0; i < rootIndices.size(); ++i) {
         bool isLastRoot = (i + 1 == rootIndices.size());
-        renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0);
+        renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0, animStep);
     }
 
     if (ImGui::BeginPopupContextWindow("HierarchyBackground",
@@ -734,7 +764,7 @@ void Engine::renderHierarchyPanel() {
 }
 
 void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
-                              std::vector<bool>& ancestorHasNext, bool isLast, int depth) {
+                              std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep) {
     std::string nameLower = obj.name;
     std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
 
@@ -749,19 +779,56 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
 
-    std::string label = "   " + obj.name;
-    bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "%s", label.c_str());
+    ImGuiID nodeId = ImGui::GetID((void*)(intptr_t)obj.id);
+    bool nodeOpen = ImGui::TreeNodeEx((void*)(intptr_t)obj.id, flags, "");
 
     ImVec2 itemMin = ImGui::GetItemRectMin();
     ImVec2 itemMax = ImGui::GetItemRectMax();
+    UIAnimationState& animState = editorUiAnimationStates[nodeId];
+    bool hovered = ImGui::IsItemHovered();
+    bool active = ImGui::IsItemActive();
+    float openTarget = nodeOpen ? 1.0f : 0.0f;
+    if (uiAnimationMode == UIAnimationMode::Off) {
+        animState.hover = hovered ? 1.0f : 0.0f;
+        animState.active = active ? 1.0f : 0.0f;
+        animState.sliderValue = openTarget;
+    } else {
+        float hoverTarget = hovered ? 1.0f : 0.0f;
+        float activeTarget = active ? 1.0f : 0.0f;
+        animState.hover += (hoverTarget - animState.hover) * animStep;
+        animState.active += (activeTarget - animState.active) * animStep;
+        animState.sliderValue += (openTarget - animState.sliderValue) * animStep;
+    }
+    float hoverT = std::clamp(animState.hover, 0.0f, 1.0f);
+    float activeT = std::clamp(animState.active, 0.0f, 1.0f);
+    float openT = std::clamp(animState.sliderValue, 0.0f, 1.0f);
+    float glow = std::min(1.0f, hoverT * 0.7f + activeT * 1.0f);
+    if (glow > 0.001f) {
+        ImVec2 pad(4.0f + 10.0f * hoverT + 14.0f * activeT, 2.0f + 6.0f * hoverT);
+        ImVec2 glowMin(itemMin.x - pad.x, itemMin.y - pad.y);
+        ImVec2 glowMax(itemMax.x + pad.x, itemMax.y + pad.y);
+        ImVec4 glowCol = ImGui::GetStyleColorVec4(ImGuiCol_HeaderHovered);
+        glowCol.w *= 0.35f * glow;
+        ImGui::GetWindowDrawList()->AddRectFilled(glowMin, glowMax, ImGui::GetColorU32(glowCol), 6.0f);
+    }
     DrawHierarchyLines(ImGui::GetWindowDrawList(), itemMin, itemMax, ancestorHasNext, depth, isLast);
 
     float lineHeight = itemMax.y - itemMin.y;
-    float iconSize = std::max(8.0f, lineHeight - 6.0f);
+    float iconScale = 1.0f + 0.08f * hoverT + 0.12f * activeT;
+    float iconSize = std::max(8.0f, (lineHeight - 6.0f) * iconScale);
     float labelStart = itemMin.x + ImGui::GetTreeNodeToLabelSpacing();
     ImVec2 iconPos(labelStart, itemMin.y + (lineHeight - iconSize) * 0.5f);
     ImU32 iconColor = GetHierarchyTypeColor(obj);
     DrawEmptyObjectIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
+    ImVec4 textCol = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    textCol.x = std::min(1.0f, textCol.x + 0.15f * hoverT + 0.2f * activeT);
+    textCol.y = std::min(1.0f, textCol.y + 0.15f * hoverT + 0.2f * activeT);
+    textCol.z = std::min(1.0f, textCol.z + 0.15f * hoverT + 0.2f * activeT);
+    textCol.w = std::min(1.0f, textCol.w + 0.2f * hoverT + 0.35f * activeT);
+    float fontSize = ImGui::GetFontSize() * (1.0f + 0.06f * hoverT + 0.1f * activeT);
+    ImVec2 textPos(iconPos.x + iconSize + 6.0f, itemMin.y + (lineHeight - fontSize) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), fontSize, textPos,
+                                        ImGui::GetColorU32(textCol), obj.name.c_str());
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
@@ -885,6 +952,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     }
 
     if (nodeOpen) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, openT);
         std::vector<SceneObject*> visibleChildren;
         visibleChildren.reserve(obj.childIds.size());
         for (int childId : obj.childIds) {
@@ -902,9 +970,10 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         ancestorHasNext.push_back(!isLast);
         for (size_t i = 0; i < visibleChildren.size(); ++i) {
             bool childLast = (i + 1 == visibleChildren.size());
-            renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1);
+            renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1, animStep);
         }
         ancestorHasNext.pop_back();
+        ImGui::PopStyleVar();
         ImGui::TreePop();
     }
 }
@@ -1041,15 +1110,31 @@ void Engine::renderInspectorPanel() {
         }
         std::string headerId = std::string(label) + "##" + id;
         ImGui::SetNextItemAllowOverlap();
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImVec4 headerCol = style.Colors[ImGuiCol_FrameBg];
+        ImVec4 headerHover = style.Colors[ImGuiCol_FrameBgHovered];
+        ImVec4 headerActive = style.Colors[ImGuiCol_FrameBgActive];
+        ImGui::PushStyleColor(ImGuiCol_Header, headerCol);
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, headerHover);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, headerActive);
         state.open = ImGui::CollapsingHeader(headerId.c_str(), flags);
+        ImGui::PopStyleColor(3);
 
         ImVec2 headerMin = ImGui::GetItemRectMin();
         ImVec2 headerMax = ImGui::GetItemRectMax();
         ImVec2 cursorAfter = ImGui::GetCursorScreenPos();
         float headerHeight = headerMax.y - headerMin.y;
         float controlSize = ImGui::GetFrameHeight();
-        ImGuiStyle& style = ImGui::GetStyle();
         float right = headerMax.x - style.FramePadding.x;
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImU32 borderCol = ImGui::GetColorU32(ImGuiCol_Border);
+        dl->AddRect(headerMin, headerMax, borderCol, style.FrameRounding, 0, 1.0f);
+        ImU32 accentCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        float accentWidth = 3.0f;
+        dl->AddRectFilled(ImVec2(headerMin.x, headerMin.y + 1.0f),
+                          ImVec2(headerMin.x + accentWidth, headerMax.y - 1.0f),
+                          accentCol, style.FrameRounding, ImDrawFlags_RoundCornersLeft);
 
         ImGui::PushID(id);
         if (menuFn) {
@@ -1415,9 +1500,8 @@ void Engine::renderInspectorPanel() {
         ImGui::Separator();
     }
 
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.4f, 0.6f, 1.0f));
-
-    if (ImGui::CollapsingHeader("Object Info", ImGuiTreeNodeFlags_DefaultOpen)) {
+    auto objectHeader = drawComponentHeader("Object Info", "ObjectInfo", nullptr, true, std::function<void()>{});
+    if (objectHeader.open) {
         char nameBuffer[128];
         strncpy(nameBuffer, obj.name.c_str(), sizeof(nameBuffer));
         nameBuffer[sizeof(nameBuffer) - 1] = '\0';
@@ -1540,8 +1624,6 @@ void Engine::renderInspectorPanel() {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
     }
-
-    ImGui::PopStyleColor();
 
     ImGui::Spacing();
 
@@ -2768,10 +2850,8 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
-    // Material section (skip for pure light objects)
     if (obj.hasRenderer) {
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
         bool rendererChanged = false;
         bool removeRenderer = false;
         auto rendererHeader = drawComponentHeader("Renderer", "Renderer", nullptr, true, [&]() {
@@ -2795,27 +2875,11 @@ void Engine::renderInspectorPanel() {
                 case RenderType::None: break;
             }
             ImGui::Text("Render Type: %s", renderLabel);
-            ImGui::Unindent(10.0f);
-        }
-        if (removeRenderer) {
-            obj.hasRenderer = false;
-            obj.renderType = RenderType::None;
-            UpdateLegacyTypeFromComponents(obj);
-            rendererChanged = true;
-        }
-        if (rendererChanged) {
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
-        ImGui::PopStyleColor();
-    }
 
-    if (obj.hasRenderer) {
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.35f, 0.55f, 1.0f));
-
-        if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Material");
             ImGui::PushID("Material");
-            ImGui::Indent(10.0f);
 
             auto textureField = [&](const char* label, const char* idSuffix, std::string& path) {
                 bool changed = false;
@@ -2849,7 +2913,7 @@ void Engine::renderInspectorPanel() {
 
             bool materialChanged = false;
 
-            ImGui::TextColored(ImVec4(0.8f, 0.7f, 1.0f, 1.0f), "Surface Inputs");
+            ImGui::TextDisabled("Surface Inputs");
             if (ImGui::ColorEdit3("Base Color", &obj.material.color.x)) {
                 materialChanged = true;
             }
@@ -2875,7 +2939,7 @@ void Engine::renderInspectorPanel() {
             }
 
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Maps");
+            ImGui::TextDisabled("Maps");
             materialChanged |= textureField("Base Map", "ObjAlbedo", obj.albedoTexturePath);
             if (ImGui::Checkbox("Use Detail Map", &obj.useOverlay)) {
                 materialChanged = true;
@@ -2884,7 +2948,7 @@ void Engine::renderInspectorPanel() {
             materialChanged |= textureField("Normal Map", "ObjNormal", obj.normalMapPath);
 
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "Shader");
+            ImGui::TextDisabled("Shader");
             auto shaderField = [&](const char* label, const char* idSuffix, std::string& path) {
                 bool changed = false;
                 ImGui::PushID(idSuffix);
@@ -2927,8 +2991,7 @@ void Engine::renderInspectorPanel() {
 
             ImGui::Spacing();
             ImGui::Separator();
-            ImGui::Text("Material");
-            ImGui::SameLine();
+            ImGui::TextDisabled("Material Asset");
             ImVec4 previewColor(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
             ImVec2 sphereStart = ImGui::GetCursorScreenPos();
             float sphereRadius = 12.0f;
@@ -2943,7 +3006,6 @@ void Engine::renderInspectorPanel() {
             ImGui::Dummy(ImVec2(sphereRadius * 2.0f, sphereRadius * 2.0f));
             ImGui::SameLine();
             ImGui::TextDisabled("%s", obj.materialPath.empty() ? "Unsaved Material" : fs::path(obj.materialPath).filename().string().c_str());
-            ImGui::Text("Material Asset");
 
             char matPathBuf[512] = {};
             std::snprintf(matPathBuf, sizeof(matPathBuf), "%s", obj.materialPath.c_str());
@@ -3018,11 +3080,143 @@ void Engine::renderInspectorPanel() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
-        }
 
-        ImGui::PopStyleColor();
+            if (obj.renderType == RenderType::OBJMesh) {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled("Mesh Info");
+
+                const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId);
+                if (meshInfo) {
+                    ImGui::Text("Source File:");
+                    ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
+
+                    ImGui::Spacing();
+
+                    ImGui::Text("Vertices: %d", meshInfo->vertexCount);
+                    ImGui::Text("Faces: %d", meshInfo->faceCount);
+                    ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
+                    ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
+
+                    ImGui::Spacing();
+
+                    if (ImGui::Button("Reload Mesh", ImVec2(-1, 0))) {
+                        std::string errMsg;
+                        int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
+                        if (newId >= 0) {
+                            obj.meshId = newId;
+                            addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
+                        } else {
+                            addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
+                        }
+                    }
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Mesh data not found!");
+                    ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
+
+                    if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
+                        std::string errMsg;
+                        int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
+                        if (newId >= 0) {
+                            obj.meshId = newId;
+                            addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
+                        } else {
+                            addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
+                        }
+                    }
+                }
+            }
+
+            if (obj.renderType == RenderType::Model) {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled("Model Info");
+
+                const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+                if (meshInfo) {
+                    ImGui::Text("Source File:");
+                    ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
+
+                    ImGui::Spacing();
+
+                    ImGui::Text("Vertices: %d", meshInfo->vertexCount);
+                    ImGui::Text("Faces: %d", meshInfo->faceCount);
+                    ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
+                    ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
+
+                    ImGui::Spacing();
+
+                    if (ImGui::Button("Reload Model", ImVec2(-1, 0))) {
+                        bool reloaded = false;
+                        if (obj.meshSourceIndex >= 0) {
+                            ModelSceneData sceneData;
+                            std::string err;
+                            if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                                int sourceIndex = obj.meshSourceIndex;
+                                if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                                    obj.meshId = sceneData.meshIndices[sourceIndex];
+                                    reloaded = true;
+                                }
+                            }
+                        }
+                        if (!reloaded) {
+                            ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                            if (result.success) {
+                                obj.meshId = result.meshIndex;
+                                reloaded = true;
+                            } else {
+                                addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                            }
+                        }
+                        if (reloaded) {
+                            addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                        }
+                    }
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
+                    ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
+
+                    if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
+                        bool reloaded = false;
+                        if (obj.meshSourceIndex >= 0) {
+                            ModelSceneData sceneData;
+                            std::string err;
+                            if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                                int sourceIndex = obj.meshSourceIndex;
+                                if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                                    obj.meshId = sceneData.meshIndices[sourceIndex];
+                                    reloaded = true;
+                                }
+                            }
+                        }
+                        if (!reloaded) {
+                            ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                            if (result.success) {
+                                obj.meshId = result.meshIndex;
+                                reloaded = true;
+                            } else {
+                                addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                            }
+                        }
+                        if (reloaded) {
+                            addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                        }
+                    }
+                }
+            }
+
+            ImGui::Unindent(10.0f);
+        }
+        if (removeRenderer) {
+            obj.hasRenderer = false;
+            obj.renderType = RenderType::None;
+            UpdateLegacyTypeFromComponents(obj);
+            rendererChanged = true;
+        }
+        if (rendererChanged) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
     }
 
     if (obj.hasLight) {
@@ -3109,148 +3303,6 @@ void Engine::renderInspectorPanel() {
         if (changed) {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
-        ImGui::PopStyleColor();
-    }
-
-    if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh) {
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.5f, 0.4f, 1.0f));
-        
-        if (ImGui::CollapsingHeader("Mesh Info", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushID("MeshInfo");
-            ImGui::Indent(10.0f);
-            
-            const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-            if (meshInfo) {
-                ImGui::Text("Source File:");
-                ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
-                
-                ImGui::Spacing();
-                
-                ImGui::Text("Vertices: %d", meshInfo->vertexCount);
-                ImGui::Text("Faces: %d", meshInfo->faceCount);
-                ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
-                ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
-                
-                ImGui::Spacing();
-                
-                if (ImGui::Button("Reload Mesh", ImVec2(-1, 0))) {
-                    std::string errMsg;
-                    int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
-                    if (newId >= 0) {
-                        obj.meshId = newId;
-                        addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
-                    } else {
-                        addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
-                    }
-                }
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Mesh data not found!");
-                ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
-                
-                if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
-                    std::string errMsg;
-                    int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
-                    if (newId >= 0) {
-                        obj.meshId = newId;
-                        addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
-                    } else {
-                        addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
-                    }
-                }
-            }
-            
-            ImGui::Unindent(10.0f);
-            ImGui::PopID();
-        }
-        
-        ImGui::PopStyleColor();
-    }
-
-    if (obj.hasRenderer && obj.renderType == RenderType::Model) {
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.65f, 1.0f));
-
-        if (ImGui::CollapsingHeader("Model Info", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushID("ModelInfo");
-            ImGui::Indent(10.0f);
-
-            const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
-            if (meshInfo) {
-                ImGui::Text("Source File:");
-                ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
-
-                ImGui::Spacing();
-
-                ImGui::Text("Vertices: %d", meshInfo->vertexCount);
-                ImGui::Text("Faces: %d", meshInfo->faceCount);
-                ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
-                ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
-
-                ImGui::Spacing();
-
-                if (ImGui::Button("Reload Model", ImVec2(-1, 0))) {
-                    bool reloaded = false;
-                    if (obj.meshSourceIndex >= 0) {
-                        ModelSceneData sceneData;
-                        std::string err;
-                        if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                            int sourceIndex = obj.meshSourceIndex;
-                            if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                obj.meshId = sceneData.meshIndices[sourceIndex];
-                                reloaded = true;
-                            }
-                        }
-                    }
-                    if (!reloaded) {
-                        ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                        if (result.success) {
-                            obj.meshId = result.meshIndex;
-                            reloaded = true;
-                        } else {
-                            addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
-                        }
-                    }
-                    if (reloaded) {
-                        addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
-                    }
-                }
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
-                ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
-
-                if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
-                    bool reloaded = false;
-                    if (obj.meshSourceIndex >= 0) {
-                        ModelSceneData sceneData;
-                        std::string err;
-                        if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                            int sourceIndex = obj.meshSourceIndex;
-                            if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                obj.meshId = sceneData.meshIndices[sourceIndex];
-                                reloaded = true;
-                            }
-                        }
-                    }
-                    if (!reloaded) {
-                        ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                        if (result.success) {
-                            obj.meshId = result.meshIndex;
-                            reloaded = true;
-                        } else {
-                            addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
-                        }
-                    }
-                    if (reloaded) {
-                        addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
-                    }
-                }
-            }
-
-            ImGui::Unindent(10.0f);
-            ImGui::PopID();
-        }
-
         ImGui::PopStyleColor();
     }
 
@@ -3346,6 +3398,12 @@ void Engine::renderInspectorPanel() {
                 std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
                 if (sc.language == ScriptLanguage::Cpp) {
                     fs::path binary = resolveScriptBinary(sc.path);
+                    if (binary.empty() && !sc.lastBinaryPath.empty()) {
+                        fs::path fallback = sc.lastBinaryPath;
+                        if (fs::exists(fallback)) {
+                            binary = fallback;
+                        }
+                    }
                     sc.lastBinaryPath = binary.string();
                     ScriptRuntime::InspectorFn inspector = scriptRuntime.getInspector(binary);
                     if (inspector) {
@@ -3363,6 +3421,12 @@ void Engine::renderInspectorPanel() {
                     }
                 } else {
                     fs::path assembly = resolveManagedAssembly(sc.path);
+                    if (assembly.empty() && !sc.lastBinaryPath.empty()) {
+                        fs::path fallback = sc.lastBinaryPath;
+                        if (fs::exists(fallback)) {
+                            assembly = fallback;
+                        }
+                    }
                     sc.lastBinaryPath = assembly.string();
                     bool hasInspector = managedRuntime.hasInspector(assembly, sc.managedType);
                     if (hasInspector) {
@@ -3471,6 +3535,18 @@ void Engine::renderInspectorPanel() {
         scriptsChanged = true;
     }
 
+    if (obj.hasRenderer) {
+        std::string matName = obj.materialPath.empty()
+            ? "In-Built Material"
+            : fs::path(obj.materialPath).filename().string();
+        std::string matLine = "Material: " + matName;
+        float textWidth = ImGui::CalcTextSize(matLine.c_str()).x;
+        float availWidth = ImGui::GetContentRegionAvail().x;
+        float x = ImGui::GetCursorPosX() + std::max(0.0f, availWidth - textWidth);
+        ImGui::SetCursorPosX(x);
+        ImGui::TextDisabled("%s", matLine.c_str());
+    }
+
     ImGui::Spacing();
     ImGui::Separator();
     bool componentChanged = false;
@@ -3478,6 +3554,7 @@ void Engine::renderInspectorPanel() {
     if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
         ImGui::OpenPopup("AddComponentPopup");
     }
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 420.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopup("AddComponentPopup")) {
         bool isUIType = isUIObject(obj);
         auto applyUiDefaults = [](SceneObject& target, UIElementType type) {
@@ -3511,32 +3588,56 @@ void Engine::renderInspectorPanel() {
                     break;
             }
         };
-        ImGui::BeginDisabled(isUIType);
-        if (!obj.hasRigidbody && ImGui::MenuItem("Rigidbody3D")) {
+
+        static char componentFilter[96] = "";
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##ComponentFilter", "Search components...", componentFilter, sizeof(componentFilter));
+
+        std::string filterLower = componentFilter;
+        std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        auto matchesFilter = [&](const std::string& label) {
+            if (filterLower.empty()) return true;
+            std::string labelLower = label;
+            std::transform(labelLower.begin(), labelLower.end(), labelLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return labelLower.find(filterLower) != std::string::npos;
+        };
+
+        struct ComponentEntry {
+            std::string label;
+            bool enabled = true;
+            std::function<void()> action;
+        };
+        std::vector<ComponentEntry> entries;
+        auto addEntry = [&](const std::string& label, bool enabled, const std::function<void()>& action) {
+            if (!matchesFilter(label)) return;
+            entries.push_back({label, enabled, action});
+        };
+
+        addEntry("Physics/Rigidbody3D", !obj.hasRigidbody && !isUIType, [&]() {
             obj.hasRigidbody = true;
             obj.rigidbody = RigidbodyComponent{};
             componentChanged = true;
-        }
-        ImGui::EndDisabled();
-        ImGui::BeginDisabled(!isUIType);
-        if (!obj.hasRigidbody2D && ImGui::MenuItem("Rigidbody2D")) {
+        });
+        addEntry("Physics/Rigidbody2D", !obj.hasRigidbody2D && isUIType, [&]() {
             obj.hasRigidbody2D = true;
             obj.rigidbody2D = Rigidbody2DComponent{};
             componentChanged = true;
-        }
-        if (!obj.hasCollider2D && ImGui::MenuItem("Collider2D")) {
+        });
+        addEntry("Physics/Collider2D", !obj.hasCollider2D && isUIType, [&]() {
             obj.hasCollider2D = true;
             obj.collider2D = Collider2DComponent{};
             obj.collider2D.boxSize = glm::max(obj.ui.size, glm::vec2(1.0f));
             componentChanged = true;
-        }
-        if (!obj.hasParallaxLayer2D && ImGui::MenuItem("Parallax Layer 2D")) {
+        });
+        addEntry("Physics/Parallax Layer 2D", !obj.hasParallaxLayer2D && isUIType, [&]() {
             obj.hasParallaxLayer2D = true;
             obj.parallaxLayer2D = ParallaxLayer2DComponent{};
             componentChanged = true;
-        }
-        ImGui::EndDisabled();
-        if (!obj.hasPlayerController && ImGui::MenuItem("Player Controller")) {
+        });
+        addEntry("Gameplay/Player Controller", !obj.hasPlayerController, [&]() {
             obj.hasPlayerController = true;
             obj.playerController = PlayerControllerComponent{};
             obj.hasCollider = true;
@@ -3550,206 +3651,313 @@ void Engine::renderInspectorPanel() {
             obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
             syncLocalTransform(obj);
             componentChanged = true;
-        }
-        if (!obj.hasAudioSource && ImGui::MenuItem("Audio Source")) {
+        });
+        addEntry("Audio/Audio Source", !obj.hasAudioSource, [&]() {
             obj.hasAudioSource = true;
             obj.audioSource = AudioSourceComponent{};
             componentChanged = true;
-        }
-        ImGui::BeginDisabled(isUIType);
-        if (!obj.hasReverbZone && ImGui::MenuItem("Reverb Zone")) {
+        });
+        addEntry("Audio/Reverb Zone", !obj.hasReverbZone && !isUIType, [&]() {
             obj.hasReverbZone = true;
             obj.reverbZone = ReverbZoneComponent{};
             obj.reverbZone.boxSize = glm::max(obj.scale, glm::vec3(1.0f));
             componentChanged = true;
-        }
-        ImGui::EndDisabled();
-        if (!obj.hasAnimation && ImGui::MenuItem("Animation")) {
+        });
+        addEntry("Animation/Animation", !obj.hasAnimation, [&]() {
             obj.hasAnimation = true;
             obj.animation = AnimationComponent{};
             showAnimationWindow = true;
             animationTargetId = obj.id;
             componentChanged = true;
-        }
-        if (!obj.hasCamera && ImGui::MenuItem("Camera")) {
+        });
+        addEntry("Rendering/Camera", !obj.hasCamera, [&]() {
             obj.hasCamera = true;
             obj.camera = CameraComponent{};
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
-        }
-        ImGui::BeginDisabled(!obj.hasCamera);
-        if (!obj.hasCameraFollow2D && ImGui::MenuItem("Camera Follow 2D")) {
+        });
+        addEntry("Rendering/Camera Follow 2D", !obj.hasCameraFollow2D && obj.hasCamera, [&]() {
             obj.hasCameraFollow2D = true;
             obj.cameraFollow2D = CameraFollow2DComponent{};
             componentChanged = true;
-        }
-        ImGui::EndDisabled();
-        if (!obj.hasPostFX && ImGui::MenuItem("Post Processing")) {
+        });
+        addEntry("Rendering/Post Processing", !obj.hasPostFX, [&]() {
             obj.hasPostFX = true;
             obj.postFx = PostFXSettings{};
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
-        }
-        if (!obj.hasLight && ImGui::BeginMenu("Light")) {
-            if (ImGui::MenuItem("Directional")) {
-                obj.hasLight = true;
-                obj.light = LightComponent{};
-                obj.light.type = LightType::Directional;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Point")) {
-                obj.hasLight = true;
-                obj.light = LightComponent{};
-                obj.light.type = LightType::Point;
-                obj.light.range = 12.0f;
-                obj.light.intensity = 2.0f;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Spot")) {
-                obj.hasLight = true;
-                obj.light = LightComponent{};
-                obj.light.type = LightType::Spot;
-                obj.light.range = 15.0f;
-                obj.light.intensity = 2.5f;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Area")) {
-                obj.hasLight = true;
-                obj.light = LightComponent{};
-                obj.light.type = LightType::Area;
-                obj.light.range = 10.0f;
-                obj.light.intensity = 3.0f;
-                obj.light.size = glm::vec2(2.0f, 2.0f);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Renderer")) {
-            if (ImGui::MenuItem("Cube")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Cube;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Sphere")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Sphere;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Capsule")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Capsule;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Plane")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Plane;
-                obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
-                syncLocalTransform(obj);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Torus")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Torus;
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Sprite (Quad)")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Sprite;
-                obj.scale = glm::vec3(1.0f, 1.0f, 0.05f);
-                obj.material.ambientStrength = 1.0f;
-                syncLocalTransform(obj);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Mirror")) {
-                obj.hasRenderer = true;
-                obj.renderType = RenderType::Mirror;
-                obj.useOverlay = true;
-                obj.material.textureMix = 1.0f;
-                obj.material.color = glm::vec3(1.0f);
-                obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
-                syncLocalTransform(obj);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("UI Element")) {
-            if (ImGui::MenuItem("Canvas")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Canvas);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Image")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Image);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Slider")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Slider);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Button")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Button);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Text")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Text);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Sprite2D")) {
-                obj.hasUI = true;
-                applyUiDefaults(obj, UIElementType::Sprite2D);
-                UpdateLegacyTypeFromComponents(obj);
-                componentChanged = true;
-            }
-            ImGui::EndMenu();
-        }
-        if (!obj.hasCollider && ImGui::BeginMenu("Collider")) {
-            if (ImGui::MenuItem("Box Collider")) {
-                obj.hasCollider = true;
-                obj.collider = ColliderComponent{};
-                obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Mesh Collider (Triangle)")) {
-                obj.hasCollider = true;
-                obj.collider = ColliderComponent{};
-                obj.collider.type = ColliderType::Mesh;
-                obj.collider.convex = false;
-                componentChanged = true;
-            }
-            if (ImGui::MenuItem("Mesh Collider (Convex)")) {
-                obj.hasCollider = true;
-                obj.collider = ColliderComponent{};
-                obj.collider.type = ColliderType::ConvexMesh;
-                obj.collider.convex = true;
-                componentChanged = true;
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::MenuItem("Script")) {
+        });
+        addEntry("Light/Directional", !obj.hasLight, [&]() {
+            obj.hasLight = true;
+            obj.light = LightComponent{};
+            obj.light.type = LightType::Directional;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Light/Point", !obj.hasLight, [&]() {
+            obj.hasLight = true;
+            obj.light = LightComponent{};
+            obj.light.type = LightType::Point;
+            obj.light.range = 12.0f;
+            obj.light.intensity = 2.0f;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Light/Spot", !obj.hasLight, [&]() {
+            obj.hasLight = true;
+            obj.light = LightComponent{};
+            obj.light.type = LightType::Spot;
+            obj.light.range = 15.0f;
+            obj.light.intensity = 2.5f;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Light/Area", !obj.hasLight, [&]() {
+            obj.hasLight = true;
+            obj.light = LightComponent{};
+            obj.light.type = LightType::Area;
+            obj.light.range = 10.0f;
+            obj.light.intensity = 3.0f;
+            obj.light.size = glm::vec2(2.0f, 2.0f);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Cube", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Cube;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Sphere", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sphere;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Capsule", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Capsule;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Plane", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Plane;
+            obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
+            syncLocalTransform(obj);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Torus", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Torus;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Sprite (Quad)", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Sprite;
+            obj.scale = glm::vec3(1.0f, 1.0f, 0.05f);
+            obj.material.ambientStrength = 1.0f;
+            syncLocalTransform(obj);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Renderer/Mirror", true, [&]() {
+            obj.hasRenderer = true;
+            obj.renderType = RenderType::Mirror;
+            obj.useOverlay = true;
+            obj.material.textureMix = 1.0f;
+            obj.material.color = glm::vec3(1.0f);
+            obj.scale = glm::vec3(2.0f, 2.0f, 0.05f);
+            syncLocalTransform(obj);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Canvas", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Canvas);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Image", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Image);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Slider", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Slider);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Button", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Button);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Text", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Text);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("UI/Sprite2D", true, [&]() {
+            obj.hasUI = true;
+            applyUiDefaults(obj, UIElementType::Sprite2D);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Collider/Box Collider", !obj.hasCollider, [&]() {
+            obj.hasCollider = true;
+            obj.collider = ColliderComponent{};
+            obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+            componentChanged = true;
+        });
+        addEntry("Collider/Mesh Collider (Triangle)", !obj.hasCollider, [&]() {
+            obj.hasCollider = true;
+            obj.collider = ColliderComponent{};
+            obj.collider.type = ColliderType::Mesh;
+            obj.collider.convex = false;
+            componentChanged = true;
+        });
+        addEntry("Collider/Mesh Collider (Convex)", !obj.hasCollider, [&]() {
+            obj.hasCollider = true;
+            obj.collider = ColliderComponent{};
+            obj.collider.type = ColliderType::ConvexMesh;
+            obj.collider.convex = true;
+            componentChanged = true;
+        });
+        addEntry("Script/Empty Script Component", true, [&]() {
             obj.scripts.push_back(ScriptComponent{});
             scriptsChanged = true;
             componentChanged = true;
+        });
+
+        static std::vector<fs::path> cachedScriptSources;
+        static std::vector<fs::path> cachedScriptBinaries;
+        static std::string cachedScriptRoot;
+        static double cachedScriptRefresh = 0.0;
+        double now = glfwGetTime();
+        std::string projectRoot = projectManager.currentProject.projectPath.string();
+        if (cachedScriptRoot != projectRoot || now - cachedScriptRefresh > 2.0) {
+            cachedScriptRoot = projectRoot;
+            cachedScriptRefresh = now;
+            cachedScriptSources.clear();
+            cachedScriptBinaries.clear();
+
+            fs::path scriptsDir = projectManager.currentProject.projectPath / "Scripts";
+            fs::path outDir;
+            ScriptBuildConfig config;
+            std::string error;
+            fs::path cfgPath = resolveScriptsConfigPath(projectManager.currentProject);
+            if (scriptCompiler.loadConfig(cfgPath, config, error)) {
+                scriptsDir = config.scriptsDir;
+                outDir = config.outDir;
+            }
+
+            std::error_code ec;
+            if (fs::exists(scriptsDir, ec)) {
+                for (auto it = fs::recursive_directory_iterator(scriptsDir, ec);
+                     it != fs::recursive_directory_iterator(); ++it) {
+                    if (it->is_directory()) continue;
+                    std::string ext = it->path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (ext == ".cpp" || ext == ".c" || ext == ".cs") {
+                        cachedScriptSources.push_back(it->path());
+                    }
+                }
+            }
+
+            if (!outDir.empty() && fs::exists(outDir, ec)) {
+                for (auto it = fs::recursive_directory_iterator(outDir, ec);
+                     it != fs::recursive_directory_iterator(); ++it) {
+                    if (it->is_directory()) continue;
+                    std::string ext = it->path().extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#ifdef _WIN32
+                    if (ext == ".dll") {
+                        cachedScriptBinaries.push_back(it->path());
+                    }
+#elif __APPLE__
+                    if (ext == ".dylib") {
+                        cachedScriptBinaries.push_back(it->path());
+                    }
+#else
+                    if (ext == ".so") {
+                        cachedScriptBinaries.push_back(it->path());
+                    }
+#endif
+                }
+            }
         }
+
+        std::unordered_map<std::string, fs::path> sourceByStem;
+        sourceByStem.reserve(cachedScriptSources.size());
+        for (const auto& path : cachedScriptSources) {
+            sourceByStem.emplace(path.stem().string(), path);
+        }
+
+        for (const auto& path : cachedScriptSources) {
+            std::string label = "Script/" + path.filename().string();
+            addEntry(label, true, [&, path]() {
+                ScriptComponent sc;
+                std::string ext = path.extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                sc.language = (ext == ".cs") ? ScriptLanguage::CSharp : ScriptLanguage::Cpp;
+                sc.path = path.string();
+                if (sc.language == ScriptLanguage::CSharp) {
+                    sc.managedType = path.stem().string();
+                }
+                obj.scripts.push_back(std::move(sc));
+                scriptsChanged = true;
+                componentChanged = true;
+            });
+        }
+
+        for (const auto& bin : cachedScriptBinaries) {
+            std::string stem = bin.stem().string();
+            if (sourceByStem.find(stem) != sourceByStem.end()) {
+                continue;
+            }
+            std::string label = "Script (Compiled)/" + stem;
+            addEntry(label, true, [&, bin]() {
+                ScriptComponent sc;
+                sc.language = ScriptLanguage::Cpp;
+                sc.path = bin.string();
+                sc.lastBinaryPath = bin.string();
+                obj.scripts.push_back(std::move(sc));
+                scriptsChanged = true;
+                componentChanged = true;
+            });
+        }
+
+        ImGui::Spacing();
+        ImVec2 listSize(ImGui::GetContentRegionAvail().x, 260.0f);
+        if (ImGui::BeginChild("ComponentList", listSize, true)) {
+            if (entries.empty()) {
+                ImGui::TextDisabled("No components match the filter.");
+            } else {
+                for (const auto& entry : entries) {
+                    if (!entry.enabled) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Selectable(entry.label.c_str())) {
+                        entry.action();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (!entry.enabled) {
+                        ImGui::EndDisabled();
+                    }
+                }
+            }
+        }
+        ImGui::EndChild();
         ImGui::EndPopup();
     }
     ImGui::PopID();

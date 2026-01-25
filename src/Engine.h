@@ -92,6 +92,15 @@ private:
     ProjectManager projectManager;
     PackageManager packageManager;
     bool showLauncher = true;
+    bool launcherIntroStarted = false;
+    bool launcherIntroFinished = false;
+    bool launcherIntroSoundPlayed = false;
+    double launcherIntroStartTime = 0.0;
+    bool launcherTransitionActive = false;
+    bool launcherTransitionPendingHide = false;
+    double launcherTransitionStartTime = 0.0;
+    ImVec2 launcherTransitionFocus = ImVec2(0.0f, 0.0f);
+    std::string launcherLoadingPreviewPath;
     bool showNewSceneDialog = false;
     bool showSaveSceneAsDialog = false;
     char newSceneName[128] = "";
@@ -185,6 +194,7 @@ private:
         bool initialized = false;
     };
     std::unordered_map<int, UIAnimationState> uiAnimationStates;
+    std::unordered_map<ImGuiID, UIAnimationState> editorUiAnimationStates;
     struct UIWorldCamera2D {
         glm::vec2 position = glm::vec2(0.0f);
         float zoom = 100.0f; // pixels per world unit
@@ -371,7 +381,7 @@ private:
     void renderAnimationWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter,
-                          std::vector<bool>& ancestorHasNext, bool isLast, int depth);
+                          std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep);
     void renderFileBrowserPanel();
     void renderMeshBuilderPanel();
     void renderInspectorPanel();
@@ -442,6 +452,8 @@ private:
     void createNewProject(const char* name, const char* location);
     void loadRecentScenes();
     void saveCurrentScene();
+    void saveProjectPreview();
+    fs::path getProjectPreviewPath(const fs::path& projectPathOrFile) const;
     void loadScene(const std::string& sceneName);
     void createNewScene(const std::string& sceneName);
     
