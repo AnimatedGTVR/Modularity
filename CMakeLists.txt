@@ -35,7 +35,7 @@ endif()
 
 # ==================== WINDOWS FIXES (only active on Windows) ====================
 if(WIN32)
-    add_compile_definitions(
+    set(MODULARITY_WINDOWS_DEFINES
         NOMINMAX                  # Fixes std::min/std::max clash with Windows.h
         WIN32_LEAN_AND_MEAN       # Speeds up Windows.h includes
         _CRT_SECURE_NO_WARNINGS   # Silences strncpy, sscanf, etc. warnings
@@ -151,6 +151,9 @@ if(MODULARITY_USE_MONO)
     target_link_libraries(core PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+if(WIN32)
+    target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+endif()
 target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 add_library(core_player STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
@@ -167,6 +170,9 @@ if(MODULARITY_USE_MONO)
     target_link_libraries(core_player PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+if(WIN32)
+    target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+endif()
 target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
 
 if(MODULARITY_ENABLE_PHYSX)
@@ -201,9 +207,15 @@ endif()
 if(MODULARITY_BUILD_EDITOR)
     add_executable(Modularity src/main.cpp)
     target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
+    if(WIN32)
+        target_compile_definitions(Modularity PRIVATE ${MODULARITY_WINDOWS_DEFINES})
+    endif()
 endif()
 add_executable(ModularityPlayer src/main_player.cpp)
 target_compile_options(ModularityPlayer PRIVATE ${MODULARITY_WARNING_FLAGS})
+if(WIN32)
+    target_compile_definitions(ModularityPlayer PRIVATE ${MODULARITY_WINDOWS_DEFINES})
+endif()
 
 # Link order matters on Linux
 if(NOT WIN32)
@@ -268,4 +280,4 @@ add_custom_command(TARGET ModularityPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/Resources
         $<TARGET_FILE_DIR:ModularityPlayer>/Resources
-)
+)	
