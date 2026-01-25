@@ -56,7 +56,7 @@ namespace {
         out.reserve(value.size());
         for (char c : value) {
             if (c == '"') {
-                out += "^\"";
+                out += "\"\"";
             } else {
                 out += c;
             }
