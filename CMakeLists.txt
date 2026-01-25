@@ -62,7 +62,14 @@ find_package(OpenGL REQUIRED)
 option(MODULARITY_USE_MONO "Enable Mono embedding for managed scripts" ON)
 
 if(MODULARITY_USE_MONO)
-    set(MONO_ROOT ${PROJECT_SOURCE_DIR}/src/ThirdParty/mono CACHE PATH "Mono root directory")
+    set(MONO_ROOT "" CACHE PATH "Mono root directory")
+    if(NOT MONO_ROOT)
+        if(DEFINED ENV{MONO_ROOT} AND NOT "$ENV{MONO_ROOT}" STREQUAL "")
+            set(MONO_ROOT "$ENV{MONO_ROOT}" CACHE PATH "Mono root directory" FORCE)
+        else()
+            set(MONO_ROOT "${PROJECT_SOURCE_DIR}/src/ThirdParty/mono" CACHE PATH "Mono root directory" FORCE)
+        endif()
+    endif()
     find_path(MONO_INCLUDE_DIR mono/jit/jit.h
         HINTS
             ${MONO_ROOT}/include/mono-2.0

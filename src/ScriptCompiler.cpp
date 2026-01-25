@@ -20,6 +20,124 @@ namespace {
         }
         return normalized;
     }
+
+    std::string trimCopy(const std::string& value) {
+        size_t start = 0;
+        while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+            start++;
+        }
+        size_t end = value.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+            end--;
+        }
+        return value.substr(start, end - start);
+    }
+    // why does windows need all of this :sob:
+#if defined(_WIN32)
+    std::string getEnvValue(const char* name) {
+        const char* value = std::getenv(name);
+        return value ? std::string(value) : std::string();
+    }
+
+    std::string runCapture(const std::string& command) {
+        std::array<char, 256> buffer{};
+        std::string output;
+        FILE* pipe = _popen(command.c_str(), "r");
+        if (!pipe) return output;
+        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+            output += buffer.data();
+        }
+        _pclose(pipe);
+        return output;
+    }
+
+    std::string findVsDevCmd() {
+        std::string vsInstall = getEnvValue("VSINSTALLDIR");
+        if (!vsInstall.empty()) {
+            fs::path candidate = fs::path(vsInstall) / "Common7" / "Tools" / "VsDevCmd.bat";
+            if (fs::exists(candidate)) return candidate.string();
+        }
+
+        std::string programFilesX86 = getEnvValue("ProgramFiles(x86)");
+        if (programFilesX86.empty()) {
+            programFilesX86 = getEnvValue("ProgramFiles");
+        }
+        if (programFilesX86.empty()) return std::string();
+
+        fs::path vswhere = fs::path(programFilesX86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
+        if (!fs::exists(vswhere)) return std::string();
+
+        std::ostringstream cmd;
+        cmd << "\"" << vswhere.string() << "\" -latest -products * -requires Microsoft.Component.MSBuild "
+            << "-property installationPath";
+        std::string installPath = trimCopy(runCapture(cmd.str()));
+        if (installPath.empty()) return std::string();
+
+        fs::path devCmd = fs::path(installPath) / "Common7" / "Tools" / "VsDevCmd.bat";
+        if (fs::exists(devCmd)) return devCmd.string();
+        return std::string();
+    }
+
+    // well, that's one way to make VS Harder to implement, For God's Sake, MICROSOFT!!!!
+    std::string findVsTool(const char* toolName) {
+        std::string programFilesX86 = getEnvValue("ProgramFiles(x86)");
+        if (programFilesX86.empty()) {
+            programFilesX86 = getEnvValue("ProgramFiles");
+        }
+        if (programFilesX86.empty()) return std::string();
+
+        fs::path vswhere = fs::path(programFilesX86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
+        if (fs::exists(vswhere)) {
+            std::ostringstream cmd;
+            cmd << "\"" << vswhere.string() << "\" -latest -products * "
+                << "-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 "
+                << "-find \"VC\\Tools\\MSVC\\**\\bin\\Hostx64\\x64\\" << toolName << "\"";
+            std::string found = trimCopy(runCapture(cmd.str()));
+            if (!found.empty() && fs::exists(found)) {
+                return found;
+            }
+        }
+
+        std::string vsInstall = getEnvValue("VSINSTALLDIR");
+        if (!vsInstall.empty()) {
+            fs::path fallback = fs::path(vsInstall) / "VC" / "Tools" / "MSVC";
+            if (fs::exists(fallback)) {
+                for (const auto& entry : fs::directory_iterator(fallback)) {
+                    if (!entry.is_directory()) continue;
+                    fs::path candidate = entry.path() / "bin" / "Hostx64" / "x64" / toolName;
+                    if (fs::exists(candidate)) return candidate.string();
+                }
+            }
+        }
+        return std::string();
+    }
+
+    std::string applyToolOverride(const std::string& command, const char* toolName,
+                                  const std::string& toolPath) {
+        if (toolPath.empty()) return command;
+        std::string prefix = std::string(toolName) + " ";
+        if (command.rfind(prefix, 0) != 0) return command;
+        std::ostringstream replaced;
+        replaced << "\"" << toolPath << "\" " << command.substr(prefix.size());
+        return replaced.str();
+    }
+
+    std::string wrapWithVsDevCmdIfNeeded(const std::string& command) {
+        std::string includeEnv = getEnvValue("INCLUDE");
+        if (!includeEnv.empty()) return command;
+
+        std::string vsDevCmd = findVsDevCmd();
+        if (vsDevCmd.empty()) return command;
+
+        std::ostringstream wrapped;
+        wrapped << "cmd /c \"\""
+                << vsDevCmd
+                << "\" -arch=x64 -host_arch=x64 >nul && "
+                << command
+                << "\"";
+        return wrapped.str();
+    }
+#endif
 }
 
 std::string ScriptCompiler::trim(const std::string& value) {
@@ -384,8 +502,19 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     }
 #endif
 
-    outCommands.compile = compileCmd.str();
-    outCommands.link = linkCmd.str();
+    std::string compileStr = compileCmd.str();
+    std::string linkStr = linkCmd.str();
+#ifdef _WIN32
+    const std::string clPath = findVsTool("cl.exe");
+    const std::string linkPath = findVsTool("link.exe");
+    compileStr = applyToolOverride(compileStr, "cl", clPath);
+    linkStr = applyToolOverride(linkStr, "link", linkPath);
+    compileStr = wrapWithVsDevCmdIfNeeded(compileStr);
+    linkStr = wrapWithVsDevCmdIfNeeded(linkStr);
+#endif
+
+    outCommands.compile = compileStr;
+    outCommands.link = linkStr;
     outCommands.objectPath = objectPath;
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath;

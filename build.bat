@@ -33,6 +33,9 @@ if %errorlevel%==0 (
     echo [INFO] ccache detected. Normalizing paths for cross-build cache hits.
 )
 
+set "MONO_ROOT_ARG="
+if defined MONO_ROOT set "MONO_ROOT_ARG=-DMONO_ROOT=%MONO_ROOT%"
+
 :: Clean old build (optional)
 if exist build if %CLEAN_BUILD%==1 (
     echo [INFO] Cleaning existing build directory...
@@ -44,7 +47,7 @@ if not exist build mkdir build
 pushd build
 
 echo [INFO] Configuring with CMake (Visual Studio 18 2026)...
-cmake -A x64 .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+cmake -A x64 .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE% %MONO_ROOT_ARG%
 
 if errorlevel 1 (
     echo.
@@ -84,7 +87,7 @@ if exist "%PLAYER_CACHE_DIR%" if %CLEAN_BUILD%==1 (
 
 if not exist "%PLAYER_CACHE_DIR%" mkdir "%PLAYER_CACHE_DIR%"
 echo [INFO] Configuring player cache build...
-cmake -S . -B "%PLAYER_CACHE_DIR%" -DMODULARITY_BUILD_EDITOR=OFF -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+cmake -S . -B "%PLAYER_CACHE_DIR%" -DMODULARITY_BUILD_EDITOR=OFF -DCMAKE_BUILD_TYPE=%BUILD_TYPE% %MONO_ROOT_ARG%
 if errorlevel 1 (
     echo.
     echo [ERROR] Player cache CMake configuration failed!
