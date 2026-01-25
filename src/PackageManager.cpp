@@ -390,12 +390,22 @@ std::string PackageManager::slugify(const std::string& value) {
 
 bool PackageManager::runCommand(const std::string& command, std::string& output) {
     std::array<char, 256> buffer{};
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
     FILE* pipe = popen(command.c_str(), "r");
+#endif
     if (!pipe) return false;
-    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+    const int buffer_len = static_cast<int>(buffer.size());
+    while (fgets(buffer.data(), buffer_len, pipe) != nullptr) {
         output += buffer.data();
     }
-    int rc = pclose(pipe);
+    int rc = 0;
+#ifdef _WIN32
+    rc = _pclose(pipe);
+#else
+    rc = pclose(pipe);
+#endif
     return rc == 0;
 }
 
