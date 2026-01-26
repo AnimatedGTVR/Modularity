@@ -163,36 +163,101 @@ namespace FileIcons {
         const ImU32 kFolderBase = IM_COL32(198, 178, 120, 255);
         const ImU32 kFolderTab = IM_COL32(215, 197, 140, 255);
         const ImU32 kFolderEdge = IM_COL32(120, 104, 70, 200);
-        const ImU32 kFolderShadow = IM_COL32(110, 95, 60, 70);
-        const ImU32 kFolderSpeck = IM_COL32(120, 110, 80, 55);
+        const ImU32 kFolderShadow = IM_COL32(110, 95, 60, 60);
 
         float w = size;
-        float h = size * 0.72f;
-        float tabW = w * 0.46f;
-        float tabH = h * 0.28f;
-        float rounding = size * 0.08f;
-        float shadowOffset = size * 0.04f;
+        float totalH = size * 0.82f;
+        float bodyY = size * 0.273f;
+        float bodyH = size * 0.547f;
+        float tabY = size * 0.125f;
+        float tabH = size * 0.203f;
+        float tabW = size * 0.43f;
+        float rounding = size * 0.07f;
+        float shadowOffset = size * 0.025f;
+        float outline = std::max(1.2f, size * 0.06f);
 
-        ImVec2 bodyMin(pos.x, pos.y + tabH * 0.55f);
-        ImVec2 bodyMax(pos.x + w, pos.y + h);
-        ImVec2 tabMin(pos.x + w * 0.06f, pos.y);
-        ImVec2 tabMax(pos.x + tabW, pos.y + tabH);
+        ImVec2 bodyMin(pos.x, pos.y + bodyY);
+        ImVec2 bodyMax(pos.x + w, pos.y + bodyY + bodyH);
+        ImVec2 tabMin(pos.x + w * 0.031f, pos.y + tabY);
+        ImVec2 tabMax(pos.x + w * 0.031f + tabW, pos.y + tabY + tabH);
 
         drawList->AddRectFilled(ImVec2(bodyMin.x + shadowOffset, bodyMin.y + shadowOffset),
                                 ImVec2(bodyMax.x + shadowOffset, bodyMax.y + shadowOffset),
                                 kFolderShadow, rounding);
 
         drawList->AddRectFilled(bodyMin, bodyMax, kFolderBase, rounding);
-        drawList->AddRect(bodyMin, bodyMax, kFolderEdge, rounding, 0, 1.2f);
-
         drawList->AddRectFilled(tabMin, tabMax, kFolderTab, rounding);
-        drawList->AddRect(tabMin, tabMax, kFolderEdge, rounding, 0, 1.0f);
 
         ImU32 band = BlendColor(color, kFolderBase, 0.7f);
-        float bandH = h * 0.14f;
+        float bandH = size * 0.094f;
         drawList->AddRectFilled(ImVec2(bodyMin.x, bodyMax.y - bandH), bodyMax, band, rounding);
 
-        DrawPaperSpeckles(drawList, bodyMin, ImVec2(bodyMax.x, bodyMax.y - bandH), kFolderSpeck);
+        drawList->AddRect(bodyMin, bodyMax, kFolderEdge, rounding, 0, outline);
+        drawList->AddRect(tabMin, tabMax, kFolderEdge, rounding, 0, outline * 0.85f);
+    }
+
+    void DrawFolderIconOpen(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
+        const ImU32 kFolderBase = IM_COL32(198, 178, 120, 255);
+        const ImU32 kFolderTab = IM_COL32(215, 197, 140, 255);
+        const ImU32 kFolderEdge = IM_COL32(120, 104, 70, 200);
+        const ImU32 kFolderShadow = IM_COL32(110, 95, 60, 55);
+        const ImU32 kPaperFill = IM_COL32(245, 245, 245, 255);
+
+        float w = size;
+        float bodyY = size * 0.273f;
+        float bodyH = size * 0.547f;
+        float tabY = size * 0.125f;
+        float tabH = size * 0.203f;
+        float tabW = size * 0.43f;
+        float rounding = size * 0.075f;
+        float shadowOffset = size * 0.02f;
+        float outline = std::max(1.2f, size * 0.06f);
+        float openOffset = size * 0.06f;
+
+        ImVec2 bodyMin(pos.x, pos.y + bodyY);
+        ImVec2 bodyMax(pos.x + w, pos.y + bodyY + bodyH);
+        ImVec2 backMin(bodyMin.x, bodyMin.y - openOffset);
+        ImVec2 backMax(bodyMax.x, bodyMax.y - openOffset);
+        ImVec2 tabMin(pos.x + w * 0.031f, pos.y + tabY - openOffset * 0.4f);
+        ImVec2 tabMax(pos.x + w * 0.031f + tabW, pos.y + tabY + tabH - openOffset * 0.4f);
+
+        drawList->AddRectFilled(ImVec2(bodyMin.x + shadowOffset, bodyMin.y + shadowOffset),
+                                ImVec2(bodyMax.x + shadowOffset, bodyMax.y + shadowOffset),
+                                kFolderShadow, rounding);
+
+        drawList->AddRectFilled(backMin, backMax, kFolderTab, rounding);
+        drawList->AddRect(backMin, backMax, kFolderEdge, rounding, 0, outline * 0.8f);
+
+        drawList->AddRectFilled(tabMin, tabMax, kFolderTab, rounding);
+        drawList->AddRect(tabMin, tabMax, kFolderEdge, rounding, 0, outline * 0.75f);
+
+        ImVec2 paperMin(pos.x + w * 0.1f, backMin.y + bodyH * 0.08f);
+        ImVec2 paperMax(pos.x + w * 0.9f, backMin.y + bodyH * 0.62f);
+        float paperRadius = rounding * 0.8f;
+        float paperOutline = outline * 0.6f;
+
+        ImVec2 p1Min = ImVec2(paperMin.x + w * 0.02f, paperMin.y - size * 0.04f);
+        ImVec2 p1Max = ImVec2(paperMax.x - w * 0.02f, paperMax.y - size * 0.04f);
+        ImVec2 p2Min = ImVec2(paperMin.x + w * 0.04f, paperMin.y - size * 0.02f);
+        ImVec2 p2Max = ImVec2(paperMax.x - w * 0.04f, paperMax.y - size * 0.02f);
+        ImVec2 p3Min = paperMin;
+        ImVec2 p3Max = paperMax;
+
+        drawList->AddRectFilled(p1Min, p1Max, kPaperFill, paperRadius);
+        drawList->AddRect(p1Min, p1Max, kFolderEdge, paperRadius, 0, paperOutline);
+        drawList->AddRectFilled(p2Min, p2Max, kPaperFill, paperRadius);
+        drawList->AddRect(p2Min, p2Max, kFolderEdge, paperRadius, 0, paperOutline);
+        drawList->AddRectFilled(p3Min, p3Max, kPaperFill, paperRadius);
+        drawList->AddRect(p3Min, p3Max, kFolderEdge, paperRadius, 0, paperOutline);
+
+        ImVec2 frontMin(bodyMin.x, bodyMin.y + openOffset);
+        ImVec2 frontMax(bodyMax.x, bodyMax.y);
+
+        drawList->AddRectFilled(frontMin, frontMax, kFolderBase, rounding);
+        ImU32 band = BlendColor(color, kFolderBase, 0.7f);
+        float bandH = size * 0.094f;
+        drawList->AddRectFilled(ImVec2(frontMin.x, frontMax.y - bandH), frontMax, band, rounding);
+        drawList->AddRect(frontMin, frontMax, kFolderEdge, rounding, 0, outline);
     }
     
     // Draw a scene/document icon
@@ -387,9 +452,15 @@ namespace FileIcons {
         }
     }
     
-    void DrawIcon(ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, ImU32 color) {
+    void DrawIcon(ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, ImU32 color, bool folderHasItems) {
         switch (category) {
-            case FileCategory::Folder:  DrawFolderIcon(drawList, pos, size, color); break;
+            case FileCategory::Folder:
+                if (folderHasItems) {
+                    DrawFolderIconOpen(drawList, pos, size, color);
+                } else {
+                    DrawFolderIcon(drawList, pos, size, color);
+                }
+                break;
             case FileCategory::Scene:   DrawSceneIcon(drawList, pos, size, color); break;
             case FileCategory::Model:   DrawModelIcon(drawList, pos, size, color); break;
             case FileCategory::Material:DrawShaderIcon(drawList, pos, size, color); break;
@@ -414,6 +485,20 @@ namespace {
         Json,
         Shader
     };
+
+    bool FolderHasVisibleItems(const fs::path& path, bool showHiddenFiles) {
+        std::error_code ec;
+        for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, ec);
+             !ec && it != fs::directory_iterator();
+             ++it) {
+            const std::string name = it->path().filename().string();
+            if (!showHiddenFiles && !name.empty() && name[0] == '.') {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
 
     fs::path makeUniquePath(const fs::path& basePath) {
         if (!fs::exists(basePath)) {
@@ -962,6 +1047,9 @@ void Engine::renderFileBrowserPanel() {
                 std::string filename = entry.path().filename().string();
                 FileCategory category = fileBrowser.getFileCategory(entry);
                 bool isSelected = fileBrowser.selectedFile == entry.path();
+                bool folderHasItems = category == FileCategory::Folder &&
+                                      entry.is_directory() &&
+                                      FolderHasVisibleItems(entry.path(), fileBrowser.showHiddenFiles);
 
                 ImGui::TableNextColumn();
                 ImGui::PushID(i);
@@ -994,7 +1082,7 @@ void Engine::renderFileBrowserPanel() {
                     cellStart.x + (cellWidth - iconSize) * 0.5f,
                     cellStart.y + padding
                 );
-                FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category));
+                FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
 
                 // Draw filename below icon (centered, with wrapping)
                 std::string displayName = filename;
@@ -1150,6 +1238,9 @@ void Engine::renderFileBrowserPanel() {
             std::string filename = entry.path().filename().string();
             FileCategory category = fileBrowser.getFileCategory(entry);
             bool isSelected = fileBrowser.selectedFile == entry.path();
+            bool folderHasItems = category == FileCategory::Folder &&
+                                  entry.is_directory() &&
+                                  FolderHasVisibleItems(entry.path(), fileBrowser.showHiddenFiles);
 
             ImGui::PushID(i);
 
@@ -1278,7 +1369,7 @@ void Engine::renderFileBrowserPanel() {
             ImGui::SameLine(4);
             ImVec2 iconPos = ImGui::GetCursorScreenPos();
             iconPos.y -= 2;
-            FileIcons::DrawIcon(drawList, category, iconPos, 16, getCategoryColor(category));
+            FileIcons::DrawIcon(drawList, category, iconPos, 16, getCategoryColor(category), folderHasItems);
 
             ImGui::SameLine(26);
 
