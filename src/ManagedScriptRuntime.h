@@ -20,14 +20,22 @@ public:
     const std::string& getLastError() const { return lastError; }
 
     struct Module {
+        struct MethodSlot {
+            void* method = nullptr;
+            bool hasDelta = false;
+            bool isStatic = true;
+        };
         fs::path assemblyPath;
         std::string typeName;
-        void* inspectorMethod = nullptr;
-        void* beginMethod = nullptr;
-        void* specMethod = nullptr;
-        void* testEditorMethod = nullptr;
-        void* updateMethod = nullptr;
-        void* tickUpdateMethod = nullptr;
+        MethodSlot inspector;
+        MethodSlot begin;
+        MethodSlot spec;
+        MethodSlot testEditor;
+        MethodSlot update;
+        MethodSlot tickUpdate;
+        void* instance = nullptr;
+        uint32_t instanceHandle = 0;
+        void* autoInspectorMethod = nullptr;
         std::unordered_set<int> beginCalledObjects;
     };
 

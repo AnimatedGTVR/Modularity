@@ -796,6 +796,90 @@ fs::path findManagedProjectRoot(const fs::path& start) {
     }
     return {};
 }
+
+fs::path findEngineManagedRoot() {
+    std::vector<fs::path> candidates;
+    candidates.push_back(fs::current_path());
+    candidates.push_back(fs::current_path().parent_path());
+#if defined(__linux__)
+    {
+        std::error_code ec;
+        fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            candidates.push_back(exe.parent_path());
+            candidates.push_back(exe.parent_path().parent_path());
+        }
+    }
+#elif defined(_WIN32)
+    {
+        wchar_t buffer[MAX_PATH];
+        DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+        if (len > 0) {
+            fs::path exe(buffer);
+            candidates.push_back(exe.parent_path());
+            candidates.push_back(exe.parent_path().parent_path());
+        }
+    }
+#endif
+
+    std::error_code ec;
+    for (const auto& root : candidates) {
+        if (root.empty()) continue;
+        fs::path candidate = root / "Scripts" / "Managed" / "ModuCPP.cs";
+        if (fs::exists(candidate, ec)) {
+            return root;
+        }
+    }
+    return {};
+}
+
+bool ensureProjectManagedCsproj(const fs::path& projectRoot, const fs::path& engineRoot, std::string& error) {
+    if (projectRoot.empty() || engineRoot.empty()) {
+        error = "Managed project setup failed: missing project or engine root.";
+        return false;
+    }
+    fs::path managedDir = projectRoot / "Scripts" / "Managed";
+    fs::path csprojPath = managedDir / "ModuCPP.csproj";
+    std::error_code ec;
+    if (fs::exists(csprojPath, ec)) return true;
+    fs::create_directories(managedDir, ec);
+    if (ec) {
+        error = "Managed project setup failed: unable to create " + managedDir.string();
+        return false;
+    }
+
+    fs::path engineApi = engineRoot / "Scripts" / "Managed" / "ModuCPP.cs";
+    if (!fs::exists(engineApi, ec)) {
+        error = "Managed project setup failed: engine ModuCPP.cs not found at " + engineApi.string();
+        return false;
+    }
+
+    std::ofstream file(csprojPath);
+    if (!file.is_open()) {
+        error = "Managed project setup failed: unable to write " + csprojPath.string();
+        return false;
+    }
+
+    file << "<Project Sdk=\"Microsoft.NET.Sdk\">\n";
+    file << "  <PropertyGroup>\n";
+    file << "    <TargetFramework>netstandard2.0</TargetFramework>\n";
+    file << "    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n";
+    file << "    <ImplicitUsings>enable</ImplicitUsings>\n";
+    file << "    <Nullable>enable</Nullable>\n";
+    file << "    <LangVersion>latest</LangVersion>\n";
+    file << "    <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>\n";
+    file << "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n";
+    file << "  </PropertyGroup>\n";
+    file << "  <ItemGroup>\n";
+    file << "    <Compile Include=\"*.cs\" />\n";
+    file << "    <Compile Include=\"**/*.cs\" />\n";
+    file << "    <Compile Include=\"../*.cs\" />\n";
+    file << "    <Compile Include=\"../**/*.cs\" Exclude=\"../Managed/**\" />\n";
+    file << "    <Compile Include=\"" << engineApi.generic_string() << "\" Link=\"ModuCPP.cs\" />\n";
+    file << "  </ItemGroup>\n";
+    file << "</Project>\n";
+    return true;
+}
 }
 
 void Engine::DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale) {
@@ -4082,6 +4166,10 @@ void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType ty
         case ConsoleMessageType::Success: prefix = "Success: "; break;
     }
 
+    if (type == ConsoleMessageType::Error && audio.isReady()) {
+        audio.playPreview("Resources/Sounds/Script Error.mp3", 0.95f, false);
+    }
+
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
     std::string timeStr = std::ctime(&time);
@@ -4315,6 +4403,10 @@ bool Engine::setRigidbodyYawFromScript(int id, float yawDegrees) {
     return physics.setActorYaw(id, yawDegrees);
 }
 
+int Engine::getSelectedObjectId() const {
+    return selectedObjectId;
+}
+
 bool Engine::raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& dir, float distance,
                                       int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal,
                                       float* hitDistance) const {
@@ -4411,6 +4503,9 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     lastCompileLog.clear();
     lastCompileStatus = "Compiling " + scriptPath.filename().string();
     lastCompileSuccess = false;
+    if (audio.isReady()) {
+        audio.playPreview("Resources/Sounds/Notification.mp3", 0.95f, false);
+    }
     {
         std::lock_guard<std::mutex> lock(compileMutex);
         compileProgress = 0.05f;
@@ -4478,7 +4573,24 @@ void Engine::compileManagedScripts() {
         compileWorker.join();
     }
 
-    fs::path managedProject = getManagedProjectPath();
+    fs::path projectRoot = projectManager.currentProject.projectPath;
+    fs::path projectManagedProject = projectRoot / "Scripts" / "Managed" / "ModuCPP.csproj";
+    if (!fs::exists(projectManagedProject)) {
+        std::string setupError;
+        fs::path engineRoot = findEngineManagedRoot();
+        if (!engineRoot.empty()) {
+            ensureProjectManagedCsproj(projectRoot, engineRoot, setupError);
+        } else {
+            setupError = "Managed project setup failed: engine root not found.";
+        }
+        if (!setupError.empty()) {
+            addConsoleMessage(setupError, ConsoleMessageType::Error);
+        }
+    }
+
+    fs::path managedProject = fs::exists(projectManagedProject)
+        ? projectManagedProject
+        : getManagedProjectPath();
     if (!fs::exists(managedProject)) {
         addConsoleMessage("Managed project not found: " + managedProject.string(), ConsoleMessageType::Error);
         return;
@@ -4489,6 +4601,9 @@ void Engine::compileManagedScripts() {
     lastCompileLog.clear();
     lastCompileStatus = "Compiling managed scripts";
     lastCompileSuccess = false;
+    if (audio.isReady()) {
+        audio.playPreview("Resources/Sounds/Notification.mp3", 0.95f, false);
+    }
     {
         std::lock_guard<std::mutex> lock(compileMutex);
         compileProgress = 0.05f;
@@ -4587,6 +4702,9 @@ void Engine::updateCompileJob() {
             lastCompileSuccess = true;
             lastCompileStatus = result.isManaged ? "Reloading ModuCPP" : "Reloading ModuCore";
             lastCompileLog = result.compileLog + result.linkLog;
+            if (audio.isReady()) {
+                audio.playPreview("Resources/Sounds/Success Script.mp3", 0.95f, false);
+            }
             addConsoleMessage("Compiled script -> " + result.binaryPath.string(), ConsoleMessageType::Success);
             if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
             if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);

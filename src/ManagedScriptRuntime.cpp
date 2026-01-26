@@ -8,6 +8,7 @@
 #if MODULARITY_USE_MONO
 #include <mono/jit/jit.h>
 #include <mono/metadata/assembly.h>
+#include <mono/metadata/attrdefs.h>
 #include <mono/metadata/debug-helpers.h>
 #include <mono/metadata/mono-config.h>
 #include <mono/metadata/threads.h>
@@ -48,11 +49,22 @@ bool splitNamespaceAndName(const std::string& fullName, std::string& nameSpace, 
 
 std::string monoExceptionToString(MonoObject* exc) {
     if (!exc) return "Unknown managed exception";
-    MonoString* strObj = mono_object_to_string(exc, nullptr);
-    if (!strObj) return "Managed exception (no ToString)";
-    char* utf8 = mono_string_to_utf8(strObj);
-    std::string out = utf8 ? utf8 : "Managed exception (utf8 conversion failed)";
-    mono_free(utf8);
+    MonoClass* klass = mono_object_get_class(exc);
+    if (!klass) return "Managed exception (no class)";
+    const char* name = mono_class_get_name(klass);
+    const char* ns = mono_class_get_namespace(klass);
+    std::string out = "Managed exception";
+    if (ns && ns[0] != '\0') {
+        out += " (";
+        out += ns;
+        out += ".";
+        out += name ? name : "Unknown";
+        out += ")";
+    } else if (name && name[0] != '\0') {
+        out += " (";
+        out += name;
+        out += ")";
+    }
     return out;
 }
 
@@ -256,23 +268,88 @@ bool ManagedScriptRuntime::loadModuleMethods(Module& mod, const fs::path& assemb
         return false;
     }
 
-    MonoMethod* inspector = mono_class_get_method_from_name(klass, "Script_OnInspector", 1);
-    MonoMethod* begin = mono_class_get_method_from_name(klass, "Script_Begin", 2);
-    MonoMethod* spec = mono_class_get_method_from_name(klass, "Script_Spec", 2);
-    MonoMethod* testEditor = mono_class_get_method_from_name(klass, "Script_TestEditor", 2);
-    MonoMethod* update = mono_class_get_method_from_name(klass, "Script_Update", 2);
-    MonoMethod* tickUpdate = mono_class_get_method_from_name(klass, "Script_TickUpdate", 2);
+    auto findMethod = [&](const std::initializer_list<const char*>& names,
+                          int paramCount) -> MonoMethod* {
+        for (const char* name : names) {
+            MonoMethod* method = mono_class_get_method_from_name(klass, name, paramCount);
+            if (method) return method;
+        }
+        return nullptr;
+    };
 
-    mod.inspectorMethod = inspector;
-    mod.beginMethod = begin;
-    mod.specMethod = spec;
-    mod.testEditorMethod = testEditor;
-    mod.updateMethod = update;
-    mod.tickUpdateMethod = tickUpdate;
+    auto isMethodStatic = [](MonoMethod* method) {
+        if (!method) return true;
+        uint32_t flags = mono_method_get_flags(method, nullptr);
+        constexpr uint32_t kStaticMask = 0x0010;
+        return (flags & kStaticMask) != 0;
+    };
 
-    if (!inspector && !begin && !spec && !testEditor && !update && !tickUpdate) {
+    auto loadSlot = [&](Module::MethodSlot& slot,
+                        const std::initializer_list<const char*>& names,
+                        bool allowDelta) {
+        MonoMethod* method = nullptr;
+        bool hasDelta = false;
+        if (allowDelta) {
+            method = findMethod(names, 2);
+            if (method) {
+                hasDelta = true;
+            } else {
+                method = findMethod(names, 1);
+            }
+        } else {
+            method = findMethod(names, 1);
+        }
+
+        slot.method = method;
+        slot.hasDelta = hasDelta;
+        slot.isStatic = isMethodStatic(method);
+    };
+
+    loadSlot(mod.inspector, {"Script_OnInspector", "OnInspector"}, false);
+    loadSlot(mod.begin, {"Script_Begin", "Begin"}, true);
+    loadSlot(mod.spec, {"Script_Spec", "Spec"}, true);
+    loadSlot(mod.testEditor, {"Script_TestEditor", "TestEditor"}, true);
+    loadSlot(mod.update, {"Script_Update", "Update"}, true);
+    loadSlot(mod.tickUpdate, {"Script_TickUpdate", "TickUpdate"}, true);
+
+    if (!mod.inspector.method && !mod.begin.method && !mod.spec.method &&
+        !mod.testEditor.method && !mod.update.method && !mod.tickUpdate.method) {
         lastError = "No managed script exports found";
         return false;
+    }
+
+    MonoClass* inspectorHost = mono_class_from_name(image, "ModuCPP", "Inspector");
+    if (inspectorHost) {
+        MonoMethod* autoMethod = mono_class_get_method_from_name(inspectorHost, "RenderAuto", 2);
+        mod.autoInspectorMethod = autoMethod;
+    }
+
+    bool needsInstance = false;
+    const Module::MethodSlot* slots[] = {
+        &mod.inspector, &mod.begin, &mod.spec, &mod.testEditor, &mod.update, &mod.tickUpdate
+    };
+    for (const Module::MethodSlot* slot : slots) {
+        if (slot->method && !slot->isStatic) {
+            needsInstance = true;
+            break;
+        }
+    }
+
+    if (mod.autoInspectorMethod) {
+        needsInstance = true;
+    }
+
+    if (needsInstance) {
+        mono_domain_set(monoState->scriptDomain, false);
+        mono_thread_attach(monoState->scriptDomain);
+        MonoObject* instance = mono_object_new(monoState->scriptDomain, klass);
+        if (!instance) {
+            lastError = "Failed to create managed script instance";
+            return false;
+        }
+        mono_runtime_object_init(instance);
+        mod.instance = instance;
+        mod.instanceHandle = mono_gchandle_new(instance, true);
     }
 
     return true;
@@ -302,8 +379,8 @@ ManagedScriptRuntime::Module* ManagedScriptRuntime::getModule(const fs::path& as
     return &modules[key];
 }
 
-static bool invokeMonoMethod(MonoDomain* domain, MonoMethod* method, ScriptContext* ctx,
-                             float deltaTime, bool hasDelta, std::string& error) {
+static bool invokeMonoMethod(MonoDomain* domain, MonoMethod* method, MonoObject* instance,
+                             ScriptContext* ctx, float deltaTime, bool hasDelta, std::string& error) {
     if (!method) return false;
     mono_domain_set(domain, false);
     mono_thread_attach(domain);
@@ -313,7 +390,7 @@ static bool invokeMonoMethod(MonoDomain* domain, MonoMethod* method, ScriptConte
     void* argsNoDelta[1] = { &ctxPtr };
 
     MonoObject* exc = nullptr;
-    mono_runtime_invoke(method, nullptr, hasDelta ? argsWithDelta : argsNoDelta, &exc);
+    mono_runtime_invoke(method, instance, hasDelta ? argsWithDelta : argsNoDelta, &exc);
     if (exc) {
         error = monoExceptionToString(exc);
         return false;
@@ -325,13 +402,29 @@ bool ManagedScriptRuntime::invokeInspector(const fs::path& assemblyPath, const s
                                            ScriptContext& ctx) {
     Module* mod = getModule(assemblyPath, typeName);
     if (!mod) return false;
-    MonoMethod* inspector = reinterpret_cast<MonoMethod*>(mod->inspectorMethod);
-    if (!inspector) {
-        lastError.clear();
-        return false;
-    }
+    MonoMethod* inspector = reinterpret_cast<MonoMethod*>(mod->inspector.method);
     std::string error;
-    bool ok = invokeMonoMethod(monoState->scriptDomain, inspector, &ctx, 0.0f, false, error);
+    if (!inspector) {
+        MonoMethod* autoInspector = reinterpret_cast<MonoMethod*>(mod->autoInspectorMethod);
+        if (!autoInspector) {
+            lastError.clear();
+            return false;
+        }
+        mono_domain_set(monoState->scriptDomain, false);
+        mono_thread_attach(monoState->scriptDomain);
+        intptr_t ctxPtr = reinterpret_cast<intptr_t>(&ctx);
+        MonoObject* instanceObj = reinterpret_cast<MonoObject*>(mod->instance);
+        void* args[2] = { &ctxPtr, instanceObj };
+        MonoObject* exc = nullptr;
+        mono_runtime_invoke(autoInspector, nullptr, args, &exc);
+        if (exc) {
+            lastError = monoExceptionToString(exc);
+            return false;
+        }
+        return true;
+    }
+    MonoObject* instance = mod->inspector.isStatic ? nullptr : reinterpret_cast<MonoObject*>(mod->instance);
+    bool ok = invokeMonoMethod(monoState->scriptDomain, inspector, instance, &ctx, 0.0f, false, error);
     if (!ok) {
         lastError = error;
     }
@@ -341,7 +434,7 @@ bool ManagedScriptRuntime::invokeInspector(const fs::path& assemblyPath, const s
 bool ManagedScriptRuntime::hasInspector(const fs::path& assemblyPath, const std::string& typeName) {
     Module* mod = getModule(assemblyPath, typeName);
     if (!mod) return false;
-    if (!mod->inspectorMethod) {
+    if (!mod->inspector.method && !mod->autoInspectorMethod) {
         lastError.clear();
         return false;
     }
@@ -355,42 +448,53 @@ void ManagedScriptRuntime::tickModule(const fs::path& assemblyPath, const std::s
     if (!mod) return;
 
     int objId = ctx.object ? ctx.object->id : -1;
-    MonoMethod* begin = reinterpret_cast<MonoMethod*>(mod->beginMethod);
+    MonoMethod* begin = reinterpret_cast<MonoMethod*>(mod->begin.method);
     if (objId >= 0 && begin && mod->beginCalledObjects.find(objId) == mod->beginCalledObjects.end()) {
         std::string error;
-        if (!invokeMonoMethod(monoState->scriptDomain, begin, &ctx, deltaTime, true, error)) {
+        MonoObject* instance = mod->begin.isStatic ? nullptr : reinterpret_cast<MonoObject*>(mod->instance);
+        if (!invokeMonoMethod(monoState->scriptDomain, begin, instance,
+                              &ctx, deltaTime, mod->begin.hasDelta, error)) {
             lastError = error;
             return;
         }
         mod->beginCalledObjects.insert(objId);
     }
 
-    MonoMethod* tickUpdate = reinterpret_cast<MonoMethod*>(mod->tickUpdateMethod);
-    MonoMethod* update = reinterpret_cast<MonoMethod*>(mod->updateMethod);
+    MonoMethod* tickUpdate = reinterpret_cast<MonoMethod*>(mod->tickUpdate.method);
+    MonoMethod* update = reinterpret_cast<MonoMethod*>(mod->update.method);
     if (tickUpdate || update) {
         std::string error;
-        if (!invokeMonoMethod(monoState->scriptDomain, tickUpdate ? tickUpdate : update,
-                              &ctx, deltaTime, true, error)) {
+        MonoMethod* method = tickUpdate ? tickUpdate : update;
+        bool hasDelta = tickUpdate ? mod->tickUpdate.hasDelta : mod->update.hasDelta;
+        MonoObject* instance = (tickUpdate ? mod->tickUpdate.isStatic : mod->update.isStatic)
+            ? nullptr
+            : reinterpret_cast<MonoObject*>(mod->instance);
+        if (!invokeMonoMethod(monoState->scriptDomain, method, instance,
+                              &ctx, deltaTime, hasDelta, error)) {
             lastError = error;
             return;
         }
     }
 
     if (runSpec) {
-        MonoMethod* spec = reinterpret_cast<MonoMethod*>(mod->specMethod);
+        MonoMethod* spec = reinterpret_cast<MonoMethod*>(mod->spec.method);
         if (spec) {
             std::string error;
-            if (!invokeMonoMethod(monoState->scriptDomain, spec, &ctx, deltaTime, true, error)) {
+            MonoObject* instance = mod->spec.isStatic ? nullptr : reinterpret_cast<MonoObject*>(mod->instance);
+            if (!invokeMonoMethod(monoState->scriptDomain, spec, instance,
+                                  &ctx, deltaTime, mod->spec.hasDelta, error)) {
                 lastError = error;
                 return;
             }
         }
     }
     if (runTest) {
-        MonoMethod* test = reinterpret_cast<MonoMethod*>(mod->testEditorMethod);
+        MonoMethod* test = reinterpret_cast<MonoMethod*>(mod->testEditor.method);
         if (test) {
             std::string error;
-            if (!invokeMonoMethod(monoState->scriptDomain, test, &ctx, deltaTime, true, error)) {
+            MonoObject* instance = mod->testEditor.isStatic ? nullptr : reinterpret_cast<MonoObject*>(mod->instance);
+            if (!invokeMonoMethod(monoState->scriptDomain, test, instance,
+                                  &ctx, deltaTime, mod->testEditor.hasDelta, error)) {
                 lastError = error;
                 return;
             }
@@ -399,6 +503,17 @@ void ManagedScriptRuntime::tickModule(const fs::path& assemblyPath, const std::s
 }
 
 void ManagedScriptRuntime::unloadAll() {
+    if (monoState && monoState->scriptDomain) {
+        mono_domain_set(monoState->scriptDomain, false);
+        mono_thread_attach(monoState->scriptDomain);
+        for (auto& entry : modules) {
+            if (entry.second.instanceHandle != 0) {
+                mono_gchandle_free(entry.second.instanceHandle);
+                entry.second.instanceHandle = 0;
+                entry.second.instance = nullptr;
+            }
+        }
+    }
     modules.clear();
     apiInjected = false;
     lastError.clear();

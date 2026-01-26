@@ -25,6 +25,17 @@ void modu_ctx_set_setting_float(ScriptContext* ctx, const char* key, float value
 void modu_ctx_set_setting_bool(ScriptContext* ctx, const char* key, int value);
 void modu_ctx_set_setting_string(ScriptContext* ctx, const char* key, const char* value);
 void modu_ctx_add_console_message(ScriptContext* ctx, const char* message, int type);
+int modu_ctx_find_object_id_by_name(ScriptContext* ctx, const char* name);
+void modu_ctx_get_object_name(ScriptContext* ctx, int id, char* outBuffer, int outBufferSize);
+int modu_ctx_get_selected_object_id(ScriptContext* ctx);
+void modu_imgui_text(const char* text);
+void modu_imgui_separator();
+int modu_imgui_button(const char* label);
+int modu_imgui_checkbox(const char* label, int* value);
+int modu_imgui_drag_float(const char* label, float* value, float speed, float minValue, float maxValue);
+int modu_imgui_drag_float3(const char* label, float* values, float speed, float minValue, float maxValue);
+int modu_imgui_input_text(const char* label, char* buffer, int bufferSize);
+int modu_imgui_accept_scene_object_drop(int* outId);
 }
 
 struct ManagedNativeApi {
@@ -50,6 +61,17 @@ struct ManagedNativeApi {
     void (*setSettingBool)(ScriptContext* ctx, const char* key, int value) = nullptr;
     void (*setSettingString)(ScriptContext* ctx, const char* key, const char* value) = nullptr;
     void (*addConsoleMessage)(ScriptContext* ctx, const char* message, int type) = nullptr;
+    int (*findObjectIdByName)(ScriptContext* ctx, const char* name) = nullptr;
+    void (*getObjectName)(ScriptContext* ctx, int id, char* outBuffer, int outBufferSize) = nullptr;
+    int (*getSelectedObjectId)(ScriptContext* ctx) = nullptr;
+    void (*imguiText)(const char* text) = nullptr;
+    void (*imguiSeparator)() = nullptr;
+    int (*imguiButton)(const char* label) = nullptr;
+    int (*imguiCheckbox)(const char* label, int* value) = nullptr;
+    int (*imguiDragFloat)(const char* label, float* value, float speed, float minValue, float maxValue) = nullptr;
+    int (*imguiDragFloat3)(const char* label, float* values, float speed, float minValue, float maxValue) = nullptr;
+    int (*imguiInputText)(const char* label, char* buffer, int bufferSize) = nullptr;
+    int (*imguiAcceptSceneObjectDrop)(int* outId) = nullptr;
 };
 
 ManagedNativeApi BuildManagedNativeApi();

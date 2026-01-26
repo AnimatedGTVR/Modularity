@@ -43,6 +43,7 @@ struct ScriptContext {
     glm::vec3 GetMoveInputWASD(float pitchDeg, float yawDeg) const;
     bool ApplyMouseLook(float& pitchDeg, float& yawDeg, float sensitivity, float maxDelta, float deltaTime,
                         bool requireMouseButton) const;
+    int GetSelectedObjectId() const;
     bool IsSprintDown() const;
     bool IsJumpDown() const;
     bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,

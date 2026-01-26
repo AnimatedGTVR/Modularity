@@ -217,6 +217,11 @@ bool ScriptContext::ApplyMouseLook(float& pitchDeg, float& yawDeg, float sensiti
     return true;
 }
 
+int ScriptContext::GetSelectedObjectId() const {
+    if (!engine) return -1;
+    return engine->getSelectedObjectId();
+}
+
 bool ScriptContext::IsSprintDown() const {
     return ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
 }

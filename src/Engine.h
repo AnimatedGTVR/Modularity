@@ -504,6 +504,7 @@ public:
     void markProjectDirty();
     // Script-accessible logging wrapper
     void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
+    int getSelectedObjectId() const;
     // Script-accessible physics helpers
     bool setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity);
     bool getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity);

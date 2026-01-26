@@ -9,6 +9,8 @@
 #include <cctype>
 #include <functional>
 #include <sstream>
+#include <fstream>
+#include <regex>
 #include <unordered_set>
 #include <unordered_map>
 #include <optional>
@@ -22,6 +24,61 @@
 
 #pragma region Hierarchy Helpers
 namespace {
+    std::optional<std::string> InferManagedTypeFromSource(const std::string& source,
+                                                          const std::string& fallbackClass) {
+        std::string nameSpace;
+        std::string className;
+        try {
+            std::smatch match;
+            std::regex namespacePattern(R"(namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(\{|;))");
+            if (std::regex_search(source, match, namespacePattern) && match.size() > 1) {
+                nameSpace = match[1].str();
+            }
+
+            if (!fallbackClass.empty()) {
+                auto escapeRegex = [](const std::string& value) {
+                    std::string escaped;
+                    escaped.reserve(value.size() * 2);
+                    for (char c : value) {
+                        if (c == '\\' || c == '.' || c == '+' || c == '*' || c == '?' || c == '^' || c == '$' ||
+                            c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == '|') {
+                            escaped.push_back('\\');
+                        }
+                        escaped.push_back(c);
+                    }
+                    return escaped;
+                };
+                std::regex classMatch("\\bclass\\s+" + escapeRegex(fallbackClass) + "\\b");
+                if (std::regex_search(source, classMatch)) {
+                    className = fallbackClass;
+                }
+            }
+
+            if (className.empty()) {
+                std::regex classPattern(R"(\bclass\s+([A-Za-z_][A-Za-z0-9_]*))");
+                if (std::regex_search(source, match, classPattern) && match.size() > 1) {
+                    className = match[1].str();
+                }
+            }
+        } catch (...) {
+            return std::nullopt;
+        }
+
+        if (className.empty()) return std::nullopt;
+        if (!nameSpace.empty()) return nameSpace + "." + className;
+        return className;
+    }
+
+    std::optional<std::string> InferManagedTypeFromFile(const fs::path& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) return std::nullopt;
+        std::ostringstream ss;
+        ss << file.rdbuf();
+        std::string source = ss.str();
+        std::string fallback = path.stem().string();
+        return InferManagedTypeFromSource(source, fallback);
+    }
+
     ImU32 GetHierarchyTypeColor(const SceneObject& obj) {
         if (!obj.scripts.empty()) return IM_COL32(255, 175, 90, 235);
         if (obj.hasCamera) return IM_COL32(110, 175, 235, 220);
@@ -574,18 +631,8 @@ void Engine::renderHierarchyPanel() {
     const char* filterOptions[] = { "Bilinear", "Nearest" };
     int filterIndex = hierarchyPreviewNearest ? 1 : 0;
     ImGui::SetNextItemWidth(120.0f);
-    ImGuiID comboId = ImGui::GetID("##HierarchyTexFilter");
-    UIAnimationState& comboAnim = editorUiAnimationStates[comboId];
-    bool comboOpen = ImGui::IsPopupOpen(comboId, ImGuiPopupFlags_None);
-    float comboT = (uiAnimationMode == UIAnimationMode::Off) ? (comboOpen ? 1.0f : 0.0f) : comboAnim.active;
-    if (uiAnimationMode != UIAnimationMode::Off) {
-        float target = comboOpen ? 1.0f : 0.0f;
-        comboAnim.active += (target - comboAnim.active) * animStep;
-        comboT = comboAnim.active;
-    }
-    ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(comboT, 0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f);
     if (ImGui::BeginCombo("##HierarchyTexFilter", filterOptions[filterIndex])) {
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::clamp(comboT, 0.0f, 1.0f));
         for (int i = 0; i < IM_ARRAYSIZE(filterOptions); ++i) {
             bool selected = (i == filterIndex);
             if (ImGui::Selectable(filterOptions[i], selected)) {
@@ -594,7 +641,6 @@ void Engine::renderHierarchyPanel() {
             }
             if (selected) ImGui::SetItemDefaultFocus();
         }
-        ImGui::PopStyleVar();
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
@@ -3349,6 +3395,16 @@ void Engine::renderInspectorPanel() {
             if (ImGui::Combo("##ScriptLanguage", &languageIndex, languageLabels, IM_ARRAYSIZE(languageLabels))) {
                 sc.language = (languageIndex == 1) ? ScriptLanguage::CSharp : ScriptLanguage::Cpp;
                 scriptsChanged = true;
+                if (sc.language == ScriptLanguage::CSharp) {
+                    std::string stem = fs::path(sc.path).stem().string();
+                    if (sc.managedType.empty() || sc.managedType == stem) {
+                        if (auto inferred = InferManagedTypeFromFile(sc.path)) {
+                            sc.managedType = *inferred;
+                        } else if (!stem.empty()) {
+                            sc.managedType = stem;
+                        }
+                    }
+                }
             }
 
             char pathBuf[512] = {};
@@ -3358,6 +3414,16 @@ void Engine::renderInspectorPanel() {
             if (ImGui::InputText("##ScriptPath", pathBuf, sizeof(pathBuf))) {
                 sc.path = pathBuf;
                 scriptsChanged = true;
+                if (sc.language == ScriptLanguage::CSharp) {
+                    std::string stem = fs::path(sc.path).stem().string();
+                    if (sc.managedType.empty() || sc.managedType == stem) {
+                        if (auto inferred = InferManagedTypeFromFile(sc.path)) {
+                            sc.managedType = *inferred;
+                        } else if (!stem.empty()) {
+                            sc.managedType = stem;
+                        }
+                    }
+                }
             }
 
             ImGui::SameLine();
@@ -3374,6 +3440,16 @@ void Engine::renderInspectorPanel() {
                     if (useSelection) {
                         sc.path = entry.path().string();
                         scriptsChanged = true;
+                        if (sc.language == ScriptLanguage::CSharp) {
+                            std::string stem = entry.path().stem().string();
+                            if (sc.managedType.empty() || sc.managedType == stem) {
+                                if (auto inferred = InferManagedTypeFromFile(entry.path())) {
+                                    sc.managedType = *inferred;
+                                } else if (!stem.empty()) {
+                                    sc.managedType = stem;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3450,80 +3526,83 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            ImGui::TextDisabled("Settings");
-            for (size_t s = 0; s < sc.settings.size(); ++s) {
-                ImGui::PushID(static_cast<int>(s));
-                char keyBuf[128] = {};
-                char valBuf[256] = {};
-                std::snprintf(keyBuf, sizeof(keyBuf), "%s", sc.settings[s].key.c_str());
-                std::snprintf(valBuf, sizeof(valBuf), "%s", sc.settings[s].value.c_str());
-                auto isBoolString = [](const std::string& v, bool& out) {
-                    if (v == "1" || v == "true" || v == "True") { out = true; return true; }
-                    if (v == "0" || v == "false" || v == "False") { out = false; return true; }
-                    return false;
-                };
-                auto isNumberString = [](const std::string& v, float& out) {
-                    if (v.empty()) return false;
-                    char* end = nullptr;
-                    out = std::strtof(v.c_str(), &end);
-                    return end && *end == '\0';
-                };
-                bool boolVal = false;
-                bool hasBool = isBoolString(sc.settings[s].value, boolVal);
-                float numVal = 0.0f;
-                bool hasNumber = isNumberString(sc.settings[s].value, numVal);
-                ImGui::SetNextItemWidth(140);
-                if (ImGui::InputText("##Key", keyBuf, sizeof(keyBuf))) {
-                    sc.settings[s].key = keyBuf;
-                    scriptsChanged = true;
-                }
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(-200);
-                if (hasBool) {
-                    if (ImGui::Checkbox("##BoolVal", &boolVal)) {
-                        sc.settings[s].value = boolVal ? "1" : "0";
+            constexpr bool showScriptSettings = false;
+            if (showScriptSettings) {
+                ImGui::TextDisabled("Settings");
+                for (size_t s = 0; s < sc.settings.size(); ++s) {
+                    ImGui::PushID(static_cast<int>(s));
+                    char keyBuf[128] = {};
+                    char valBuf[256] = {};
+                    std::snprintf(keyBuf, sizeof(keyBuf), "%s", sc.settings[s].key.c_str());
+                    std::snprintf(valBuf, sizeof(valBuf), "%s", sc.settings[s].value.c_str());
+                    auto isBoolString = [](const std::string& v, bool& out) {
+                        if (v == "1" || v == "true" || v == "True") { out = true; return true; }
+                        if (v == "0" || v == "false" || v == "False") { out = false; return true; }
+                        return false;
+                    };
+                    auto isNumberString = [](const std::string& v, float& out) {
+                        if (v.empty()) return false;
+                        char* end = nullptr;
+                        out = std::strtof(v.c_str(), &end);
+                        return end && *end == '\0';
+                    };
+                    bool boolVal = false;
+                    bool hasBool = isBoolString(sc.settings[s].value, boolVal);
+                    float numVal = 0.0f;
+                    bool hasNumber = isNumberString(sc.settings[s].value, numVal);
+                    ImGui::SetNextItemWidth(140);
+                    if (ImGui::InputText("##Key", keyBuf, sizeof(keyBuf))) {
+                        sc.settings[s].key = keyBuf;
                         scriptsChanged = true;
                     }
-                } else if (hasNumber) {
-                    if (ImGui::InputFloat("##NumVal", &numVal, 0.0f, 0.0f, "%.4f")) {
-                        sc.settings[s].value = std::to_string(numVal);
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(-200);
+                    if (hasBool) {
+                        if (ImGui::Checkbox("##BoolVal", &boolVal)) {
+                            sc.settings[s].value = boolVal ? "1" : "0";
+                            scriptsChanged = true;
+                        }
+                    } else if (hasNumber) {
+                        if (ImGui::InputFloat("##NumVal", &numVal, 0.0f, 0.0f, "%.4f")) {
+                            sc.settings[s].value = std::to_string(numVal);
+                            scriptsChanged = true;
+                        }
+                    } else {
+                        if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
+                            sc.settings[s].value = valBuf;
+                            scriptsChanged = true;
+                        }
+                    }
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(hasBool);
+                    if (ImGui::SmallButton("As Bool")) {
+                        sc.settings[s].value = (!sc.settings[s].value.empty() && sc.settings[s].value != "0" && sc.settings[s].value != "false") ? "1" : "0";
                         scriptsChanged = true;
                     }
-                } else {
-                    if (ImGui::InputText("##Value", valBuf, sizeof(valBuf))) {
-                        sc.settings[s].value = valBuf;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(hasNumber);
+                    if (ImGui::SmallButton("As Number")) {
+                        float parsed = 0.0f;
+                        if (!isNumberString(sc.settings[s].value, parsed)) parsed = 0.0f;
+                        sc.settings[s].value = std::to_string(parsed);
                         scriptsChanged = true;
                     }
-                }
-                ImGui::SameLine();
-                ImGui::BeginDisabled(hasBool);
-                if (ImGui::SmallButton("As Bool")) {
-                    sc.settings[s].value = (!sc.settings[s].value.empty() && sc.settings[s].value != "0" && sc.settings[s].value != "false") ? "1" : "0";
-                    scriptsChanged = true;
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::BeginDisabled(hasNumber);
-                if (ImGui::SmallButton("As Number")) {
-                    float parsed = 0.0f;
-                    if (!isNumberString(sc.settings[s].value, parsed)) parsed = 0.0f;
-                    sc.settings[s].value = std::to_string(parsed);
-                    scriptsChanged = true;
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::SmallButton("X")) {
-                    sc.settings.erase(sc.settings.begin() + static_cast<long>(s));
-                    scriptsChanged = true;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("X")) {
+                        sc.settings.erase(sc.settings.begin() + static_cast<long>(s));
+                        scriptsChanged = true;
+                        ImGui::PopID();
+                        break;
+                    }
                     ImGui::PopID();
-                    break;
                 }
-                ImGui::PopID();
-            }
 
-            if (ImGui::SmallButton("Add Setting")) {
-                sc.settings.push_back(ScriptSetting{"", ""});
-                scriptsChanged = true;
+                if (ImGui::SmallButton("Add Setting")) {
+                    sc.settings.push_back(ScriptSetting{"", ""});
+                    scriptsChanged = true;
+                }
             }
         }
 

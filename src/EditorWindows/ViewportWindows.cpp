@@ -874,29 +874,11 @@ void Engine::renderGameViewportWindow() {
         ImGui::Spacing();
     }
     const GameResolutionOption& resOption = kGameResolutions[gameViewportResolutionIndex];
-    float comboAnimSpeed = 0.0f;
-    if (uiAnimationMode == UIAnimationMode::Fluid) {
-        comboAnimSpeed = 8.0f;
-    } else if (uiAnimationMode == UIAnimationMode::Snappy) {
-        comboAnimSpeed = 18.0f;
-    }
-    float comboAnimStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
-        : (1.0f - std::exp(-comboAnimSpeed * ImGui::GetIO().DeltaTime));
 
     if (!isPlaying && showGameViewportToolbar) {
         ImGui::SetNextItemWidth(180.0f);
-        ImGuiID comboId = ImGui::GetID("Resolution");
-        UIAnimationState& comboAnim = editorUiAnimationStates[comboId];
-        bool comboOpen = ImGui::IsPopupOpen(comboId, ImGuiPopupFlags_None);
-        if (uiAnimationMode == UIAnimationMode::Off) {
-            comboAnim.active = comboOpen ? 1.0f : 0.0f;
-        } else {
-            float target = comboOpen ? 1.0f : 0.0f;
-            comboAnim.active += (target - comboAnim.active) * comboAnimStep;
-        }
-        ImGui::SetNextWindowBgAlpha(0.85f * std::clamp(comboAnim.active, 0.0f, 1.0f));
+        ImGui::SetNextWindowBgAlpha(0.85f);
         if (ImGui::BeginCombo("Resolution", resOption.label)) {
-            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, std::clamp(comboAnim.active, 0.0f, 1.0f));
             for (int i = 0; i < (int)kGameResolutions.size(); ++i) {
                 bool selected = (i == gameViewportResolutionIndex);
                 if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
@@ -904,7 +886,6 @@ void Engine::renderGameViewportWindow() {
                 }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
-            ImGui::PopStyleVar();
             ImGui::EndCombo();
         }
         if (kGameResolutions[gameViewportResolutionIndex].custom) {
@@ -2476,7 +2457,9 @@ void Engine::renderViewport() {
             }
         }
 
-    bool showViewportToolbar = !gameViewportFocused && !(isPlaying && showGameViewport);
+    bool windowActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+                        ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+    bool showViewportToolbar = windowActive && !gameViewportFocused && !(isPlaying && showGameViewport);
     const float toolbarWidthEstimate = 520.0f;
     const float toolbarHeightEstimate = 42.0f;
     static ImVec2 toolbarSizeCache(toolbarWidthEstimate, toolbarHeightEstimate);
@@ -4499,6 +4482,7 @@ void Engine::renderViewport() {
 
         if (showViewportToolbar) {
             ImGui::SetNextWindowPos(toolbarRectMin, ImGuiCond_Always);
+            ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
             ImGui::SetNextWindowBgAlpha(0.0f);
             ImGuiWindowFlags toolbarFlags = ImGuiWindowFlags_NoDecoration |
                 ImGuiWindowFlags_NoMove |

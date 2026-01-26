@@ -119,8 +119,81 @@ void modu_ctx_add_console_message(ScriptContext* ctx, const char* message, int t
     ctx->AddConsoleMessage(message, static_cast<ConsoleMessageType>(type));
 }
 
+int modu_ctx_find_object_id_by_name(ScriptContext* ctx, const char* name) {
+    if (!ctx || !name) return -1;
+    SceneObject* obj = ctx->FindObjectByName(name);
+    return obj ? obj->id : -1;
+}
+
+void modu_ctx_get_object_name(ScriptContext* ctx, int id, char* outBuffer, int outBufferSize) {
+    if (!outBuffer || outBufferSize <= 0) return;
+    const char* name = "";
+    if (ctx) {
+        SceneObject* obj = ctx->FindObjectById(id);
+        if (obj) name = obj->name.c_str();
+    }
+    std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), "%s", name);
+}
+
+int modu_ctx_get_selected_object_id(ScriptContext* ctx) {
+    if (!ctx) return -1;
+    return ctx->GetSelectedObjectId();
+}
+
+void modu_imgui_text(const char* text) {
+    if (!text) return;
+    ImGui::TextUnformatted(text);
+}
+
+void modu_imgui_separator() {
+    ImGui::Separator();
+}
+
+int modu_imgui_button(const char* label) {
+    if (!label) return 0;
+    return ImGui::Button(label) ? 1 : 0;
+}
+
+int modu_imgui_checkbox(const char* label, int* value) {
+    if (!label || !value) return 0;
+    bool checked = (*value != 0);
+    bool changed = ImGui::Checkbox(label, &checked);
+    *value = checked ? 1 : 0;
+    return changed ? 1 : 0;
+}
+
+int modu_imgui_drag_float(const char* label, float* value, float speed, float minValue, float maxValue) {
+    if (!label || !value) return 0;
+    return ImGui::DragFloat(label, value, speed, minValue, maxValue) ? 1 : 0;
+}
+
+int modu_imgui_drag_float3(const char* label, float* values, float speed, float minValue, float maxValue) {
+    if (!label || !values) return 0;
+    return ImGui::DragFloat3(label, values, speed, minValue, maxValue) ? 1 : 0;
+}
+
+int modu_imgui_input_text(const char* label, char* buffer, int bufferSize) {
+    if (!label || !buffer || bufferSize <= 0) return 0;
+    return ImGui::InputText(label, buffer, static_cast<size_t>(bufferSize)) ? 1 : 0;
+}
+
+int modu_imgui_accept_scene_object_drop(int* outId) {
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
+            if (outId && payload->DataSize == sizeof(int)) {
+                *outId = *(const int*)payload->Data;
+            }
+            ImGui::EndDragDropTarget();
+            return 1;
+        }
+        ImGui::EndDragDropTarget();
+    }
+    return 0;
+}
+
 ManagedNativeApi BuildManagedNativeApi() {
     ManagedNativeApi api;
+    api.version = 3;
     api.getObjectId = modu_ctx_get_object_id;
     api.getPosition = modu_ctx_get_position;
     api.setPosition = modu_ctx_set_position;
@@ -141,5 +214,16 @@ ManagedNativeApi BuildManagedNativeApi() {
     api.setSettingBool = modu_ctx_set_setting_bool;
     api.setSettingString = modu_ctx_set_setting_string;
     api.addConsoleMessage = modu_ctx_add_console_message;
+    api.findObjectIdByName = modu_ctx_find_object_id_by_name;
+    api.getObjectName = modu_ctx_get_object_name;
+    api.getSelectedObjectId = modu_ctx_get_selected_object_id;
+    api.imguiText = modu_imgui_text;
+    api.imguiSeparator = modu_imgui_separator;
+    api.imguiButton = modu_imgui_button;
+    api.imguiCheckbox = modu_imgui_checkbox;
+    api.imguiDragFloat = modu_imgui_drag_float;
+    api.imguiDragFloat3 = modu_imgui_drag_float3;
+    api.imguiInputText = modu_imgui_input_text;
+    api.imguiAcceptSceneObjectDrop = modu_imgui_accept_scene_object_drop;
     return api;
 }

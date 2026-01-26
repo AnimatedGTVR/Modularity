@@ -262,8 +262,6 @@ void Engine::renderLauncher() {
         }
     }
     const float slideEase = 1.0f - std::pow(1.0f - slideT, 3.0f);
-    const float contentAlpha = launcherIntroFinished ? 1.0f : slideEase;
-    const float contentOffsetY = (1.0f - slideEase) * 48.0f;
 
     const float transitionDuration = 0.45f;
     float transitionT = 0.0f;
@@ -273,6 +271,11 @@ void Engine::renderLauncher() {
     const float transitionEase = 1.0f - std::pow(1.0f - transitionT, 3.0f);
     const float transitionAlpha = 1.0f - transitionEase;
     const float uiScale = 1.0f + 0.06f * transitionEase;
+    const float introOffsetT = launcherIntroFinished ? 0.0f : (1.0f - slideEase);
+    const float contentAlpha = launcherIntroFinished ? 1.0f : slideEase;
+    const float introLeftOffsetX = -140.0f * uiScale * introOffsetT;
+    const float introRightOffsetX = 140.0f * uiScale * introOffsetT;
+    const float introHeroOffsetY = -90.0f * uiScale * introOffsetT;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -358,13 +361,13 @@ void Engine::renderLauncher() {
         }
 
         ImVec2 contentStart = ImGui::GetCursorPos();
-        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + contentOffsetY * uiScale));
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, contentAlpha * transitionAlpha);
         ImGui::SetWindowFontScale(uiScale);
         if (!launcherIntroFinished) {
             ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
         }
 
+        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + introHeroOffsetY));
         ImGui::BeginChild("LauncherHero", ImVec2(0, heroHeight), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
 
@@ -386,10 +389,15 @@ void Engine::renderLauncher() {
 
         ImGui::EndChild();
 
+        ImVec2 heroItemSize = ImGui::GetItemRectSize();
+        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + heroItemSize.y));
+
         ImGui::Spacing();
         ImGui::Spacing();
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
+        ImVec2 leftStart = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(ImVec2(leftStart.x + introLeftOffsetX, leftStart.y));
         ImGui::BeginChild("LauncherLeft", ImVec2(leftPanelWidth, 0), true);
         ImGui::PopStyleColor();
 
@@ -460,9 +468,15 @@ void Engine::renderLauncher() {
 
         ImGui::EndChild();
 
+        ImVec2 leftSize = ImGui::GetItemRectSize();
+        ImGui::SetCursorPos(leftStart);
+        ImGui::Dummy(leftSize);
+
         ImGui::SameLine();
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
+        ImVec2 rightStart = ImGui::GetCursorPos();
+        ImGui::SetCursorPos(ImVec2(rightStart.x + introRightOffsetX, rightStart.y));
         ImGui::BeginChild("LauncherRight", ImVec2(0, 0), true);
         ImGui::PopStyleColor();
 
@@ -493,6 +507,9 @@ void Engine::renderLauncher() {
                 {
                     if (ImGui::MenuItem("Open"))
                     {
+                        if (audio.isReady()) {
+                            audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
+                        }
                         launcherTransitionActive = true;
                         launcherTransitionPendingHide = false;
                         launcherTransitionStartTime = glfwGetTime();
@@ -564,6 +581,9 @@ void Engine::renderLauncher() {
 
                 if ((clicked && !openClicked) || openClicked)
                 {
+                    if (audio.isReady()) {
+                        audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
+                    }
                     launcherTransitionActive = true;
                     launcherTransitionPendingHide = false;
                     launcherTransitionStartTime = glfwGetTime();
@@ -588,6 +608,10 @@ void Engine::renderLauncher() {
         ImGui::TextDisabled("Modularity Engine - Beta V6.3");
         ImGui::EndChild();
 
+        ImVec2 rightSize = ImGui::GetItemRectSize();
+        ImGui::SetCursorPos(rightStart);
+        ImGui::Dummy(rightSize);
+
         if (!launcherIntroFinished) {
             ImGui::PopItemFlag();
         }
@@ -599,14 +623,50 @@ void Engine::renderLauncher() {
             const char* title = "Modularity";
             ImFont* font = ImGui::GetFont();
             const float baseFontSize = ImGui::GetFontSize();
-            float fontSize = baseFontSize * 2.6f;
-            ImVec2 textSize = ImGui::CalcTextSize(title);
+            const float fadeOutT = ImClamp((introElapsed - (introFadeIn + introHold)) / introFadeOut, 0.0f, 1.0f);
+            const float globalScale = 2.0f - 0.18f * fadeOutT;
+            const float fontSizeNormal = baseFontSize * 2.6f * globalScale;
+            const ImVec4 baseCol = ImVec4(0.95f, 0.96f, 0.98f, 1.0f);
+            const float letterDelay = 0.07f;
+            const float letterIn = 0.18f;
+
+            auto ease = [](float t) {
+                t = ImClamp(t, 0.0f, 1.0f);
+                return t * t * (3.0f - 2.0f * t);
+            };
+
             ImVec2 center = ImVec2(displaySize.x * 0.5f, displaySize.y * 0.38f);
-            const float scale = baseFontSize > 0.0f ? (fontSize / baseFontSize) : 1.0f;
-            ImVec2 textPos = ImVec2(center.x - (textSize.x * 0.5f) * scale,
-                                    center.y - (textSize.y * 0.5f) * scale);
-            ImU32 textCol = ImGui::GetColorU32(ImVec4(0.95f, 0.96f, 0.98f, textAlpha));
-            overlay->AddText(font, fontSize, textPos, textCol, title);
+            float totalWidth = 0.0f;
+            for (const char* c = title; *c; ++c) {
+                char letter[2] = { *c, 0 };
+                totalWidth += font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
+            }
+
+            ImVec2 textPos = ImVec2(center.x - totalWidth * 0.5f,
+                                    center.y - fontSizeNormal * 0.5f);
+
+            float advanceX = 0.0f;
+            int index = 0;
+            for (const char* c = title; *c; ++c, ++index) {
+                char letter[2] = { *c, 0 };
+                float letterT = (introElapsed - (letterDelay * index)) / letterIn;
+                float letterEase = ease(letterT);
+                float letterAlpha = textAlpha * letterEase;
+                if (letterAlpha <= 0.001f) {
+                    float letterWidth = font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
+                    advanceX += letterWidth;
+                    continue;
+                }
+
+                float letterScale = (1.15f - 0.15f * letterEase) * globalScale;
+                float letterFontSize = baseFontSize * 2.6f * letterScale;
+                float letterWidth = font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
+                float offsetX = (letterWidth * (letterScale / globalScale - 1.0f)) * 0.5f;
+                ImVec2 letterPos = ImVec2(textPos.x + advanceX - offsetX, textPos.y);
+                ImU32 textCol = ImGui::GetColorU32(ImVec4(baseCol.x, baseCol.y, baseCol.z, letterAlpha));
+                overlay->AddText(font, letterFontSize, letterPos, textCol, letter);
+                advanceX += letterWidth;
+            }
         }
     }
 
@@ -821,6 +881,9 @@ void Engine::renderOpenProjectDialog() {
             if (strlen(projectManager.openProjectPath) == 0) {
                 projectManager.errorMessage = "Please enter a project path";
             } else {
+                if (audio.isReady()) {
+                    audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
+                }
                 OpenProjectPath(projectManager.openProjectPath);
                 if (!projectManager.errorMessage.empty()) {
                     // Error handled in OpenProjectPath
