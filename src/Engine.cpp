@@ -1166,6 +1166,7 @@ void Engine::run() {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        uiCanvas3DInputs.clear();
 
         if (pendingWorkspaceReload) {
             ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
@@ -1206,18 +1207,20 @@ void Engine::run() {
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
-            if (showBuildSettings) renderBuildSettingsWindow();
-            renderScriptEditorWindows();
-            renderViewport();
-            if (showGameViewport) renderGameViewportWindow();
-            renderDialogs();
-        } else {
-            renderPlayerViewport();
-        }
+        if (showBuildSettings) renderBuildSettingsWindow();
+        renderScriptEditorWindows();
+        renderViewport();
+        if (showGameViewport) renderGameViewportWindow();
+        renderDialogs();
+    } else {
+        renderPlayerViewport();
+    }
 
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame: UI rendering complete, finalizing frame..." << std::endl;
         }
+
+        renderUiCanvas3DTargets();
 
         int displayW, displayH;
         glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
@@ -1282,6 +1285,16 @@ void Engine::shutdown() {
     audio.onPlayStop();
     audio.shutdown();
     physics.shutdown();
+
+    for (auto& entry : uiCanvas3DContexts) {
+        if (!entry.second.context) continue;
+        ImGui::SetCurrentContext(entry.second.context);
+        if (entry.second.backendReady) {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
+        ImGui::DestroyContext(entry.second.context);
+    }
+    uiCanvas3DContexts.clear();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

@@ -528,6 +528,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiButtonStyle=" << static_cast<int>(obj.ui.buttonStyle) << "\n";
             file << "uiStylePreset=" << obj.ui.stylePreset << "\n";
             file << "uiTextScale=" << obj.ui.textScale << "\n";
+            file << "uiRenderIn3D=" << (obj.ui.renderIn3D ? 1 : 0) << "\n";
+            file << "uiRenderTargetSize=" << obj.ui.renderTargetSize.x << "," << obj.ui.renderTargetSize.y << "\n";
             if (obj.hasPostFX) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
@@ -593,6 +595,15 @@ namespace {
 template <typename Vec2T>
 void ParseVec2(const std::string& value, Vec2T& out) {
     sscanf(value.c_str(), "%f,%f", &out.x, &out.y);
+}
+
+void ParseIVec2(const std::string& value, glm::ivec2& out) {
+    int x = 0;
+    int y = 0;
+    if (sscanf(value.c_str(), "%d,%d", &x, &y) == 2) {
+        out.x = x;
+        out.y = y;
+    }
 }
 
 void ParseVec2List(const std::string& value, std::vector<glm::vec2>& out) {
@@ -943,6 +954,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiButtonStyle", +[](SceneObject& obj, const std::string& value) { obj.ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value)); }},
         {"uiStylePreset", +[](SceneObject& obj, const std::string& value) { obj.ui.stylePreset = value; }},
         {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
+        {"uiRenderIn3D", +[](SceneObject& obj, const std::string& value) { obj.ui.renderIn3D = (std::stoi(value) != 0); }},
+        {"uiRenderTargetSize", +[](SceneObject& obj, const std::string& value) { ParseIVec2(value, obj.ui.renderTargetSize); }},
         {"postEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.enabled = (std::stoi(value) != 0); }},
         {"postBloomEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomEnabled = (std::stoi(value) != 0); }},
         {"postBloomThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomThreshold = std::stof(value); }},

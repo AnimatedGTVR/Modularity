@@ -25,9 +25,7 @@ PxQuat ToPxQuat(const glm::vec3& eulerDeg) {
     return PxQuat(q.x, q.y, q.z, q.w);
 }
 
-glm::vec3 ToGlmVec3(const PxVec3& v) {
-    return glm::vec3(v.x, v.y, v.z);
-}
+glm::vec3 ToGlmVec3(const PxVec3& v) {return glm::vec3(v.x, v.y, v.z);}
 
 glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
     float T1 = std::atan2(m[2][1], m[2][2]);

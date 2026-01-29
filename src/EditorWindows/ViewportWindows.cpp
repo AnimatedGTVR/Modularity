@@ -1005,8 +1005,31 @@ void Engine::renderGameViewportWindow() {
             }
         }
         bool uiInteracting = false;
-        auto isUIType = [](const SceneObject& target) {
-            return target.hasUI && target.ui.type != UIElementType::None;
+        auto find3DCanvasId = [&](const SceneObject& target) -> int {
+            const SceneObject* current = &target;
+            while (current) {
+                if (current->hasUI && current->ui.type == UIElementType::Canvas && current->ui.renderIn3D) {
+                    return current->id;
+                }
+                if (current->parentId < 0) break;
+                auto pit = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                    [&](const SceneObject& o) { return o.id == current->parentId; });
+                if (pit == sceneObjects.end()) break;
+                current = &(*pit);
+            }
+            return -1;
+        };
+        auto isUiOn3DCanvas = [&](const SceneObject& target) {
+            return find3DCanvasId(target) >= 0;
+        };
+        int editCanvas3DId = -1;
+        if (SceneObject* selected = getSelectedObject()) {
+            editCanvas3DId = find3DCanvasId(*selected);
+        }
+        auto isUIType = [&](const SceneObject& target) {
+            if (!target.hasUI || target.ui.type == UIElementType::None) return false;
+            int canvasId = find3DCanvasId(target);
+            return (canvasId < 0) || (canvasId == editCanvas3DId);
         };
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
@@ -2459,7 +2482,6 @@ void Engine::renderViewport() {
 
     bool windowActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
                         ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
-    bool showViewportToolbar = windowActive && !gameViewportFocused && !(isPlaying && showGameViewport);
     const float toolbarWidthEstimate = 520.0f;
     const float toolbarHeightEstimate = 42.0f;
     static ImVec2 toolbarSizeCache(toolbarWidthEstimate, toolbarHeightEstimate);
@@ -2478,17 +2500,52 @@ void Engine::renderViewport() {
         toolbarRectMin = ImVec2(toolbarLeft, toolbarTop);
         toolbarRectMax = ImVec2(toolbarLeft + toolbarSizeCache.x, toolbarTop + toolbarSizeCache.y);
     };
-    if (showViewportToolbar) {
-        computeToolbarRect();
-    } else {
-        toolbarRectMin = imageMin;
-        toolbarRectMax = imageMin;
-    }
+    computeToolbarRect();
+    static float toolbarHideAnim = 0.0f;
+    float toolbarHideOffset = toolbarSizeCache.y + 14.0f;
+    ImVec2 toolbarRectMinAnim = ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset * toolbarHideAnim);
+    ImVec2 toolbarRectMaxAnim = ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset * toolbarHideAnim);
+    ImVec2 toolbarMousePos = ImGui::GetIO().MousePos;
+    bool mouseInToolbar = (toolbarMousePos.x >= toolbarRectMinAnim.x && toolbarMousePos.x <= toolbarRectMaxAnim.x &&
+                           toolbarMousePos.y >= toolbarRectMinAnim.y && toolbarMousePos.y <= toolbarRectMaxAnim.y);
+    bool toolbarAllowed = !gameViewportFocused && !(isPlaying && showGameViewport);
+    bool showViewportToolbar = toolbarAllowed &&
+                               (windowActive || mouseOverViewportImage || mouseInToolbar || toolbarHideAnim < 0.999f);
+    bool toolbarHover = toolbarAllowed && (mouseOverViewportImage || mouseInToolbar);
+    float toolbarAnimSpeed = 10.0f;
+    float toolbarTarget = toolbarHover ? 0.0f : 1.0f;
+    float toolbarAnimStep = 1.0f - std::exp(-toolbarAnimSpeed * ImGui::GetIO().DeltaTime);
+    toolbarHideAnim += (toolbarTarget - toolbarHideAnim) * toolbarAnimStep;
+    toolbarRectMin.y += toolbarHideOffset * toolbarHideAnim;
+    toolbarRectMax.y += toolbarHideOffset * toolbarHideAnim;
 
     bool uiWorldCameraActive = false;
     if (uiWorldMode) {
-        auto isUIType = [](const SceneObject& target) {
-            return target.hasUI && target.ui.type != UIElementType::None;
+        auto find3DCanvasId = [&](const SceneObject& target) -> int {
+            const SceneObject* current = &target;
+            while (current) {
+                if (current->hasUI && current->ui.type == UIElementType::Canvas && current->ui.renderIn3D) {
+                    return current->id;
+                }
+                if (current->parentId < 0) break;
+                auto pit = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                    [&](const SceneObject& o) { return o.id == current->parentId; });
+                if (pit == sceneObjects.end()) break;
+                current = &(*pit);
+            }
+            return -1;
+        };
+        auto isUiOn3DCanvas = [&](const SceneObject& target) {
+            return find3DCanvasId(target) >= 0;
+        };
+        int editCanvas3DId = -1;
+        if (SceneObject* selected = getSelectedObject()) {
+            editCanvas3DId = find3DCanvasId(*selected);
+        }
+        auto isUIType = [&](const SceneObject& target) {
+            if (!target.hasUI || target.ui.type == UIElementType::None) return false;
+            int canvasId = find3DCanvasId(target);
+            return (canvasId < 0) || (canvasId == editCanvas3DId);
         };
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
@@ -3120,7 +3177,11 @@ void Engine::renderViewport() {
         };
 
         SceneObject* selectedObj = getSelectedObject();
-        if (!uiWorldMode && selectedObj && !selectedObj->hasPostFX && !HasUIComponent(*selectedObj)) {
+        bool selectedIsUiCanvas3D = selectedObj && selectedObj->hasUI &&
+                                    selectedObj->ui.type == UIElementType::Canvas &&
+                                    selectedObj->ui.renderIn3D;
+        if (!uiWorldMode && selectedObj && !selectedObj->hasPostFX &&
+            (!HasUIComponent(*selectedObj) || selectedIsUiCanvas3D)) {
             ImGuizmo::BeginFrame();
             ImGuizmo::Enable(true);
             ImGuizmo::SetOrthographic(false);
@@ -4481,26 +4542,15 @@ void Engine::renderViewport() {
         ImU32 toolbarOutline = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.0f));
 
         if (showViewportToolbar) {
-            ImGui::SetNextWindowPos(toolbarRectMin, ImGuiCond_Always);
-            ImGui::SetNextWindowViewport(ImGui::GetWindowViewport()->ID);
-            ImGui::SetNextWindowBgAlpha(0.0f);
-            ImGuiWindowFlags toolbarFlags = ImGuiWindowFlags_NoDecoration |
-                ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_NoDocking |
-                ImGuiWindowFlags_AlwaysAutoResize |
-                ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav;
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(toolbarPadding, toolbarPadding));
+            ImGui::SetCursorScreenPos(ImVec2(toolbarRectMin.x + toolbarPadding, toolbarRectMin.y + toolbarPadding));
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(toolbarSpacing, toolbarSpacing));
-            ImGui::Begin("##ViewportToolbarOverlay", nullptr, toolbarFlags);
 
-        ImDrawList* toolbarDrawList = ImGui::GetWindowDrawList();
-        ImDrawListSplitter splitter;
-        splitter.Split(toolbarDrawList, 2);
-        splitter.SetCurrentChannel(toolbarDrawList, 1);
+            ImDrawList* toolbarDrawList = ImGui::GetWindowDrawList();
+            ImDrawListSplitter splitter;
+            splitter.Split(toolbarDrawList, 2);
+            splitter.SetCurrentChannel(toolbarDrawList, 1);
 
-        ImGui::BeginGroup();
+            ImGui::BeginGroup();
 
         auto gizmoButton = [&](const char* id, GizmoToolbar::Icon icon, ImGuizmo::OPERATION op, const char* tooltip) {
             if (GizmoToolbar::IconButton(id, icon, mCurrentGizmoOperation == op, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
@@ -4634,27 +4684,29 @@ void Engine::renderViewport() {
             ImGui::SetTooltip("Toggle 2D UI world overlay");
         }
 
-        ImGui::EndGroup();
+            ImGui::EndGroup();
 
-        splitter.SetCurrentChannel(toolbarDrawList, 0);
-        float rounding = 10.0f;
-        ImVec2 bgMin = ImGui::GetWindowPos();
-        ImVec2 bgMax = ImVec2(bgMin.x + ImGui::GetWindowSize().x, bgMin.y + ImGui::GetWindowSize().y);
-        toolbarDrawList->AddRectFilled(bgMin, bgMax, toolbarBg, rounding, ImDrawFlags_RoundCornersAll);
-        toolbarDrawList->AddRect(bgMin, bgMax, toolbarOutline, rounding, ImDrawFlags_RoundCornersAll, 1.5f);
+            ImVec2 groupMin = ImGui::GetItemRectMin();
+            ImVec2 groupMax = ImGui::GetItemRectMax();
+            ImVec2 bgMin = ImVec2(groupMin.x - toolbarPadding, groupMin.y - toolbarPadding);
+            ImVec2 bgMax = ImVec2(groupMax.x + toolbarPadding, groupMax.y + toolbarPadding);
 
-        splitter.Merge(toolbarDrawList);
+            splitter.SetCurrentChannel(toolbarDrawList, 0);
+            float rounding = 10.0f;
+            toolbarDrawList->AddRectFilled(bgMin, bgMax, toolbarBg, rounding, ImDrawFlags_RoundCornersAll);
+            toolbarDrawList->AddRect(bgMin, bgMax, toolbarOutline, rounding, ImDrawFlags_RoundCornersAll, 1.5f);
 
-        toolbarSizeCache = ImGui::GetWindowSize();
-        toolbarRectMin = ImGui::GetWindowPos();
-        toolbarRectMax = ImVec2(toolbarRectMin.x + toolbarSizeCache.x, toolbarRectMin.y + toolbarSizeCache.y);
+            splitter.Merge(toolbarDrawList);
 
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) || ImGui::IsAnyItemHovered()) {
+            toolbarSizeCache = ImVec2(bgMax.x - bgMin.x, bgMax.y - bgMin.y);
+            toolbarRectMin = bgMin;
+            toolbarRectMax = bgMax;
+
+        if (ImGui::IsAnyItemHovered() ||
+            ImGui::IsMouseHoveringRect(toolbarRectMin, toolbarRectMax)) {
             blockSelection = true;
         }
-
-            ImGui::End();
-            ImGui::PopStyleVar(2);
+            ImGui::PopStyleVar();
         }
 
         if (uiWorldMode) {
@@ -4994,6 +5046,435 @@ void Engine::renderViewport() {
 }
 #pragma endregion
 
+#pragma region 3D UI Canvas Targets
+void Engine::renderUiCanvas3DTargets() {
+    if (!rendererInitialized || !projectManager.currentProject.isLoaded) return;
+
+    ImGuiContext* mainContext = ImGui::GetCurrentContext();
+    if (!mainContext) return;
+
+    ImGuiStyle mainStyle = ImGui::GetStyle();
+    ImGuiIO& mainIo = ImGui::GetIO();
+
+    std::unordered_map<int, SceneObject*> byId;
+    byId.reserve(sceneObjects.size());
+    for (auto& obj : sceneObjects) {
+        byId[obj.id] = &obj;
+    }
+
+    auto isUiType = [](const SceneObject& target) {
+        return target.hasUI && target.ui.type != UIElementType::None;
+    };
+
+    for (auto& obj : sceneObjects) {
+        if (obj.hasUI && obj.ui.type == UIElementType::Canvas && !obj.ui.renderIn3D) {
+            if (obj.hasRenderer && obj.renderType == RenderType::Sprite) {
+                obj.hasRenderer = false;
+                obj.renderType = RenderType::None;
+            }
+        }
+    }
+
+    auto findCanvasRoot = [&](const SceneObject& obj) -> const SceneObject* {
+        const SceneObject* current = &obj;
+        const SceneObject* found = nullptr;
+        while (current) {
+            if (current->hasUI && current->ui.type == UIElementType::Canvas) {
+                found = current;
+            }
+            if (current->parentId < 0) break;
+            auto it = byId.find(current->parentId);
+            if (it == byId.end()) break;
+            current = it->second;
+        }
+        return found;
+    };
+
+    std::unordered_set<int> activeCanvasIds;
+    for (auto& canvas : sceneObjects) {
+        if (!canvas.enabled || !canvas.hasUI || canvas.ui.type != UIElementType::Canvas || !canvas.ui.renderIn3D) continue;
+        activeCanvasIds.insert(canvas.id);
+
+        canvas.hasRenderer = true;
+        canvas.renderType = RenderType::Sprite;
+        canvas.material.textureMix = 1.0f;
+
+        int targetWidth = (canvas.ui.renderTargetSize.x > 0) ? canvas.ui.renderTargetSize.x : static_cast<int>(canvas.ui.size.x);
+        int targetHeight = (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y : static_cast<int>(canvas.ui.size.y);
+        targetWidth = std::clamp(targetWidth, 16, 4096);
+        targetHeight = std::clamp(targetHeight, 16, 4096);
+        float layoutWidth = std::max(1.0f, canvas.ui.size.x);
+        float layoutHeight = std::max(1.0f, canvas.ui.size.y);
+
+        Renderer::UiTargetInfo target = renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
+        if (target.fbo == 0 || target.texture == 0) continue;
+
+        UiCanvas3DContext& ctxEntry = uiCanvas3DContexts[canvas.id];
+        if (!ctxEntry.context) {
+            ctxEntry.context = ImGui::CreateContext();
+            ImGui::SetCurrentContext(ctxEntry.context);
+            ImGuiIO& io = ImGui::GetIO();
+            io.Fonts->AddFontDefault();
+            ImGui_ImplOpenGL3_Init("#version 330");
+            ImGui_ImplOpenGL3_CreateDeviceObjects();
+            ctxEntry.backendReady = true;
+        }
+
+        ImGui::SetCurrentContext(ctxEntry.context);
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(layoutWidth, layoutHeight);
+        io.DisplayFramebufferScale = ImVec2(
+            (layoutWidth > 0.0f) ? (static_cast<float>(targetWidth) / layoutWidth) : 1.0f,
+            (layoutHeight > 0.0f) ? (static_cast<float>(targetHeight) / layoutHeight) : 1.0f
+        );
+        io.DeltaTime = (mainIo.DeltaTime > 0.0f) ? mainIo.DeltaTime : (1.0f / 60.0f);
+        auto inputIt = uiCanvas3DInputs.find(canvas.id);
+        if (inputIt != uiCanvas3DInputs.end() && inputIt->second.hasInput) {
+            io.MousePos = inputIt->second.mousePos;
+            io.MouseDown[0] = inputIt->second.mouseDown[0];
+            io.MouseDown[1] = inputIt->second.mouseDown[1];
+            io.MouseDown[2] = inputIt->second.mouseDown[2];
+            io.MouseWheel = inputIt->second.mouseWheel;
+        } else {
+            io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+            io.MouseDown[0] = false;
+            io.MouseDown[1] = false;
+            io.MouseDown[2] = false;
+            io.MouseWheel = 0.0f;
+        }
+
+        ImGui::GetStyle() = mainStyle;
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(layoutWidth, layoutHeight));
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                 ImGuiWindowFlags_NoBackground;
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+        ImGui::Begin("##Canvas3D", nullptr, flags);
+
+        auto anchorToPivot = [](UIAnchor anchor, const ImVec2& size) {
+            switch (anchor) {
+                case UIAnchor::Center: return ImVec2(size.x * 0.5f, size.y * 0.5f);
+                case UIAnchor::TopLeft: return ImVec2(0.0f, 0.0f);
+                case UIAnchor::TopRight: return ImVec2(size.x, 0.0f);
+                case UIAnchor::BottomLeft: return ImVec2(0.0f, size.y);
+                case UIAnchor::BottomRight: return ImVec2(size.x, size.y);
+                default: return ImVec2(size.x * 0.5f, size.y * 0.5f);
+            }
+        };
+        auto anchorToPoint = [](UIAnchor anchor, const ImVec2& min, const ImVec2& max) {
+            switch (anchor) {
+                case UIAnchor::Center: return ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+                case UIAnchor::TopLeft: return min;
+                case UIAnchor::TopRight: return ImVec2(max.x, min.y);
+                case UIAnchor::BottomLeft: return ImVec2(min.x, max.y);
+                case UIAnchor::BottomRight: return max;
+                default: return ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+            }
+        };
+        auto resolveUIRect = [&](const SceneObject& obj, ImVec2& outMin, ImVec2& outMax) {
+            std::vector<const SceneObject*> chain;
+            const SceneObject* current = &obj;
+            while (current) {
+                if (isUiType(*current) && current->id != canvas.id) {
+                    chain.push_back(current);
+                }
+                if (current->parentId < 0) break;
+                auto it = byId.find(current->parentId);
+                if (it == byId.end()) break;
+                current = it->second;
+                if (current->id == canvas.id) break;
+            }
+            std::reverse(chain.begin(), chain.end());
+
+            ImVec2 regionMin = ImGui::GetWindowPos();
+            ImVec2 regionMax = ImVec2(regionMin.x + layoutWidth, regionMin.y + layoutHeight);
+            for (const SceneObject* node : chain) {
+                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x),
+                                     std::max(1.0f, node->ui.size.y));
+                ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
+                ImVec2 pivot(anchorPoint.x + node->ui.position.x,
+                             anchorPoint.y + node->ui.position.y);
+                ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
+                regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
+                regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
+            }
+            outMin = regionMin;
+            outMax = regionMax;
+        };
+
+        auto brighten = [](const ImVec4& c, float k) {
+            return ImVec4(std::clamp(c.x * k, 0.0f, 1.0f),
+                          std::clamp(c.y * k, 0.0f, 1.0f),
+                          std::clamp(c.z * k, 0.0f, 1.0f),
+                          c.w);
+        };
+        float animSpeed = 0.0f;
+        if (uiAnimationMode == UIAnimationMode::Fluid) {
+            animSpeed = 8.0f;
+        } else if (uiAnimationMode == UIAnimationMode::Snappy) {
+            animSpeed = 18.0f;
+        }
+        float animStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
+            : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
+        auto animateValue = [&](float& current, float target, bool immediate) {
+            if (uiAnimationMode == UIAnimationMode::Off || immediate) {
+                current = target;
+            } else {
+                current += (target - current) * animStep;
+            }
+            return current;
+        };
+
+        for (auto& obj : sceneObjects) {
+            if (!obj.enabled || !isUiType(obj)) continue;
+            const SceneObject* root = findCanvasRoot(obj);
+            if (!root || root->id != canvas.id) continue;
+            if (obj.ui.type == UIElementType::Canvas) continue;
+
+            ImVec2 rectMin, rectMax;
+            resolveUIRect(obj, rectMin, rectMax);
+            ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
+            if (rectSize.x <= 1.0f || rectSize.y <= 1.0f) continue;
+
+            ImGuiStyle savedStyle = ImGui::GetStyle();
+            bool styleApplied = false;
+            if (!obj.ui.stylePreset.empty()) {
+                if (const auto* preset = getUIStylePreset(obj.ui.stylePreset)) {
+                    ImGui::GetStyle() = preset->style;
+                    styleApplied = true;
+                }
+            }
+
+            ImVec2 drawMin = rectMin;
+            ImVec2 drawMax = rectMax;
+            ImVec2 drawSize(drawMax.x - drawMin.x, drawMax.y - drawMin.y);
+            ImVec2 localMin(drawMin.x - ImGui::GetWindowPos().x, drawMin.y - ImGui::GetWindowPos().y);
+
+            ImGui::PushID(obj.id);
+            UIAnimationState& animState = uiAnimationStates[obj.id];
+            if (!animState.initialized) {
+                animState.sliderValue = obj.ui.sliderValue;
+                animState.initialized = true;
+            }
+            if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
+                unsigned int texId = 0;
+                if (!obj.albedoTexturePath.empty()) {
+                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                        texId = tex->GetID();
+                    }
+                }
+                ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                float angle = glm::radians(obj.ui.rotation);
+                if (std::abs(angle) > 1e-4f) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 center = ImVec2((drawMin.x + drawMax.x) * 0.5f, (drawMin.y + drawMax.y) * 0.5f);
+                    ImVec2 half = ImVec2(drawSize.x * 0.5f, drawSize.y * 0.5f);
+                    float c = std::cos(angle);
+                    float s = std::sin(angle);
+                    auto rotPt = [&](float x, float y) {
+                        return ImVec2(center.x + x * c - y * s, center.y + x * s + y * c);
+                    };
+                    ImVec2 p0 = rotPt(-half.x, -half.y);
+                    ImVec2 p1 = rotPt( half.x, -half.y);
+                    ImVec2 p2 = rotPt( half.x,  half.y);
+                    ImVec2 p3 = rotPt(-half.x,  half.y);
+                    if (texId != 0) {
+                        dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
+                                         ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                         ImGui::GetColorU32(tint));
+                    } else {
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        dl->AddQuadFilled(p0, p1, p2, p3, fill);
+                        dl->AddQuad(p0, p1, p2, p3, border, 2.0f);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f);
+                        dl->AddText(textPos, IM_COL32(210, 210, 220, 220), obj.ui.label.c_str());
+                    }
+                    ImGui::Dummy(drawSize);
+                } else {
+                    ImGui::SetCursorPos(localMin);
+                    if (texId != 0) {
+                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                    } else {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        dl->AddRectFilled(drawMin, drawMax, fill, 6.0f);
+                        dl->AddRect(drawMin, drawMax, border, 6.0f);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(210, 210, 220, 220), obj.ui.label.c_str());
+                        ImGui::Dummy(drawSize);
+                    }
+                }
+            } else if (obj.ui.type == UIElementType::Slider) {
+                ImGui::SetCursorPos(localMin);
+                ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
+                    ImGui::PushItemWidth(drawSize.x);
+                    ImGui::BeginDisabled(!obj.ui.interactable);
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
+                    ImGui::PushStyleColor(ImGuiCol_SliderGrab, brighten(tint, 0.9f));
+                    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
+                    ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, obj.ui.sliderMin, obj.ui.sliderMax);
+                    ImGui::PopStyleColor(5);
+                    ImGui::EndDisabled();
+                    ImGui::PopItemWidth();
+                } else {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImU32 bg = ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                    ImU32 fill = ImGui::GetColorU32(tint);
+                    ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                    float minValue = obj.ui.sliderMin;
+                    float maxValue = obj.ui.sliderMax;
+                    float range = (maxValue - minValue);
+                    if (range <= 1e-6f) range = 1.0f;
+                    ImGui::BeginDisabled(!obj.ui.interactable);
+                    ImGui::InvisibleButton("##UISlider", drawSize);
+                    bool held = obj.ui.interactable && ImGui::IsItemActive();
+                    if (held && ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+                        float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+                        mouseT = std::clamp(mouseT, 0.0f, 1.0f);
+                        float newValue = minValue + mouseT * range;
+                        obj.ui.sliderValue = newValue;
+                    }
+                    ImGui::EndDisabled();
+
+                    animateValue(animState.sliderValue, obj.ui.sliderValue, held);
+                    float displayValue = (uiAnimationMode == UIAnimationMode::Off) ? obj.ui.sliderValue : animState.sliderValue;
+                    float t = (displayValue - minValue) / range;
+                    t = std::clamp(t, 0.0f, 1.0f);
+
+                    if (obj.ui.sliderStyle == UISliderStyle::Fill) {
+                        float rounding = 6.0f;
+                        ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+                        dl->AddRectFilled(drawMin, drawMax, bg, rounding);
+                        if (fillMax.x > drawMin.x) {
+                            dl->AddRectFilled(drawMin, fillMax, fill, rounding);
+                        }
+                        dl->AddRect(drawMin, drawMax, border, rounding);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
+                    } else if (obj.ui.sliderStyle == UISliderStyle::Circle) {
+                        ImVec2 center((drawMin.x + drawMax.x) * 0.5f, (drawMin.y + drawMax.y) * 0.5f);
+                        float radius = std::max(2.0f, std::min(drawSize.x, drawSize.y) * 0.5f - 2.0f);
+                        dl->AddCircleFilled(center, radius, bg, 32);
+                        float start = -IM_PI * 0.5f;
+                        float end = start + t * IM_PI * 2.0f;
+                        dl->PathClear();
+                        dl->PathArcTo(center, radius, start, end, 32);
+                        dl->PathLineTo(center);
+                        dl->PathFillConvex(fill);
+                        dl->AddCircle(center, radius, border, 32, 2.0f);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
+                    }
+                }
+            } else if (obj.ui.type == UIElementType::Button) {
+                ImGui::SetCursorPos(localMin);
+                ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                obj.ui.buttonPressed = false;
+                if (obj.ui.buttonStyle == UIButtonStyle::ImGui) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, tint);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
+                    ImGui::BeginDisabled(!obj.ui.interactable);
+                    obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
+                    ImGui::EndDisabled();
+                    ImGui::PopStyleColor(3);
+                } else if (obj.ui.buttonStyle == UIButtonStyle::Outline) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImU32 border = ImGui::GetColorU32(tint);
+                    ImGui::BeginDisabled(!obj.ui.interactable);
+                    if (ImGui::InvisibleButton("##UIButton", drawSize)) {
+                        obj.ui.buttonPressed = obj.ui.interactable;
+                    }
+                    bool hovered = ImGui::IsItemHovered();
+                    bool active = ImGui::IsItemActive();
+                    ImGui::EndDisabled();
+                    float hoverT = animateValue(animState.hover, hovered ? 1.0f : 0.0f, false);
+                    float activeT = animateValue(animState.active, active ? 1.0f : 0.0f, false);
+                    if (hoverT > 0.001f) {
+                        ImVec4 hoverCol = brighten(tint, 0.45f);
+                        hoverCol.w *= std::clamp(hoverT, 0.0f, 1.0f);
+                        dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(hoverCol), 6.0f);
+                    }
+                    if (activeT > 0.001f) {
+                        ImVec4 activeCol = brighten(tint, 0.65f);
+                        activeCol.w *= std::clamp(activeT, 0.0f, 1.0f);
+                        dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(activeCol), 6.0f);
+                    }
+                    dl->AddRect(drawMin, drawMax, border, 6.0f, 0, 2.0f);
+                    ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                    ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                   drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                    dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
+                }
+            } else if (obj.ui.type == UIElementType::Text) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                float scale = std::max(0.1f, obj.ui.textScale);
+                float fontSize = std::max(1.0f, ImGui::GetFontSize() * scale);
+                ImVec2 textPos = ImVec2(drawMin.x + 4.0f, drawMin.y + 2.0f);
+                ImGui::PushClipRect(drawMin, drawMax, true);
+                dl->AddText(ImGui::GetFont(), fontSize, textPos, ImGui::GetColorU32(tint), obj.ui.label.c_str());
+                ImGui::PopClipRect();
+            }
+            ImGui::PopID();
+            if (styleApplied) ImGui::GetStyle() = savedStyle;
+        }
+
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::Render();
+
+        GLint prevFbo = 0;
+        GLint prevViewport[4] = {};
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+        glGetIntegerv(GL_VIEWPORT, prevViewport);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+        glViewport(0, 0, target.width, target.height);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+        glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+    }
+
+    for (auto it = uiCanvas3DContexts.begin(); it != uiCanvas3DContexts.end(); ) {
+        if (activeCanvasIds.find(it->first) == activeCanvasIds.end()) {
+            if (it->second.context) {
+                ImGui::SetCurrentContext(it->second.context);
+                if (it->second.backendReady) {
+                    ImGui_ImplOpenGL3_Shutdown();
+                }
+                ImGui::DestroyContext(it->second.context);
+            }
+            it = uiCanvas3DContexts.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    renderer.cleanupUiTargets(activeCanvasIds);
+
+    ImGui::SetCurrentContext(mainContext);
+}
+#pragma endregion
+
 #pragma region Player Viewport
 void Engine::renderPlayerViewport() {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -5028,6 +5509,67 @@ void Engine::renderPlayerViewport() {
         ImVec2 imageMax = ImGui::GetItemRectMax();
         bool imageHovered = ImGui::IsItemHovered();
 
+        auto updateUiCanvas3DInput = [&](const Camera& cam, float fovDeg, float nearPlane, float farPlane) {
+            if (!imageHovered) return;
+            ImVec2 mouse = ImGui::GetIO().MousePos;
+            if (mouse.x < imageMin.x || mouse.x > imageMax.x || mouse.y < imageMin.y || mouse.y > imageMax.y) {
+                return;
+            }
+            float width = std::max(1.0f, imageMax.x - imageMin.x);
+            float height = std::max(1.0f, imageMax.y - imageMin.y);
+            float ndcX = ((mouse.x - imageMin.x) / width) * 2.0f - 1.0f;
+            float ndcY = 1.0f - ((mouse.y - imageMin.y) / height) * 2.0f;
+
+            glm::mat4 view = cam.getViewMatrix();
+            glm::mat4 proj = glm::perspective(glm::radians(fovDeg), width / height, nearPlane, farPlane);
+            glm::mat4 inv = glm::inverse(proj * view);
+            glm::vec4 nearP = inv * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+            glm::vec4 farP = inv * glm::vec4(ndcX, ndcY, 1.0f, 1.0f);
+            glm::vec3 origin = glm::vec3(nearP) / nearP.w;
+            glm::vec3 dir = glm::normalize(glm::vec3(farP) / farP.w - origin);
+
+            const float eps = 1e-5f;
+            for (auto& canvas : sceneObjects) {
+                if (!canvas.enabled || !canvas.hasUI || canvas.ui.type != UIElementType::Canvas || !canvas.ui.renderIn3D) continue;
+                glm::mat4 model(1.0f);
+                model = glm::translate(model, canvas.position);
+                model = glm::rotate(model, glm::radians(canvas.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                model = glm::rotate(model, glm::radians(canvas.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                model = glm::rotate(model, glm::radians(canvas.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                model = glm::scale(model, canvas.scale);
+
+                glm::vec3 planePoint = glm::vec3(model * glm::vec4(0, 0, 0, 1));
+                glm::vec3 planeNormal = glm::normalize(glm::mat3(model) * glm::vec3(0, 0, 1));
+                float denom = glm::dot(planeNormal, dir);
+                if (std::abs(denom) < eps) continue;
+                float t = glm::dot(planeNormal, planePoint - origin) / denom;
+                if (t < 0.0f) continue;
+                glm::vec3 hit = origin + dir * t;
+                glm::vec4 local4 = glm::inverse(model) * glm::vec4(hit, 1.0f);
+                glm::vec3 local = glm::vec3(local4);
+                if (std::abs(local.x) > 0.5f || std::abs(local.y) > 0.5f) continue;
+
+                float u = local.x + 0.5f;
+                float v = 0.5f - local.y;
+                float layoutW = std::max(1.0f, canvas.ui.size.x);
+                float layoutH = std::max(1.0f, canvas.ui.size.y);
+                ImVec2 canvasPos(u * layoutW, v * layoutH);
+
+                UiCanvas3DInput& input = uiCanvas3DInputs[canvas.id];
+                if (!input.hasInput || t < input.hitT) {
+                    input.mousePos = canvasPos;
+                    input.mouseDown[0] = ImGui::GetIO().MouseDown[0];
+                    input.mouseDown[1] = ImGui::GetIO().MouseDown[1];
+                    input.mouseDown[2] = ImGui::GetIO().MouseDown[2];
+                    input.mouseWheel = ImGui::GetIO().MouseWheel;
+                    input.hasInput = true;
+                    input.hitT = t;
+                }
+            }
+        };
+
+        updateUiCanvas3DInput(camera, FOV, NEAR_PLANE, FAR_PLANE);
+
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float uiScaleX = (viewportWidth > 0) ? (imageSize.x / (float)viewportWidth) : 1.0f;
         float uiScaleY = (viewportHeight > 0) ? (imageSize.y / (float)viewportHeight) : 1.0f;
@@ -5040,8 +5582,31 @@ void Engine::renderPlayerViewport() {
         }
 
         bool uiInteracting = false;
-        auto isUIType = [](const SceneObject& target) {
-            return target.hasUI && target.ui.type != UIElementType::None;
+        auto find3DCanvasId = [&](const SceneObject& target) -> int {
+            const SceneObject* current = &target;
+            while (current) {
+                if (current->hasUI && current->ui.type == UIElementType::Canvas && current->ui.renderIn3D) {
+                    return current->id;
+                }
+                if (current->parentId < 0) break;
+                auto pit = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                    [&](const SceneObject& o) { return o.id == current->parentId; });
+                if (pit == sceneObjects.end()) break;
+                current = &(*pit);
+            }
+            return -1;
+        };
+        auto isUiOn3DCanvas = [&](const SceneObject& target) {
+            return find3DCanvasId(target) >= 0;
+        };
+        int editCanvas3DId = -1;
+        if (SceneObject* selected = getSelectedObject()) {
+            editCanvas3DId = find3DCanvasId(*selected);
+        }
+        auto isUIType = [&](const SceneObject& target) {
+            if (!target.hasUI || target.ui.type == UIElementType::None) return false;
+            int canvasId = find3DCanvasId(target);
+            return (canvasId < 0) || (canvasId == editCanvas3DId);
         };
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);

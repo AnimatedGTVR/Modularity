@@ -626,6 +626,10 @@ Renderer::~Renderer() {
         releaseRenderTarget(entry.second);
     }
     mirrorTargets.clear();
+    for (auto& entry : uiTargets) {
+        releaseRenderTarget(entry.second);
+    }
+    uiTargets.clear();
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (viewportTexture) glDeleteTextures(1, &viewportTexture);
     if (rbo) glDeleteRenderbuffers(1, &rbo);
@@ -853,6 +857,10 @@ void Renderer::setupFBO() {
 }
 
 void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h) {
+    ensureRenderTarget(target, w, h, false);
+}
+
+void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha) {
     if (w <= 0 || h <= 0) return;
 
     if (target.fbo == 0) {
@@ -861,15 +869,18 @@ void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h) {
         glGenRenderbuffers(1, &target.rbo);
     }
 
-    if (target.width == w && target.height == h) return;
+    if (target.width == w && target.height == h && target.hasAlpha == alpha) return;
 
     target.width = w;
     target.height = h;
+    target.hasAlpha = alpha;
 
     glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
 
     glBindTexture(GL_TEXTURE_2D, target.texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, target.width, target.height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    GLenum internalFormat = alpha ? GL_RGBA : GL_RGB;
+    GLenum dataFormat = alpha ? GL_RGBA : GL_RGB;
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, target.width, target.height, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.texture, 0);
@@ -959,6 +970,23 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
         if (active.find(it->first) == active.end()) {
             releaseRenderTarget(it->second);
             it = mirrorTargets.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+Renderer::UiTargetInfo Renderer::ensureUiTarget(int id, int width, int height) {
+    RenderTarget& target = uiTargets[id];
+    ensureRenderTarget(target, width, height, true);
+    return { target.fbo, target.texture, target.width, target.height };
+}
+
+void Renderer::cleanupUiTargets(const std::unordered_set<int>& active) {
+    for (auto it = uiTargets.begin(); it != uiTargets.end(); ) {
+        if (active.find(it->first) == active.end()) {
+            releaseRenderTarget(it->second);
+            it = uiTargets.erase(it);
         } else {
             ++it;
         }
@@ -1312,6 +1340,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
+    renderSkybox(view, proj);
+
     for (const auto& obj : sceneObjects) {
         if (!obj.enabled) continue;
         if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
@@ -1344,7 +1374,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setMat4("view", view);
         shader->setMat4("projection", proj);
         shader->setVec3("viewPos", camera.position);
-        shader->setBool("unlit", obj.renderType == RenderType::Mirror);
+        bool isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
+        shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || isUiCanvas3D);
         shader->setVec3("ambientColor", ambientColor);
         shader->setVec3("ambientColor", ambientColor);
 
@@ -1385,11 +1416,22 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setBool("useSkinning", false);
         }
 
-        Texture* baseTex = texture1;
-        if (!obj.albedoTexturePath.empty()) {
-            if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+        bool usingUiTargetTex = false;
+        if (isUiCanvas3D) {
+            auto it = uiTargets.find(obj.id);
+            if (it != uiTargets.end() && it->second.texture != 0) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, it->second.texture);
+                usingUiTargetTex = true;
+            }
         }
-        if (baseTex) baseTex->Bind(GL_TEXTURE0);
+        Texture* baseTex = texture1;
+        if (!usingUiTargetTex) {
+            if (!obj.albedoTexturePath.empty()) {
+                if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+            }
+            if (baseTex) baseTex->Bind(GL_TEXTURE0);
+        }
 
         bool overlayUsed = false;
         if (obj.renderType == RenderType::Mirror) {
@@ -1453,8 +1495,26 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
 
         if (meshToDraw) {
+            bool wantsBlend = (obj.renderType == RenderType::Sprite) || isUiCanvas3D;
+            GLboolean blendWasEnabled = GL_FALSE;
+            GLboolean depthMaskWasEnabled = GL_TRUE;
+            if (wantsBlend) {
+                blendWasEnabled = glIsEnabled(GL_BLEND);
+                if (!blendWasEnabled) glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            }
+            if (isUiCanvas3D) {
+                glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMaskWasEnabled);
+                glDepthMask(GL_FALSE);
+            }
             recordMeshDraw();
             meshToDraw->draw();
+            if (isUiCanvas3D) {
+                glDepthMask(depthMaskWasEnabled);
+            }
+            if (wantsBlend && !blendWasEnabled) {
+                glDisable(GL_BLEND);
+            }
         }
     }
 
@@ -1463,11 +1523,6 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     } else {
         glEnable(GL_CULL_FACE);
         glCullFace(prevCullMode);
-    }
-
-    if (skybox) {
-        recordDrawCall();
-        skybox->draw(glm::value_ptr(view), glm::value_ptr(proj));
     }
 
     if (unbindFramebuffer) {

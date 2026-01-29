@@ -217,6 +217,19 @@ private:
     bool uiWorldMode = false;
     bool uiWorldPanning = false;
     UIWorldCamera2D uiWorldCamera;
+    struct UiCanvas3DContext {
+        ImGuiContext* context = nullptr;
+        bool backendReady = false;
+    };
+    struct UiCanvas3DInput {
+        ImVec2 mousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+        bool mouseDown[3] = { false, false, false };
+        float mouseWheel = 0.0f;
+        bool hasInput = false;
+        float hitT = FLT_MAX;
+    };
+    std::unordered_map<int, UiCanvas3DContext> uiCanvas3DContexts;
+    std::unordered_map<int, UiCanvas3DInput> uiCanvas3DInputs;
     bool consoleWrapText = true;
     enum class MeshEditSelectionMode { Vertex = 0, Edge = 1, Face = 2 };
     MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Vertex;
@@ -389,6 +402,7 @@ private:
     void renderViewport();
     void renderPlayerViewport();
     void renderGameViewportWindow();
+    void renderUiCanvas3DTargets();
     void renderBuildSettingsWindow();
     void renderScriptingWindow();
     void renderDialogs();

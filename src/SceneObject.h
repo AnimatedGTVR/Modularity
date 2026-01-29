@@ -288,6 +288,8 @@ struct UIElementComponent {
     UIButtonStyle buttonStyle = UIButtonStyle::ImGui;
     std::string stylePreset = "Default";
     float textScale = 1.0f;
+    bool renderIn3D = false;
+    glm::ivec2 renderTargetSize = glm::ivec2(512, 512);
 };
 
 struct Rigidbody2DComponent {

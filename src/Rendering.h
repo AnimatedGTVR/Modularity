@@ -6,6 +6,7 @@
 #include "../include/Textures/Texture.h"
 #include "../include/Skybox/Skybox.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 
 // Cube vertex data (position + normal + texcoord)
@@ -92,6 +93,7 @@ private:
         unsigned int rbo = 0;
         int width = 0;
         int height = 0;
+        bool hasAlpha = false;
     };
     RenderTarget previewTarget;
     RenderTarget postTarget;
@@ -138,12 +140,14 @@ private:
     unsigned int displayTexture = 0;
     bool historyValid = false;
     std::unordered_map<int, RenderTarget> mirrorTargets;
+    std::unordered_map<int, RenderTarget> uiTargets;
     RenderStats viewportStats;
     RenderStats previewStats;
     RenderStats* activeStats = nullptr;
 
     void setupFBO();
     void ensureRenderTarget(RenderTarget& target, int w, int h);
+    void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha);
     void releaseRenderTarget(RenderTarget& target);
     void updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void ensureQuad();
@@ -186,4 +190,13 @@ public:
     unsigned int getViewportTexture() const { return displayTexture ? displayTexture : viewportTexture; }
     const RenderStats& getLastViewportStats() const { return viewportStats; }
     const RenderStats& getLastPreviewStats() const { return previewStats; }
+
+    struct UiTargetInfo {
+        unsigned int fbo = 0;
+        unsigned int texture = 0;
+        int width = 0;
+        int height = 0;
+    };
+    UiTargetInfo ensureUiTarget(int id, int width, int height);
+    void cleanupUiTargets(const std::unordered_set<int>& active);
 };

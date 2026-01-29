@@ -1712,6 +1712,21 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
 
+            if (obj.ui.type == UIElementType::Canvas) {
+                if (ImGui::Checkbox("Render In 3D", &obj.ui.renderIn3D)) {
+                    changed = true;
+                }
+                if (obj.ui.renderIn3D) {
+                    int size[2] = { obj.ui.renderTargetSize.x, obj.ui.renderTargetSize.y };
+                    if (ImGui::DragInt2("Render Target (px)", size, 1.0f, 16, 4096)) {
+                        obj.ui.renderTargetSize.x = std::max(16, size[0]);
+                        obj.ui.renderTargetSize.y = std::max(16, size[1]);
+                        changed = true;
+                    }
+                    ImGui::TextDisabled("Canvas renders on a 3D quad; use object scale for world size.");
+                }
+            }
+
             if (obj.ui.type == UIElementType::Button || obj.ui.type == UIElementType::Slider) {
                 if (ImGui::Checkbox("Interactable", &obj.ui.interactable)) {
                     changed = true;
