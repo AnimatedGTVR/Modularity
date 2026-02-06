@@ -5390,6 +5390,15 @@ void ImGui::UpdateMouseMovingWindowNewFrame()
                     pos = ImLerp(moving_window->DockAnimFromPos, pos_target, ease_out);
                 }
             }
+            const bool want_drag_smooth = (moving_window->DockNode != NULL) || moving_window->DockIsActive || (moving_window->DockNodeAsHost != NULL);
+            if (want_drag_smooth)
+            {
+                const float drag_speed = 22.0f;
+                const float t = ImClamp(g.IO.DeltaTime * drag_speed, 0.0f, 1.0f);
+                pos = ImLerp(moving_window->Pos, pos, t);
+                const float lift_t = ImSaturate(g.ActiveIdTimer / 0.08f);
+                pos.y -= (1.0f - lift_t) * 6.0f;
+            }
             if (moving_window->Pos.x != pos.x || moving_window->Pos.y != pos.y)
             {
                 SetWindowPos(moving_window, pos, ImGuiCond_Always);

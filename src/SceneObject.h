@@ -220,7 +220,8 @@ struct ScriptSetting {
 
 enum class ScriptLanguage {
     Cpp = 0,
-    CSharp = 1
+    CSharp = 1,
+    C = 2
 };
 
 struct ScriptComponent {

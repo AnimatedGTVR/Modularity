@@ -1,10 +1,10 @@
 ---
-title: C++ Scripting
-description: Hot-compiled native C++ scripts, per-object state, ImGui inspectors, and runtime/editor hooks.
+title: Native Scripting (C++ and C)
+description: Hot-compiled native C++ and C scripts, per-object state, ImGui inspectors, and runtime/editor hooks.
 ---
 
-# C++ Scripting
-Scripts in Modularity are native C++ code compiled into shared libraries and loaded at runtime. They run per scene object and can optionally draw ImGui UI in the inspector and in custom editor windows.
+# Native Scripting (C++ and C)
+Scripts in Modularity are native C++ or C code compiled into shared libraries and loaded at runtime. They run per scene object and can optionally draw ImGui UI in the inspector and in custom editor windows.
 
 > Notes up front:
 > - Scripts are not sandboxed. They can crash the editor/game if they dereference bad pointers or do unsafe work.
@@ -12,6 +12,7 @@ Scripts in Modularity are native C++ code compiled into shared libraries and loa
 
 ## Table of contents
 - [Quickstart](#quickstart)
+- [C scripting (C API bridge)](#c-scripting-c-api-bridge)
 - [C# managed scripting (experimental)](#c-managed-scripting-experimental)
 - [Scripts.modu](#scriptsmodu)
 - [How compilation works](#how-compilation-works)
@@ -36,6 +37,35 @@ Scripts in Modularity are native C++ code compiled into shared libraries and loa
    - In the File Browser, right-click the script file and choose **Compile Script**, or
    - In the Inspector’s script component menu, choose **Compile**.
 5. Implement a tick hook (`TickUpdate`) and observe behavior in play mode.
+
+## C scripting (C API bridge)
+You can also write native scripts in plain C (`.c`). The compiler generates a C++ bridge automatically and links it with your C object file.
+
+1. Create `Scripts/MyScript.c` (or use **Project window -> New -> C Script**).
+2. In Inspector -> Script component, set `Language` to **C** and assign the file.
+3. Compile as usual (right-click file -> **Compile Script** or script component menu -> **Compile**).
+
+Minimal C example:
+```c
+#include "ScriptRuntimeCAPI.h"
+
+void Modu_TickUpdate(ModuScriptContext* ctx, float dt) {
+    (void)dt;
+    ModuVec3 pos = Modu_GetPosition(ctx);
+    pos.x += 0.01f;
+    Modu_SetPosition(ctx, pos);
+}
+```
+
+Supported C hook names (all optional):
+- `Modu_Begin`
+- `Modu_TickUpdate`
+- `Modu_Update`
+- `Modu_Spec`
+- `Modu_TestEditor`
+- `Modu_OnInspector`
+- `Modu_RenderEditorWindow`
+- `Modu_ExitRenderEditorWindow`
 
 ## C# managed scripting (experimental)
 Modularity can host managed C# scripts via the .NET runtime. This is an early, minimal integration
@@ -93,7 +123,7 @@ Modularity compiles scripts into shared libraries and loads them by symbol name.
   - Linux: `.so`
 
 ### Wrapper generation (important)
-To reduce boilerplate, Modularity auto-generates a wrapper for these hook names **if it detects them in your script**:
+To reduce boilerplate, Modularity auto-generates a wrapper for these C++ hook names **if it detects them in your script**:
 - `Begin`
 - `TickUpdate`
 - `Update`
@@ -108,15 +138,13 @@ void TickUpdate(ScriptContext& ctx, float dt) {
 }
 ```
 
-However:
-- `Script_OnInspector` is **not** wrapper-generated. If you want inspector UI, you must export it explicitly with `extern "C"`.
-- Scripted editor windows (`RenderEditorWindow`, `ExitRenderEditorWindow`) are also **not** wrapper-generated; export them explicitly with `extern "C"`.
+For C scripts (`.c`), wrapper generation always emits the bridge and maps `Modu_*` hooks to `Script_*` exports.
 
 ## Lifecycle hooks
 All hooks are optional. If a hook is missing, it is simply not called.
 
 Hook list:
-- `Script_OnInspector(ScriptContext&)` (manual export required)
+- `Script_OnInspector(ScriptContext&)`
 - `Script_Begin(ScriptContext&, float deltaTime)` (wrapper-generated from `Begin`)
 - `Script_TickUpdate(ScriptContext&, float deltaTime)` (wrapper-generated from `TickUpdate`)
 - `Script_Update(ScriptContext&, float deltaTime)` (wrapper-generated from `Update`, used only if TickUpdate missing)
@@ -204,7 +232,7 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
 }
 ```
 
-> Tip: `Script_OnInspector` must be exported exactly with `extern "C"` (it is not wrapper-generated).
+> Tip: `extern "C"` exports still work and are recommended for clarity, but recent builds can auto-wrap inspector/editor hooks.
 > Important: Do not call ImGui functions (e.g., `ImGui::Text`) from `TickUpdate` or other runtime hooks. Those run before the ImGui frame is active and outside any window, which can crash.
 
 ### Scripted editor windows (custom tabs)
@@ -372,11 +400,11 @@ link /nologo /DLL ..\\Cache\\ScriptBin\\SampleInspector.obj /OUT:..\\Cache\\Scri
   - Ensure the object is enabled and the script component is enabled.
   - Ensure the script path points to a real file and the compiled binary exists.
 - **No inspector UI**
-  - `Script_OnInspector` must be exported with `extern "C"` (no wrapper is generated for it).
+  - Ensure the hook exists (`Script_OnInspector` for C++, `Modu_OnInspector` for C).
 - **Changes not saved**
   - Call `ctx.MarkDirty()` after mutating transforms/settings you want to persist.
 - **Editor window not showing**
-  - Ensure `RenderEditorWindow` is exported with `extern "C"` and the binary is up to date.
+  - Ensure the hook exists (`RenderEditorWindow` or `Modu_RenderEditorWindow`) and the binary is up to date.
 - **Custom UI style preset not listed**
   - Ensure `RegisterUIStylePreset(...)` ran (e.g. in `Begin`) before selecting it in the Inspector.
 - **Hard crash**

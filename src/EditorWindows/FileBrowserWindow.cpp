@@ -82,7 +82,7 @@ namespace FileIcons {
                                     kPaperShadow, rounding);
 
             drawList->AddRectFilled(min, max, kPaperBase, rounding);
-            drawList->AddRect(min, max, kPaperEdge, rounding, 0, 1.2f);
+            drawList->AddRect(min, max, kPaperEdge, rounding, 0, 0.4f);
 
             ImVec2 foldA(max.x - cornerSize, min.y);
             ImVec2 foldB(max.x, min.y + cornerSize);
@@ -129,10 +129,10 @@ namespace FileIcons {
                                     kSheetShadow, rounding);
 
             drawList->AddRectFilled(min, max, kSheetBase, rounding);
-            drawList->AddRect(min, max, kSheetEdge, rounding, 0, 1.2f);
+            drawList->AddRect(min, max, kSheetEdge, rounding, 0, 0.4f);
             drawList->AddRect(ImVec2(min.x + 1.0f, min.y + 1.0f),
                               ImVec2(max.x - 1.0f, max.y - 1.0f),
-                              kSheetInner, rounding, 0, 1.0f);
+                              kSheetInner, rounding, 0, 0.6f);
 
             ImVec2 foldA(max.x - cornerSize, min.y);
             ImVec2 foldB(max.x, min.y + cornerSize);
@@ -174,7 +174,7 @@ namespace FileIcons {
         float tabW = size * 0.43f;
         float rounding = size * 0.07f;
         float shadowOffset = size * 0.025f;
-        float outline = std::max(1.2f, size * 0.06f);
+        float outline = std::max(0.8f, size * 0.04f);
 
         ImVec2 bodyMin(pos.x, pos.y + bodyY);
         ImVec2 bodyMax(pos.x + w, pos.y + bodyY + bodyH);
@@ -206,30 +206,32 @@ namespace FileIcons {
         float w = size;
         float bodyY = size * 0.273f;
         float bodyH = size * 0.547f;
-        float tabY = size * 0.125f;
-        float tabH = size * 0.203f;
-        float tabW = size * 0.43f;
+        float tabY = size * 0.145f;
+        float tabH = size * 0.17f;
+        float tabW = size * 0.40f;
         float rounding = size * 0.075f;
         float shadowOffset = size * 0.02f;
-        float outline = std::max(1.2f, size * 0.06f);
+        float outline = std::max(0.8f, size * 0.04f);
         float openOffset = size * 0.06f;
+        float backRounding = rounding * 0.35f;
+        float tabRounding = rounding * 0.45f;
 
         ImVec2 bodyMin(pos.x, pos.y + bodyY);
         ImVec2 bodyMax(pos.x + w, pos.y + bodyY + bodyH);
         ImVec2 backMin(bodyMin.x, bodyMin.y - openOffset);
         ImVec2 backMax(bodyMax.x, bodyMax.y - openOffset);
-        ImVec2 tabMin(pos.x + w * 0.031f, pos.y + tabY - openOffset * 0.4f);
-        ImVec2 tabMax(pos.x + w * 0.031f + tabW, pos.y + tabY + tabH - openOffset * 0.4f);
+        ImVec2 tabMin(pos.x + w * 0.06f, pos.y + tabY - openOffset * 0.4f);
+        ImVec2 tabMax(pos.x + w * 0.06f + tabW, pos.y + tabY + tabH - openOffset * 0.4f);
 
         drawList->AddRectFilled(ImVec2(bodyMin.x + shadowOffset, bodyMin.y + shadowOffset),
                                 ImVec2(bodyMax.x + shadowOffset, bodyMax.y + shadowOffset),
                                 kFolderShadow, rounding);
 
-        drawList->AddRectFilled(backMin, backMax, kFolderTab, rounding);
-        drawList->AddRect(backMin, backMax, kFolderEdge, rounding, 0, outline * 0.8f);
+        drawList->AddRectFilled(backMin, backMax, kFolderTab, backRounding);
+        drawList->AddRect(backMin, backMax, kFolderEdge, backRounding, 0, outline * 0.8f);
 
-        drawList->AddRectFilled(tabMin, tabMax, kFolderTab, rounding);
-        drawList->AddRect(tabMin, tabMax, kFolderEdge, rounding, 0, outline * 0.75f);
+        drawList->AddRectFilled(tabMin, tabMax, kFolderTab, tabRounding);
+        drawList->AddRect(tabMin, tabMax, kFolderEdge, tabRounding, 0, outline * 0.75f);
 
         ImVec2 paperMin(pos.x + w * 0.1f, backMin.y + bodyH * 0.08f);
         ImVec2 paperMax(pos.x + w * 0.9f, backMin.y + bodyH * 0.62f);
@@ -323,7 +325,7 @@ namespace FileIcons {
 
         ImVec2 frameMin(min.x + w * 0.08f, min.y + h * 0.12f);
         ImVec2 frameMax(max.x - w * 0.08f, max.y - h * 0.1f);
-        drawList->AddRect(frameMin, frameMax, ink, 3.0f, 0, 1.2f);
+        drawList->AddRect(frameMin, frameMax, ink, 3.0f, 0, 0.8f);
 
         float midY = frameMax.y - h * 0.28f;
         drawList->AddTriangleFilled(
@@ -480,6 +482,7 @@ namespace {
     enum class CreateKind {
         Folder,
         CppScript,
+        CScript,
         Header,
         Text,
         Json,
@@ -635,6 +638,7 @@ void Engine::renderFileBrowserPanel() {
         if (kind != CreateKind::Folder && target.extension().empty()) {
             switch (kind) {
                 case CreateKind::CppScript: target += ".cpp"; break;
+                case CreateKind::CScript: target += ".c"; break;
                 case CreateKind::Header: target += ".h"; break;
                 case CreateKind::Text: target += ".txt"; break;
                 case CreateKind::Json: target += ".json"; break;
@@ -674,6 +678,21 @@ void Engine::renderFileBrowserPanel() {
                         "}\n"
                         "\n"
                         "void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {\n"
+                        "}\n";
+                    break;
+                case CreateKind::CScript:
+                    contents =
+                        "#include \"ScriptRuntimeCAPI.h\"\n"
+                        "\n"
+                        "void Modu_OnInspector(ModuScriptContext* ctx) {\n"
+                        "    (void)ctx;\n"
+                        "}\n"
+                        "\n"
+                        "void Modu_TickUpdate(ModuScriptContext* ctx, float deltaTime) {\n"
+                        "    (void)deltaTime;\n"
+                        "    ModuVec3 pos = Modu_GetPosition(ctx);\n"
+                        "    pos.y += 0.0f;\n"
+                        "    Modu_SetPosition(ctx, pos);\n"
                         "}\n";
                     break;
                 case CreateKind::Header:
@@ -1132,6 +1151,9 @@ void Engine::renderFileBrowserPanel() {
                         if (ImGui::MenuItem("C++ Script")) {
                             createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
                         }
+                        if (ImGui::MenuItem("C Script")) {
+                            createEntry(entry.path(), CreateKind::CScript, "NewScript.c");
+                        }
                         if (ImGui::MenuItem("Header")) {
                             createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
                         }
@@ -1270,6 +1292,9 @@ void Engine::renderFileBrowserPanel() {
                     if (ImGui::MenuItem("C++ Script")) {
                         createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
                     }
+                    if (ImGui::MenuItem("C Script")) {
+                        createEntry(entry.path(), CreateKind::CScript, "NewScript.c");
+                    }
                     if (ImGui::MenuItem("Header")) {
                         createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
                     }
@@ -1405,6 +1430,9 @@ void Engine::renderFileBrowserPanel() {
             }
             if (ImGui::MenuItem("C++ Script")) {
                 createEntry(fileBrowser.currentPath, CreateKind::CppScript, "NewScript.cpp");
+            }
+            if (ImGui::MenuItem("C Script")) {
+                createEntry(fileBrowser.currentPath, CreateKind::CScript, "NewScript.c");
             }
             if (ImGui::MenuItem("Header")) {
                 createEntry(fileBrowser.currentPath, CreateKind::Header, "NewHeader.h");

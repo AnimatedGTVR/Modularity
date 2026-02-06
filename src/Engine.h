@@ -137,7 +137,7 @@ private:
         Animation = 1,
         Scripting = 2
     };
-    UIAnimationMode uiAnimationMode = UIAnimationMode::Off;
+    UIAnimationMode uiAnimationMode = UIAnimationMode::Fluid;
     WorkspaceMode currentWorkspace = WorkspaceMode::Default;
     bool workspaceLayoutDirty = false;
     bool pendingWorkspaceReload = false;

@@ -1193,9 +1193,13 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                                 sc.path = value;
                             } else if (sub == "lang" || sub == "language") {
                                 int langValue = std::stoi(value);
-                                sc.language = (langValue == static_cast<int>(ScriptLanguage::CSharp))
-                                    ? ScriptLanguage::CSharp
-                                    : ScriptLanguage::Cpp;
+                                if (langValue == static_cast<int>(ScriptLanguage::CSharp)) {
+                                    sc.language = ScriptLanguage::CSharp;
+                                } else if (langValue == static_cast<int>(ScriptLanguage::C)) {
+                                    sc.language = ScriptLanguage::C;
+                                } else {
+                                    sc.language = ScriptLanguage::Cpp;
+                                }
                             } else if (sub == "type") {
                                 sc.managedType = value;
                             } else if (sub == "enabled") {

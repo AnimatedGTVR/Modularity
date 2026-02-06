@@ -1,6 +1,8 @@
 #include "Engine.h"
 #include "ThirdParty/imgui/imgui.h"
 #include <algorithm>
+#include <cfloat>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -160,7 +162,7 @@ void Engine::renderAnimationWindow() {
     };
 
     auto drawTimeline = [&](AnimationComponent& anim) {
-        ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, 70.0f);
+        ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, 86.0f);
         ImVec2 start = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("AnimationTimeline", size);
 
@@ -169,9 +171,23 @@ void Engine::renderAnimationWindow() {
         ImU32 border = ImGui::GetColorU32(ImGuiCol_Border);
         ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
         ImU32 keyColor = ImGui::GetColorU32(ImGuiCol_SliderGrab);
+        ImU32 tickColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
         draw->AddRectFilled(start, ImVec2(start.x + size.x, start.y + size.y), bg, 6.0f);
         draw->AddRect(start, ImVec2(start.x + size.x, start.y + size.y), border, 6.0f);
+
+        if (anim.clipLength > 0.0f) {
+            int majorTicks = std::max(2, static_cast<int>(std::ceil(anim.clipLength)));
+            for (int i = 0; i <= majorTicks; ++i) {
+                float t = static_cast<float>(i) / static_cast<float>(majorTicks);
+                float x = start.x + t * size.x;
+                float timeValue = t * anim.clipLength;
+                draw->AddLine(ImVec2(x, start.y + 2.0f), ImVec2(x, start.y + size.y - 18.0f), tickColor, 1.0f);
+                char tickLabel[16];
+                std::snprintf(tickLabel, sizeof(tickLabel), "%.1f", timeValue);
+                draw->AddText(ImVec2(x + 2.0f, start.y + size.y - 16.0f), tickColor, tickLabel);
+            }
+        }
 
         float clamped = clampFloat(animationCurrentTime, 0.0f, anim.clipLength);
         float playheadX = start.x + (anim.clipLength > 0.0f ? (clamped / anim.clipLength) * size.x : 0.0f);
@@ -180,7 +196,7 @@ void Engine::renderAnimationWindow() {
         for (size_t i = 0; i < anim.keyframes.size(); ++i) {
             float keyX = start.x +
                 (anim.clipLength > 0.0f ? (anim.keyframes[i].time / anim.clipLength) * size.x : 0.0f);
-            ImVec2 center(keyX, start.y + size.y * 0.5f);
+            ImVec2 center(keyX, start.y + (size.y - 18.0f) * 0.5f);
             float radius = (animationSelectedKey == static_cast<int>(i)) ? 6.0f : 4.5f;
             draw->AddCircleFilled(center, radius, keyColor);
 
@@ -235,6 +251,13 @@ void Engine::renderAnimationWindow() {
     ImGui::BeginChild("AnimatorTargets", ImVec2(0, 0), true);
     ImGui::TextDisabled("Targets");
     ImGui::Spacing();
+    static char targetFilter[96] = "";
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##AnimTargetFilter", "Filter targets...", targetFilter, sizeof(targetFilter));
+    std::string targetFilterLower = targetFilter;
+    std::transform(targetFilterLower.begin(), targetFilterLower.end(), targetFilterLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    ImGui::Spacing();
     ImGui::BeginDisabled(!selectedObj);
     if (ImGui::Button("Add Animation to Selected", ImVec2(-1, 0))) {
         if (selectedObj && !selectedObj->hasAnimation) {
@@ -255,7 +278,15 @@ void Engine::renderAnimationWindow() {
     if (animTargets.empty()) {
         ImGui::TextDisabled("No Animation components yet.");
     } else {
+        int visibleTargets = 0;
         for (auto* obj : animTargets) {
+            std::string objNameLower = obj->name;
+            std::transform(objNameLower.begin(), objNameLower.end(), objNameLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!targetFilterLower.empty() && objNameLower.find(targetFilterLower) == std::string::npos) {
+                continue;
+            }
+            visibleTargets++;
             bool selected = (targetObj && obj->id == targetObj->id);
             if (ImGui::Selectable(obj->name.c_str(), selected)) {
                 animationTargetId = obj->id;
@@ -270,6 +301,9 @@ void Engine::renderAnimationWindow() {
                 ImGui::Text("Length: %.2fs", obj->animation.clipLength);
                 ImGui::EndTooltip();
             }
+        }
+        if (visibleTargets == 0) {
+            ImGui::TextDisabled("No targets match filter.");
         }
     }
     ImGui::EndChild();
@@ -290,7 +324,7 @@ void Engine::renderAnimationWindow() {
 
     ImGui::Text("Animator");
     ImGui::SameLine();
-    ImGui::TextDisabled("Target: %s", targetObj->name.c_str());
+    ImGui::TextDisabled("Target: %s  |  Keyframes: %zu", targetObj->name.c_str(), anim.keyframes.size());
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -299,7 +333,7 @@ void Engine::renderAnimationWindow() {
         if (ImGui::BeginTabItem("Pose")) {
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
             ImGui::BeginDisabled(!anim.enabled);
-            if (ImGui::Button("Key")) {
+            if (ImGui::Button("Capture Key")) {
                 captureKeyframe(*targetObj);
             }
             ImGui::EndDisabled();
@@ -317,9 +351,44 @@ void Engine::renderAnimationWindow() {
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
             ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(anim.keyframes.empty());
+            if (ImGui::Button("Prev Key")) {
+                int best = -1;
+                float bestTime = -1.0f;
+                for (size_t i = 0; i < anim.keyframes.size(); ++i) {
+                    if (anim.keyframes[i].time < animationCurrentTime &&
+                        (best < 0 || anim.keyframes[i].time > bestTime)) {
+                        best = static_cast<int>(i);
+                        bestTime = anim.keyframes[i].time;
+                    }
+                }
+                if (best < 0) best = 0;
+                animationSelectedKey = best;
+                animationCurrentTime = anim.keyframes[best].time;
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(anim.keyframes.empty());
+            if (ImGui::Button("Next Key")) {
+                int best = -1;
+                float bestTime = FLT_MAX;
+                for (size_t i = 0; i < anim.keyframes.size(); ++i) {
+                    if (anim.keyframes[i].time > animationCurrentTime &&
+                        (best < 0 || anim.keyframes[i].time < bestTime)) {
+                        best = static_cast<int>(i);
+                        bestTime = anim.keyframes[i].time;
+                    }
+                }
+                if (best < 0) best = static_cast<int>(anim.keyframes.size()) - 1;
+                animationSelectedKey = best;
+                animationCurrentTime = anim.keyframes[best].time;
+            }
+            ImGui::EndDisabled();
             ImGui::PopStyleVar();
 
             ImGui::Spacing();
+            ImGui::SeparatorText("Timeline");
             drawTimeline(anim);
             ImGui::SliderFloat("Time", &animationCurrentTime, 0.0f, anim.clipLength, "%.2fs");
 

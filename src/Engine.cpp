@@ -5156,12 +5156,12 @@ void Engine::loadEditorUserSettings() {
             style.Colors[i] = loadedColors[i];
         }
     }
-    style.Colors[ImGuiCol_Button] = ImVec4(0.20f, 0.22f, 0.28f, 1.00f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.30f, 0.36f, 1.00f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.30f, 0.34f, 0.40f, 1.00f);
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.19f, 0.26f, 1.00f);
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.24f, 0.26f, 0.34f, 1.00f);
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.26f, 0.30f, 0.36f, 1.00f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.22f, 0.23f, 0.32f, 1.00f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.28f, 0.30f, 0.42f, 1.00f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.33f, 0.36f, 0.48f, 1.00f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.21f, 0.30f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.28f, 0.40f, 1.00f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.30f, 0.34f, 0.46f, 1.00f);
 
     applyWorkspacePreset(currentWorkspace, false);
     scriptingFilesDirty = true;

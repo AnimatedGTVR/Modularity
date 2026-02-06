@@ -925,6 +925,17 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                     if (!alreadyAssigned) {
                         ScriptComponent sc;
                         sc.path = path;
+                        std::string ext = fs::path(path).extension().string();
+                        std::transform(ext.begin(), ext.end(), ext.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        if (ext == ".cs") {
+                            sc.language = ScriptLanguage::CSharp;
+                            sc.managedType = fs::path(path).stem().string();
+                        } else if (ext == ".c") {
+                            sc.language = ScriptLanguage::C;
+                        } else {
+                            sc.language = ScriptLanguage::Cpp;
+                        }
                         obj.scripts.push_back(sc);
                         projectManager.currentProject.hasUnsavedChanges = true;
                         addConsoleMessage("Assigned script to " + obj.name, ConsoleMessageType::Success);
@@ -3369,6 +3380,21 @@ void Engine::renderInspectorPanel() {
 
     bool scriptsChanged = false;
     int scriptToRemove = -1;
+    auto isNativeScriptLanguage = [](ScriptLanguage language) {
+        return language == ScriptLanguage::Cpp || language == ScriptLanguage::C;
+    };
+    auto inferNativeLanguageFromPath = [](const fs::path& path) {
+        std::string ext = path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return (ext == ".c") ? ScriptLanguage::C : ScriptLanguage::Cpp;
+    };
+    auto isNativeScriptSourcePath = [](const fs::path& path) {
+        std::string ext = path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx";
+    };
 
     for (size_t i = 0; i < obj.scripts.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
@@ -3382,8 +3408,9 @@ void Engine::renderInspectorPanel() {
         }
         std::string scriptId = "ScriptComponent" + std::to_string(i);
         auto header = drawComponentHeader(headerLabel.c_str(), scriptId.c_str(), &sc.enabled, true, [&]() {
-            if (ImGui::MenuItem("Compile", nullptr, false, sc.language == ScriptLanguage::Cpp ? !sc.path.empty() : true)) {
-                if (sc.language == ScriptLanguage::Cpp) {
+            bool nativeScript = isNativeScriptLanguage(sc.language);
+            if (ImGui::MenuItem("Compile", nullptr, false, nativeScript ? !sc.path.empty() : true)) {
+                if (nativeScript) {
                     compileScriptFile(sc.path);
                 } else {
                     compileManagedScripts();
@@ -3403,12 +3430,23 @@ void Engine::renderInspectorPanel() {
         }
 
         if (header.open) {
-            const char* languageLabels[] = {"C++", "C#"};
-            int languageIndex = (sc.language == ScriptLanguage::CSharp) ? 1 : 0;
+            const char* languageLabels[] = {"C++", "C", "C#"};
+            int languageIndex = 0;
+            if (sc.language == ScriptLanguage::C) {
+                languageIndex = 1;
+            } else if (sc.language == ScriptLanguage::CSharp) {
+                languageIndex = 2;
+            }
             ImGui::TextDisabled("Language");
             ImGui::SetNextItemWidth(140);
             if (ImGui::Combo("##ScriptLanguage", &languageIndex, languageLabels, IM_ARRAYSIZE(languageLabels))) {
-                sc.language = (languageIndex == 1) ? ScriptLanguage::CSharp : ScriptLanguage::Cpp;
+                if (languageIndex == 2) {
+                    sc.language = ScriptLanguage::CSharp;
+                } else if (languageIndex == 1) {
+                    sc.language = ScriptLanguage::C;
+                } else {
+                    sc.language = ScriptLanguage::Cpp;
+                }
                 scriptsChanged = true;
                 if (sc.language == ScriptLanguage::CSharp) {
                     std::string stem = fs::path(sc.path).stem().string();
@@ -3438,6 +3476,8 @@ void Engine::renderInspectorPanel() {
                             sc.managedType = stem;
                         }
                     }
+                } else if (!sc.path.empty()) {
+                    sc.language = inferNativeLanguageFromPath(sc.path);
                 }
             }
 
@@ -3446,8 +3486,8 @@ void Engine::renderInspectorPanel() {
                 if (!fileBrowser.selectedFile.empty()) {
                     fs::directory_entry entry(fileBrowser.selectedFile);
                     bool useSelection = false;
-                    if (sc.language == ScriptLanguage::Cpp) {
-                        useSelection = (fileBrowser.getFileCategory(entry) == FileCategory::Script);
+                    if (isNativeScriptLanguage(sc.language)) {
+                        useSelection = isNativeScriptSourcePath(entry.path());
                     } else {
                         std::string ext = entry.path().extension().string();
                         useSelection = (ext == ".dll" || ext == ".cs");
@@ -3455,7 +3495,9 @@ void Engine::renderInspectorPanel() {
                     if (useSelection) {
                         sc.path = entry.path().string();
                         scriptsChanged = true;
-                        if (sc.language == ScriptLanguage::CSharp) {
+                        if (isNativeScriptLanguage(sc.language)) {
+                            sc.language = inferNativeLanguageFromPath(entry.path());
+                        } else if (sc.language == ScriptLanguage::CSharp) {
                             std::string stem = entry.path().stem().string();
                             if (sc.managedType.empty() || sc.managedType == stem) {
                                 if (auto inferred = InferManagedTypeFromFile(entry.path())) {
@@ -3487,7 +3529,7 @@ void Engine::renderInspectorPanel() {
                 ctx.script = &sc;
                 // Scope script inspector to avoid shared ImGui IDs across objects or multiple instances
                 std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
-                if (sc.language == ScriptLanguage::Cpp) {
+                if (isNativeScriptLanguage(sc.language)) {
                     fs::path binary = resolveScriptBinary(sc.path);
                     if (binary.empty() && !sc.lastBinaryPath.empty()) {
                         fs::path fallback = sc.lastBinaryPath;
@@ -3691,36 +3733,27 @@ void Engine::renderInspectorPanel() {
         std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-        auto matchesFilter = [&](const std::string& label) {
-            if (filterLower.empty()) return true;
-            std::string labelLower = label;
-            std::transform(labelLower.begin(), labelLower.end(), labelLower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            return labelLower.find(filterLower) != std::string::npos;
-        };
-
         struct ComponentEntry {
-            std::string label;
+            std::string path;
             bool enabled = true;
             std::function<void()> action;
         };
         std::vector<ComponentEntry> entries;
-        auto addEntry = [&](const std::string& label, bool enabled, const std::function<void()>& action) {
-            if (!matchesFilter(label)) return;
-            entries.push_back({label, enabled, action});
+        auto addEntry = [&](const std::string& path, bool enabled, const std::function<void()>& action) {
+            entries.push_back({path, enabled, action});
         };
 
-        addEntry("Physics/Rigidbody3D", !obj.hasRigidbody && !isUIType, [&]() {
+        addEntry("Physics/Rigidbody 3D", !obj.hasRigidbody && !isUIType, [&]() {
             obj.hasRigidbody = true;
             obj.rigidbody = RigidbodyComponent{};
             componentChanged = true;
         });
-        addEntry("Physics/Rigidbody2D", !obj.hasRigidbody2D && isUIType, [&]() {
+        addEntry("Physics/Rigidbody 2D", !obj.hasRigidbody2D && isUIType, [&]() {
             obj.hasRigidbody2D = true;
             obj.rigidbody2D = Rigidbody2DComponent{};
             componentChanged = true;
         });
-        addEntry("Physics/Collider2D", !obj.hasCollider2D && isUIType, [&]() {
+        addEntry("Physics/Collider 2D", !obj.hasCollider2D && isUIType, [&]() {
             obj.hasCollider2D = true;
             obj.collider2D = Collider2DComponent{};
             obj.collider2D.boxSize = glm::max(obj.ui.size, glm::vec2(1.0f));
@@ -3781,14 +3814,14 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("Light/Directional", !obj.hasLight, [&]() {
+        addEntry("Lights/Directional", !obj.hasLight, [&]() {
             obj.hasLight = true;
             obj.light = LightComponent{};
             obj.light.type = LightType::Directional;
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("Light/Point", !obj.hasLight, [&]() {
+        addEntry("Lights/Point", !obj.hasLight, [&]() {
             obj.hasLight = true;
             obj.light = LightComponent{};
             obj.light.type = LightType::Point;
@@ -3797,7 +3830,7 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("Light/Spot", !obj.hasLight, [&]() {
+        addEntry("Lights/Spot", !obj.hasLight, [&]() {
             obj.hasLight = true;
             obj.light = LightComponent{};
             obj.light.type = LightType::Spot;
@@ -3806,7 +3839,7 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("Light/Area", !obj.hasLight, [&]() {
+        addEntry("Lights/Area", !obj.hasLight, [&]() {
             obj.hasLight = true;
             obj.light = LightComponent{};
             obj.light.type = LightType::Area;
@@ -3924,7 +3957,7 @@ void Engine::renderInspectorPanel() {
             obj.collider.convex = true;
             componentChanged = true;
         });
-        addEntry("Script/Empty Script Component", true, [&]() {
+        addEntry("Scripting/Empty Script Component", true, [&]() {
             obj.scripts.push_back(ScriptComponent{});
             scriptsChanged = true;
             componentChanged = true;
@@ -3997,13 +4030,19 @@ void Engine::renderInspectorPanel() {
         }
 
         for (const auto& path : cachedScriptSources) {
-            std::string label = "Script/" + path.filename().string();
+            std::string label = "Scripting/" + path.filename().string();
             addEntry(label, true, [&, path]() {
                 ScriptComponent sc;
                 std::string ext = path.extension().string();
                 std::transform(ext.begin(), ext.end(), ext.begin(),
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                sc.language = (ext == ".cs") ? ScriptLanguage::CSharp : ScriptLanguage::Cpp;
+                if (ext == ".cs") {
+                    sc.language = ScriptLanguage::CSharp;
+                } else if (ext == ".c") {
+                    sc.language = ScriptLanguage::C;
+                } else {
+                    sc.language = ScriptLanguage::Cpp;
+                }
                 sc.path = path.string();
                 if (sc.language == ScriptLanguage::CSharp) {
                     sc.managedType = path.stem().string();
@@ -4019,7 +4058,7 @@ void Engine::renderInspectorPanel() {
             if (sourceByStem.find(stem) != sourceByStem.end()) {
                 continue;
             }
-            std::string label = "Script (Compiled)/" + stem;
+            std::string label = "Scripting Compiled/" + stem;
             addEntry(label, true, [&, bin]() {
                 ScriptComponent sc;
                 sc.language = ScriptLanguage::Cpp;
@@ -4031,22 +4070,82 @@ void Engine::renderInspectorPanel() {
             });
         }
 
+        auto toLower = [](const std::string& value) {
+            std::string lowered = value;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return lowered;
+        };
+        auto splitPath = [](const std::string& path) {
+            size_t slash = path.find('/');
+            if (slash == std::string::npos) {
+                return std::pair<std::string, std::string>("Misc", path);
+            }
+            return std::pair<std::string, std::string>(path.substr(0, slash), path.substr(slash + 1));
+        };
+
+        std::vector<const ComponentEntry*> filteredEntries;
+        filteredEntries.reserve(entries.size());
+        for (const auto& entry : entries) {
+            if (!filterLower.empty()) {
+                std::string loweredPath = toLower(entry.path);
+                if (loweredPath.find(filterLower) == std::string::npos) {
+                    continue;
+                }
+            }
+            filteredEntries.push_back(&entry);
+        }
+
+        std::vector<std::string> categoryOrder;
+        std::unordered_map<std::string, std::vector<const ComponentEntry*>> categorizedEntries;
+        categorizedEntries.reserve(filteredEntries.size());
+        for (const ComponentEntry* entry : filteredEntries) {
+            auto split = splitPath(entry->path);
+            auto itCat = categorizedEntries.find(split.first);
+            if (itCat == categorizedEntries.end()) {
+                categoryOrder.push_back(split.first);
+            }
+            categorizedEntries[split.first].push_back(entry);
+        }
+
         ImGui::Spacing();
+        ImGui::TextDisabled("%s", filterLower.empty() ? "Browse categories" : "Search results");
         ImVec2 listSize(ImGui::GetContentRegionAvail().x, 260.0f);
         if (ImGui::BeginChild("ComponentList", listSize, true)) {
-            if (entries.empty()) {
+            if (filteredEntries.empty()) {
                 ImGui::TextDisabled("No components match the filter.");
-            } else {
-                for (const auto& entry : entries) {
-                    if (!entry.enabled) {
+            } else if (!filterLower.empty()) {
+                for (const ComponentEntry* entry : filteredEntries) {
+                    if (!entry->enabled) {
                         ImGui::BeginDisabled();
                     }
-                    if (ImGui::Selectable(entry.label.c_str())) {
-                        entry.action();
+                    if (ImGui::Selectable(entry->path.c_str())) {
+                        entry->action();
                         ImGui::CloseCurrentPopup();
                     }
-                    if (!entry.enabled) {
+                    if (!entry->enabled) {
                         ImGui::EndDisabled();
+                    }
+                }
+            } else {
+                for (const auto& category : categoryOrder) {
+                    auto itCat = categorizedEntries.find(category);
+                    if (itCat == categorizedEntries.end()) continue;
+                    if (ImGui::BeginMenu(category.c_str())) {
+                        for (const ComponentEntry* entry : itCat->second) {
+                            auto split = splitPath(entry->path);
+                            if (!entry->enabled) {
+                                ImGui::BeginDisabled();
+                            }
+                            if (ImGui::MenuItem(split.second.c_str())) {
+                                entry->action();
+                                ImGui::CloseCurrentPopup();
+                            }
+                            if (!entry->enabled) {
+                                ImGui::EndDisabled();
+                            }
+                        }
+                        ImGui::EndMenu();
                     }
                 }
             }

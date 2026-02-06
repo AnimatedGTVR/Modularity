@@ -304,6 +304,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     fs::path relativeParent = relToScripts.has_parent_path() ? relToScripts.parent_path() : fs::path();
     std::string baseName = scriptAbs.stem().string();
     fs::path objectPath = config.outDir / relativeParent / (baseName + ".o");
+    fs::path secondaryObjectPath;
 
     fs::path binaryPath = config.outDir / relativeParent;
 #ifdef _WIN32
@@ -312,6 +313,11 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #else
     binaryPath /= baseName + ".so";
 #endif
+
+    std::string extLower = scriptAbs.extension().string();
+    std::transform(extLower.begin(), extLower.end(), extLower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool isCSource = extLower == ".c";
 
     // Build a lightweight wrapper that exposes expected entry points with C linkage and optional deltaTime.
     auto readFileToString = [](const fs::path& path, std::string& contents) -> bool {
@@ -329,12 +335,13 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         bool takesContext = false;
     };
 
-    auto detectFunction = [](const std::string& source, const std::string& name) -> FunctionSpec {
+    auto detectFunction = [](const std::string& source, const std::string& name,
+                             const std::string& contextPattern) -> FunctionSpec {
         FunctionSpec spec;
         try {
             const std::string prefix = "\\bvoid\\s+(?:IEnum\\s+)?";
-            std::regex ctxDeltaPattern(prefix + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
-            std::regex ctxOnlyPattern(prefix + name + "\\s*\\(\\s*ScriptContext\\s*[&*][^\\)]*\\)");
+            std::regex ctxDeltaPattern(prefix + name + "\\s*\\(\\s*" + contextPattern + "\\s*[^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
+            std::regex ctxOnlyPattern(prefix + name + "\\s*\\(\\s*" + contextPattern + "\\s*[^\\)]*\\)");
             std::regex deltaPattern(prefix + name + "\\s*\\(\\s*(float|double)[^\\)]*\\)");
             std::regex basicPattern(prefix + name + "\\s*\\(\\s*\\)");
 
@@ -369,138 +376,436 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         return false;
     }
 
-    FunctionSpec beginSpec = detectFunction(scriptSource, "Begin");
-    FunctionSpec specSpec = detectFunction(scriptSource, "Spec");
-    FunctionSpec testEditorSpec = detectFunction(scriptSource, "TestEditor");
-    FunctionSpec updateSpec = detectFunction(scriptSource, "Update");
-    FunctionSpec tickUpdateSpec = detectFunction(scriptSource, "TickUpdate");
-    FunctionSpec inspectorSpec = detectFunction(scriptSource, "Script_OnInspector");
-
-    auto hasExternCInspector = [&]() {
+    auto hasExternCSymbol = [&](const std::string& symbol) {
         try {
-            std::regex direct(R"(extern\s+"C"\s+void\s+Script_OnInspector\s*\()");
+            std::regex direct("extern\\s+\"C\"\\s+void\\s+" + symbol + "\\s*\\(");
             if (std::regex_search(scriptSource, direct)) return true;
-            std::regex block(R"(extern\s+"C"\s*\{[\s\S]*?\bScript_OnInspector\b)");
+            std::regex block("extern\\s+\"C\"\\s*\\{[\\s\\S]*?\\b" + symbol + "\\b");
             return std::regex_search(scriptSource, block);
         } catch (...) {
             return false;
         }
     };
-    bool inspectorExtern = hasExternCInspector();
-    bool needsInspectorWrap = inspectorSpec.present && !inspectorExtern;
+
+    auto appendWindowsIncludesAndDefines = [&](std::ostringstream& cmd) {
+        for (const auto& inc : config.includeDirs) {
+            cmd << " /I\"" << inc.string() << "\"";
+        }
+        for (const auto& def : config.defines) {
+            cmd << " /D" << escapeDefine(def);
+        }
+    };
+
+    auto appendPosixIncludesAndDefines = [&](std::ostringstream& cmd) {
+        for (const auto& inc : config.includeDirs) {
+            cmd << " -I\"" << inc.string() << "\"";
+        }
+        auto formatDefine = [&](const std::string& def) {
+            std::string escaped = def;
+            for (size_t pos = 0; pos < escaped.size(); ++pos) {
+                if (escaped[pos] == '"') {
+                    escaped.insert(pos, "\\");
+                    ++pos;
+                }
+            }
+            return std::string(" -D\"") + escaped + "\"";
+        };
+        for (const auto& def : config.defines) {
+            cmd << formatDefine(def);
+        }
+    };
 
     fs::path wrapperPath;
-    bool useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present
-                      || updateSpec.present || tickUpdateSpec.present || needsInspectorWrap;
-    fs::path sourceToCompile = scriptAbs;
+    bool useWrapper = false;
+    std::ostringstream compileCmd;
+    std::ostringstream linkCmd;
 
-    if (useWrapper) {
-        wrapperPath = config.outDir / relativeParent / (baseName + ".wrap.cpp");
+    if (isCSource) {
+        const std::string cContextPattern = "(?:struct\\s+)?ModuScriptContext\\s*\\*";
+        FunctionSpec beginSpec = detectFunction(scriptSource, "Modu_Begin", cContextPattern);
+        FunctionSpec specSpec = detectFunction(scriptSource, "Modu_Spec", cContextPattern);
+        FunctionSpec testEditorSpec = detectFunction(scriptSource, "Modu_TestEditor", cContextPattern);
+        FunctionSpec updateSpec = detectFunction(scriptSource, "Modu_Update", cContextPattern);
+        FunctionSpec tickUpdateSpec = detectFunction(scriptSource, "Modu_TickUpdate", cContextPattern);
+        FunctionSpec inspectorSpec = detectFunction(scriptSource, "Modu_OnInspector", cContextPattern);
+        FunctionSpec editorRenderSpec = detectFunction(scriptSource, "Modu_RenderEditorWindow", cContextPattern);
+        FunctionSpec editorExitSpec = detectFunction(scriptSource, "Modu_ExitRenderEditorWindow", cContextPattern);
+
+        useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present ||
+                     updateSpec.present || tickUpdateSpec.present || inspectorSpec.present ||
+                     editorRenderSpec.present || editorExitSpec.present;
+        if (!useWrapper) {
+            error = "C script has no Modu_ hooks. Expected one of Modu_Begin/Modu_TickUpdate/Modu_OnInspector.";
+            return false;
+        }
+
+        wrapperPath = config.outDir / relativeParent / (baseName + ".capi.wrap.cpp");
+#ifdef _WIN32
+        secondaryObjectPath = config.outDir / relativeParent / (baseName + ".wrap.obj");
+#else
+        secondaryObjectPath = config.outDir / relativeParent / (baseName + ".wrap.o");
+#endif
         std::error_code createErr;
         fs::create_directories(wrapperPath.parent_path(), createErr);
 
         std::ofstream wrapper(wrapperPath);
         if (!wrapper.is_open()) {
-            error = "Unable to write wrapper file: " + wrapperPath.string();
+            error = "Unable to write C API wrapper file: " + wrapperPath.string();
             return false;
         }
 
-        std::string includePath = scriptAbs.lexically_normal().generic_string();
-        if (needsInspectorWrap) {
-            wrapper << "#define Script_OnInspector Script_OnInspector_Impl\n";
-        }
-        wrapper << "#include \"ScriptRuntime.h\"\n";
-        wrapper << "#include \"" << includePath << "\"\n";
-        if (needsInspectorWrap) {
-            wrapper << "#undef Script_OnInspector\n";
-        }
-        wrapper << "\n";
-        wrapper << "extern \"C\" {\n";
+        auto emitCImplDecl = [&](const char* name, const FunctionSpec& spec) {
+            if (!spec.present) return;
+            wrapper << "void " << name << "(";
+            if (spec.takesContext && spec.takesDelta) {
+                wrapper << "ModuScriptContext* ctx, float deltaTime";
+            } else if (spec.takesContext) {
+                wrapper << "ModuScriptContext* ctx";
+            } else if (spec.takesDelta) {
+                wrapper << "float deltaTime";
+            }
+            wrapper << ");\n";
+        };
 
-        auto emitWrapper = [&](const char* exportedName, const char* implName,
-                               const FunctionSpec& spec) {
+        wrapper << "#include \"ScriptRuntime.h\"\n";
+        wrapper << "#include <cstring>\n";
+        wrapper << "#include <cstdio>\n\n";
+        wrapper << "extern \"C\" {\n";
+        wrapper << "struct ModuScriptContext { ScriptContext* ctx; };\n";
+        wrapper << "struct ModuVec3 { float x; float y; float z; };\n\n";
+        wrapper << "static ScriptContext* ModuAsCpp(ModuScriptContext* ctx) {\n";
+        wrapper << "    return ctx ? ctx->ctx : nullptr;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_GetObjectId(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->object) ? cpp->object->id : -1;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_IsObjectEnabled(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->IsObjectEnabled()) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetObjectEnabled(ModuScriptContext* ctx, int enabled) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp) cpp->SetObjectEnabled(enabled != 0);\n";
+        wrapper << "}\n\n";
+        wrapper << "ModuVec3 Modu_GetPosition(ModuScriptContext* ctx) {\n";
+        wrapper << "    ModuVec3 out{0.0f, 0.0f, 0.0f};\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp && cpp->object) {\n";
+        wrapper << "        out.x = cpp->object->position.x;\n";
+        wrapper << "        out.y = cpp->object->position.y;\n";
+        wrapper << "        out.z = cpp->object->position.z;\n";
+        wrapper << "    }\n";
+        wrapper << "    return out;\n";
+        wrapper << "}\n\n";
+        wrapper << "ModuVec3 Modu_GetRotation(ModuScriptContext* ctx) {\n";
+        wrapper << "    ModuVec3 out{0.0f, 0.0f, 0.0f};\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp && cpp->object) {\n";
+        wrapper << "        out.x = cpp->object->rotation.x;\n";
+        wrapper << "        out.y = cpp->object->rotation.y;\n";
+        wrapper << "        out.z = cpp->object->rotation.z;\n";
+        wrapper << "    }\n";
+        wrapper << "    return out;\n";
+        wrapper << "}\n\n";
+        wrapper << "ModuVec3 Modu_GetScale(ModuScriptContext* ctx) {\n";
+        wrapper << "    ModuVec3 out{1.0f, 1.0f, 1.0f};\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp && cpp->object) {\n";
+        wrapper << "        out.x = cpp->object->scale.x;\n";
+        wrapper << "        out.y = cpp->object->scale.y;\n";
+        wrapper << "        out.z = cpp->object->scale.z;\n";
+        wrapper << "    }\n";
+        wrapper << "    return out;\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetPosition(ModuScriptContext* ctx, ModuVec3 value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp) cpp->SetPosition(glm::vec3(value.x, value.y, value.z));\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetRotation(ModuScriptContext* ctx, ModuVec3 value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp) cpp->SetRotation(glm::vec3(value.x, value.y, value.z));\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetScale(ModuScriptContext* ctx, ModuVec3 value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (cpp) cpp->SetScale(glm::vec3(value.x, value.y, value.z));\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_SetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3 velocity) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->SetRigidbodyVelocity(glm::vec3(velocity.x, velocity.y, velocity.z))) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_AddRigidbodyForce(ModuScriptContext* ctx, ModuVec3 force) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->AddRigidbodyForce(glm::vec3(force.x, force.y, force.z))) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_AddConsoleMessage(ModuScriptContext* ctx, const char* message, int type) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp) return;\n";
+        wrapper << "    ConsoleMessageType msgType = ConsoleMessageType::Info;\n";
+        wrapper << "    switch (type) {\n";
+        wrapper << "        case 1: msgType = ConsoleMessageType::Warning; break;\n";
+        wrapper << "        case 2: msgType = ConsoleMessageType::Error; break;\n";
+        wrapper << "        case 3: msgType = ConsoleMessageType::Success; break;\n";
+        wrapper << "        default: msgType = ConsoleMessageType::Info; break;\n";
+        wrapper << "    }\n";
+        wrapper << "    cpp->AddConsoleMessage(message ? message : \"\", msgType);\n";
+        wrapper << "}\n\n";
+        wrapper << "float Modu_GetSettingFloat(ModuScriptContext* ctx, const char* key, float fallback) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) return fallback;\n";
+        wrapper << "    return cpp->GetSettingFloat(key, fallback);\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetSettingFloat(ModuScriptContext* ctx, const char* key, float value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) return;\n";
+        wrapper << "    cpp->SetSettingFloat(key, value);\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_GetSettingBool(ModuScriptContext* ctx, const char* key, int fallback) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) return fallback ? 1 : 0;\n";
+        wrapper << "    return cpp->GetSettingBool(key, fallback != 0) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetSettingBool(ModuScriptContext* ctx, const char* key, int value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) return;\n";
+        wrapper << "    cpp->SetSettingBool(key, value != 0);\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetSettingString(ModuScriptContext* ctx, const char* key, const char* value) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) return;\n";
+        wrapper << "    cpp->SetSetting(key, value ? value : \"\");\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_GetSettingString(ModuScriptContext* ctx, const char* key, const char* fallback,\n";
+        wrapper << "                          char* outBuffer, int outBufferSize) {\n";
+        wrapper << "    if (!outBuffer || outBufferSize <= 0) return 0;\n";
+        wrapper << "    outBuffer[0] = '\\0';\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp || !key) {\n";
+        wrapper << "        if (fallback) {\n";
+        wrapper << "            std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), \"%s\", fallback);\n";
+        wrapper << "            return 1;\n";
+        wrapper << "        }\n";
+        wrapper << "        return 0;\n";
+        wrapper << "    }\n";
+        wrapper << "    std::string value = cpp->GetSetting(key, fallback ? fallback : \"\");\n";
+        wrapper << "    std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), \"%s\", value.c_str());\n";
+        wrapper << "    return 1;\n";
+        wrapper << "}\n\n";
+
+        emitCImplDecl("Modu_Begin", beginSpec);
+        emitCImplDecl("Modu_Spec", specSpec);
+        emitCImplDecl("Modu_TestEditor", testEditorSpec);
+        emitCImplDecl("Modu_Update", updateSpec);
+        emitCImplDecl("Modu_TickUpdate", tickUpdateSpec);
+        emitCImplDecl("Modu_OnInspector", inspectorSpec);
+        emitCImplDecl("Modu_RenderEditorWindow", editorRenderSpec);
+        emitCImplDecl("Modu_ExitRenderEditorWindow", editorExitSpec);
+        if (beginSpec.present || specSpec.present || testEditorSpec.present || updateSpec.present ||
+            tickUpdateSpec.present || inspectorSpec.present || editorRenderSpec.present || editorExitSpec.present) {
+            wrapper << "\n";
+        }
+
+        auto emitScriptBridge = [&](const char* exportedName, const char* implName,
+                                    const FunctionSpec& spec) {
             if (!spec.present) return;
             wrapper << "void " << exportedName << "(ScriptContext& ctx, float deltaTime) {\n";
+            wrapper << "    ModuScriptContext cctx{&ctx};\n";
             if (spec.takesContext && spec.takesDelta) {
-                wrapper << "    " << implName << "(ctx, deltaTime);\n";
+                wrapper << "    " << implName << "(&cctx, deltaTime);\n";
             } else if (spec.takesContext) {
                 wrapper << "    (void)deltaTime;\n";
-                wrapper << "    " << implName << "(ctx);\n";
+                wrapper << "    " << implName << "(&cctx);\n";
             } else if (spec.takesDelta) {
-                wrapper << "    (void)ctx;\n";
                 wrapper << "    " << implName << "(deltaTime);\n";
             } else {
-                wrapper << "    (void)ctx;\n";
+                wrapper << "    (void)cctx;\n";
                 wrapper << "    (void)deltaTime;\n";
                 wrapper << "    " << implName << "();\n";
             }
             wrapper << "}\n\n";
         };
 
-        emitWrapper("Script_Begin", "Begin", beginSpec);
-        emitWrapper("Script_Spec", "Spec", specSpec);
-        emitWrapper("Script_TestEditor", "TestEditor", testEditorSpec);
-        emitWrapper("Script_Update", "Update", updateSpec);
-        emitWrapper("Script_TickUpdate", "TickUpdate", tickUpdateSpec);
-        if (needsInspectorWrap) {
-            wrapper << "void Script_OnInspector(ScriptContext& ctx) {\n";
-            if (inspectorSpec.takesContext) {
-                wrapper << "    Script_OnInspector_Impl(ctx);\n";
+        auto emitEditorBridge = [&](const char* exportedName, const char* implName,
+                                    const FunctionSpec& spec) {
+            if (!spec.present) return;
+            wrapper << "void " << exportedName << "(ScriptContext& ctx) {\n";
+            wrapper << "    ModuScriptContext cctx{&ctx};\n";
+            if (spec.takesContext) {
+                wrapper << "    " << implName << "(&cctx);\n";
+            } else if (spec.takesDelta) {
+                wrapper << "    " << implName << "(0.0f);\n";
             } else {
-                wrapper << "    (void)ctx;\n";
-                wrapper << "    Script_OnInspector_Impl();\n";
+                wrapper << "    (void)cctx;\n";
+                wrapper << "    " << implName << "();\n";
             }
             wrapper << "}\n\n";
-        }
+        };
 
+        emitScriptBridge("Script_Begin", "Modu_Begin", beginSpec);
+        emitScriptBridge("Script_Spec", "Modu_Spec", specSpec);
+        emitScriptBridge("Script_TestEditor", "Modu_TestEditor", testEditorSpec);
+        emitScriptBridge("Script_Update", "Modu_Update", updateSpec);
+        emitScriptBridge("Script_TickUpdate", "Modu_TickUpdate", tickUpdateSpec);
+        emitEditorBridge("Script_OnInspector", "Modu_OnInspector", inspectorSpec);
+        emitEditorBridge("RenderEditorWindow", "Modu_RenderEditorWindow", editorRenderSpec);
+        emitEditorBridge("ExitRenderEditorWindow", "Modu_ExitRenderEditorWindow", editorExitSpec);
         wrapper << "}\n";
-        sourceToCompile = wrapperPath;
-    }
 
-    std::ostringstream compileCmd;
 #ifdef _WIN32
-    compileCmd << "cl /nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
-    for (const auto& inc : config.includeDirs) {
-        compileCmd << " /I\"" << inc.string() << "\"";
-    }
-    for (const auto& def : config.defines) {
-        compileCmd << " /D" << escapeDefine(def);
-    }
-    compileCmd << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
-#else
-    compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
-    for (const auto& inc : config.includeDirs) {
-        compileCmd << " -I\"" << inc.string() << "\"";
-    }
-    auto formatDefine = [&](const std::string& def) {
-        std::string escaped = def;
-        for (size_t pos = 0; pos < escaped.size(); ++pos) {
-            if (escaped[pos] == '"') {
-                escaped.insert(pos, "\\");
-                ++pos;
-            }
+        compileCmd << "cl /nologo /TC /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(compileCmd);
+        compileCmd << " /c \"" << scriptAbs.string() << "\" /Fo\"" << objectPath.string() << "\"";
+        compileCmd << " && ";
+        compileCmd << "cl /nologo /TP /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(compileCmd);
+        compileCmd << " /c \"" << wrapperPath.string() << "\" /Fo\"" << secondaryObjectPath.string() << "\"";
+        linkCmd << "link /nologo /DLL \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
+                << "\" /OUT:\"" << binaryPath.string() << "\"";
+        for (const auto& lib : config.windowsLinkLibs) {
+            linkCmd << " " << lib;
         }
-        return std::string(" -D\"") + escaped + "\"";
-    };
-    for (const auto& def : config.defines) {
-        compileCmd << formatDefine(def);
-    }
-    compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
-#endif
-
-    std::ostringstream linkCmd;
-#ifdef _WIN32
-    linkCmd << "link /nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
-            << binaryPath.string() << "\"";
-    for (const auto& lib : config.windowsLinkLibs) {
-        linkCmd << " " << lib;
-    }
 #else
-    linkCmd << "g++ -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
-    for (const auto& lib : config.linuxLinkLibs) {
-        linkCmd << " " << formatLinkFlag(lib);
-    }
+        compileCmd << "gcc -std=c11 -fPIC -O0 -g";
+        appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -c \"" << scriptAbs.string() << "\" -o \"" << objectPath.string() << "\"";
+        compileCmd << " && ";
+        compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
+        appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
+        linkCmd << "g++ -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
+                << "\" -o \"" << binaryPath.string() << "\"";
+        for (const auto& lib : config.linuxLinkLibs) {
+            linkCmd << " " << formatLinkFlag(lib);
+        }
 #endif
+    } else {
+        const std::string cppContextPattern = "ScriptContext\\s*[&*]";
+        FunctionSpec beginSpec = detectFunction(scriptSource, "Begin", cppContextPattern);
+        FunctionSpec specSpec = detectFunction(scriptSource, "Spec", cppContextPattern);
+        FunctionSpec testEditorSpec = detectFunction(scriptSource, "TestEditor", cppContextPattern);
+        FunctionSpec updateSpec = detectFunction(scriptSource, "Update", cppContextPattern);
+        FunctionSpec tickUpdateSpec = detectFunction(scriptSource, "TickUpdate", cppContextPattern);
+        FunctionSpec inspectorSpec = detectFunction(scriptSource, "Script_OnInspector", cppContextPattern);
+        FunctionSpec editorRenderSpec = detectFunction(scriptSource, "RenderEditorWindow", cppContextPattern);
+        FunctionSpec editorExitSpec = detectFunction(scriptSource, "ExitRenderEditorWindow", cppContextPattern);
+
+        bool needsInspectorWrap = inspectorSpec.present && !hasExternCSymbol("Script_OnInspector");
+        bool needsRenderWrap = editorRenderSpec.present && !hasExternCSymbol("RenderEditorWindow");
+        bool needsExitWrap = editorExitSpec.present && !hasExternCSymbol("ExitRenderEditorWindow");
+        useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present ||
+                     updateSpec.present || tickUpdateSpec.present ||
+                     needsInspectorWrap || needsRenderWrap || needsExitWrap;
+
+        fs::path sourceToCompile = scriptAbs;
+        if (useWrapper) {
+            wrapperPath = config.outDir / relativeParent / (baseName + ".wrap.cpp");
+            std::error_code createErr;
+            fs::create_directories(wrapperPath.parent_path(), createErr);
+
+            std::ofstream wrapper(wrapperPath);
+            if (!wrapper.is_open()) {
+                error = "Unable to write wrapper file: " + wrapperPath.string();
+                return false;
+            }
+
+            std::string includePath = scriptAbs.lexically_normal().generic_string();
+            if (needsInspectorWrap) {
+                wrapper << "#define Script_OnInspector Script_OnInspector_Impl\n";
+            }
+            if (needsRenderWrap) {
+                wrapper << "#define RenderEditorWindow RenderEditorWindow_Impl\n";
+            }
+            if (needsExitWrap) {
+                wrapper << "#define ExitRenderEditorWindow ExitRenderEditorWindow_Impl\n";
+            }
+            wrapper << "#include \"ScriptRuntime.h\"\n";
+            wrapper << "#include \"" << includePath << "\"\n";
+            if (needsExitWrap) {
+                wrapper << "#undef ExitRenderEditorWindow\n";
+            }
+            if (needsRenderWrap) {
+                wrapper << "#undef RenderEditorWindow\n";
+            }
+            if (needsInspectorWrap) {
+                wrapper << "#undef Script_OnInspector\n";
+            }
+            wrapper << "\n";
+            wrapper << "extern \"C\" {\n";
+
+            auto emitTickBridge = [&](const char* exportedName, const char* implName,
+                                      const FunctionSpec& spec) {
+                if (!spec.present) return;
+                wrapper << "void " << exportedName << "(ScriptContext& ctx, float deltaTime) {\n";
+                if (spec.takesContext && spec.takesDelta) {
+                    wrapper << "    " << implName << "(ctx, deltaTime);\n";
+                } else if (spec.takesContext) {
+                    wrapper << "    (void)deltaTime;\n";
+                    wrapper << "    " << implName << "(ctx);\n";
+                } else if (spec.takesDelta) {
+                    wrapper << "    (void)ctx;\n";
+                    wrapper << "    " << implName << "(deltaTime);\n";
+                } else {
+                    wrapper << "    (void)ctx;\n";
+                    wrapper << "    (void)deltaTime;\n";
+                    wrapper << "    " << implName << "();\n";
+                }
+                wrapper << "}\n\n";
+            };
+
+            auto emitEditorBridge = [&](const char* exportedName, const char* implName,
+                                        const FunctionSpec& spec) {
+                if (!spec.present) return;
+                wrapper << "void " << exportedName << "(ScriptContext& ctx) {\n";
+                if (spec.takesContext) {
+                    wrapper << "    " << implName << "(ctx);\n";
+                } else if (spec.takesDelta) {
+                    wrapper << "    (void)ctx;\n";
+                    wrapper << "    " << implName << "(0.0f);\n";
+                } else {
+                    wrapper << "    (void)ctx;\n";
+                    wrapper << "    " << implName << "();\n";
+                }
+                wrapper << "}\n\n";
+            };
+
+            emitTickBridge("Script_Begin", "Begin", beginSpec);
+            emitTickBridge("Script_Spec", "Spec", specSpec);
+            emitTickBridge("Script_TestEditor", "TestEditor", testEditorSpec);
+            emitTickBridge("Script_Update", "Update", updateSpec);
+            emitTickBridge("Script_TickUpdate", "TickUpdate", tickUpdateSpec);
+            if (needsInspectorWrap) {
+                emitEditorBridge("Script_OnInspector", "Script_OnInspector_Impl", inspectorSpec);
+            }
+            if (needsRenderWrap) {
+                emitEditorBridge("RenderEditorWindow", "RenderEditorWindow_Impl", editorRenderSpec);
+            }
+            if (needsExitWrap) {
+                emitEditorBridge("ExitRenderEditorWindow", "ExitRenderEditorWindow_Impl", editorExitSpec);
+            }
+
+            wrapper << "}\n";
+            sourceToCompile = wrapperPath;
+        }
+
+#ifdef _WIN32
+        compileCmd << "cl /nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(compileCmd);
+        compileCmd << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
+        linkCmd << "link /nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
+                << binaryPath.string() << "\"";
+        for (const auto& lib : config.windowsLinkLibs) {
+            linkCmd << " " << lib;
+        }
+#else
+        compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
+        appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
+        linkCmd << "g++ -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
+        for (const auto& lib : config.linuxLinkLibs) {
+            linkCmd << " " << formatLinkFlag(lib);
+        }
+#endif
+    }
 
     std::string compileStr = compileCmd.str();
     std::string linkStr = linkCmd.str();
@@ -508,6 +813,15 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     const std::string clPath = findVsTool("cl.exe");
     const std::string linkPath = findVsTool("link.exe");
     compileStr = applyToolOverride(compileStr, "cl", clPath);
+    if (!clPath.empty()) {
+        const std::string marker = " && cl ";
+        const std::string replacement = " && \"" + clPath + "\" ";
+        size_t pos = 0;
+        while ((pos = compileStr.find(marker, pos)) != std::string::npos) {
+            compileStr.replace(pos, marker.size(), replacement);
+            pos += replacement.size();
+        }
+    }
     linkStr = applyToolOverride(linkStr, "link", linkPath);
     compileStr = wrapWithVsDevCmdIfNeeded(compileStr);
     linkStr = wrapWithVsDevCmdIfNeeded(linkStr);
@@ -516,6 +830,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.compile = compileStr;
     outCommands.link = linkStr;
     outCommands.objectPath = objectPath;
+    outCommands.secondaryObjectPath = secondaryObjectPath;
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath;
     outCommands.usedWrapper = useWrapper;
@@ -554,6 +869,10 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     if (!commands.objectPath.empty()) {
         std::error_code ec;
         fs::create_directories(commands.objectPath.parent_path(), ec);
+    }
+    if (!commands.secondaryObjectPath.empty()) {
+        std::error_code ec;
+        fs::create_directories(commands.secondaryObjectPath.parent_path(), ec);
     }
     if (!commands.binaryPath.empty()) {
         std::error_code ec;
