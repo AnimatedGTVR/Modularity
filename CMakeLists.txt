@@ -332,7 +332,7 @@ if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
 endif()
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/Modularity
+    DESTINATION .
 )
 
 # ==================== Packaging (CPack) ====================
