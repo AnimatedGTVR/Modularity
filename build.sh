@@ -52,6 +52,7 @@ mkdir -p build
 cd build
 cmake .. -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type"
 cmake --build . -- -j"$(nproc)"
+cmake --install . --prefix install
 
 mkdir -p Packages/ThirdParty
 find . -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
@@ -73,6 +74,7 @@ mkdir -p "$player_cache_dir"
 cmake -S . -B "$player_cache_dir" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type" -DMODULARITY_BUILD_EDITOR=OFF
 cmake --build "$player_cache_dir" --target ModularityPlayer -- -j"$(nproc)"
 
+
 mkdir -p "$player_cache_dir/Packages/ThirdParty"
 find "$player_cache_dir" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
     -not -path "$player_cache_dir/Packages/*" -exec cp -f {} "$player_cache_dir/Packages/ThirdParty/" \;
@@ -85,4 +87,5 @@ cd build
 
 cp -r ../Resources .
 cp Resources/imgui.ini .
-ln -sf build/compile_commands.json compile_commands.json
+ln -sf compile_commands.json ../compile_commands.json
+cpack
