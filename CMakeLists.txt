@@ -334,3 +334,23 @@ endif()
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
     DESTINATION ${CMAKE_INSTALL_DATADIR}/Modularity
 )
+
+# ==================== Packaging (CPack) ====================
+
+set(CPACK_PACKAGE_NAME "Modularity")
+set(CPACK_PACKAGE_VENDOR "Modularity")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Modularity Game Engine")
+set(CPACK_PACKAGE_CONTACT "support@moduengine.xyz")
+
+set(CPACK_PACKAGE_FILE_NAME
+    "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}"
+)
+
+set(CPACK_GENERATOR "TGZ")
+
+set(CPACK_INSTALL_CMAKE_PROJECTS
+    "${CMAKE_BINARY_DIR};${CMAKE_PROJECT_NAME};ALL;/"
+)
+
+include(CPack)
