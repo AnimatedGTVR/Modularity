@@ -4,8 +4,8 @@ project(Modularity LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_INSTALL_RPATH "$ORIGIN")
-set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 
 # ==================== Compiler cache (ccache / sccache) ====================
 
@@ -276,15 +276,6 @@ else()
     target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
 endif()
 
-# ==================== Copy Resources folder after build ====================
-if(MODULARITY_BUILD_EDITOR)
-    add_custom_command(TARGET Modularity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/Resources
-            $<TARGET_FILE_DIR:Modularity>/Resources
-    )
-endif()
-
 add_custom_command(TARGET ModularityPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/Resources
@@ -318,15 +309,28 @@ if(WIN32 AND MODULARITY_ENABLE_PHYSX)
     )
 endif()
 
-# ======================= Copy PhysX SO's (Linux) ====================
+include(GNUInstallDirs)
+
+if(MODULARITY_BUILD_EDITOR)
+    install(TARGETS Modularity
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
+install(TARGETS ModularityPlayer
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
 if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
-    file(GLOB PHYSX_LIBS
-        "${PHYSX_ROOT}/bin/linux.x86_64/release/*.so"
+    file(GLOB PHYSX_SO_FILES
+        "${CMAKE_BINARY_DIR}/physx/bin/linux.x86_64/release/*.so"
     )
 
-    add_custom_command(TARGET Modularity POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${PHYSX_LIBS}
-        $<TARGET_FILE_DIR:Modularity>
+    install(FILES ${PHYSX_SO_FILES}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
-endif
+endif()
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/Modularity
+)
