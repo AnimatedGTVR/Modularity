@@ -317,3 +317,16 @@ if(WIN32 AND MODULARITY_ENABLE_PHYSX)
             -P ${PHYSX_COPY_SCRIPT}
     )
 endif()
+
+# ======================= Copy PhysX SO's (Linux) ====================
+if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
+    file(GLOB PHYSX_LIBS
+        "${PHYSX_ROOT}/bin/linux.x86_64/release/*.so"
+    )
+
+    add_custom_command(TARGET Modularity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${PHYSX_LIBS}
+        $<TARGET_FILE_DIR:Modularity>
+    )
+endif
