@@ -31,11 +31,11 @@ pipeline {
                 '''
             }
         }
+    }
 
-        post {
-            success {
-                archiveArtifacts artifacts: 'build/*.tar.gz', fingerprint: true
-            }
+    post {
+        success {
+            archiveArtifacts artifacts: 'build/*.tar.gz', fingerprint: true
         }
     }
 }
