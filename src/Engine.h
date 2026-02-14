@@ -86,7 +86,14 @@ private:
     bool autoStartPlayerMode = false;
     std::string autoStartProjectPath;
     std::string autoStartSceneName;
-    std::vector<std::string> consoleLog;
+    struct ConsoleEntry {
+        std::string timestamp;
+        std::string message;
+        ConsoleMessageType type = ConsoleMessageType::Info;
+    };
+    std::vector<ConsoleEntry> consoleLog;
+    std::string latestErrorMessage;
+    std::string latestErrorTimestamp;
     int draggedObjectId = -1;
 
     ProjectManager projectManager;
@@ -399,6 +406,7 @@ private:
     void renderMeshBuilderPanel();
     void renderInspectorPanel();
     void renderConsolePanel();
+    void renderLatestErrorBar();
     void renderViewport();
     void renderPlayerViewport();
     void renderGameViewportWindow();
@@ -532,7 +540,10 @@ public:
     bool setRigidbodyYawFromScript(int id, float yawDegrees);
     bool raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& dir, float distance,
                                   int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal,
-                                  float* hitDistance) const;
+                                  float* hitDistance, int* hitActorId = nullptr,
+                                  glm::vec3* hitActorVelocity = nullptr,
+                                  float* hitStaticFriction = nullptr,
+                                  float* hitDynamicFriction = nullptr) const;
     // Audio control exposed to scripts
     bool playAudioFromScript(int id);
     bool stopAudioFromScript(int id);

@@ -32,6 +32,20 @@ void Modu_SetScale(ModuScriptContext* ctx, ModuVec3 value);
 
 int Modu_SetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3 velocity);
 int Modu_AddRigidbodyForce(ModuScriptContext* ctx, ModuVec3 force);
+int Modu_GetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3* outVelocity);
+int Modu_SetRigidbodyRotation(ModuScriptContext* ctx, ModuVec3 rotation);
+int Modu_EnsureCapsuleCollider(ModuScriptContext* ctx, float height, float radius);
+int Modu_EnsureRigidbody(ModuScriptContext* ctx, int useGravity, int kinematic);
+
+int Modu_IsSprintDown(ModuScriptContext* ctx);
+int Modu_IsJumpDown(ModuScriptContext* ctx);
+ModuVec3 Modu_GetMoveInputWASD(ModuScriptContext* ctx, float pitchDeg, float yawDeg);
+int Modu_ApplyMouseLook(ModuScriptContext* ctx, float* pitchDeg, float* yawDeg,
+                        float sensitivity, float maxDelta, float deltaTime, int requireMouseButton);
+int Modu_RaycastClosestDetailed(ModuScriptContext* ctx, ModuVec3 origin, ModuVec3 dir, float distance,
+                                ModuVec3* hitPos, ModuVec3* hitNormal, float* hitDistance,
+                                int* hitObjectId, ModuVec3* hitObjectVelocity,
+                                float* hitStaticFriction, float* hitDynamicFriction);
 
 void Modu_AddConsoleMessage(ModuScriptContext* ctx, const char* message, int type);
 
@@ -42,6 +56,16 @@ void Modu_SetSettingBool(ModuScriptContext* ctx, const char* key, int value);
 void Modu_SetSettingString(ModuScriptContext* ctx, const char* key, const char* value);
 int Modu_GetSettingString(ModuScriptContext* ctx, const char* key, const char* fallback,
                           char* outBuffer, int outBufferSize);
+
+void Modu_InspectorText(ModuScriptContext* ctx, const char* text);
+void Modu_InspectorSeparator(ModuScriptContext* ctx);
+int Modu_InspectorDragFloat(ModuScriptContext* ctx, const char* label, float* value,
+                            float speed, float minValue, float maxValue, const char* format);
+int Modu_InspectorDragFloat2(ModuScriptContext* ctx, const char* label, float* value,
+                             float speed, float minValue, float maxValue, const char* format);
+int Modu_InspectorDragFloat3(ModuScriptContext* ctx, const char* label, float* value,
+                             float speed, float minValue, float maxValue, const char* format);
+int Modu_InspectorCheckbox(ModuScriptContext* ctx, const char* label, int* value);
 
 #ifdef __cplusplus
 }

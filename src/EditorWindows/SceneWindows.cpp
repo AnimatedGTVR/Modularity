@@ -1910,6 +1910,20 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
             }
 
+            ImGui::SeparatorText("Surface");
+            if (ImGui::DragFloat("Static Friction", &obj.collider.staticFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
+                obj.collider.staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Dynamic Friction", &obj.collider.dynamicFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
+                obj.collider.dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Restitution", &obj.collider.restitution, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                obj.collider.restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
+                changed = true;
+            }
+
             ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
@@ -1941,10 +1955,39 @@ void Engine::renderInspectorPanel() {
             ImGui::Indent(10.0f);
             if (ImGui::DragFloat("Move Speed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
                 obj.playerController.moveSpeed = std::max(0.1f, obj.playerController.moveSpeed);
+                obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Run Speed", &obj.playerController.runSpeed, 0.1f, 0.1f, 140.0f, "%.2f")) {
+                obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
                 changed = true;
             }
             if (ImGui::DragFloat("Look Sensitivity", &obj.playerController.lookSensitivity, 0.01f, 0.01f, 2.0f, "%.2f")) {
                 obj.playerController.lookSensitivity = std::clamp(obj.playerController.lookSensitivity, 0.01f, 2.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Ground Accel", &obj.playerController.groundAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                obj.playerController.groundAcceleration = std::clamp(obj.playerController.groundAcceleration, 0.0f, 200.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Air Accel", &obj.playerController.airAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                obj.playerController.airAcceleration = std::clamp(obj.playerController.airAcceleration, 0.0f, 200.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Braking", &obj.playerController.braking, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                obj.playerController.braking = std::clamp(obj.playerController.braking, 0.0f, 200.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Min Surface Control", &obj.playerController.minSurfaceControl, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                obj.playerController.minSurfaceControl = std::clamp(obj.playerController.minSurfaceControl, 0.0f, 1.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Slide Gravity", &obj.playerController.slideGravity, 0.1f, 0.0f, 120.0f, "%.2f")) {
+                obj.playerController.slideGravity = std::clamp(obj.playerController.slideGravity, 0.0f, 120.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Platform Carry", &obj.playerController.platformCarry, 0.01f, 0.0f, 3.0f, "%.2f")) {
+                obj.playerController.platformCarry = std::clamp(obj.playerController.platformCarry, 0.0f, 3.0f);
                 changed = true;
             }
             if (ImGui::DragFloat("Height", &obj.playerController.height, 0.01f, 0.5f, 3.0f, "%.2f")) {
@@ -3364,6 +3407,25 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
+            if (obj.light.type != LightType::Directional) {
+                if (ImGui::Checkbox("Cast Shadows", &obj.light.castShadows)) {
+                    changed = true;
+                }
+                if (obj.light.castShadows) {
+                    if (ImGui::Checkbox("Soft Shadows", &obj.light.softShadows)) {
+                        changed = true;
+                    }
+                    if (ImGui::SliderFloat("Shadow Bias", &obj.light.shadowBias, 0.0001f, 0.20f, "%.4f")) {
+                        changed = true;
+                    }
+                    if (obj.light.softShadows) {
+                        if (ImGui::SliderFloat("Shadow Softness", &obj.light.shadowSoftness, 0.001f, 0.20f, "%.3f")) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
             ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
@@ -4184,6 +4246,8 @@ void Engine::renderConsolePanel() {
     bool settingsChanged = false;
     if (ImGui::Button("Clear")) {
         consoleLog.clear();
+        latestErrorMessage.clear();
+        latestErrorTimestamp.clear();
     }
 
     ImGui::SameLine();
@@ -4196,29 +4260,125 @@ void Engine::renderConsolePanel() {
 
     ImGui::Separator();
 
+    Texture* infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+    Texture* warningLogo = renderer.getTexture("Resources/Engine-Root/Warning Logo.png");
+    Texture* errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
+    Texture* successLogo = renderer.getTexture("Resources/Engine-Root/Modu-Logo.png");
+
+    auto typeLabel = [](ConsoleMessageType type) -> const char* {
+        switch (type) {
+            case ConsoleMessageType::Warning: return "Warning";
+            case ConsoleMessageType::Error: return "Error";
+            case ConsoleMessageType::Success: return "Success";
+            case ConsoleMessageType::Info:
+            default:
+                return "Info";
+        }
+    };
+
+    auto typeColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(1.0f, 0.84f, 0.35f, 1.0f);
+            case ConsoleMessageType::Error: return ImVec4(1.0f, 0.46f, 0.46f, 1.0f);
+            case ConsoleMessageType::Success: return ImVec4(0.50f, 0.95f, 0.55f, 1.0f);
+            case ConsoleMessageType::Info:
+            default:
+                return ImVec4(0.65f, 0.84f, 1.0f, 1.0f);
+        }
+    };
+
+    auto rowColor = [](ConsoleMessageType type) -> ImU32 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return IM_COL32(74, 60, 20, 195);
+            case ConsoleMessageType::Error: return IM_COL32(88, 28, 28, 205);
+            case ConsoleMessageType::Success: return IM_COL32(20, 70, 30, 190);
+            case ConsoleMessageType::Info:
+            default:
+                return IM_COL32(30, 52, 78, 185);
+        }
+    };
+
+    auto typeIcon = [&](ConsoleMessageType type) -> Texture* {
+        switch (type) {
+            case ConsoleMessageType::Warning: return warningLogo;
+            case ConsoleMessageType::Error: return errorLogo;
+            case ConsoleMessageType::Success: return successLogo;
+            case ConsoleMessageType::Info:
+            default:
+                return infoLogo;
+        }
+    };
+
     ImGui::BeginChild("ConsoleOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-    if (consoleWrapText) {
-        ImGui::PushTextWrapPos(0.0f);
-    }
+    const bool shouldScroll = autoScroll && (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.0f);
 
-    for (const auto& log : consoleLog) {
-        ImVec4 color = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-        if (log.find("Error") != std::string::npos) {
-            color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
-        } else if (log.find("Warning") != std::string::npos) {
-            color = ImVec4(1.0f, 0.8f, 0.4f, 1.0f);
-        } else if (log.find("Success") != std::string::npos) {
-            color = ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
+    if (consoleLog.empty()) {
+        ImGui::TextDisabled("No console messages yet.");
+    } else {
+        for (size_t i = 0; i < consoleLog.size(); ++i) {
+            const ConsoleEntry& log = consoleLog[i];
+            ImGui::PushID(static_cast<int>(i));
+
+            Texture* icon = typeIcon(log.type);
+            const bool hasIcon = icon && icon->GetID();
+            const float iconSize = 16.0f;
+            float rowWidth = ImGui::GetContentRegionAvail().x;
+            const float textLeft = hasIcon ? 36.0f : 10.0f;
+            const std::string header = "[" + log.timestamp + "] " + typeLabel(log.type);
+
+            const float minTextWidth = 32.0f;
+            float textWidth = ImMax(minTextWidth, rowWidth - textLeft - 10.0f);
+
+            ImVec2 headerSize = ImGui::CalcTextSize(header.c_str(), nullptr, false, FLT_MAX);
+            ImVec2 msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false,
+                                                 consoleWrapText ? textWidth : FLT_MAX);
+            if (!consoleWrapText) {
+                float requiredWidth = textLeft + ImMax(headerSize.x, msgSize.x) + 10.0f;
+                rowWidth = ImMax(rowWidth, requiredWidth);
+                textWidth = ImMax(minTextWidth, rowWidth - textLeft - 10.0f);
+                msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, FLT_MAX);
+            } else {
+                msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, textWidth);
+            }
+
+            const float topPad = 4.0f;
+            const float bottomPad = 4.0f;
+            const float lineGap = 2.0f;
+            const float rowHeight = ImMax(26.0f, topPad + ImGui::GetTextLineHeight() + lineGap + msgSize.y + bottomPad);
+
+            const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(rowWidth, rowHeight));
+            const ImVec2 rowMax = ImVec2(rowMin.x + rowWidth, rowMin.y + rowHeight);
+
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(rowMin, rowMax, rowColor(log.type), 6.0f);
+            draw->PushClipRect(rowMin, rowMax, true);
+
+            if (hasIcon) {
+                const ImVec2 iconMin(rowMin.x + 8.0f, rowMin.y + (rowHeight - iconSize) * 0.5f);
+                const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
+                draw->AddImage((ImTextureID)(intptr_t)icon->GetID(), iconMin, iconMax,
+                               ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE);
+            }
+
+            const float textX = rowMin.x + textLeft;
+            draw->AddText(ImVec2(textX, rowMin.y + topPad),
+                          ImGui::ColorConvertFloat4ToU32(typeColor(log.type)),
+                          header.c_str());
+            draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                          ImVec2(textX, rowMin.y + topPad + ImGui::GetTextLineHeight() + lineGap),
+                          ImGui::GetColorU32(ImGuiCol_Text),
+                          log.message.c_str(), nullptr,
+                          consoleWrapText ? textWidth : 0.0f);
+
+            draw->PopClipRect();
+            ImGui::Dummy(ImVec2(0.0f, 3.0f));
+            ImGui::PopID();
         }
-        ImGui::TextColored(color, "%s", log.c_str());
     }
 
-    if (consoleWrapText) {
-        ImGui::PopTextWrapPos();
-    }
-
-    if (autoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+    if (shouldScroll) {
         ImGui::SetScrollHereY(1.0f);
     }
 
@@ -4228,6 +4388,67 @@ void Engine::renderConsolePanel() {
     }
 
     ImGui::End();
+}
+
+void Engine::renderLatestErrorBar() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (!viewport) return;
+
+    const bool hasError = !latestErrorMessage.empty();
+    Texture* errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
+    Texture* infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+    Texture* icon = hasError ? errorLogo : infoLogo;
+
+    std::string bodyText = hasError
+        ? ("[" + latestErrorTimestamp + "] " + latestErrorMessage)
+        : "No errors yet.";
+
+    const float margin = 8.0f;
+    const float barHeight = 30.0f;
+    ImVec2 barPos(viewport->WorkPos.x + margin,
+                  viewport->WorkPos.y + viewport->WorkSize.y - barHeight - margin);
+    ImVec2 barSize(viewport->WorkSize.x - margin * 2.0f, barHeight);
+    if (barSize.x <= 40.0f || barSize.y <= 8.0f) return;
+
+    ImGuiWindowFlags barFlags = ImGuiWindowFlags_NoDecoration |
+                                ImGuiWindowFlags_NoDocking |
+                                ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoMove |
+                                ImGuiWindowFlags_NoNav |
+                                ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                ImGuiWindowFlags_NoInputs;
+
+    ImGui::SetNextWindowPos(barPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(barSize, ImGuiCond_Always);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                          hasError ? ImVec4(0.30f, 0.10f, 0.10f, 0.93f)
+                                   : ImVec4(0.10f, 0.18f, 0.24f, 0.88f));
+    ImGui::PushStyleColor(ImGuiCol_Border,
+                          hasError ? ImVec4(0.85f, 0.25f, 0.25f, 0.80f)
+                                   : ImVec4(0.30f, 0.50f, 0.70f, 0.60f));
+
+    if (ImGui::Begin("##LatestErrorBar", nullptr, barFlags)) {
+        if (icon && icon->GetID()) {
+            ImGui::Image((ImTextureID)(intptr_t)icon->GetID(), ImVec2(16.0f, 16.0f),
+                         ImVec2(0, 1), ImVec2(1, 0));
+            ImGui::SameLine();
+        }
+
+        ImGui::TextColored(hasError ? ImVec4(1.0f, 0.46f, 0.46f, 1.0f)
+                                    : ImVec4(0.70f, 0.88f, 1.0f, 1.0f),
+                           "%s:",
+                           hasError ? "Latest Error" : "Status");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(bodyText.c_str());
+    }
+    ImGui::End();
+
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
 }
 
 #pragma endregion

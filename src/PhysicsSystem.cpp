@@ -42,6 +42,24 @@ glm::vec3 ToGlmEulerDeg(const PxQuat& q) {
     glm::mat3 m = glm::mat3_cast(gq);
     return glm::degrees(ExtractEulerXYZ(m));
 }
+
+PxMaterial* CreateShapeMaterial(PxPhysics* physics, PxMaterial* fallback,
+                                const SceneObject& obj, bool& outOwned) {
+    outOwned = false;
+    if (!physics || !fallback) return fallback;
+    if (!obj.hasCollider || !obj.collider.enabled) {
+        return fallback;
+    }
+    const float staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
+    const float dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
+    const float restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
+    PxMaterial* material = physics->createMaterial(staticFriction, dynamicFriction, restitution);
+    if (!material) {
+        return fallback;
+    }
+    outOwned = true;
+    return material;
+}
 } // namespace
 
 namespace {
@@ -204,6 +222,8 @@ PxConvexMesh* PhysicsSystem::cookConvexMesh(const std::vector<PxVec3>& vertices)
 bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const {
     (void)isDynamic;
     if (!actor) return false;
+    bool ownsMaterial = false;
+    PxMaterial* shapeMaterial = CreateShapeMaterial(mPhysics, mDefaultMaterial, obj, ownsMaterial);
     PxShape* shape = nullptr;
     auto tuneShape = [](PxShape* s, float minDim, bool /*swept*/) {
         if (!s) return;
@@ -216,14 +236,14 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
     switch (obj.renderType) {
         case RenderType::Cube: {
             PxVec3 halfExtents = ToPxVec3(glm::max(obj.scale * 0.5f, glm::vec3(0.01f)));
-            shape = mPhysics->createShape(PxBoxGeometry(halfExtents), *mDefaultMaterial, true);
+            shape = mPhysics->createShape(PxBoxGeometry(halfExtents), *shapeMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
         case RenderType::Sphere: {
             float radius = std::max({obj.scale.x, obj.scale.y, obj.scale.z}) * 0.5f;
             radius = std::max(radius, 0.01f);
-            shape = mPhysics->createShape(PxSphereGeometry(radius), *mDefaultMaterial, true);
+            shape = mPhysics->createShape(PxSphereGeometry(radius), *shapeMaterial, true);
             tuneShape(shape, radius * 2.0f, isDynamic);
             break;
         }
@@ -232,7 +252,7 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         radius = std::max(radius, 0.01f);
         float cylHeight = std::max(0.05f, obj.scale.y - radius * 2.0f);
         float halfHeight = cylHeight * 0.5f;
-        shape = mPhysics->createShape(PxCapsuleGeometry(radius, halfHeight), *mDefaultMaterial, true);
+        shape = mPhysics->createShape(PxCapsuleGeometry(radius, halfHeight), *shapeMaterial, true);
         if (shape) {
             // PhysX capsules default to the X axis; rotate to align with Y (character up)
             shape->setLocalPose(PxTransform(PxQuat(PxHalfPi, PxVec3(0, 0, 1))));
@@ -243,21 +263,21 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         case RenderType::Plane: {
             glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
             halfExtents.z = std::max(halfExtents.z, 0.01f);
-            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *shapeMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
         case RenderType::Sprite: {
             glm::vec3 halfExtents = glm::max(obj.scale * 0.5f, glm::vec3(0.01f));
             halfExtents.z = std::max(halfExtents.z, 0.01f);
-            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *shapeMaterial, true);
             tuneShape(shape, std::min({halfExtents.x, halfExtents.y, halfExtents.z}) * 2.0f, isDynamic);
             break;
         }
         case RenderType::Torus: {
             float radius = std::max({obj.scale.x, obj.scale.y, obj.scale.z}) * 0.5f;
             radius = std::max(radius, 0.01f);
-            shape = mPhysics->createShape(PxSphereGeometry(radius), *mDefaultMaterial, true);
+            shape = mPhysics->createShape(PxSphereGeometry(radius), *shapeMaterial, true);
             tuneShape(shape, radius * 2.0f, isDynamic);
             break;
         }
@@ -265,6 +285,9 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
             break;
     }
 
+    if (ownsMaterial && shapeMaterial) {
+        shapeMaterial->release();
+    }
     if (!shape) return false;
     actor->attachShape(*shape);
     shape->release();
@@ -274,6 +297,8 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
 bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const {
     if (!actor || !obj.hasCollider || !obj.collider.enabled) return false;
 
+    bool ownsMaterial = false;
+    PxMaterial* shapeMaterial = CreateShapeMaterial(mPhysics, mDefaultMaterial, obj, ownsMaterial);
     PxShape* shape = nullptr;
     auto tuneShape = [](PxShape* s, float minDim, bool /*swept*/) {
         if (!s) return;
@@ -285,14 +310,14 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
     float minDim = 0.1f;
     if (obj.collider.type == ColliderType::Box) {
         glm::vec3 half = glm::max(obj.collider.boxSize * 0.5f, glm::vec3(0.01f));
-        shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(half)), *mDefaultMaterial, true);
+        shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(half)), *shapeMaterial, true);
         minDim = std::min({half.x, half.y, half.z}) * 2.0f;
     } else if (obj.collider.type == ColliderType::Capsule) {
         float radius = std::max({obj.collider.boxSize.x, obj.collider.boxSize.z}) * 0.5f;
         radius = std::max(radius, 0.01f);
         float cylHeight = std::max(0.05f, obj.collider.boxSize.y - radius * 2.0f);
         float halfHeight = cylHeight * 0.5f;
-        shape = mPhysics->createShape(PxCapsuleGeometry(radius, halfHeight), *mDefaultMaterial, true);
+        shape = mPhysics->createShape(PxCapsuleGeometry(radius, halfHeight), *shapeMaterial, true);
         if (shape) {
             // Rotate capsule so its axis matches the engine's Y-up expectation
             shape->setLocalPose(PxTransform(PxQuat(PxHalfPi, PxVec3(0, 0, 1))));
@@ -317,7 +342,7 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
         auto makeBoundsShape = [&](const glm::vec3& boundsMin, const glm::vec3& boundsMax) {
             glm::vec3 halfExtents = glm::max((boundsMax - boundsMin) * 0.5f, glm::vec3(0.01f));
             glm::vec3 center = (boundsMax + boundsMin) * 0.5f;
-            PxShape* box = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *mDefaultMaterial, true);
+            PxShape* box = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *shapeMaterial, true);
             if (box) {
                 box->setLocalPose(PxTransform(ToPxVec3(center), PxQuat(PxIdentity)));
             }
@@ -375,14 +400,14 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
                     PxConvexMesh* convex = cookConvexMesh(verts);
                     if (convex) {
                         PxConvexMeshGeometry geom(convex, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
-                        shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
+                        shape = mPhysics->createShape(geom, *shapeMaterial, true);
                         convex->release();
                     }
                 } else {
                     PxTriangleMesh* tri = cookTriangleMesh(verts, indices);
                     if (tri) {
                         PxTriangleMeshGeometry geom(tri, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
-                        shape = mPhysics->createShape(geom, *mDefaultMaterial, true);
+                        shape = mPhysics->createShape(geom, *shapeMaterial, true);
                         tri->release();
                     }
                 }
@@ -396,6 +421,9 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
 
     tuneShape(shape, std::max(0.01f, minDim), isDynamic || obj.hasPlayerController);
 
+    if (ownsMaterial && shapeMaterial) {
+        shapeMaterial->release();
+    }
     if (!shape) return false;
     actor->attachShape(*shape);
     shape->release();
@@ -693,9 +721,15 @@ bool PhysicsSystem::addAngularImpulse(int id, const glm::vec3& impulse) {
 }
 
 bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
-                                   int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance) const {
+                                   int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance,
+                                   int* hitActorId, glm::vec3* hitActorVelocity,
+                                   float* hitStaticFriction, float* hitDynamicFriction) const {
 #ifdef MODULARITY_ENABLE_PHYSX
     if (!isReady() || distance <= 0.0f) return false;
+    if (hitActorId) *hitActorId = -1;
+    if (hitActorVelocity) *hitActorVelocity = glm::vec3(0.0f);
+    if (hitStaticFriction) *hitStaticFriction = 0.9f;
+    if (hitDynamicFriction) *hitDynamicFriction = 0.9f;
     PxVec3 unitDir = ToPxVec3(glm::normalize(dir));
     if (!unitDir.isFinite()) return false;
 
@@ -716,9 +750,36 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
     if (hitPos) *hitPos = ToGlmVec3(hit.block.position);
     if (hitNormal) *hitNormal = ToGlmVec3(hit.block.normal);
     if (hitDistance) *hitDistance = hit.block.distance;
+    if (hitStaticFriction || hitDynamicFriction) {
+        PxShape* shape = hit.block.shape;
+        if (shape) {
+            PxMaterial* materials[1] = {nullptr};
+            PxU16 count = shape->getMaterials(materials, 1);
+            if (count > 0 && materials[0]) {
+                if (hitStaticFriction) *hitStaticFriction = materials[0]->getStaticFriction();
+                if (hitDynamicFriction) *hitDynamicFriction = materials[0]->getDynamicFriction();
+            }
+        }
+    }
+    if (hitActorId || hitActorVelocity) {
+        PxRigidActor* hitActor = hit.block.actor;
+        if (hitActor) {
+            for (const auto& [id, rec] : mActors) {
+                if (rec.actor != hitActor) continue;
+                if (hitActorId) *hitActorId = id;
+                if (hitActorVelocity && rec.isDynamic) {
+                    if (const PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+                        *hitActorVelocity = ToGlmVec3(dyn->getLinearVelocity());
+                    }
+                }
+                break;
+            }
+        }
+    }
     return true;
 #else
     (void)origin; (void)dir; (void)distance; (void)ignoreId; (void)hitPos; (void)hitNormal; (void)hitDistance;
+    (void)hitActorId; (void)hitActorVelocity; (void)hitStaticFriction; (void)hitDynamicFriction;
     return false;
 #endif
 }

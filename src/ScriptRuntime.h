@@ -47,13 +47,19 @@ struct ScriptContext {
     bool IsSprintDown() const;
     bool IsJumpDown() const;
     bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
-                       glm::vec3* outHitPos = nullptr, bool* outHitGround = nullptr) const;
+                       glm::vec3* outHitPos = nullptr, bool* outHitGround = nullptr,
+                       glm::vec3* outHitNormal = nullptr, int* outHitActorId = nullptr,
+                       glm::vec3* outHitActorVelocity = nullptr,
+                       float* outHitStaticFriction = nullptr,
+                       float* outHitDynamicFriction = nullptr) const;
     void ApplyVelocity(const glm::vec3& velocity, float deltaTime);
     struct StandaloneMovementSettings {
         glm::vec3 moveTuning = glm::vec3(4.5f, 7.5f, 6.5f);
         glm::vec3 lookTuning = glm::vec3(0.12f, 200.0f, 0.0f);
         glm::vec3 capsuleTuning = glm::vec3(1.8f, 0.4f, 0.2f);
         glm::vec3 gravityTuning = glm::vec3(-9.81f, 0.4f, 30.0f);
+        glm::vec3 locomotionTuning = glm::vec3(24.0f, 8.0f, 16.0f);
+        glm::vec3 surfaceTuning = glm::vec3(0.2f, 40.0f, 1.0f);
         bool enableMouseLook = true;
         bool requireMouseButton = false;
         bool enforceCollider = true;
@@ -63,9 +69,17 @@ struct ScriptContext {
         float pitch = 0.0f;
         float yaw = 0.0f;
         float verticalVelocity = 0.0f;
+        glm::vec2 localVelocity = glm::vec2(0.0f);
+        glm::vec3 slideVelocity = glm::vec3(0.0f);
+        glm::vec3 lastGroundHitPos = glm::vec3(0.0f);
+        bool hasGroundSample = false;
     };
     struct StandaloneMovementDebug {
         glm::vec3 velocity = glm::vec3(0.0f);
+        glm::vec2 localVelocity = glm::vec2(0.0f);
+        glm::vec3 platformVelocity = glm::vec3(0.0f);
+        float surfaceFriction = 0.0f;
+        float slopeDegrees = 0.0f;
         bool grounded = false;
     };
     void BindStandaloneMovementSettings(StandaloneMovementSettings& settings);
@@ -107,6 +121,12 @@ struct ScriptContext {
     bool RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                         glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr,
                         float* hitDistance = nullptr) const;
+    bool RaycastClosestDetailed(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                                glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr,
+                                float* hitDistance = nullptr, int* hitObjectId = nullptr,
+                                glm::vec3* hitObjectVelocity = nullptr,
+                                float* hitStaticFriction = nullptr,
+                                float* hitDynamicFriction = nullptr) const;
     bool SetRigidbodyRotation(const glm::vec3& rotDeg);
     bool TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg);
     // Audio helpers

@@ -20,8 +20,11 @@ uniform float ambientStrength = 0.2;
 uniform vec3 ambientColor = vec3(1.0);
 uniform float specularStrength = 0.5;
 uniform float shininess = 32.0;
+
 const int MAX_LIGHTS = 10;
+const int MAX_SHADOW_MAPS = 4;
 uniform int lightCount = 0; // up to MAX_LIGHTS
+
 // type: 0 dir, 1 point, 2 spot, 3 area (rect)
 uniform int lightTypeArr[MAX_LIGHTS];
 uniform vec3 lightDirArr[MAX_LIGHTS];
@@ -33,11 +36,65 @@ uniform float lightInnerCosArr[MAX_LIGHTS];
 uniform float lightOuterCosArr[MAX_LIGHTS];
 uniform vec2 lightAreaSizeArr[MAX_LIGHTS];
 uniform float lightAreaFadeArr[MAX_LIGHTS];
+uniform int lightShadowMapArr[MAX_LIGHTS];
+uniform int lightShadowModeArr[MAX_LIGHTS]; // 0 off, 1 hard, 2 soft
+uniform float lightShadowBiasArr[MAX_LIGHTS];
+uniform float lightShadowSoftnessArr[MAX_LIGHTS];
+uniform float lightShadowFarArr[MAX_LIGHTS];
 
-// Single directional light controlled by hierarchy (fallback if none set)
-uniform vec3 lightDir = normalize(vec3(0.3, 1.0, 0.5));
-uniform vec3 lightColor = vec3(1.0);
-uniform float lightIntensity = 1.0;
+uniform samplerCube shadowCube0;
+uniform samplerCube shadowCube1;
+uniform samplerCube shadowCube2;
+uniform samplerCube shadowCube3;
+
+float sampleShadowCube(int mapIndex, vec3 sampleDir)
+{
+    if (mapIndex == 0) return texture(shadowCube0, sampleDir).r;
+    if (mapIndex == 1) return texture(shadowCube1, sampleDir).r;
+    if (mapIndex == 2) return texture(shadowCube2, sampleDir).r;
+    if (mapIndex == 3) return texture(shadowCube3, sampleDir).r;
+    return 1.0;
+}
+
+float computeShadowOcclusion(int lightIndex, vec3 fragToLight, float nl)
+{
+    int mode = lightShadowModeArr[lightIndex];
+    int mapIndex = lightShadowMapArr[lightIndex];
+    if (mode <= 0 || mapIndex < 0 || mapIndex >= MAX_SHADOW_MAPS) return 0.0;
+
+    float farPlane = max(lightShadowFarArr[lightIndex], 0.001);
+    float currentDepth = length(fragToLight);
+    if (currentDepth <= 0.0001) return 0.0;
+
+    float baseBias = max(lightShadowBiasArr[lightIndex], 0.0001);
+    float slopeBias = baseBias * (1.0 - clamp(nl, 0.0, 1.0));
+    float bias = max(baseBias * 0.25, slopeBias);
+    float hardDepth = sampleShadowCube(mapIndex, fragToLight) * farPlane;
+    if (mode == 1) {
+        return (currentDepth - bias > hardDepth) ? 1.0 : 0.0;
+    }
+
+    float softness = max(lightShadowSoftnessArr[lightIndex], 0.0);
+    if (softness <= 0.0001) {
+        return (currentDepth - bias > hardDepth) ? 1.0 : 0.0;
+    }
+
+    const vec3 sampleOffsetDirections[20] = vec3[](
+        vec3(1, 1, 1), vec3(1, -1, 1), vec3(-1, -1, 1), vec3(-1, 1, 1),
+        vec3(1, 1, -1), vec3(1, -1, -1), vec3(-1, -1, -1), vec3(-1, 1, -1),
+        vec3(1, 1, 0), vec3(1, -1, 0), vec3(-1, -1, 0), vec3(-1, 1, 0),
+        vec3(1, 0, 1), vec3(-1, 0, 1), vec3(1, 0, -1), vec3(-1, 0, -1),
+        vec3(0, 1, 1), vec3(0, -1, 1), vec3(0, -1, -1), vec3(0, 1, -1)
+    );
+
+    float diskRadius = softness * (1.0 + currentDepth / farPlane);
+    float shadow = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        float closestDepth = sampleShadowCube(mapIndex, fragToLight + sampleOffsetDirections[i] * diskRadius) * farPlane;
+        shadow += (currentDepth - bias > closestDepth) ? 1.0 : 0.0;
+    }
+    return shadow / 20.0;
+}
 
 void main()
 {
@@ -71,7 +128,13 @@ void main()
         norm = normalize(TBN * mapN);
     }
 
-    vec3 ambient = ambientStrength * ambientColor * baseColor;
+    vec3 albedo = pow(max(baseColor, vec3(0.0)), vec3(2.2));
+    float metallic = clamp(specularStrength, 0.0, 1.0);
+    float smoothness = clamp(shininess / 256.0, 0.0, 1.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 diffuseColor = albedo * (1.0 - metallic);
+
+    vec3 ambient = ambientStrength * ambientColor * diffuseColor;
     vec3 lighting = ambient;
 
     int count = min(lightCount, MAX_LIGHTS);
@@ -128,18 +191,8 @@ void main()
                 float falloff = clamp(1.0 - (dist / range), 0.0, 1.0);
                 attenuation = falloff * falloff;
             }
-
-            // Lambert against area normal for softer look
-            float nl = max(dot(norm, lDirN), 0.0);
             float facing = max(dot(n, -lDirN), 0.0);
             attenuation *= facing * edgeWeight;
-
-            vec3 diffuse = nl * lightColorArr[i] * intensity;
-            vec3 halfwayDir = normalize(lDirN + viewDir);
-            float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
-            vec3 specular = specularStrength * spec * lightColorArr[i] * intensity;
-            lighting += attenuation * (diffuse + specular) * baseColor;
-            continue;
         } else {
             vec3 ldir = lightPosArr[i] - FragPos;
             float dist = length(ldir);
@@ -153,12 +206,15 @@ void main()
             }
         }
 
-        float diff = max(dot(norm, lDirN), 0.0);
-        vec3 diffuse = diff * lightColorArr[i] * intensity;
+        float nl = max(dot(norm, lDirN), 0.0);
+        vec3 diffuse = nl * diffuseColor * lightColorArr[i] * intensity;
 
         vec3 halfwayDir = normalize(lDirN + viewDir);
-        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
-        vec3 specular = specularStrength * spec * lightColorArr[i] * intensity;
+        float specPower = mix(8.0, 256.0, smoothness);
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), specPower);
+        float vdh = max(dot(viewDir, halfwayDir), 0.0);
+        vec3 fresnel = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+        vec3 specular = fresnel * spec * lightColorArr[i] * intensity;
 
         if (ltype == 2) {
             float cosTheta = dot(-lDirN, normalize(lightDirArr[i]));
@@ -166,9 +222,15 @@ void main()
             attenuation *= spotAtten;
         }
 
-        lighting += attenuation * (diffuse + specular) * baseColor;
+        float shadow = 0.0;
+        if (ltype != 0) {
+            shadow = computeShadowOcclusion(i, lightPosArr[i] - FragPos, nl);
+        }
+
+        lighting += (1.0 - shadow) * attenuation * (diffuse + specular);
     }
 
     float alpha = tex1.a;
-    FragColor = vec4(lighting, alpha);  // Preserve alpha if needed
+    vec3 finalColor = pow(max(lighting, vec3(0.0)), vec3(1.0 / 2.2));
+    FragColor = vec4(finalColor, alpha);
 }

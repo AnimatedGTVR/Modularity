@@ -101,11 +101,18 @@ private:
     RenderTarget historyTarget;
     RenderTarget bloomTargetA;
     RenderTarget bloomTargetB;
+    static constexpr int kMaxShadowMaps = 4;
+    struct ShadowCubeMap {
+        unsigned int fbo = 0;
+        unsigned int depthCube = 0;
+        int resolution = 0;
+    };
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
     Shader* postShader = nullptr;
     Shader* brightShader = nullptr;
     Shader* blurShader = nullptr;
+    Shader* shadowDepthShader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     unsigned int debugWhiteTexture = 0;
@@ -127,7 +134,10 @@ private:
     std::string postFragPath = "Resources/Shaders/postfx_frag.glsl";
     std::string postBrightFragPath = "Resources/Shaders/postfx_bright_frag.glsl";
     std::string postBlurFragPath = "Resources/Shaders/postfx_blur_frag.glsl";
+    std::string shadowDepthVertPath = "Resources/Shaders/shadow_depth_vert.glsl";
+    std::string shadowDepthFragPath = "Resources/Shaders/shadow_depth_frag.glsl";
     bool autoReloadShaders = true;
+    int shadowMapResolution = 512;
     glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
@@ -139,6 +149,7 @@ private:
     unsigned int quadVBO = 0;
     unsigned int displayTexture = 0;
     bool historyValid = false;
+    std::unordered_map<int, ShadowCubeMap> shadowCubeMaps;
     std::unordered_map<int, RenderTarget> mirrorTargets;
     std::unordered_map<int, RenderTarget> uiTargets;
     RenderStats viewportStats;

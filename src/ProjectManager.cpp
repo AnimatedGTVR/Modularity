@@ -386,12 +386,22 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "colliderType=" << static_cast<int>(obj.collider.type) << "\n";
                 file << "colliderBox=" << obj.collider.boxSize.x << "," << obj.collider.boxSize.y << "," << obj.collider.boxSize.z << "\n";
                 file << "colliderConvex=" << (obj.collider.convex ? 1 : 0) << "\n";
+                file << "colliderStaticFriction=" << obj.collider.staticFriction << "\n";
+                file << "colliderDynamicFriction=" << obj.collider.dynamicFriction << "\n";
+                file << "colliderRestitution=" << obj.collider.restitution << "\n";
             }
             file << "hasPlayerController=" << (obj.hasPlayerController ? 1 : 0) << "\n";
             if (obj.hasPlayerController) {
                 file << "pcEnabled=" << (obj.playerController.enabled ? 1 : 0) << "\n";
                 file << "pcMoveSpeed=" << obj.playerController.moveSpeed << "\n";
+                file << "pcRunSpeed=" << obj.playerController.runSpeed << "\n";
                 file << "pcLookSensitivity=" << obj.playerController.lookSensitivity << "\n";
+                file << "pcGroundAcceleration=" << obj.playerController.groundAcceleration << "\n";
+                file << "pcAirAcceleration=" << obj.playerController.airAcceleration << "\n";
+                file << "pcBraking=" << obj.playerController.braking << "\n";
+                file << "pcMinSurfaceControl=" << obj.playerController.minSurfaceControl << "\n";
+                file << "pcSlideGravity=" << obj.playerController.slideGravity << "\n";
+                file << "pcPlatformCarry=" << obj.playerController.platformCarry << "\n";
                 file << "pcHeight=" << obj.playerController.height << "\n";
                 file << "pcRadius=" << obj.playerController.radius << "\n";
                 file << "pcJumpStrength=" << obj.playerController.jumpStrength << "\n";
@@ -506,6 +516,10 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "lightInner=" << obj.light.innerAngle << "\n";
             file << "lightOuter=" << obj.light.outerAngle << "\n";
             file << "lightSize=" << obj.light.size.x << "," << obj.light.size.y << "\n";
+            file << "lightCastShadows=" << (obj.light.castShadows ? 1 : 0) << "\n";
+            file << "lightSoftShadows=" << (obj.light.softShadows ? 1 : 0) << "\n";
+            file << "lightShadowBias=" << obj.light.shadowBias << "\n";
+            file << "lightShadowSoftness=" << obj.light.shadowSoftness << "\n";
             file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
             file << "cameraType=" << static_cast<int>(obj.camera.type) << "\n";
             file << "cameraFov=" << obj.camera.fov << "\n";
@@ -835,10 +849,20 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"colliderType", +[](SceneObject& obj, const std::string& value) { obj.collider.type = static_cast<ColliderType>(std::stoi(value)); }},
         {"colliderBox", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.collider.boxSize); }},
         {"colliderConvex", +[](SceneObject& obj, const std::string& value) { obj.collider.convex = std::stoi(value) != 0; }},
+        {"colliderStaticFriction", +[](SceneObject& obj, const std::string& value) { obj.collider.staticFriction = std::stof(value); }},
+        {"colliderDynamicFriction", +[](SceneObject& obj, const std::string& value) { obj.collider.dynamicFriction = std::stof(value); }},
+        {"colliderRestitution", +[](SceneObject& obj, const std::string& value) { obj.collider.restitution = std::stof(value); }},
         {"hasPlayerController", +[](SceneObject& obj, const std::string& value) { obj.hasPlayerController = std::stoi(value) != 0; }},
         {"pcEnabled", +[](SceneObject& obj, const std::string& value) { obj.playerController.enabled = std::stoi(value) != 0; }},
         {"pcMoveSpeed", +[](SceneObject& obj, const std::string& value) { obj.playerController.moveSpeed = std::stof(value); }},
+        {"pcRunSpeed", +[](SceneObject& obj, const std::string& value) { obj.playerController.runSpeed = std::stof(value); }},
         {"pcLookSensitivity", +[](SceneObject& obj, const std::string& value) { obj.playerController.lookSensitivity = std::stof(value); }},
+        {"pcGroundAcceleration", +[](SceneObject& obj, const std::string& value) { obj.playerController.groundAcceleration = std::stof(value); }},
+        {"pcAirAcceleration", +[](SceneObject& obj, const std::string& value) { obj.playerController.airAcceleration = std::stof(value); }},
+        {"pcBraking", +[](SceneObject& obj, const std::string& value) { obj.playerController.braking = std::stof(value); }},
+        {"pcMinSurfaceControl", +[](SceneObject& obj, const std::string& value) { obj.playerController.minSurfaceControl = std::stof(value); }},
+        {"pcSlideGravity", +[](SceneObject& obj, const std::string& value) { obj.playerController.slideGravity = std::stof(value); }},
+        {"pcPlatformCarry", +[](SceneObject& obj, const std::string& value) { obj.playerController.platformCarry = std::stof(value); }},
         {"pcHeight", +[](SceneObject& obj, const std::string& value) { obj.playerController.height = std::stof(value); }},
         {"pcRadius", +[](SceneObject& obj, const std::string& value) { obj.playerController.radius = std::stof(value); }},
         {"pcJumpStrength", +[](SceneObject& obj, const std::string& value) { obj.playerController.jumpStrength = std::stof(value); }},
@@ -932,6 +956,10 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"lightInner", +[](SceneObject& obj, const std::string& value) { obj.light.innerAngle = std::stof(value); }},
         {"lightOuter", +[](SceneObject& obj, const std::string& value) { obj.light.outerAngle = std::stof(value); }},
         {"lightSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.light.size); }},
+        {"lightCastShadows", +[](SceneObject& obj, const std::string& value) { obj.light.castShadows = (std::stoi(value) != 0); }},
+        {"lightSoftShadows", +[](SceneObject& obj, const std::string& value) { obj.light.softShadows = (std::stoi(value) != 0); }},
+        {"lightShadowBias", +[](SceneObject& obj, const std::string& value) { obj.light.shadowBias = std::stof(value); }},
+        {"lightShadowSoftness", +[](SceneObject& obj, const std::string& value) { obj.light.shadowSoftness = std::stof(value); }},
         {"lightEnabled", +[](SceneObject& obj, const std::string& value) { obj.light.enabled = (std::stoi(value) != 0); }},
         {"cameraType", +[](SceneObject& obj, const std::string& value) { obj.camera.type = static_cast<SceneCameraType>(std::stoi(value)); }},
         {"cameraFov", +[](SceneObject& obj, const std::string& value) { obj.camera.fov = std::stof(value); }},

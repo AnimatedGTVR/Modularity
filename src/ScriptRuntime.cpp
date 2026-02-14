@@ -46,6 +46,24 @@ std::string trimString(const std::string& input) {
 bool isUIObject(const SceneObject* obj) {
     return obj && HasUIComponent(*obj);
 }
+
+glm::vec2 moveTowardsVec2(const glm::vec2& current, const glm::vec2& target, float maxDelta) {
+    if (maxDelta <= 0.0f) return current;
+    glm::vec2 delta = target - current;
+    float len = glm::length(delta);
+    if (len <= maxDelta || len <= 1e-5f) {
+        return target;
+    }
+    return current + (delta / len) * maxDelta;
+}
+
+glm::vec3 sanitizePlanar(const glm::vec3& value) {
+    glm::vec3 out(value.x, 0.0f, value.z);
+    if (!std::isfinite(out.x) || !std::isfinite(out.z)) {
+        return glm::vec3(0.0f);
+    }
+    return out;
+}
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -231,15 +249,25 @@ bool ScriptContext::IsJumpDown() const {
 }
 
 bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
-                                  glm::vec3* outHitPos, bool* outHitGround) const {
+                                  glm::vec3* outHitPos, bool* outHitGround,
+                                  glm::vec3* outHitNormal, int* outHitActorId,
+                                  glm::vec3* outHitActorVelocity,
+                                  float* outHitStaticFriction,
+                                  float* outHitDynamicFriction) const {
     if (!object) return false;
     glm::vec3 hitPos(0.0f);
     glm::vec3 hitNormal(0.0f, 1.0f, 0.0f);
     float hitDist = 0.0f;
+    int hitActorId = -1;
+    glm::vec3 hitActorVelocity(0.0f);
+    float hitStaticFriction = 0.9f;
+    float hitDynamicFriction = 0.9f;
     float probeDist = capsuleHalf + probeExtra;
     glm::vec3 rayStart = object->position + glm::vec3(0.0f, 0.1f, 0.0f);
-    bool hitGround = RaycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
-                                    &hitPos, &hitNormal, &hitDist);
+    bool hitGround = RaycastClosestDetailed(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
+                                            &hitPos, &hitNormal, &hitDist,
+                                            &hitActorId, &hitActorVelocity,
+                                            &hitStaticFriction, &hitDynamicFriction);
     bool grounded = hitGround && hitNormal.y > 0.25f &&
                     hitDist <= capsuleHalf + groundSnap &&
                     verticalVelocity <= 0.35f;
@@ -248,6 +276,11 @@ bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float gro
     }
     if (outHitPos) *outHitPos = hitPos;
     if (outHitGround) *outHitGround = hitGround;
+    if (outHitNormal) *outHitNormal = hitNormal;
+    if (outHitActorId) *outHitActorId = hitActorId;
+    if (outHitActorVelocity) *outHitActorVelocity = hitActorVelocity;
+    if (outHitStaticFriction) *outHitStaticFriction = hitStaticFriction;
+    if (outHitDynamicFriction) *outHitDynamicFriction = hitDynamicFriction;
     return grounded;
 }
 
@@ -263,6 +296,8 @@ void ScriptContext::BindStandaloneMovementSettings(StandaloneMovementSettings& s
     AutoSetting("lookTuning", settings.lookTuning);
     AutoSetting("capsuleTuning", settings.capsuleTuning);
     AutoSetting("gravityTuning", settings.gravityTuning);
+    AutoSetting("locomotionTuning", settings.locomotionTuning);
+    AutoSetting("surfaceTuning", settings.surfaceTuning);
     AutoSetting("enableMouseLook", settings.enableMouseLook);
     AutoSetting("requireMouseButton", settings.requireMouseButton);
     AutoSetting("enforceCollider", settings.enforceCollider);
@@ -277,6 +312,8 @@ void ScriptContext::DrawStandaloneMovementInspector(StandaloneMovementSettings& 
     ImGui::DragFloat2("Look Sens/Clamp", &settings.lookTuning.x, 0.01f, 0.0f, 500.0f, "%.2f");
     ImGui::DragFloat3("Height/Radius/Snap", &settings.capsuleTuning.x, 0.02f, 0.0f, 5.0f, "%.2f");
     ImGui::DragFloat3("Gravity/Probe/MaxFall", &settings.gravityTuning.x, 0.05f, -50.0f, 50.0f, "%.2f");
+    ImGui::DragFloat3("Ground/Air/Brake", &settings.locomotionTuning.x, 0.05f, 0.0f, 200.0f, "%.2f");
+    ImGui::DragFloat3("Grip/Slide/Carry", &settings.surfaceTuning.x, 0.02f, 0.0f, 200.0f, "%.2f");
     ImGui::Checkbox("Enable Mouse Look", &settings.enableMouseLook);
     ImGui::Checkbox("Hold RMB to Look", &settings.requireMouseButton);
     ImGui::Checkbox("Force Collider", &settings.enforceCollider);
@@ -304,14 +341,28 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
     const float gravity = settings.gravityTuning.x;
     const float probeExtra = settings.gravityTuning.y;
     const float maxFall = glm::max(1.0f, settings.gravityTuning.z);
+    const float groundAccel = glm::max(0.0f, settings.locomotionTuning.x);
+    const float airAccel = glm::max(0.0f, settings.locomotionTuning.y);
+    const float braking = glm::max(0.0f, settings.locomotionTuning.z);
+    const float minSurfaceControl = std::clamp(settings.surfaceTuning.x, 0.0f, 1.0f);
+    const float slideGravity = glm::max(0.0f, settings.surfaceTuning.y);
+    const float platformCarry = std::clamp(settings.surfaceTuning.z, 0.0f, 3.0f);
 
     if (settings.enableMouseLook) {
         ApplyMouseLook(state.pitch, state.yaw, lookSensitivity, maxMouseDelta, deltaTime, settings.requireMouseButton);
     }
 
     glm::vec3 move = GetMoveInputWASD(state.pitch, state.yaw);
+    glm::vec3 planarForward(0.0f);
+    glm::vec3 planarRight(0.0f);
+    GetPlanarYawPitchVectors(state.pitch, state.yaw, planarForward, planarRight);
+    glm::vec2 localInput(glm::dot(move, planarRight), glm::dot(move, planarForward));
+    if (glm::length(localInput) > 1.0f) {
+        localInput = glm::normalize(localInput);
+    }
     float targetSpeed = IsSprintDown() ? runSpeed : walkSpeed;
-    glm::vec3 velocity = move * targetSpeed;
+    glm::vec2 targetLocalVelocity = localInput * targetSpeed;
+    glm::vec3 velocity(0.0f);
     float capsuleHalf = std::max(0.1f, height * 0.5f);
 
     glm::vec3 physVel;
@@ -319,19 +370,99 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
     if (havePhysVel) state.verticalVelocity = physVel.y;
 
     glm::vec3 hitPos(0.0f);
+    glm::vec3 hitNormal(0.0f, 1.0f, 0.0f);
+    glm::vec3 hitActorVelocity(0.0f);
+    int hitActorId = -1;
+    float hitStaticFriction = 0.9f;
+    float hitDynamicFriction = 0.9f;
     bool hitGround = false;
-    bool grounded = ResolveGround(capsuleHalf, probeExtra, groundSnap, state.verticalVelocity, &hitPos, &hitGround);
+    bool grounded = ResolveGround(capsuleHalf, probeExtra, groundSnap, state.verticalVelocity,
+                                  &hitPos, &hitGround, &hitNormal, &hitActorId,
+                                  &hitActorVelocity, &hitStaticFriction, &hitDynamicFriction);
+
+    (void)hitActorId;
+    (void)hitStaticFriction;
+    float dynamicFriction = std::clamp(hitDynamicFriction, 0.0f, 2.0f);
+    float grip = grounded ? std::clamp(dynamicFriction, minSurfaceControl, 1.0f) : 1.0f;
+
+    float accelRate = grounded ? groundAccel * grip : airAccel;
+    state.localVelocity = (accelRate > 0.0f)
+        ? moveTowardsVec2(state.localVelocity, targetLocalVelocity, accelRate * deltaTime)
+        : targetLocalVelocity;
+
+    if (glm::dot(localInput, localInput) < 1e-4f && braking > 0.0f) {
+        float brakeScale = grounded ? (0.5f + 0.5f * grip) : 0.15f;
+        float damp = std::max(0.0f, 1.0f - braking * brakeScale * deltaTime);
+        state.localVelocity *= damp;
+    }
+
+    float localSpeed = glm::length(state.localVelocity);
+    if (localSpeed > targetSpeed && targetSpeed > 0.0f) {
+        state.localVelocity *= (targetSpeed / localSpeed);
+    }
+
+    glm::vec3 platformVelocity = sanitizePlanar(hitActorVelocity);
+    if (grounded && hitGround) {
+        if (state.hasGroundSample && deltaTime > 1e-5f) {
+            glm::vec3 pointVelocity = sanitizePlanar((hitPos - state.lastGroundHitPos) / deltaTime);
+            if (glm::dot(pointVelocity, pointVelocity) < (120.0f * 120.0f)) {
+                if (glm::dot(platformVelocity, platformVelocity) < 1e-4f) {
+                    platformVelocity = pointVelocity;
+                } else {
+                    platformVelocity = glm::mix(platformVelocity, pointVelocity, 0.35f);
+                }
+            }
+        }
+        state.lastGroundHitPos = hitPos;
+        state.hasGroundSample = true;
+    } else {
+        state.hasGroundSample = false;
+    }
+
+    if (grounded && hitGround) {
+        glm::vec3 n = glm::normalize(hitNormal);
+        if (std::isfinite(n.x) && std::isfinite(n.y) && std::isfinite(n.z)) {
+            glm::vec3 gravityDir(0.0f, -1.0f, 0.0f);
+            glm::vec3 downSlope = gravityDir - n * glm::dot(gravityDir, n);
+            float downLen = glm::length(downSlope);
+            if (downLen > 1e-4f) {
+                downSlope /= downLen;
+                float slopeFactor = std::clamp((1.0f - n.y) * 3.0f, 0.0f, 1.5f);
+                float slip = std::clamp(1.0f - dynamicFriction * 0.85f, 0.0f, 1.0f);
+                float slideAccel = slideGravity * slopeFactor * (0.35f + slip);
+                state.slideVelocity += downSlope * slideAccel * deltaTime;
+            }
+        }
+        float slideDamp = std::clamp((dynamicFriction + 0.15f) * 6.0f, 0.5f, 12.0f);
+        state.slideVelocity *= std::max(0.0f, 1.0f - slideDamp * deltaTime);
+    } else {
+        state.slideVelocity *= std::max(0.0f, 1.0f - 4.0f * deltaTime);
+    }
+    state.slideVelocity = sanitizePlanar(state.slideVelocity);
+
     if (grounded) {
         state.verticalVelocity = 0.0f;
         if (!havePhysVel) {
             object->position.y = hitGround ? std::max(object->position.y, hitPos.y + capsuleHalf) : capsuleHalf;
         }
-        if (IsJumpDown()) state.verticalVelocity = jumpStrength;
+        if (IsJumpDown()) {
+            state.verticalVelocity = jumpStrength;
+            state.hasGroundSample = false;
+        }
     } else {
         state.verticalVelocity += gravity * deltaTime;
     }
 
+    platformVelocity = grounded ? platformVelocity * platformCarry : glm::vec3(0.0f);
+    glm::vec3 planarVelocity =
+        planarRight * state.localVelocity.x +
+        planarForward * state.localVelocity.y +
+        platformVelocity +
+        state.slideVelocity;
+
     state.verticalVelocity = std::clamp(state.verticalVelocity, -maxFall, maxFall);
+    velocity.x = planarVelocity.x;
+    velocity.z = planarVelocity.z;
     velocity.y = state.verticalVelocity;
     glm::vec3 rotation(state.pitch, state.yaw, 0.0f);
     SetRotation(rotation);
@@ -340,6 +471,14 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
 
     if (debug) {
         debug->velocity = velocity;
+        debug->localVelocity = state.localVelocity;
+        debug->platformVelocity = platformVelocity;
+        debug->surfaceFriction = dynamicFriction;
+        float slopeDegrees = 0.0f;
+        if (hitGround) {
+            slopeDegrees = glm::degrees(std::acos(std::clamp(hitNormal.y, -1.0f, 1.0f)));
+        }
+        debug->slopeDegrees = slopeDegrees;
         debug->grounded = grounded;
     }
 }
@@ -580,9 +719,18 @@ bool ScriptContext::SetRigidbodyYaw(float yawDegrees) {
 
 bool ScriptContext::RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                                    glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance) const {
+    return RaycastClosestDetailed(origin, dir, distance, hitPos, hitNormal, hitDistance);
+}
+
+bool ScriptContext::RaycastClosestDetailed(const glm::vec3& origin, const glm::vec3& dir, float distance,
+                                           glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance,
+                                           int* hitObjectId, glm::vec3* hitObjectVelocity,
+                                           float* hitStaticFriction, float* hitDynamicFriction) const {
     if (!engine) return false;
     int ignoreId = object ? object->id : -1;
-    return engine->raycastClosestFromScript(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance);
+    return engine->raycastClosestFromScript(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance,
+                                            hitObjectId, hitObjectVelocity,
+                                            hitStaticFriction, hitDynamicFriction);
 }
 
 bool ScriptContext::SetRigidbodyRotation(const glm::vec3& rotDeg) {

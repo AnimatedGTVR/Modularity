@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <cstring>
+#include <ctime>
 #include "ThirdParty/glm/gtc/constants.hpp"
 #include "ThirdParty/glfw/deps/stb_image_write.h"
 
@@ -1212,6 +1213,7 @@ void Engine::run() {
         renderViewport();
         if (showGameViewport) renderGameViewportWindow();
         renderDialogs();
+        renderLatestErrorBar();
     } else {
         renderPlayerViewport();
     }
@@ -2128,6 +2130,31 @@ void Engine::updatePlayerController(float delta) {
         return;
     }
 
+    struct ControllerRuntimeState {
+        glm::vec2 localVelocity = glm::vec2(0.0f);
+        glm::vec3 slideVelocity = glm::vec3(0.0f);
+        glm::vec3 lastGroundHitPos = glm::vec3(0.0f);
+        bool hasGroundSample = false;
+    };
+    static std::unordered_map<int, ControllerRuntimeState> runtimeStates;
+    ControllerRuntimeState& runtime = runtimeStates[player->id];
+    auto moveTowardsVec2 = [](const glm::vec2& current, const glm::vec2& target, float maxDelta) {
+        if (maxDelta <= 0.0f) return current;
+        glm::vec2 deltaVec = target - current;
+        float len = glm::length(deltaVec);
+        if (len <= maxDelta || len <= 1e-5f) {
+            return target;
+        }
+        return current + (deltaVec / len) * maxDelta;
+    };
+    auto sanitizePlanar = [](const glm::vec3& value) {
+        glm::vec3 out(value.x, 0.0f, value.z);
+        if (!std::isfinite(out.x) || !std::isfinite(out.z)) {
+            return glm::vec3(0.0f);
+        }
+        return out;
+    };
+
     auto& pc = player->playerController;
     // Maintain capsule sizing and collider defaults
     if (pc.pitch == 0.0f && pc.yaw == 0.0f && (glm::length(player->rotation) > 0.01f)) {
@@ -2174,8 +2201,14 @@ void Engine::updatePlayerController(float delta) {
     if (key(GLFW_KEY_A)) move -= planarRight;
     if (glm::length(move) > 0.001f) move = glm::normalize(move);
 
-    float targetSpeed = pc.moveSpeed;
-    glm::vec3 velocity(move * targetSpeed);
+    glm::vec2 localInput(glm::dot(move, planarRight), glm::dot(move, planarForward));
+    if (glm::length(localInput) > 1.0f) {
+        localInput = glm::normalize(localInput);
+    }
+    bool sprinting = key(GLFW_KEY_LEFT_SHIFT) || key(GLFW_KEY_RIGHT_SHIFT);
+    float targetSpeed = sprinting ? std::max(pc.moveSpeed, pc.runSpeed) : pc.moveSpeed;
+    glm::vec2 targetLocalVelocity = localInput * targetSpeed;
+    glm::vec3 velocity(0.0f);
 
     // Simple gravity and jump
     float capsuleHalf = std::max(0.1f, pc.height * 0.5f);
@@ -2186,16 +2219,86 @@ void Engine::updatePlayerController(float delta) {
     // Ground check via PhysX scene query so mesh colliders work, not just the plane
     glm::vec3 hitPos;
     glm::vec3 hitNormal;
+    glm::vec3 hitActorVelocity(0.0f);
+    int hitActorId = -1;
+    float hitStaticFriction = 0.9f;
+    float hitDynamicFriction = 0.9f;
     float hitDist = 0.0f;
     float probeDist = capsuleHalf + 0.4f;
     glm::vec3 rayStart = player->position + glm::vec3(0.0f, 0.1f, 0.0f);
     bool hitGround = physics.raycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
-                                            player->id, &hitPos, &hitNormal, &hitDist);
+                                            player->id, &hitPos, &hitNormal, &hitDist,
+                                            &hitActorId, &hitActorVelocity,
+                                            &hitStaticFriction, &hitDynamicFriction);
     bool grounded = hitGround && hitNormal.y > 0.25f && hitDist <= capsuleHalf + 0.2f && pc.verticalVelocity <= 0.35f;
     if (!hitGround) {
         // Fallback to simple height check to avoid regressions if queries fail
         grounded = player->position.y <= capsuleHalf + 0.12f && pc.verticalVelocity <= 0.35f;
     }
+
+    (void)hitActorId;
+    (void)hitStaticFriction;
+    const float dynamicFriction = std::clamp(hitDynamicFriction, 0.0f, 2.0f);
+    const float minSurfaceControl = std::clamp(pc.minSurfaceControl, 0.0f, 1.0f);
+    const float grip = grounded ? std::clamp(dynamicFriction, minSurfaceControl, 1.0f) : 1.0f;
+    const float groundAccel = std::max(0.0f, pc.groundAcceleration);
+    const float airAccel = std::max(0.0f, pc.airAcceleration);
+    const float braking = std::max(0.0f, pc.braking);
+    const float slideGravity = std::max(0.0f, pc.slideGravity);
+    const float platformCarry = std::clamp(pc.platformCarry, 0.0f, 3.0f);
+
+    float accelRate = grounded ? groundAccel * grip : airAccel;
+    runtime.localVelocity = (accelRate > 0.0f)
+        ? moveTowardsVec2(runtime.localVelocity, targetLocalVelocity, accelRate * delta)
+        : targetLocalVelocity;
+    if (glm::dot(localInput, localInput) < 1e-4f && braking > 0.0f) {
+        float brakeScale = grounded ? (0.5f + 0.5f * grip) : 0.15f;
+        float damp = std::max(0.0f, 1.0f - braking * brakeScale * delta);
+        runtime.localVelocity *= damp;
+    }
+    float localSpeed = glm::length(runtime.localVelocity);
+    if (localSpeed > targetSpeed && targetSpeed > 0.0f) {
+        runtime.localVelocity *= (targetSpeed / localSpeed);
+    }
+
+    glm::vec3 platformVelocity = sanitizePlanar(hitActorVelocity);
+    if (grounded && hitGround) {
+        if (runtime.hasGroundSample && delta > 1e-5f) {
+            glm::vec3 pointVelocity = sanitizePlanar((hitPos - runtime.lastGroundHitPos) / delta);
+            if (glm::dot(pointVelocity, pointVelocity) < (120.0f * 120.0f)) {
+                if (glm::dot(platformVelocity, platformVelocity) < 1e-4f) {
+                    platformVelocity = pointVelocity;
+                } else {
+                    platformVelocity = glm::mix(platformVelocity, pointVelocity, 0.35f);
+                }
+            }
+        }
+        runtime.lastGroundHitPos = hitPos;
+        runtime.hasGroundSample = true;
+    } else {
+        runtime.hasGroundSample = false;
+    }
+
+    if (grounded && hitGround) {
+        glm::vec3 n = glm::normalize(hitNormal);
+        if (std::isfinite(n.x) && std::isfinite(n.y) && std::isfinite(n.z)) {
+            glm::vec3 gravityDir(0.0f, -1.0f, 0.0f);
+            glm::vec3 downSlope = gravityDir - n * glm::dot(gravityDir, n);
+            float downLen = glm::length(downSlope);
+            if (downLen > 1e-4f) {
+                downSlope /= downLen;
+                float slopeFactor = std::clamp((1.0f - n.y) * 3.0f, 0.0f, 1.5f);
+                float slip = std::clamp(1.0f - dynamicFriction * 0.85f, 0.0f, 1.0f);
+                float slideAccel = slideGravity * slopeFactor * (0.35f + slip);
+                runtime.slideVelocity += downSlope * slideAccel * delta;
+            }
+        }
+        float slideDamp = std::clamp((dynamicFriction + 0.15f) * 6.0f, 0.5f, 12.0f);
+        runtime.slideVelocity *= std::max(0.0f, 1.0f - slideDamp * delta);
+    } else {
+        runtime.slideVelocity *= std::max(0.0f, 1.0f - 4.0f * delta);
+    }
+    runtime.slideVelocity = sanitizePlanar(runtime.slideVelocity);
 
     if (grounded) {
         pc.verticalVelocity = 0.0f;
@@ -2208,10 +2311,21 @@ void Engine::updatePlayerController(float delta) {
         }
         if (key(GLFW_KEY_SPACE)) {
             pc.verticalVelocity = pc.jumpStrength;
+            runtime.hasGroundSample = false;
         }
     } else {
         pc.verticalVelocity += -9.81f * delta;
     }
+
+    platformVelocity = grounded ? platformVelocity * platformCarry : glm::vec3(0.0f);
+    glm::vec3 planarVelocity =
+        planarRight * runtime.localVelocity.x +
+        planarForward * runtime.localVelocity.y +
+        platformVelocity +
+        runtime.slideVelocity;
+
+    velocity.x = planarVelocity.x;
+    velocity.z = planarVelocity.z;
     velocity.y = pc.verticalVelocity;
     velocity.y = std::clamp(velocity.y, -30.0f, 30.0f);
 
@@ -4171,24 +4285,32 @@ void Engine::setParent(int childId, int parentId) {
 
 #pragma region Console Logging
 void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType type) {
-    std::string prefix;
-    switch (type) {
-        case ConsoleMessageType::Info: prefix = "Info: "; break;
-        case ConsoleMessageType::Warning: prefix = "Warning: "; break;
-        case ConsoleMessageType::Error: prefix = "Error: "; break;
-        case ConsoleMessageType::Success: prefix = "Success: "; break;
-    }
-
     if (type == ConsoleMessageType::Error && audio.isReady()) {
         audio.playPreview("Resources/Sounds/Script Error.mp3", 0.95f, false);
     }
 
     auto now = std::chrono::system_clock::now();
-    auto time = std::chrono::system_clock::to_time_t(now);
-    std::string timeStr = std::ctime(&time);
-    timeStr = timeStr.substr(11, 8);
+    std::time_t clockTime = std::chrono::system_clock::to_time_t(now);
+    char timeStr[16] = "00:00:00";
+    std::tm tmNow{};
+#if defined(_WIN32)
+    localtime_s(&tmNow, &clockTime);
+#else
+    localtime_r(&clockTime, &tmNow);
+#endif
+    std::strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &tmNow);
 
-    consoleLog.push_back("[" + timeStr + "] " + prefix + " " + message);
+    ConsoleEntry entry;
+    entry.timestamp = timeStr;
+    entry.message = message;
+    entry.type = type;
+    consoleLog.push_back(std::move(entry));
+
+    if (type == ConsoleMessageType::Error) {
+        latestErrorMessage = message;
+        latestErrorTimestamp = timeStr;
+    }
+
     if (consoleLog.size() > 1000) {
         consoleLog.erase(consoleLog.begin());
     }
@@ -4422,8 +4544,12 @@ int Engine::getSelectedObjectId() const {
 
 bool Engine::raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& dir, float distance,
                                       int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal,
-                                      float* hitDistance) const {
-    return physics.raycastClosest(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance);
+                                      float* hitDistance, int* hitActorId,
+                                      glm::vec3* hitActorVelocity,
+                                      float* hitStaticFriction,
+                                      float* hitDynamicFriction) const {
+    return physics.raycastClosest(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance,
+                                  hitActorId, hitActorVelocity, hitStaticFriction, hitDynamicFriction);
 }
 
 void Engine::syncLocalTransform(SceneObject& obj) {

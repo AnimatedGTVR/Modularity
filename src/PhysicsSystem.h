@@ -27,7 +27,9 @@ public:
     bool addAngularImpulse(int id, const glm::vec3& impulse);
     bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                         int ignoreId, glm::vec3* hitPos = nullptr,
-                        glm::vec3* hitNormal = nullptr, float* hitDistance = nullptr) const;
+                        glm::vec3* hitNormal = nullptr, float* hitDistance = nullptr,
+                        int* hitActorId = nullptr, glm::vec3* hitActorVelocity = nullptr,
+                        float* hitStaticFriction = nullptr, float* hitDynamicFriction = nullptr) const;
 
     void onPlayStart(const std::vector<SceneObject>& objects);
     void onPlayStop();

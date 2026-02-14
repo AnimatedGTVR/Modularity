@@ -1,6 +1,7 @@
 #include "Rendering.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -607,6 +608,7 @@ Renderer::~Renderer() {
     delete postShader;
     delete brightShader;
     delete blurShader;
+    delete shadowDepthShader;
     if (previewTarget.fbo) glDeleteFramebuffers(1, &previewTarget.fbo);
     if (previewTarget.texture) glDeleteTextures(1, &previewTarget.texture);
     if (previewTarget.rbo) glDeleteRenderbuffers(1, &previewTarget.rbo);
@@ -622,6 +624,11 @@ Renderer::~Renderer() {
     if (bloomTargetB.fbo) glDeleteFramebuffers(1, &bloomTargetB.fbo);
     if (bloomTargetB.texture) glDeleteTextures(1, &bloomTargetB.texture);
     if (bloomTargetB.rbo) glDeleteRenderbuffers(1, &bloomTargetB.rbo);
+    for (auto& entry : shadowCubeMaps) {
+        if (entry.second.fbo) glDeleteFramebuffers(1, &entry.second.fbo);
+        if (entry.second.depthCube) glDeleteTextures(1, &entry.second.depthCube);
+    }
+    shadowCubeMaps.clear();
     for (auto& entry : mirrorTargets) {
         releaseRenderTarget(entry.second);
     }
@@ -707,6 +714,12 @@ void Renderer::initialize() {
     } else {
         blurShader->use();
         blurShader->setInt("image", 0);
+    }
+    shadowDepthShader = new Shader(shadowDepthVertPath.c_str(), shadowDepthFragPath.c_str());
+    if (!shadowDepthShader || shadowDepthShader->ID == 0) {
+        std::cerr << "Shadow depth shader compilation failed; shadows will be disabled.\n";
+        delete shadowDepthShader;
+        shadowDepthShader = nullptr;
     }
     ShaderEntry entry;
     entry.shader.reset(defaultShader);
@@ -1225,6 +1238,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
     struct LightUniform {
         int type = 0; // 0 dir,1 point,2 spot,3 area
+        int sourceId = -1;
         glm::vec3 dir = glm::vec3(0.0f, -1.0f, 0.0f);
         glm::vec3 pos = glm::vec3(0.0f);
         glm::vec3 color = glm::vec3(1.0f);
@@ -1234,6 +1248,12 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         float outer = glm::cos(glm::radians(25.0f));
         glm::vec2 areaSize = glm::vec2(1.0f); // width/height for area lights
         float areaFade = 0.0f; // 0 sharp, 1 fully softened
+        bool castShadows = false;
+        int shadowMode = 0; // 0 off, 1 hard, 2 soft
+        float shadowBias = 0.02f;
+        float shadowSoftness = 0.04f;
+        float shadowFar = 10.0f;
+        int shadowMapIndex = -1;
     };
     auto forwardFromRotation = [](const SceneObject& obj) {
         glm::vec3 f = glm::normalize(glm::vec3(
@@ -1246,6 +1266,31 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             f = glm::vec3(0.0f, -1.0f, 0.0f);
         }
         return f;
+    };
+    auto buildModelMatrix = [](const SceneObject& obj) {
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, obj.position);
+        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, obj.scale);
+        return model;
+    };
+    auto selectMeshForObject = [&](const SceneObject& obj) -> Mesh* {
+        if (obj.renderType == RenderType::Cube) return cubeMesh;
+        if (obj.renderType == RenderType::Sphere) return sphereMesh;
+        if (obj.renderType == RenderType::Capsule) return capsuleMesh;
+        if (obj.renderType == RenderType::Plane) return planeMesh;
+        if (obj.renderType == RenderType::Mirror) return planeMesh;
+        if (obj.renderType == RenderType::Sprite) return planeMesh;
+        if (obj.renderType == RenderType::Torus) return torusMesh;
+        if (obj.renderType == RenderType::OBJMesh && obj.meshId != -1) {
+            return g_objLoader.getMesh(obj.meshId);
+        }
+        if (obj.renderType == RenderType::Model && obj.meshId != -1) {
+            return getModelLoader().getMesh(obj.meshId);
+        }
+        return nullptr;
     };
 
     constexpr size_t kMaxLights = 10;
@@ -1265,6 +1310,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (obj.light.type == LightType::Directional) {
             LightUniform l;
             l.type = 0;
+            l.sourceId = obj.id;
             l.dir = forwardFromRotation(obj);
             l.color = obj.light.color;
             l.intensity = obj.light.intensity;
@@ -1273,13 +1319,19 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         } else if (obj.light.type == LightType::Spot) {
             LightUniform l;
             l.type = 2;
+            l.sourceId = obj.id;
             l.pos = obj.position;
             l.dir = forwardFromRotation(obj);
             l.color = obj.light.color;
             l.intensity = obj.light.intensity;
-            l.range = obj.light.range;
+            l.range = glm::max(obj.light.range, 1.0f);
             l.inner = glm::cos(glm::radians(obj.light.innerAngle));
             l.outer = glm::cos(glm::radians(obj.light.outerAngle));
+            l.castShadows = obj.light.castShadows;
+            l.shadowMode = obj.light.castShadows ? (obj.light.softShadows ? 2 : 1) : 0;
+            l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
+            l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
+            l.shadowFar = l.range;
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -1289,10 +1341,16 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         } else if (obj.light.type == LightType::Point) {
             LightUniform l;
             l.type = 1;
+            l.sourceId = obj.id;
             l.pos = obj.position;
             l.color = obj.light.color;
             l.intensity = obj.light.intensity;
-            l.range = obj.light.range;
+            l.range = glm::max(obj.light.range, 1.0f);
+            l.castShadows = obj.light.castShadows;
+            l.shadowMode = obj.light.castShadows ? (obj.light.softShadows ? 2 : 1) : 0;
+            l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
+            l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
+            l.shadowFar = l.range;
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -1302,6 +1360,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         } else if (obj.light.type == LightType::Area) {
             LightUniform l;
             l.type = 3; // area
+            l.sourceId = obj.id;
             l.pos = obj.position;
             l.dir = forwardFromRotation(obj); // plane normal
             l.color = obj.light.color;
@@ -1310,6 +1369,11 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.range = (obj.light.range > 0.0f) ? obj.light.range : glm::max(sizeHint * 2.0f, 1.0f);
             l.areaSize = obj.light.size;
             l.areaFade = glm::clamp(obj.light.edgeFade, 0.0f, 1.0f);
+            l.castShadows = obj.light.castShadows;
+            l.shadowMode = obj.light.castShadows ? (obj.light.softShadows ? 2 : 1) : 0;
+            l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
+            l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
+            l.shadowFar = glm::max(l.range, 1.0f);
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -1334,6 +1398,147 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     glm::mat4 view = camera.getViewMatrix();
     glm::mat4 proj = glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane);
 
+    std::array<unsigned int, kMaxShadowMaps> shadowTextures = {0, 0, 0, 0};
+    std::unordered_set<int> activeShadowIds;
+    auto releaseShadowCubeMap = [](ShadowCubeMap& map) {
+        if (map.fbo) glDeleteFramebuffers(1, &map.fbo);
+        if (map.depthCube) glDeleteTextures(1, &map.depthCube);
+        map.fbo = 0;
+        map.depthCube = 0;
+        map.resolution = 0;
+    };
+    if (shadowDepthShader && shadowDepthShader->ID != 0) {
+        GLint prevViewport[4] = {0, 0, width, height};
+        GLint prevFbo = 0;
+        GLboolean blendWasEnabled = glIsEnabled(GL_BLEND);
+        GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+        GLboolean cullWasEnabled = glIsEnabled(GL_CULL_FACE);
+        GLboolean polyOffsetWasEnabled = glIsEnabled(GL_POLYGON_OFFSET_FILL);
+        GLint cullModeBefore = GL_BACK;
+        glGetIntegerv(GL_VIEWPORT, prevViewport);
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+        glGetIntegerv(GL_CULL_FACE_MODE, &cullModeBefore);
+
+        if (blendWasEnabled) glDisable(GL_BLEND);
+        if (!depthWasEnabled) glEnable(GL_DEPTH_TEST);
+        if (!polyOffsetWasEnabled) glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(2.0f, 4.0f);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+
+        int shadowSlot = 0;
+        for (auto& light : lights) {
+            light.shadowMapIndex = -1;
+            if (shadowSlot >= kMaxShadowMaps) continue;
+            if (!light.castShadows || light.type == 0 || light.sourceId < 0) continue;
+
+            ShadowCubeMap& shadowMap = shadowCubeMaps[light.sourceId];
+            if (shadowMap.fbo == 0 || shadowMap.depthCube == 0 || shadowMap.resolution != shadowMapResolution) {
+                releaseShadowCubeMap(shadowMap);
+
+                glGenFramebuffers(1, &shadowMap.fbo);
+                glGenTextures(1, &shadowMap.depthCube);
+                shadowMap.resolution = shadowMapResolution;
+
+                glBindTexture(GL_TEXTURE_CUBE_MAP, shadowMap.depthCube);
+                for (int face = 0; face < 6; ++face) {
+                    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_DEPTH_COMPONENT,
+                                 shadowMap.resolution, shadowMap.resolution, 0,
+                                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+                }
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_CUBE_MAP_POSITIVE_X, shadowMap.depthCube, 0);
+                glDrawBuffer(GL_NONE);
+                glReadBuffer(GL_NONE);
+                if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                    std::cerr << "Failed to create shadow cubemap framebuffer for light " << light.sourceId << "\n";
+                    releaseShadowCubeMap(shadowMap);
+                    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+                    continue;
+                }
+                glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+            }
+
+            if (shadowMap.fbo == 0 || shadowMap.depthCube == 0) continue;
+
+            activeShadowIds.insert(light.sourceId);
+            light.shadowFar = glm::max(light.shadowFar, 1.0f);
+            light.shadowMapIndex = shadowSlot;
+            shadowTextures[shadowSlot] = shadowMap.depthCube;
+            ++shadowSlot;
+
+            const float shadowNearPlane = 0.1f;
+            glm::mat4 shadowProj = glm::perspective(glm::radians(90.0f), 1.0f, shadowNearPlane, light.shadowFar);
+            std::array<glm::mat4, 6> shadowViews = {
+                glm::lookAt(light.pos, light.pos + glm::vec3(1.0f, 0.0f, 0.0f),  glm::vec3(0.0f, -1.0f, 0.0f)),
+                glm::lookAt(light.pos, light.pos + glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)),
+                glm::lookAt(light.pos, light.pos + glm::vec3(0.0f, 1.0f, 0.0f),  glm::vec3(0.0f, 0.0f, 1.0f)),
+                glm::lookAt(light.pos, light.pos + glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f)),
+                glm::lookAt(light.pos, light.pos + glm::vec3(0.0f, 0.0f, 1.0f),  glm::vec3(0.0f, -1.0f, 0.0f)),
+                glm::lookAt(light.pos, light.pos + glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, -1.0f, 0.0f))
+            };
+
+            shadowDepthShader->use();
+            shadowDepthShader->setVec3("lightPos", light.pos);
+            shadowDepthShader->setFloat("farPlane", light.shadowFar);
+
+            glViewport(0, 0, shadowMap.resolution, shadowMap.resolution);
+            glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
+
+            for (int face = 0; face < 6; ++face) {
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                       GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, shadowMap.depthCube, 0);
+                glDrawBuffer(GL_NONE);
+                glReadBuffer(GL_NONE);
+                glClear(GL_DEPTH_BUFFER_BIT);
+                shadowDepthShader->setMat4("lightSpaceMatrix", shadowProj * shadowViews[face]);
+
+                for (const auto& obj : sceneObjects) {
+                    if (!obj.enabled || !HasRendererComponent(obj)) continue;
+                    if (obj.renderType == RenderType::Mirror) continue;
+                    if (obj.renderType == RenderType::Sprite) continue;
+                    if (obj.id == light.sourceId) continue;
+                    bool isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
+                    if (isUiCanvas3D) continue;
+                    if (obj.hasSkeletalAnimation && obj.skeletal.enabled) continue;
+
+                    Mesh* shadowMesh = selectMeshForObject(obj);
+                    if (!shadowMesh) continue;
+
+                    shadowDepthShader->setMat4("model", buildModelMatrix(obj));
+                    shadowMesh->draw();
+                }
+            }
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+        glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+        if (blendWasEnabled) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        if (!depthWasEnabled) glDisable(GL_DEPTH_TEST); else glEnable(GL_DEPTH_TEST);
+        if (!polyOffsetWasEnabled) glDisable(GL_POLYGON_OFFSET_FILL);
+        if (!cullWasEnabled) glDisable(GL_CULL_FACE);
+        else {
+            glEnable(GL_CULL_FACE);
+            glCullFace(cullModeBefore);
+        }
+    }
+
+    for (auto it = shadowCubeMaps.begin(); it != shadowCubeMaps.end(); ) {
+        if (activeShadowIds.find(it->first) == activeShadowIds.end()) {
+            releaseShadowCubeMap(it->second);
+            it = shadowCubeMaps.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
     GLint prevCullMode = GL_BACK;
     glGetIntegerv(GL_CULL_FACE_MODE, &prevCullMode);
@@ -1347,12 +1552,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
         if (!HasRendererComponent(obj)) continue;
 
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, obj.position);
-        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, obj.scale);
+        glm::mat4 model = buildModelMatrix(obj);
 
         std::string vertPath = obj.vertexShaderPath;
         std::string fragPath = obj.fragmentShaderPath;
@@ -1377,10 +1577,20 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         bool isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
         shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || isUiCanvas3D);
         shader->setVec3("ambientColor", ambientColor);
-        shader->setVec3("ambientColor", ambientColor);
+        shader->setInt("texture1", 0);
+        shader->setInt("overlayTex", 1);
+        shader->setInt("normalMap", 2);
+        shader->setInt("shadowCube0", 3);
+        shader->setInt("shadowCube1", 4);
+        shader->setInt("shadowCube2", 5);
+        shader->setInt("shadowCube3", 6);
+        for (int slot = 0; slot < kMaxShadowMaps; ++slot) {
+            glActiveTexture(GL_TEXTURE3 + slot);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, shadowTextures[slot]);
+        }
 
         shader->setInt("lightCount", static_cast<int>(lights.size()));
-        for (size_t i = 0; i < lights.size() && i < 10; ++i) {
+        for (size_t i = 0; i < lights.size() && i < kMaxLights; ++i) {
             const auto& l = lights[i];
             std::string idx = "[" + std::to_string(i) + "]";
             shader->setInt("lightTypeArr" + idx, l.type);
@@ -1388,12 +1598,17 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setVec3("lightPosArr" + idx, l.pos);
             shader->setVec3("lightColorArr" + idx, l.color);
             shader->setFloat("lightIntensityArr" + idx, l.intensity);
-        shader->setFloat("lightRangeArr" + idx, l.range);
-        shader->setFloat("lightInnerCosArr" + idx, l.inner);
-        shader->setFloat("lightOuterCosArr" + idx, l.outer);
-        shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
+            shader->setFloat("lightRangeArr" + idx, l.range);
+            shader->setFloat("lightInnerCosArr" + idx, l.inner);
+            shader->setFloat("lightOuterCosArr" + idx, l.outer);
+            shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
             shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
-    }
+            shader->setInt("lightShadowMapArr" + idx, l.shadowMapIndex);
+            shader->setInt("lightShadowModeArr" + idx, (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
+            shader->setFloat("lightShadowBiasArr" + idx, l.shadowBias);
+            shader->setFloat("lightShadowSoftnessArr" + idx, l.shadowSoftness);
+            shader->setFloat("lightShadowFarArr" + idx, l.shadowFar);
+        }
 
         shader->setMat4("model", model);
         shader->setVec3("materialColor", obj.material.color);
@@ -1462,19 +1677,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
         shader->setBool("hasNormalMap", normalUsed);
 
-        Mesh* meshToDraw = nullptr;
-        if (obj.renderType == RenderType::Cube) meshToDraw = cubeMesh;
-        else if (obj.renderType == RenderType::Sphere) meshToDraw = sphereMesh;
-        else if (obj.renderType == RenderType::Capsule) meshToDraw = capsuleMesh;
-        else if (obj.renderType == RenderType::Plane) meshToDraw = planeMesh;
-        else if (obj.renderType == RenderType::Mirror) meshToDraw = planeMesh;
-        else if (obj.renderType == RenderType::Sprite) meshToDraw = planeMesh;
-        else if (obj.renderType == RenderType::Torus) meshToDraw = torusMesh;
-        else if (obj.renderType == RenderType::OBJMesh && obj.meshId != -1) {
-            meshToDraw = g_objLoader.getMesh(obj.meshId);
-        } else if (obj.renderType == RenderType::Model && obj.meshId != -1) {
-            meshToDraw = getModelLoader().getMesh(obj.meshId);
-        }
+        Mesh* meshToDraw = selectMeshForObject(obj);
 
         if (obj.renderType == RenderType::Model && obj.meshId != -1 &&
             obj.hasSkeletalAnimation && obj.skeletal.enabled && !wantsGpuSkinning) {

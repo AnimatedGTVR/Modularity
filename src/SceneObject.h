@@ -165,6 +165,10 @@ struct LightComponent {
     float outerAngle = 25.0f;
     // Area (rect) size in world units
     glm::vec2 size = glm::vec2(1.0f, 1.0f);
+    bool castShadows = false;
+    bool softShadows = true;
+    float shadowBias = 0.02f;
+    float shadowSoftness = 0.04f;
     bool enabled = true;
 };
 
@@ -258,12 +262,22 @@ struct ColliderComponent {
     ColliderType type = ColliderType::Box;
     glm::vec3 boxSize = glm::vec3(1.0f);
     bool convex = true; // For mesh colliders: true = convex hull, false = triangle mesh (static only)
+    float staticFriction = 0.9f;
+    float dynamicFriction = 0.8f;
+    float restitution = 0.0f;
 };
 
 struct PlayerControllerComponent {
     bool enabled = true;
     float moveSpeed = 6.0f;
+    float runSpeed = 9.0f;
     float lookSensitivity = 0.12f;
+    float groundAcceleration = 24.0f;
+    float airAcceleration = 8.0f;
+    float braking = 16.0f;
+    float minSurfaceControl = 0.2f;
+    float slideGravity = 40.0f;
+    float platformCarry = 1.0f;
     float height = 1.8f;
     float radius = 0.4f;
     float jumpStrength = 6.5f;
