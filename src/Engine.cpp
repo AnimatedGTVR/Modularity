@@ -1222,6 +1222,7 @@ void Engine::run() {
             std::cerr << "[DEBUG] First frame: UI rendering complete, finalizing frame..." << std::endl;
         }
 
+        autosaveWorkspaceLayout();
         renderUiCanvas3DTargets();
 
         int displayW, displayH;
@@ -1275,6 +1276,10 @@ void Engine::run() {
 }
 
 void Engine::shutdown() {
+    if (ImGui::GetCurrentContext()) {
+        saveWorkspaceLayout(currentWorkspace);
+    }
+
     if (projectManager.currentProject.isLoaded && projectManager.currentProject.hasUnsavedChanges) {
         saveCurrentScene();
     }
@@ -4972,9 +4977,22 @@ void Engine::renderScriptEditorWindows() {
     ctx.object = getSelectedObject();
     ctx.script = nullptr;
 
+    ImGuiID scriptDockId = 0;
+    const char* dockAnchors[] = { "Scripting", "Inspector", "Project", "Viewport" };
+    for (const char* anchorName : dockAnchors) {
+        ImGuiWindow* anchorWindow = ImGui::FindWindowByName(anchorName);
+        if (!anchorWindow || anchorWindow->DockId == 0) continue;
+        if (ImGui::DockBuilderGetNode(anchorWindow->DockId) == nullptr) continue;
+        scriptDockId = anchorWindow->DockId;
+        break;
+    }
+
     for (auto& entry : scriptEditorWindows) {
         if (!entry.open) continue;
 
+        if (scriptDockId != 0) {
+            ImGui::SetNextWindowDockID(scriptDockId, ImGuiCond_FirstUseEver);
+        }
         std::string title = entry.label + "###" + entry.binaryPath.string();
         if (ImGui::Begin(title.c_str(), &entry.open)) {
             scriptRuntime.callEditorWindow(entry.binaryPath, ctx);
@@ -5150,6 +5168,38 @@ fs::path Engine::getWorkspaceLayoutPath(WorkspaceMode mode) const {
         filename = "scripter.ini";
     }
     return settingsDir / filename;
+}
+
+void Engine::saveWorkspaceLayout(WorkspaceMode mode) const {
+    if (!ImGui::GetCurrentContext()) {
+        return;
+    }
+
+    fs::path layoutPath = getWorkspaceLayoutPath(mode);
+    if (layoutPath.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    fs::create_directories(layoutPath.parent_path(), ec);
+    ImGui::SaveIniSettingsToDisk(layoutPath.string().c_str());
+}
+
+void Engine::autosaveWorkspaceLayout() {
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    if (!context || showLauncher || playerMode) {
+        return;
+    }
+
+    if (context->SettingsDirtyTimer > 0.0f) {
+        workspaceLayoutSavePending = true;
+        return;
+    }
+
+    if (workspaceLayoutSavePending) {
+        saveWorkspaceLayout(currentWorkspace);
+        workspaceLayoutSavePending = false;
+    }
 }
 
 void Engine::loadEditorUserSettings() {
@@ -5359,7 +5409,7 @@ void Engine::exportEditorThemeLayout() {
         return;
     }
     saveEditorUserSettings();
-    fs::path layoutPath = getEditorLayoutPath();
+    fs::path layoutPath = getWorkspaceLayoutPath(currentWorkspace);
     if (layoutPath.empty()) {
         addConsoleMessage("Failed to resolve layout export path", ConsoleMessageType::Error);
         return;

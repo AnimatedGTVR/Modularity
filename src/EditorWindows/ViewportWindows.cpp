@@ -2048,6 +2048,9 @@ void Engine::renderMainMenuBar() {
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
             if (ImGui::Button(label)) {
+                if (currentWorkspace != mode) {
+                    saveWorkspaceLayout(currentWorkspace);
+                }
                 applyWorkspacePreset(mode, true);
                 saveEditorUserSettings();
             }
@@ -2108,6 +2111,7 @@ void Engine::renderMainMenuBar() {
 
 void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
     currentWorkspace = mode;
+    workspaceLayoutSavePending = false;
     switch (mode) {
         case WorkspaceMode::Default:
             showHierarchy = true;

@@ -148,6 +148,7 @@ private:
     WorkspaceMode currentWorkspace = WorkspaceMode::Default;
     bool workspaceLayoutDirty = false;
     bool pendingWorkspaceReload = false;
+    bool workspaceLayoutSavePending = false;
     fs::path pendingWorkspaceIniPath;
     bool editorSettingsDirty = false;
     bool showEnvironmentWindow = true;
@@ -445,6 +446,8 @@ private:
     bool applyUIStylePresetByName(const std::string& name);
     void applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout);
     void buildWorkspaceLayout(WorkspaceMode mode);
+    void autosaveWorkspaceLayout();
+    void saveWorkspaceLayout(WorkspaceMode mode) const;
     fs::path getEditorUserSettingsPath() const;
     fs::path getEditorLayoutPath() const;
     fs::path getWorkspaceLayoutPath(WorkspaceMode mode) const;

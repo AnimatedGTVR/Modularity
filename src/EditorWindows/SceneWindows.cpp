@@ -4388,6 +4388,7 @@ void Engine::renderConsolePanel() {
 
     static bool consolePopoutOpen = false;
     static bool autoScroll = true;
+    static float consolePopoutAnim = 0.0f;
 
     const float margin = 12.0f;
     const ImVec2 tabSize(96.0f, 30.0f);
@@ -4409,8 +4410,8 @@ void Engine::renderConsolePanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 7.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
     if (ImGui::Begin("ConsoleTab##ViewportMini", nullptr, tabFlags)) {
-        const bool wasOpen = consolePopoutOpen;
-        if (wasOpen) {
+        const bool tabActive = consolePopoutOpen || consolePopoutAnim > 0.02f;
+        if (tabActive) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
@@ -4418,14 +4419,31 @@ void Engine::renderConsolePanel() {
         if (ImGui::Button("Console", ImGui::GetContentRegionAvail())) {
             consolePopoutOpen = !consolePopoutOpen;
         }
-        if (wasOpen) {
+        if (tabActive) {
             ImGui::PopStyleColor(3);
         }
     }
     ImGui::End();
     ImGui::PopStyleVar(3);
 
-    if (!consolePopoutOpen) {
+    const float targetAnim = consolePopoutOpen ? 1.0f : 0.0f;
+    const float blend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
+    consolePopoutAnim += (targetAnim - consolePopoutAnim) * blend;
+    if (std::fabs(consolePopoutAnim - targetAnim) < 0.001f) {
+        consolePopoutAnim = targetAnim;
+    }
+    const float openAmount = std::clamp(consolePopoutAnim, 0.0f, 1.0f);
+    auto withScaledAlpha = [&](ImVec4 color) -> ImVec4 {
+        color.w = std::clamp(color.w * openAmount, 0.0f, 1.0f);
+        return color;
+    };
+    auto withScaledAlphaU32 = [&](ImU32 color) -> ImU32 {
+        ImVec4 c = ImGui::ColorConvertU32ToFloat4(color);
+        c.w = std::clamp(c.w * openAmount, 0.0f, 1.0f);
+        return ImGui::ColorConvertFloat4ToU32(c);
+    };
+
+    if (!consolePopoutOpen && openAmount <= 0.001f) {
         return;
     }
 
@@ -4436,22 +4454,39 @@ void Engine::renderConsolePanel() {
     }
 
     ImVec2 miniPos(anchorMax.x - miniSize.x - margin, tabPos.y - miniSize.y - 8.0f);
+    miniPos.y += (1.0f - openAmount) * 22.0f;
     miniPos.y = ImMax(anchorMin.y + margin, miniPos.y);
 
     bool keepOpen = consolePopoutOpen;
+    bool* openPtr = consolePopoutOpen ? &keepOpen : nullptr;
     ImGuiWindowFlags miniFlags = ImGuiWindowFlags_NoDocking |
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_NoResize |
                                  ImGuiWindowFlags_NoCollapse;
+    if (openAmount < 0.98f) {
+        miniFlags |= ImGuiWindowFlags_NoInputs;
+    }
     ImGui::SetNextWindowPos(miniPos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(miniSize, ImGuiCond_Always);
     ImGui::SetNextWindowViewport(mainViewport->ID);
-    if (!ImGui::Begin("Console##MiniLogPanel", &keepOpen, miniFlags)) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::SetNextWindowBgAlpha(style.Colors[ImGuiCol_WindowBg].w * openAmount);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, openAmount);
+    ImGui::PushStyleColor(ImGuiCol_Border, withScaledAlpha(style.Colors[ImGuiCol_Border]));
+    ImGui::PushStyleColor(ImGuiCol_BorderShadow, withScaledAlpha(style.Colors[ImGuiCol_BorderShadow]));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, withScaledAlpha(style.Colors[ImGuiCol_ChildBg]));
+    if (!ImGui::Begin("Console##MiniLogPanel", openPtr, miniFlags)) {
         ImGui::End();
-        consolePopoutOpen = keepOpen;
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        if (openPtr) {
+            consolePopoutOpen = keepOpen;
+        }
         return;
     }
-    consolePopoutOpen = keepOpen;
+    if (openPtr) {
+        consolePopoutOpen = keepOpen;
+    }
 
     bool settingsChanged = false;
     if (ImGui::Button("Clear")) {
@@ -4485,25 +4520,25 @@ void Engine::renderConsolePanel() {
         }
     };
 
-    auto typeColor = [](ConsoleMessageType type) -> ImVec4 {
+    auto typeColor = [&](ConsoleMessageType type) -> ImVec4 {
         switch (type) {
-            case ConsoleMessageType::Warning: return ImVec4(1.0f, 0.84f, 0.35f, 1.0f);
-            case ConsoleMessageType::Error: return ImVec4(1.0f, 0.46f, 0.46f, 1.0f);
-            case ConsoleMessageType::Success: return ImVec4(0.50f, 0.95f, 0.55f, 1.0f);
+            case ConsoleMessageType::Warning: return withScaledAlpha(ImVec4(1.0f, 0.84f, 0.35f, 1.0f));
+            case ConsoleMessageType::Error: return withScaledAlpha(ImVec4(1.0f, 0.46f, 0.46f, 1.0f));
+            case ConsoleMessageType::Success: return withScaledAlpha(ImVec4(0.50f, 0.95f, 0.55f, 1.0f));
             case ConsoleMessageType::Info:
             default:
-                return ImVec4(0.65f, 0.84f, 1.0f, 1.0f);
+                return withScaledAlpha(ImVec4(0.65f, 0.84f, 1.0f, 1.0f));
         }
     };
 
-    auto rowColor = [](ConsoleMessageType type) -> ImU32 {
+    auto rowColor = [&](ConsoleMessageType type) -> ImU32 {
         switch (type) {
-            case ConsoleMessageType::Warning: return IM_COL32(74, 60, 20, 195);
-            case ConsoleMessageType::Error: return IM_COL32(88, 28, 28, 205);
-            case ConsoleMessageType::Success: return IM_COL32(20, 70, 30, 190);
+            case ConsoleMessageType::Warning: return withScaledAlphaU32(IM_COL32(74, 60, 20, 195));
+            case ConsoleMessageType::Error: return withScaledAlphaU32(IM_COL32(88, 28, 28, 205));
+            case ConsoleMessageType::Success: return withScaledAlphaU32(IM_COL32(20, 70, 30, 190));
             case ConsoleMessageType::Info:
             default:
-                return IM_COL32(30, 52, 78, 185);
+                return withScaledAlphaU32(IM_COL32(30, 52, 78, 185));
         }
     };
 
@@ -4568,7 +4603,7 @@ void Engine::renderConsolePanel() {
                 const ImVec2 iconMin(rowMin.x + 8.0f, rowMin.y + (rowHeight - iconSize) * 0.5f);
                 const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
                 draw->AddImage((ImTextureID)(intptr_t)icon->GetID(), iconMin, iconMax,
-                               ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE);
+                               ImVec2(0, 1), ImVec2(1, 0), withScaledAlphaU32(IM_COL32_WHITE));
             }
 
             const float textX = rowMin.x + textLeft;
@@ -4577,7 +4612,7 @@ void Engine::renderConsolePanel() {
                           header.c_str());
             draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                           ImVec2(textX, rowMin.y + topPad + ImGui::GetTextLineHeight() + lineGap),
-                          ImGui::GetColorU32(ImGuiCol_Text),
+                          withScaledAlphaU32(ImGui::GetColorU32(ImGuiCol_Text)),
                           log.message.c_str(), nullptr,
                           consoleWrapText ? textWidth : 0.0f);
 
@@ -4597,6 +4632,8 @@ void Engine::renderConsolePanel() {
     }
 
     ImGui::End();
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
 }
 
 void Engine::renderLatestErrorBar() {
