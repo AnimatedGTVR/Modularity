@@ -1200,7 +1200,6 @@ void Engine::run() {
                 if (showInspector) renderInspectorPanel();
                 if (showFileBrowser) renderFileBrowserPanel();
                 if (showMeshBuilder) renderMeshBuilderPanel();
-                if (showConsole) renderConsolePanel();
                 if (showScriptingWindow) renderScriptingWindow();
                 if (showEnvironmentWindow) renderEnvironmentWindow();
                 if (showCameraWindow) renderCameraWindow();
@@ -1212,6 +1211,7 @@ void Engine::run() {
         renderScriptEditorWindows();
         renderViewport();
         if (showGameViewport) renderGameViewportWindow();
+        if (showConsole) renderConsolePanel();
         renderDialogs();
         renderLatestErrorBar();
     } else {

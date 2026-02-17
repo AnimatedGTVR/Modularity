@@ -612,6 +612,10 @@ Renderer::~Renderer() {
     if (previewTarget.fbo) glDeleteFramebuffers(1, &previewTarget.fbo);
     if (previewTarget.texture) glDeleteTextures(1, &previewTarget.texture);
     if (previewTarget.rbo) glDeleteRenderbuffers(1, &previewTarget.rbo);
+    for (auto& entry : extraPreviewTargets) {
+        releaseRenderTarget(entry.second);
+    }
+    extraPreviewTargets.clear();
     if (postTarget.fbo) glDeleteFramebuffers(1, &postTarget.fbo);
     if (postTarget.texture) glDeleteTextures(1, &postTarget.texture);
     if (postTarget.rbo) glDeleteRenderbuffers(1, &postTarget.rbo);
@@ -1902,16 +1906,17 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     activeStats = nullptr;
 }
 
-unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX) {
+unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot) {
     resetStats(previewStats);
     activeStats = &previewStats;
-    ensureRenderTarget(previewTarget, width, height);
-    if (previewTarget.fbo == 0) {
+    RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];
+    ensureRenderTarget(target, width, height);
+    if (target.fbo == 0) {
         activeStats = nullptr;
         return 0;
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, previewTarget.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
     glViewport(0, 0, width, height);
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1920,11 +1925,11 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
     if (!applyPostFX) {
         activeStats = nullptr;
-        return previewTarget.texture;
+        return target.texture;
     }
-    unsigned int processed = applyPostProcessing(sceneObjects, previewTarget.texture, width, height, false);
+    unsigned int processed = applyPostProcessing(sceneObjects, target.texture, width, height, false);
     activeStats = nullptr;
-    return processed ? processed : previewTarget.texture;
+    return processed ? processed : target.texture;
 }
 
 void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {

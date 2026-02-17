@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
+#include <iomanip>
 #include <functional>
 #include <sstream>
 #include <unordered_set>
@@ -503,6 +504,39 @@ namespace {
         return false;
     }
 
+    std::string formatByteSize(uintmax_t bytes) {
+        static const char* kUnits[] = { "B", "KB", "MB", "GB", "TB" };
+        double size = static_cast<double>(bytes);
+        int unit = 0;
+        while (size >= 1024.0 && unit < 4) {
+            size /= 1024.0;
+            ++unit;
+        }
+
+        std::ostringstream ss;
+        if (unit == 0) {
+            ss << bytes << " " << kUnits[unit];
+        } else {
+            ss << std::fixed << std::setprecision(size >= 10.0 ? 1 : 2) << size << " " << kUnits[unit];
+        }
+        return ss.str();
+    }
+
+    const char* fileCategoryLabel(FileCategory cat) {
+        switch (cat) {
+            case FileCategory::Folder: return "Folder";
+            case FileCategory::Scene: return "Scene";
+            case FileCategory::Model: return "Model";
+            case FileCategory::Material: return "Material";
+            case FileCategory::Texture: return "Texture";
+            case FileCategory::Shader: return "Shader";
+            case FileCategory::Script: return "Script";
+            case FileCategory::Audio: return "Audio";
+            case FileCategory::Text: return "Text";
+            default: return "File";
+        }
+    }
+
     fs::path makeUniquePath(const fs::path& basePath) {
         if (!fs::exists(basePath)) {
             return basePath;
@@ -758,32 +792,34 @@ void Engine::renderFileBrowserPanel() {
         }
     };
     ImGui::PushStyleColor(ImGuiCol_ChildBg, toolbarBg);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0f, 3.0f));
-    ImGui::BeginChild("ProjectToolbar", ImVec2(0, 44), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+    ImGui::BeginChild("ProjectToolbar", ImVec2(0, 38), true, ImGuiWindowFlags_NoScrollbar);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 2.0f));
     bool canGoBack = fileBrowser.historyIndex > 0;
     bool canGoForward = fileBrowser.historyIndex < (int)fileBrowser.pathHistory.size() - 1;
     bool canGoUp = fileBrowser.currentPath != fileBrowser.projectRoot &&
                    fileBrowser.currentPath.has_parent_path();
 
     ImGui::BeginDisabled(!canGoBack);
-    ImGui::Button("<##Back", ImVec2(26, 0));
+    ImGui::Button("<##Back", ImVec2(24, 0));
     if (ImGui::IsItemActivated()) fileBrowser.navigateBack();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Back");
 
     ImGui::SameLine();
     ImGui::BeginDisabled(!canGoForward);
-    ImGui::Button(">##Forward", ImVec2(26, 0));
+    ImGui::Button(">##Forward", ImVec2(24, 0));
     if (ImGui::IsItemActivated()) fileBrowser.navigateForward();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Forward");
 
     ImGui::SameLine();
     ImGui::BeginDisabled(!canGoUp);
-    ImGui::Button("^##Up", ImVec2(26, 0));
+    ImGui::Button("^##Up", ImVec2(24, 0));
     if (ImGui::IsItemActivated()) fileBrowser.navigateUp();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Up one folder");
@@ -848,18 +884,25 @@ void Engine::renderFileBrowserPanel() {
     ImGui::PopStyleColor(2);
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140);
-    if (ImGui::InputTextWithHint("##Search", "Search...", fileBrowserSearch, sizeof(fileBrowserSearch))) {
+    ImGui::SetNextItemWidth(168.0f);
+    if (ImGui::InputTextWithHint("##Search", "Filter files...", fileBrowserSearch, sizeof(fileBrowserSearch))) {
         fileBrowser.searchFilter = fileBrowserSearch;
         fileBrowser.needsRefresh = true;
+    }
+    if (fileBrowserSearch[0] != '\0') {
+        ImGui::SameLine();
+        if (ImGui::Button("x##ClearSearch", ImVec2(20.0f, 0.0f))) {
+            fileBrowserSearch[0] = '\0';
+            fileBrowser.searchFilter.clear();
+            fileBrowser.needsRefresh = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear search");
     }
 
     ImGui::SameLine();
     bool isGridMode = fileBrowser.viewMode == FileBrowserViewMode::Grid;
     if (isGridMode) {
-        ImGui::TextDisabled("Size");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
+        ImGui::SetNextItemWidth(76.0f);
         if (ImGui::SliderFloat("##IconScale", &fileBrowserIconScale, 0.6f, 2.0f, "%.1fx")) {
             settingsDirty = true;
         }
@@ -867,23 +910,54 @@ void Engine::renderFileBrowserPanel() {
         ImGui::SameLine();
     }
 
-    if (ImGui::Button(isGridMode ? "Grid" : "List", ImVec2(54, 0))) {
-        fileBrowser.viewMode = isGridMode ? FileBrowserViewMode::List : FileBrowserViewMode::Grid;
+    if (isGridMode) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("Grid", ImVec2(44, 0)) && !isGridMode) {
+        fileBrowser.viewMode = FileBrowserViewMode::Grid;
         settingsDirty = true;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip(isGridMode ? "Switch to List View" : "Switch to Grid View");
+    if (isGridMode) {
+        ImGui::PopStyleColor(3);
+    }
     ImGui::SameLine();
-    if (ImGui::Button(showFileBrowserSidebar ? "Side" : "Side", ImVec2(52, 0))) {
+    if (!isGridMode) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("List", ImVec2(44, 0)) && isGridMode) {
+        fileBrowser.viewMode = FileBrowserViewMode::List;
+        settingsDirty = true;
+    }
+    if (!isGridMode) {
+        ImGui::PopStyleColor(3);
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button(showFileBrowserSidebar ? "Hide Side" : "Show Side", ImVec2(72, 0))) {
         showFileBrowserSidebar = !showFileBrowserSidebar;
         settingsDirty = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle sidebar");
 
+    std::string itemCount = std::to_string(fileBrowser.entries.size()) + " items";
+    float itemCountWidth = ImGui::CalcTextSize(itemCount.c_str()).x;
+    float rightX = ImGui::GetWindowContentRegionMax().x - itemCountWidth - 8.0f;
+    if (rightX > ImGui::GetCursorPosX()) {
+        ImGui::SameLine(rightX);
+    } else {
+        ImGui::SameLine();
+    }
+    ImGui::TextDisabled("%s", itemCount.c_str());
+
     ImGui::EndChild();
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleVar(4);
     ImGui::PopStyleColor();
 
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0.0f, 3.0f));
 
     // === FILE CONTENT AREA ===
     ImVec4 contentBg = style.Colors[ImGuiCol_WindowBg];
@@ -893,15 +967,16 @@ void Engine::renderFileBrowserPanel() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, contentBg);
     ImGui::BeginChild("FileContent", ImVec2(0, 0), true);
     if (showFileBrowserSidebar) {
-        float minSidebarWidth = 160.0f;
+        float minSidebarWidth = 150.0f;
         float maxSidebarWidth = std::max(minSidebarWidth, ImGui::GetContentRegionAvail().x * 0.5f);
         fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, minSidebarWidth, maxSidebarWidth);
 
         ImGui::BeginChild("FileSidebar", ImVec2(fileBrowserSidebarWidth, 0), true);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
         ImGui::TextDisabled("Favorites");
         ImGui::SameLine();
-        if (ImGui::SmallButton("+")) {
+        if (ImGui::SmallButton("+##AddFavorite")) {
             fs::path current = normalizePath(fileBrowser.currentPath);
             bool exists = false;
             for (const auto& fav : fileBrowserFavorites) {
@@ -1024,7 +1099,7 @@ void Engine::renderFileBrowserPanel() {
         }
 
         ImGui::EndChild();
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
         ImGui::EndChild();
 
         ImGui::SameLine();
@@ -1049,18 +1124,17 @@ void Engine::renderFileBrowserPanel() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     if (fileBrowser.viewMode == FileBrowserViewMode::Grid) {
-        float baseIconSize = 64.0f;
+        float baseIconSize = 56.0f;
         float iconSize = baseIconSize * fileBrowserIconScale;
-        float padding = 8.0f * fileBrowserIconScale;
-        float textHeight = 32.0f;  // Space for filename text
+        float padding = 6.0f * fileBrowserIconScale;
+        float textHeight = 24.0f;
         float cellWidth = iconSize + padding * 2;
         float cellHeight = iconSize + padding * 2 + textHeight;
 
         float windowWidth = ImGui::GetContentRegionAvail().x;
         int columns = std::max(1, (int)((windowWidth + padding) / (cellWidth + padding)));
 
-        // Use a table for consistent grid layout
-        if (ImGui::BeginTable("FileGrid", columns, ImGuiTableFlags_NoPadInnerX)) {
+        if (ImGui::BeginTable("FileGrid", columns, ImGuiTableFlags_NoPadInnerX | ImGuiTableFlags_NoPadOuterX)) {
             for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
                 const auto& entry = fileBrowser.entries[i];
                 std::string filename = entry.path().filename().string();
@@ -1084,16 +1158,16 @@ void Engine::renderFileBrowserPanel() {
                 bool hovered = ImGui::IsItemHovered();
                 bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(0);
 
-                // Draw background
-                ImU32 bgColor = isSelected ? IM_COL32(70, 110, 160, 200) :
-                               (hovered ? IM_COL32(60, 65, 75, 180) : IM_COL32(0, 0, 0, 0));
+                ImU32 bgColor = isSelected ? IM_COL32(72, 98, 132, 205) :
+                               (hovered ? IM_COL32(48, 52, 60, 165) : IM_COL32(0, 0, 0, 0));
                 if (bgColor != IM_COL32(0, 0, 0, 0)) {
-                    drawList->AddRectFilled(cellStart, cellEnd, bgColor, 6.0f);
+                    drawList->AddRectFilled(cellStart, cellEnd, bgColor, 7.0f);
                 }
 
-                // Draw border on selection
                 if (isSelected) {
-                    drawList->AddRect(cellStart, cellEnd, IM_COL32(100, 150, 220, 255), 6.0f, 0, 2.0f);
+                    drawList->AddRect(cellStart, cellEnd, IM_COL32(108, 162, 224, 255), 7.0f, 0, 1.8f);
+                } else if (hovered) {
+                    drawList->AddRect(cellStart, cellEnd, IM_COL32(84, 98, 116, 210), 7.0f, 0, 1.0f);
                 }
 
                 // Draw icon centered in cell
@@ -1126,8 +1200,7 @@ void Engine::renderFileBrowserPanel() {
                 );
 
                 // Text with subtle shadow for readability
-                drawList->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 100), displayName.c_str());
-                drawList->AddText(textPos, IM_COL32(230, 230, 230, 255), displayName.c_str());
+                drawList->AddText(textPos, IM_COL32(228, 232, 240, 255), displayName.c_str());
 
                 // Handle double click
                 if (doubleClicked) {
@@ -1253,7 +1326,7 @@ void Engine::renderFileBrowserPanel() {
 
     } else {
         // List View
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 1.0f));
 
         for (int i = 0; i < (int)fileBrowser.entries.size(); i++) {
             const auto& entry = fileBrowser.entries[i];
@@ -1267,12 +1340,72 @@ void Engine::renderFileBrowserPanel() {
             ImGui::PushID(i);
 
             // Selectable row
-            if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 20))) {
+            if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 21))) {
                 fileBrowser.selectedFile = entry.path();
 
                 if (ImGui::IsMouseDoubleClicked(0)) {
                     openEntry(entry);
                 }
+            }
+            ImVec2 rowMin = ImGui::GetItemRectMin();
+            ImVec2 rowMax = ImGui::GetItemRectMax();
+            bool rowHovered = ImGui::IsItemHovered();
+
+            if (isSelected || rowHovered) {
+                ImU32 rowFill = isSelected ? IM_COL32(68, 95, 126, 190) : IM_COL32(44, 48, 56, 145);
+                drawList->AddRectFilled(rowMin, rowMax, rowFill, 5.0f);
+                if (isSelected) {
+                    drawList->AddRect(rowMin, rowMax, IM_COL32(106, 158, 220, 235), 5.0f, 0, 1.2f);
+                } else {
+                    drawList->AddRect(rowMin, rowMax, IM_COL32(82, 95, 112, 180), 5.0f, 0, 1.0f);
+                }
+            }
+
+            const float listIconSize = 15.0f;
+            ImVec2 iconPos(rowMin.x + 7.0f, rowMin.y + (rowMax.y - rowMin.y - listIconSize) * 0.5f);
+            FileIcons::DrawIcon(drawList, category, iconPos, listIconSize, getCategoryColor(category), folderHasItems);
+
+            ImU32 nameColor = IM_COL32(220, 224, 230, 255);
+            switch (category) {
+                case FileCategory::Folder:   nameColor = IM_COL32(242, 214, 132, 255); break;
+                case FileCategory::Scene:    nameColor = IM_COL32(158, 204, 250, 255); break;
+                case FileCategory::Model:    nameColor = IM_COL32(152, 224, 170, 255); break;
+                case FileCategory::Material: nameColor = IM_COL32(236, 205, 132, 255); break;
+                case FileCategory::Texture:  nameColor = IM_COL32(220, 171, 226, 255); break;
+                default: break;
+            }
+
+            std::string metadata = fileCategoryLabel(category);
+            if (!entry.is_directory()) {
+                std::error_code sizeEc;
+                uintmax_t sizeBytes = entry.file_size(sizeEc);
+                if (!sizeEc) {
+                    metadata += "  ";
+                    metadata += formatByteSize(sizeBytes);
+                }
+            }
+
+            float textY = rowMin.y + 3.0f;
+            float nameX = iconPos.x + listIconSize + 8.0f;
+            float rightPad = 10.0f;
+            float metaWidth = ImGui::CalcTextSize(metadata.c_str()).x;
+            float metaX = rowMax.x - rightPad - metaWidth;
+            float maxNameWidth = ImMax(48.0f, metaX - nameX - 12.0f);
+
+            std::string displayName = filename;
+            if (ImGui::CalcTextSize(displayName.c_str()).x > maxNameWidth) {
+                while (displayName.size() > 3) {
+                    displayName.pop_back();
+                    if (ImGui::CalcTextSize((displayName + "...").c_str()).x <= maxNameWidth) {
+                        break;
+                    }
+                }
+                displayName += "...";
+            }
+
+            drawList->AddText(ImVec2(nameX, textY), nameColor, displayName.c_str());
+            if (metaX > nameX + 72.0f) {
+                drawList->AddText(ImVec2(metaX, textY), IM_COL32(156, 166, 180, 245), metadata.c_str());
             }
 
             // Context menu
@@ -1389,26 +1522,6 @@ void Engine::renderFileBrowserPanel() {
                 ImGui::Text("%s", filename.c_str());
                 ImGui::EndDragDropSource();
             }
-
-            // Draw icon inline
-            ImGui::SameLine(4);
-            ImVec2 iconPos = ImGui::GetCursorScreenPos();
-            iconPos.y -= 2;
-            FileIcons::DrawIcon(drawList, category, iconPos, 16, getCategoryColor(category), folderHasItems);
-
-            ImGui::SameLine(26);
-
-            // Color-coded filename
-            ImVec4 textColor;
-            switch (category) {
-                case FileCategory::Folder:  textColor = ImVec4(1.0f, 0.85f, 0.4f, 1.0f); break;
-                case FileCategory::Scene:   textColor = ImVec4(0.5f, 0.75f, 1.0f, 1.0f); break;
-                case FileCategory::Model:   textColor = ImVec4(0.5f, 0.9f, 0.6f, 1.0f); break;
-                case FileCategory::Material:textColor = ImVec4(0.95f, 0.8f, 0.45f, 1.0f); break;
-                case FileCategory::Texture: textColor = ImVec4(0.9f, 0.6f, 0.9f, 1.0f); break;
-                default:                    textColor = ImVec4(0.85f, 0.85f, 0.85f, 1.0f); break;
-            }
-            ImGui::TextColored(textColor, "%s", filename.c_str());
 
             ImGui::PopID();
         }

@@ -96,6 +96,65 @@ float computeShadowOcclusion(int lightIndex, vec3 fragToLight, float nl)
     return shadow / 20.0;
 }
 
+const float PI = 3.14159265359;
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - clamp(cosTheta, 0.0, 1.0), 5.0);
+}
+
+float distributionGGX(float NdotH, float roughness)
+{
+    float a = max(roughness * roughness, 0.02);
+    float a2 = a * a;
+    float d = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 0.0001);
+}
+
+float geometrySchlickGGX(float NdotX, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotX / max(NdotX * (1.0 - k) + k, 0.0001);
+}
+
+float geometrySmith(float NdotV, float NdotL, float roughness)
+{
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+vec3 evaluateDirectSpecular(
+    vec3 N, vec3 V, vec3 L, vec3 F0,
+    float roughness, float smoothness,
+    float specPower, float specEnergy,
+    vec3 lightColor, float intensity)
+{
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    if (NdotL <= 0.0 || NdotV <= 0.0) {
+        return vec3(0.0);
+    }
+
+    vec3 H = normalize(V + L);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+
+    float D = distributionGGX(NdotH, roughness);
+    float G = geometrySmith(NdotV, NdotL, roughness);
+    vec3 F = fresnelSchlick(VdotH, F0);
+    vec3 microfacet = (D * G * F) / max(4.0 * NdotV * NdotL, 0.0001);
+
+    // Extra direct reflection lobe so high smoothness pops clearly under direct lights.
+    float refl = pow(max(dot(reflect(-L, N), V), 0.0), specPower * 1.25);
+    float blinn = pow(max(NdotH, 0.0), specPower);
+    vec3 enhanced = F * (0.8 * refl + 0.25 * blinn) * specEnergy;
+
+    // Keep very rough surfaces close to matte, while preserving high-smoothness highlights.
+    float smoothVisibility = mix(0.03, 1.0, smoothness * smoothness);
+
+    return (microfacet * smoothVisibility + enhanced) * lightColor * intensity * NdotL;
+}
+
 void main()
 {
     vec3 norm = normalize(Normal);
@@ -131,6 +190,7 @@ void main()
     vec3 albedo = pow(max(baseColor, vec3(0.0)), vec3(2.2));
     float metallic = clamp(specularStrength, 0.0, 1.0);
     float smoothness = clamp(shininess / 256.0, 0.0, 1.0);
+    float roughness = clamp(1.0 - smoothness, 0.03, 1.0);
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     vec3 diffuseColor = albedo * (1.0 - metallic);
 
@@ -143,34 +203,41 @@ void main()
         float intensity = lightIntensityArr[i];
         if (intensity <= 0.0) continue;
 
-        vec3 lDirN;
+        vec3 lDirN = vec3(0.0, 1.0, 0.0);
         float attenuation = 1.0;
+        bool isArea = false;
+        vec3 areaNormal = vec3(0.0, 1.0, 0.0);
+        vec3 areaTangent = vec3(1.0, 0.0, 0.0);
+        vec3 areaBitangent = vec3(0.0, 0.0, 1.0);
+        vec3 areaCenter = vec3(0.0);
+        vec2 areaHalfSize = vec2(0.5);
 
         if (ltype == 0) {
             lDirN = -normalize(lightDirArr[i]);
         } else if (ltype == 3) { // area light approximate
-            vec3 n = normalize(lightDirArr[i]);
-            vec3 up = abs(n.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-            vec3 tangent = normalize(cross(up, n));
-            vec3 bitangent = cross(n, tangent);
+            isArea = true;
+            areaNormal = normalize(lightDirArr[i]);
+            vec3 up = abs(areaNormal.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            areaTangent = normalize(cross(up, areaNormal));
+            areaBitangent = cross(areaNormal, areaTangent);
 
-            vec3 center = lightPosArr[i];
-            vec3 rel = FragPos - center;
-            float distPlane = dot(rel, n);
-            vec3 onPlane = FragPos - distPlane * n;
-            vec2 halfSize = lightAreaSizeArr[i] * 0.5;
+            areaCenter = lightPosArr[i];
+            vec3 rel = FragPos - areaCenter;
+            float distPlane = dot(rel, areaNormal);
+            vec3 onPlane = FragPos - distPlane * areaNormal;
+            areaHalfSize = lightAreaSizeArr[i] * 0.5;
             vec2 local;
-            local.x = dot(onPlane - center, tangent);
-            local.y = dot(onPlane - center, bitangent);
+            local.x = dot(onPlane - areaCenter, areaTangent);
+            local.y = dot(onPlane - areaCenter, areaBitangent);
 
             float fade = clamp(lightAreaFadeArr[i], 0.0, 1.0);
             vec2 absLocal = abs(local);
             float edgeWeight = 1.0;
             if (fade < 0.0001) {
-                if (absLocal.x > halfSize.x || absLocal.y > halfSize.y) continue;
+                if (absLocal.x > areaHalfSize.x || absLocal.y > areaHalfSize.y) continue;
             } else {
-                vec2 inner = halfSize * (1.0 - fade);
-                vec2 delta = max(halfSize - inner, vec2(0.0001));
+                vec2 inner = areaHalfSize * (1.0 - fade);
+                vec2 delta = max(areaHalfSize - inner, vec2(0.0001));
                 vec2 outside = max(absLocal - inner, vec2(0.0));
                 float maxOutside = max(outside.x / delta.x, outside.y / delta.y);
                 edgeWeight = 1.0 - clamp(maxOutside, 0.0, 1.0);
@@ -178,7 +245,7 @@ void main()
                 edgeWeight = smoothstep(0.0, 1.0, edgeWeight);
             }
 
-            vec3 closest = center + tangent * local.x + bitangent * local.y;
+            vec3 closest = areaCenter + areaTangent * local.x + areaBitangent * local.y;
 
             vec3 lvec = closest - FragPos;
             float dist = length(lvec);
@@ -191,7 +258,7 @@ void main()
                 float falloff = clamp(1.0 - (dist / range), 0.0, 1.0);
                 attenuation = falloff * falloff;
             }
-            float facing = max(dot(n, -lDirN), 0.0);
+            float facing = max(dot(areaNormal, -lDirN), 0.0);
             attenuation *= facing * edgeWeight;
         } else {
             vec3 ldir = lightPosArr[i] - FragPos;
@@ -206,20 +273,69 @@ void main()
             }
         }
 
-        float nl = max(dot(norm, lDirN), 0.0);
-        vec3 diffuse = nl * diffuseColor * lightColorArr[i] * intensity;
-
-        vec3 halfwayDir = normalize(lDirN + viewDir);
-        float specPower = mix(8.0, 256.0, smoothness);
-        float spec = pow(max(dot(norm, halfwayDir), 0.0), specPower);
-        float vdh = max(dot(viewDir, halfwayDir), 0.0);
-        vec3 fresnel = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
-        vec3 specular = fresnel * spec * lightColorArr[i] * intensity;
-
         if (ltype == 2) {
             float cosTheta = dot(-lDirN, normalize(lightDirArr[i]));
             float spotAtten = smoothstep(lightOuterCosArr[i], lightInnerCosArr[i], cosTheta);
             attenuation *= spotAtten;
+        }
+
+        float nl = max(dot(norm, lDirN), 0.0);
+        vec3 diffuse = nl * diffuseColor * lightColorArr[i] * intensity;
+
+        // Dynamic scaling: smooth materials pop more, rough ones stay broad/matte.
+        float specPower = mix(2.0, 4096.0, pow(smoothness, 1.35));
+        float specEnergy = mix(0.0, 2.8, pow(smoothness, 0.7));
+        vec3 specular;
+        if (isArea) {
+            vec3 sampleOffsets[9] = vec3[](
+                vec3(0.0),
+                areaTangent * areaHalfSize.x,
+                -areaTangent * areaHalfSize.x,
+                areaBitangent * areaHalfSize.y,
+                -areaBitangent * areaHalfSize.y,
+                areaTangent * areaHalfSize.x + areaBitangent * areaHalfSize.y,
+                areaTangent * areaHalfSize.x - areaBitangent * areaHalfSize.y,
+                -areaTangent * areaHalfSize.x + areaBitangent * areaHalfSize.y,
+                -areaTangent * areaHalfSize.x - areaBitangent * areaHalfSize.y
+            );
+
+            specular = vec3(0.0);
+            float sampleWeight = 0.0;
+            for (int s = 0; s < 9; ++s) {
+                vec3 samplePos = areaCenter + sampleOffsets[s];
+                vec3 sampleVec = samplePos - FragPos;
+                float sampleDist = length(sampleVec);
+                if (sampleDist < 1e-4) continue;
+                vec3 sampleL = sampleVec / sampleDist;
+                float sampleFacing = max(dot(areaNormal, -sampleL), 0.0);
+                if (sampleFacing <= 0.0) continue;
+
+                float sampleAtten = attenuation;
+                float range = lightRangeArr[i];
+                if (range > 0.0) {
+                    float falloff = clamp(1.0 - (sampleDist / range), 0.0, 1.0);
+                    sampleAtten *= falloff * falloff;
+                }
+
+                specular += evaluateDirectSpecular(
+                    norm, viewDir, sampleL, F0,
+                    roughness, smoothness,
+                    specPower, specEnergy,
+                    lightColorArr[i], intensity
+                ) * sampleAtten * sampleFacing;
+                sampleWeight += 1.0;
+            }
+            if (sampleWeight > 0.0) {
+                specular /= sampleWeight;
+            }
+        } else {
+            specular = evaluateDirectSpecular(
+                norm, viewDir, lDirN, F0,
+                roughness, smoothness,
+                specPower, specEnergy,
+                lightColorArr[i], intensity
+            );
+            specular *= attenuation;
         }
 
         float shadow = 0.0;
@@ -227,7 +343,7 @@ void main()
             shadow = computeShadowOcclusion(i, lightPosArr[i] - FragPos, nl);
         }
 
-        lighting += (1.0 - shadow) * attenuation * (diffuse + specular);
+        lighting += (1.0 - shadow) * (attenuation * diffuse + specular);
     }
 
     float alpha = tex1.a;

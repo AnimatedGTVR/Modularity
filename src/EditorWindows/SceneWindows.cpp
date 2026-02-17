@@ -1153,6 +1153,121 @@ void Engine::renderInspectorPanel() {
         }
     };
 
+    auto drawMaterialPreview = [&](const char* idSuffix,
+                                   const MaterialProperties& material,
+                                   const std::string& albedoPath,
+                                   const std::string& overlayPath,
+                                   const std::string& normalPath,
+                                   bool useOverlay,
+                                   const std::string& vertShaderPath,
+                                   const std::string& fragShaderPath,
+                                   float previewScale,
+                                   int previewSlot) {
+        ImGui::PushID(idSuffix);
+
+        float availableWidth = ImGui::GetContentRegionAvail().x;
+        float previewWidth = std::clamp(220.0f * previewScale, 120.0f, std::max(120.0f, availableWidth));
+        float previewHeight = std::clamp(previewWidth * 0.62f, 110.0f, 220.0f);
+        int targetWidth = std::max(64, static_cast<int>(previewWidth));
+        int targetHeight = std::max(64, static_cast<int>(previewHeight));
+
+        static const std::string kPreviewWhiteTexture = "Resources/Textures/editor_preview_white.ppm";
+
+        Camera previewCamera;
+        previewCamera.position = glm::vec3(0.0f, 0.3f, 3.2f);
+        previewCamera.front = glm::normalize(glm::vec3(0.0f, -0.05f, -1.0f));
+        previewCamera.up = glm::vec3(0.0f, 1.0f, 0.0f);
+
+        std::vector<SceneObject> previewScene;
+        previewScene.reserve(5);
+
+        SceneObject keyLight("MatPreviewKey", ObjectType::PointLight, -9201);
+        keyLight.hasLight = true;
+        keyLight.position = glm::vec3(1.8f, 1.8f, 2.2f);
+        keyLight.light.type = LightType::Point;
+        keyLight.light.color = glm::vec3(1.0f, 0.97f, 0.92f);
+        keyLight.light.intensity = 2.9f;
+        keyLight.light.range = 10.0f;
+        previewScene.push_back(keyLight);
+
+        SceneObject fillLight("MatPreviewFill", ObjectType::PointLight, -9202);
+        fillLight.hasLight = true;
+        fillLight.position = glm::vec3(-2.0f, 0.8f, 1.4f);
+        fillLight.light.type = LightType::Point;
+        fillLight.light.color = glm::vec3(0.75f, 0.82f, 1.0f);
+        fillLight.light.intensity = 1.2f;
+        fillLight.light.range = 9.0f;
+        previewScene.push_back(fillLight);
+
+        SceneObject rimLight("MatPreviewRim", ObjectType::DirectionalLight, -9203);
+        rimLight.hasLight = true;
+        rimLight.light.type = LightType::Directional;
+        rimLight.light.color = glm::vec3(0.95f, 0.98f, 1.0f);
+        rimLight.light.intensity = 0.65f;
+        rimLight.rotation = glm::vec3(18.0f, 210.0f, 0.0f);
+        previewScene.push_back(rimLight);
+
+        SceneObject previewSphere("MatPreviewSphere", ObjectType::Sphere, -9204);
+        previewSphere.hasRenderer = true;
+        previewSphere.renderType = RenderType::Sphere;
+        previewSphere.position = glm::vec3(0.0f, 0.24f, 0.0f);
+        previewSphere.rotation = glm::vec3(0.0f, -18.0f, 0.0f);
+        previewSphere.scale = glm::vec3(1.35f);
+        previewSphere.material = material;
+        previewSphere.albedoTexturePath = albedoPath.empty() ? kPreviewWhiteTexture : albedoPath;
+        previewSphere.overlayTexturePath = overlayPath;
+        previewSphere.normalMapPath = normalPath;
+        previewSphere.useOverlay = useOverlay;
+        previewSphere.vertexShaderPath = vertShaderPath;
+        previewSphere.fragmentShaderPath = fragShaderPath;
+        previewScene.push_back(previewSphere);
+
+        SceneObject previewGround("MatPreviewGround", ObjectType::Plane, -9205);
+        previewGround.hasRenderer = true;
+        previewGround.renderType = RenderType::Plane;
+        previewGround.position = glm::vec3(0.0f, -0.95f, -0.2f);
+        previewGround.rotation = glm::vec3(-90.0f, 0.0f, 0.0f);
+        previewGround.scale = glm::vec3(4.6f, 4.6f, 1.0f);
+        previewGround.material.color = glm::vec3(0.19f, 0.2f, 0.22f);
+        previewGround.material.ambientStrength = 0.28f;
+        previewGround.material.specularStrength = 0.07f;
+        previewGround.material.shininess = 22.0f;
+        previewGround.material.textureMix = 0.0f;
+        previewGround.albedoTexturePath = kPreviewWhiteTexture;
+        previewScene.push_back(previewGround);
+
+        unsigned int previewTexture = renderer.renderScenePreview(
+            previewCamera,
+            previewScene,
+            targetWidth,
+            targetHeight,
+            35.0f,
+            0.1f,
+            30.0f,
+            false,
+            previewSlot
+        );
+
+        if (previewTexture != 0) {
+            ImVec2 imageSize(previewWidth, previewHeight);
+            float padX = availableWidth - previewWidth;
+            if (padX > 1.0f) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX * 0.5f);
+            }
+            ImGui::Image((ImTextureID)(intptr_t)previewTexture, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), IM_COL32(90, 102, 122, 210), 4.0f, 0, 1.0f);
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f), "Material preview unavailable.");
+            ImGui::Dummy(ImVec2(previewWidth, previewHeight));
+        }
+
+        ImGui::PopID();
+    };
+
+    static float assetMaterialPreviewScale = 1.0f;
+    static float objectMaterialPreviewScale = 1.0f;
+
     struct ComponentHeaderState {
         bool open = false;
         bool enabledChanged = false;
@@ -1386,6 +1501,24 @@ void Engine::renderInspectorPanel() {
                     }
                     ImGui::EndDisabled();
                 }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled("Preview");
+                ImGui::SetNextItemWidth(180.0f);
+                ImGui::SliderFloat("Size##AssetMaterialPreview", &assetMaterialPreviewScale, 0.6f, 1.8f, "%.2fx");
+                drawMaterialPreview(
+                    "AssetMaterialPreview",
+                    inspectedMaterial,
+                    inspectedAlbedo,
+                    inspectedOverlay,
+                    inspectedNormal,
+                    inspectedUseOverlay,
+                    inspectedVertShader,
+                    inspectedFragShader,
+                    assetMaterialPreviewScale,
+                    1001
+                );
 
                 if (matChanged) {
                     inspectedMaterialValid = true;
@@ -3107,19 +3240,6 @@ void Engine::renderInspectorPanel() {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled("Material Asset");
-            ImVec4 previewColor(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
-            ImVec2 sphereStart = ImGui::GetCursorScreenPos();
-            float sphereRadius = 12.0f;
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            ImU32 shadowCol = ImGui::ColorConvertFloat4ToU32(ImVec4(previewColor.x * 0.3f, previewColor.y * 0.3f, previewColor.z * 0.3f, 1.0f));
-            ImU32 baseCol = ImGui::ColorConvertFloat4ToU32(previewColor);
-            ImU32 highlightCol = ImGui::ColorConvertFloat4ToU32(ImVec4(std::min(1.0f, previewColor.x + 0.25f), std::min(1.0f, previewColor.y + 0.25f), std::min(1.0f, previewColor.z + 0.25f), 1.0f));
-            ImVec2 center = ImVec2(sphereStart.x + sphereRadius, sphereStart.y + sphereRadius);
-            dl->AddCircleFilled(center, sphereRadius, shadowCol);
-            dl->AddCircleFilled(ImVec2(center.x, center.y - 1.5f), sphereRadius - 1.5f, baseCol);
-            dl->AddCircleFilled(ImVec2(center.x - sphereRadius * 0.35f, center.y - sphereRadius * 0.5f), sphereRadius * 0.35f, highlightCol);
-            ImGui::Dummy(ImVec2(sphereRadius * 2.0f, sphereRadius * 2.0f));
-            ImGui::SameLine();
             ImGui::TextDisabled("%s", obj.materialPath.empty() ? "Unsaved Material" : fs::path(obj.materialPath).filename().string().c_str());
 
             char matPathBuf[512] = {};
@@ -3188,8 +3308,20 @@ void Engine::renderInspectorPanel() {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled("Preview");
-            ImVec4 previewColorBar(obj.material.color.x, obj.material.color.y, obj.material.color.z, 1.0f);
-            ImGui::ColorButton("##MaterialPreview", previewColorBar, ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetContentRegionAvail().x, 32.0f));
+            ImGui::SetNextItemWidth(180.0f);
+            ImGui::SliderFloat("Size##ObjectMaterialPreview", &objectMaterialPreviewScale, 0.6f, 1.8f, "%.2fx");
+            drawMaterialPreview(
+                "ObjectMaterialPreview",
+                obj.material,
+                obj.albedoTexturePath,
+                obj.overlayTexturePath,
+                obj.normalMapPath,
+                obj.useOverlay,
+                obj.vertexShaderPath,
+                obj.fragmentShaderPath,
+                objectMaterialPreviewScale,
+                1002
+            );
 
             if (materialChanged) {
                 projectManager.currentProject.hasUnsavedChanges = true;
@@ -4241,7 +4373,85 @@ void Engine::renderInspectorPanel() {
 
 #pragma region Console Panel
 void Engine::renderConsolePanel() {
-    ImGui::Begin("Console", &showConsole);
+    const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    if (!mainViewport) return;
+
+    ImVec2 anchorMin = mainViewport->WorkPos;
+    ImVec2 anchorMax = ImVec2(mainViewport->WorkPos.x + mainViewport->WorkSize.x,
+                              mainViewport->WorkPos.y + mainViewport->WorkSize.y);
+    if (ImGuiWindow* viewportWindow = ImGui::FindWindowByName("Viewport")) {
+        if (viewportWindow->WasActive) {
+            anchorMin = viewportWindow->InnerRect.Min;
+            anchorMax = viewportWindow->InnerRect.Max;
+        }
+    }
+
+    static bool consolePopoutOpen = false;
+    static bool autoScroll = true;
+
+    const float margin = 12.0f;
+    const ImVec2 tabSize(96.0f, 30.0f);
+    ImVec2 tabPos(anchorMax.x - tabSize.x - margin, anchorMax.y - tabSize.y - margin);
+    tabPos.x = ImMax(anchorMin.x + 4.0f, tabPos.x);
+    tabPos.y = ImMax(anchorMin.y + 4.0f, tabPos.y);
+
+    ImGuiWindowFlags tabFlags = ImGuiWindowFlags_NoDecoration |
+                                ImGuiWindowFlags_NoDocking |
+                                ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoMove |
+                                ImGuiWindowFlags_NoResize |
+                                ImGuiWindowFlags_NoNav |
+                                ImGuiWindowFlags_NoFocusOnAppearing;
+    ImGui::SetNextWindowPos(tabPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(tabSize, ImGuiCond_Always);
+    ImGui::SetNextWindowViewport(mainViewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 7.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    if (ImGui::Begin("ConsoleTab##ViewportMini", nullptr, tabFlags)) {
+        const bool wasOpen = consolePopoutOpen;
+        if (wasOpen) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        }
+        if (ImGui::Button("Console", ImGui::GetContentRegionAvail())) {
+            consolePopoutOpen = !consolePopoutOpen;
+        }
+        if (wasOpen) {
+            ImGui::PopStyleColor(3);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+
+    if (!consolePopoutOpen) {
+        return;
+    }
+
+    ImVec2 miniSize(ImMin(560.0f, anchorMax.x - anchorMin.x - margin * 2.0f),
+                    ImMin(320.0f, anchorMax.y - anchorMin.y - tabSize.y - margin * 3.0f));
+    if (miniSize.x < 260.0f || miniSize.y < 140.0f) {
+        return;
+    }
+
+    ImVec2 miniPos(anchorMax.x - miniSize.x - margin, tabPos.y - miniSize.y - 8.0f);
+    miniPos.y = ImMax(anchorMin.y + margin, miniPos.y);
+
+    bool keepOpen = consolePopoutOpen;
+    ImGuiWindowFlags miniFlags = ImGuiWindowFlags_NoDocking |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoCollapse;
+    ImGui::SetNextWindowPos(miniPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(miniSize, ImGuiCond_Always);
+    ImGui::SetNextWindowViewport(mainViewport->ID);
+    if (!ImGui::Begin("Console##MiniLogPanel", &keepOpen, miniFlags)) {
+        ImGui::End();
+        consolePopoutOpen = keepOpen;
+        return;
+    }
+    consolePopoutOpen = keepOpen;
 
     bool settingsChanged = false;
     if (ImGui::Button("Clear")) {
@@ -4251,7 +4461,6 @@ void Engine::renderConsolePanel() {
     }
 
     ImGui::SameLine();
-    static bool autoScroll = true;
     ImGui::Checkbox("Auto-scroll", &autoScroll);
     ImGui::SameLine();
     if (ImGui::Checkbox("Wrap Text", &consoleWrapText)) {

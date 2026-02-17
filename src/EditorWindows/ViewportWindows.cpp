@@ -2144,8 +2144,22 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             break;
     }
 
+    auto layoutFileIsUsable = [](const fs::path& layoutPath) {
+        std::ifstream in(layoutPath);
+        if (!in.is_open()) return false;
+
+        bool hasDockingData = false;
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line == "[Docking][Data]") {
+                hasDockingData = true;
+            }
+        }
+        return hasDockingData;
+    };
+
     fs::path layoutPath = getWorkspaceLayoutPath(mode);
-    if (!layoutPath.empty() && fs::exists(layoutPath)) {
+    if (!layoutPath.empty() && fs::exists(layoutPath) && layoutFileIsUsable(layoutPath)) {
         pendingWorkspaceIniPath = layoutPath;
         pendingWorkspaceReload = true;
         workspaceLayoutDirty = false;
@@ -2154,13 +2168,39 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
 
     if (rebuildLayout) {
         buildWorkspaceLayout(mode);
+        workspaceLayoutDirty = false;
+        return;
     }
-    workspaceLayoutDirty = false;
+
+    // applyWorkspacePreset() is also called during project/settings load, where
+    // there may be no active ImGui window for ImGui::GetID() yet.
+    // Defer dock layout rebuild to the normal UI frame path.
+    pendingWorkspaceIniPath.clear();
+    pendingWorkspaceReload = true;
+    workspaceLayoutDirty = true;
 }
 
 void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
-    ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
+    if (!ImGui::GetCurrentContext()) {
+        workspaceLayoutDirty = true;
+        return;
+    }
+
+    ImGuiID dockspaceId = 0;
+    if (ImGuiWindow* dockHost = ImGui::FindWindowByName("DockSpace")) {
+        dockspaceId = dockHost->GetID("MainDockspace");
+    } else if (ImGui::GetCurrentWindowRead()) {
+        dockspaceId = ImGui::GetID("MainDockspace");
+    } else {
+        workspaceLayoutDirty = true;
+        return;
+    }
+
     ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (!viewport) {
+        workspaceLayoutDirty = true;
+        return;
+    }
 
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
@@ -2173,9 +2213,11 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.28f, nullptr, &dockMain);
 
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
+        ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
+        ImGui::DockBuilderDockWindow("Environment", dockRight);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
-        ImGui::DockBuilderDockWindow("Console", dockBottom);
+        ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     } else if (mode == WorkspaceMode::Animation) {
@@ -2184,21 +2226,24 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.35f, nullptr, &dockMain);
 
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
+        ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
+        ImGui::DockBuilderDockWindow("Environment", dockRight);
         ImGui::DockBuilderDockWindow("Animation", dockBottom);
-        ImGui::DockBuilderDockWindow("Console", dockBottom);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
+        ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
     } else {
         ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.25f, nullptr, &dockMain);
         ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.35f, nullptr, &dockMain);
-        ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.25f, nullptr, &dockMain);
 
         ImGui::DockBuilderDockWindow("Project", dockLeft);
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
+        ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Scripting", dockRight);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
-        ImGui::DockBuilderDockWindow("Console", dockBottom);
+        ImGui::DockBuilderDockWindow("Environment", dockRight);
+        ImGui::DockBuilderDockWindow("Project Settings", dockRight);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     }
