@@ -2546,6 +2546,193 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
+    if (obj.hasGroundBakedType) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.28f, 0.5f, 0.34f, 1.0f));
+        bool removeGroundBaked = false;
+        bool changed = false;
+        auto header = drawComponentHeader("GroundBakedType", "GroundBakedType", &obj.groundBakedType.enabled, true, [&]() {
+            if (ImGui::MenuItem("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+            }
+            if (ImGui::MenuItem("Remove")) {
+                removeGroundBaked = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            ImGui::PushID("GroundBakedType");
+            ImGui::Indent(10.0f);
+
+            if (ImGui::Button("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+            }
+            if (ImGui::Checkbox("Include In Bake", &obj.groundBakedType.includeInBake)) {
+                changed = true;
+            }
+            if (ImGui::DragFloat("Area Cost", &obj.groundBakedType.areaCost, 0.05f, 0.1f, 100.0f, "%.2f")) {
+                obj.groundBakedType.areaCost = std::clamp(obj.groundBakedType.areaCost, 0.1f, 100.0f);
+                changed = true;
+            }
+            ImGui::TextDisabled("Objects marked here are considered walkable during bake.");
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        if (removeGroundBaked) {
+            obj.hasGroundBakedType = false;
+            obj.groundBakedType = GroundBakedTypeComponent{};
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasObsticleObject) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.3f, 0.28f, 1.0f));
+        bool removeObstacle = false;
+        bool changed = false;
+        auto header = drawComponentHeader("ObsticleObject", "ObsticleObject", &obj.obsticleObject.enabled, true, [&]() {
+            if (ImGui::MenuItem("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+            }
+            if (ImGui::MenuItem("Remove")) {
+                removeObstacle = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            ImGui::PushID("ObsticleObject");
+            ImGui::Indent(10.0f);
+
+            if (ImGui::Button("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+            }
+            if (ImGui::Checkbox("Carve", &obj.obsticleObject.carve)) {
+                changed = true;
+            }
+            if (ImGui::DragFloat("Padding", &obj.obsticleObject.padding, 0.02f, 0.0f, 10.0f, "%.2f")) {
+                obj.obsticleObject.padding = std::clamp(obj.obsticleObject.padding, 0.0f, 10.0f);
+                changed = true;
+            }
+            ImGui::TextDisabled("Obstacle regions are removed from the baked walkable map.");
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        if (removeObstacle) {
+            obj.hasObsticleObject = false;
+            obj.obsticleObject = ObsticleObjectComponent{};
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasAIAgent) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.32f, 0.4f, 0.58f, 1.0f));
+        bool removeAgent = false;
+        bool changed = false;
+        auto header = drawComponentHeader("AI Agent", "AIAgent", &obj.aiAgent.enabled, true, [&]() {
+            if (ImGui::MenuItem("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+                aiPreviewAgentId = obj.id;
+            }
+            if (ImGui::MenuItem("Remove")) {
+                removeAgent = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            ImGui::PushID("AIAgent");
+            ImGui::Indent(10.0f);
+
+            if (ImGui::Button("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+                aiPreviewAgentId = obj.id;
+            }
+
+            if (ImGui::Checkbox("Use Target Object", &obj.aiAgent.useTargetObject)) {
+                changed = true;
+            }
+            if (obj.aiAgent.useTargetObject) {
+                SceneObject* target = findObjectById(obj.aiAgent.targetId);
+                ImGui::TextDisabled("Target: %s",
+                    (target && target->enabled) ? target->name.c_str() : "<none>");
+
+                SceneObject* selectedTarget = findObjectById(selectedObjectId);
+                bool canUseSelection = selectedTarget && selectedTarget->id != obj.id;
+                ImGui::BeginDisabled(!canUseSelection);
+                if (ImGui::Button("Use Selection as Target")) {
+                    obj.aiAgent.targetId = selectedTarget->id;
+                    aiPreviewTargetId = selectedTarget->id;
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Clear Target")) {
+                    obj.aiAgent.targetId = -1;
+                    changed = true;
+                }
+            }
+
+            if (ImGui::DragFloat3("Destination", &obj.aiAgent.destination.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::Button("Set Destination To Current")) {
+                obj.aiAgent.destination = obj.position;
+                changed = true;
+            }
+
+            if (ImGui::DragFloat("Speed", &obj.aiAgent.speed, 0.05f, 0.05f, 100.0f, "%.2f")) {
+                obj.aiAgent.speed = std::max(0.05f, obj.aiAgent.speed);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Stopping Distance", &obj.aiAgent.stoppingDistance, 0.01f, 0.0f, 25.0f, "%.2f")) {
+                obj.aiAgent.stoppingDistance = std::clamp(obj.aiAgent.stoppingDistance, 0.0f, 25.0f);
+                changed = true;
+            }
+            if (ImGui::DragFloat("Repath Interval", &obj.aiAgent.repathInterval, 0.05f, 0.05f, 10.0f, "%.2f")) {
+                obj.aiAgent.repathInterval = std::clamp(obj.aiAgent.repathInterval, 0.05f, 10.0f);
+                changed = true;
+            }
+            if (ImGui::Checkbox("Auto Repath", &obj.aiAgent.autoRepath)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Align To Path", &obj.aiAgent.alignToPath)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Debug Draw Path", &obj.aiAgent.debugDrawPath)) {
+                changed = true;
+            }
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        if (removeAgent) {
+            obj.hasAIAgent = false;
+            obj.aiAgent = AIAgentComponent{};
+            aiAgentRuntimeStates.erase(obj.id);
+            changed = true;
+        }
+        if (changed) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
     if (obj.hasAnimation) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.35f, 0.55f, 1.0f));
@@ -2571,7 +2758,9 @@ void Engine::renderInspectorPanel() {
                 animationTargetId = obj.id;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("Keyframes: %zu", obj.animation.keyframes.size());
+            ImGui::TextDisabled("Keyframes: %zu | Tracks: %zu",
+                                obj.animation.keyframes.size(),
+                                obj.animation.tracks.size());
 
             if (ImGui::DragFloat("Clip Length", &obj.animation.clipLength, 0.05f, 0.1f, 120.0f, "%.2f")) {
                 obj.animation.clipLength = std::max(0.1f, obj.animation.clipLength);
@@ -3955,6 +4144,25 @@ void Engine::renderInspectorPanel() {
             obj.hasReverbZone = true;
             obj.reverbZone = ReverbZoneComponent{};
             obj.reverbZone.boxSize = glm::max(obj.scale, glm::vec3(1.0f));
+            componentChanged = true;
+        });
+        addEntry("AI Pathfinding/GroundBakedType", !obj.hasGroundBakedType && !isUIType, [&]() {
+            obj.hasGroundBakedType = true;
+            obj.groundBakedType = GroundBakedTypeComponent{};
+            showAIPathfindingWindow = true;
+            componentChanged = true;
+        });
+        addEntry("AI Pathfinding/ObsticleObject", !obj.hasObsticleObject && !isUIType, [&]() {
+            obj.hasObsticleObject = true;
+            obj.obsticleObject = ObsticleObjectComponent{};
+            showAIPathfindingWindow = true;
+            componentChanged = true;
+        });
+        addEntry("AI Pathfinding/AI Agent", !obj.hasAIAgent && !isUIType, [&]() {
+            obj.hasAIAgent = true;
+            obj.aiAgent = AIAgentComponent{};
+            obj.aiAgent.destination = obj.position;
+            showAIPathfindingWindow = true;
             componentChanged = true;
         });
         addEntry("Animation/Animation", !obj.hasAnimation, [&]() {

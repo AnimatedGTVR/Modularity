@@ -1176,6 +1176,10 @@ void Engine::run() {
         if (simulatePhysics) {
             physics.simulate(deltaTime, sceneObjects);
         }
+        bool runAI = isPlaying || specMode || testMode;
+        if (runAI) {
+            updateAIAgents(deltaTime);
+        }
 
         updateHierarchyWorldTransforms();
         updateSkinningMatrices();
@@ -1302,6 +1306,7 @@ void Engine::run() {
                 if (showEnvironmentWindow) renderEnvironmentWindow();
                 if (showCameraWindow) renderCameraWindow();
                 if (showAnimationWindow) renderAnimationWindow();
+                if (showAIPathfindingWindow) renderAIPathfindingWindow();
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
@@ -3546,6 +3551,7 @@ void Engine::applyAutoStartMode() {
     showEnvironmentWindow = false;
     showCameraWindow = false;
     showAnimationWindow = false;
+    showAIPathfindingWindow = false;
     showViewOutput = false;
     showSceneGizmos = false;
     showGameViewport = false;
@@ -4715,6 +4721,12 @@ void Engine::duplicateSelected() {
         newObj.audioSource = it->audioSource;
         newObj.hasReverbZone = it->hasReverbZone;
         newObj.reverbZone = it->reverbZone;
+        newObj.hasGroundBakedType = it->hasGroundBakedType;
+        newObj.groundBakedType = it->groundBakedType;
+        newObj.hasObsticleObject = it->hasObsticleObject;
+        newObj.obsticleObject = it->obsticleObject;
+        newObj.hasAIAgent = it->hasAIAgent;
+        newObj.aiAgent = it->aiAgent;
         newObj.hasAnimation = it->hasAnimation;
         newObj.animation = it->animation;
         newObj.hasSkeletalAnimation = it->hasSkeletalAnimation;
@@ -5900,6 +5912,8 @@ void Engine::loadEditorUserSettings() {
             consoleWrapText = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showAnimationWindow") {
             showAnimationWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showAIPathfindingWindow") {
+            showAIPathfindingWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGizmos") {
             showSceneGizmos = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGrid3D") {
@@ -6044,6 +6058,7 @@ void Engine::saveEditorUserSettings() const {
     file << "fileBrowserSidebarVisible=" << (showFileBrowserSidebar ? "1" : "0") << "\n";
     file << "consoleWrapText=" << (consoleWrapText ? "1" : "0") << "\n";
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
+    file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
     file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
     file << "showSceneGrid3D=" << (showSceneGrid3D ? "1" : "0") << "\n";
     file << "showCanvasOverlay=" << (showCanvasOverlay ? "1" : "0") << "\n";

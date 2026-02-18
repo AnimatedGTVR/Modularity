@@ -1927,6 +1927,11 @@ void Engine::renderMainMenuBar() {
             if (prevAnimationWindow != showAnimationWindow) {
                 saveEditorUserSettings();
             }
+            bool prevAIPathWindow = showAIPathfindingWindow;
+            ImGui::MenuItem("AI Pathfinding", nullptr, &showAIPathfindingWindow);
+            if (prevAIPathWindow != showAIPathfindingWindow) {
+                saveEditorUserSettings();
+            }
             ImGui::MenuItem("View Output", nullptr, &showViewOutput);
             ImGui::Separator();
             ImGui::MenuItem("UI World Overlay", nullptr, &uiWorldMode);
@@ -2120,6 +2125,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             showConsole = true;
             showScriptingWindow = false;
             showAnimationWindow = false;
+            showAIPathfindingWindow = false;
             showEnvironmentWindow = true;
             showCameraWindow = true;
             showGameViewport = true;
@@ -2131,6 +2137,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             showConsole = true;
             showScriptingWindow = false;
             showAnimationWindow = true;
+            showAIPathfindingWindow = true;
             showEnvironmentWindow = false;
             showCameraWindow = false;
             showGameViewport = true;
@@ -2142,6 +2149,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             showConsole = true;
             showScriptingWindow = true;
             showAnimationWindow = false;
+            showAIPathfindingWindow = false;
             showEnvironmentWindow = false;
             showCameraWindow = false;
             showGameViewport = true;
@@ -2234,6 +2242,7 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
         ImGui::DockBuilderDockWindow("Animation", dockBottom);
+        ImGui::DockBuilderDockWindow("AI Pathfinding", dockBottom);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
         ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);

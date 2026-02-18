@@ -304,7 +304,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=18\n";
+        file << "version=19\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "objectCount=" << objects.size() << "\n";
@@ -447,6 +447,31 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "reverbDiffusion=" << obj.reverbZone.diffusion << "\n";
                 file << "reverbDensity=" << obj.reverbZone.density << "\n";
             }
+            file << "hasGroundBakedType=" << (obj.hasGroundBakedType ? 1 : 0) << "\n";
+            if (obj.hasGroundBakedType) {
+                file << "groundBakedEnabled=" << (obj.groundBakedType.enabled ? 1 : 0) << "\n";
+                file << "groundBakedInclude=" << (obj.groundBakedType.includeInBake ? 1 : 0) << "\n";
+                file << "groundBakedAreaCost=" << obj.groundBakedType.areaCost << "\n";
+            }
+            file << "hasObsticleObject=" << (obj.hasObsticleObject ? 1 : 0) << "\n";
+            if (obj.hasObsticleObject) {
+                file << "obsticleEnabled=" << (obj.obsticleObject.enabled ? 1 : 0) << "\n";
+                file << "obsticleCarve=" << (obj.obsticleObject.carve ? 1 : 0) << "\n";
+                file << "obsticlePadding=" << obj.obsticleObject.padding << "\n";
+            }
+            file << "hasAIAgent=" << (obj.hasAIAgent ? 1 : 0) << "\n";
+            if (obj.hasAIAgent) {
+                file << "aiAgentEnabled=" << (obj.aiAgent.enabled ? 1 : 0) << "\n";
+                file << "aiAgentUseTargetObject=" << (obj.aiAgent.useTargetObject ? 1 : 0) << "\n";
+                file << "aiAgentTargetId=" << obj.aiAgent.targetId << "\n";
+                file << "aiAgentDestination=" << obj.aiAgent.destination.x << "," << obj.aiAgent.destination.y << "," << obj.aiAgent.destination.z << "\n";
+                file << "aiAgentSpeed=" << obj.aiAgent.speed << "\n";
+                file << "aiAgentStoppingDistance=" << obj.aiAgent.stoppingDistance << "\n";
+                file << "aiAgentRepathInterval=" << obj.aiAgent.repathInterval << "\n";
+                file << "aiAgentAutoRepath=" << (obj.aiAgent.autoRepath ? 1 : 0) << "\n";
+                file << "aiAgentAlignToPath=" << (obj.aiAgent.alignToPath ? 1 : 0) << "\n";
+                file << "aiAgentDebugDrawPath=" << (obj.aiAgent.debugDrawPath ? 1 : 0) << "\n";
+            }
             file << "hasAnimation=" << (obj.hasAnimation ? 1 : 0) << "\n";
             if (obj.hasAnimation) {
                 file << "animEnabled=" << (obj.animation.enabled ? 1 : 0) << "\n";
@@ -465,6 +490,31 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                     file << "animKey" << ki << "_curve=" << static_cast<int>(key.curveMode) << "\n";
                     file << "animKey" << ki << "_in=" << key.bezierIn.x << "," << key.bezierIn.y << "\n";
                     file << "animKey" << ki << "_out=" << key.bezierOut.x << "," << key.bezierOut.y << "\n";
+                }
+                file << "animEventCount=" << obj.animation.events.size() << "\n";
+                for (size_t ei = 0; ei < obj.animation.events.size(); ++ei) {
+                    const auto& evt = obj.animation.events[ei];
+                    file << "animEvent" << ei << "_time=" << evt.time << "\n";
+                    file << "animEvent" << ei << "_id=" << evt.eventId << "\n";
+                    file << "animEvent" << ei << "_payload=" << evt.payload << "\n";
+                }
+                file << "animTrackCount=" << obj.animation.tracks.size() << "\n";
+                for (size_t ti = 0; ti < obj.animation.tracks.size(); ++ti) {
+                    const auto& track = obj.animation.tracks[ti];
+                    file << "animTrack" << ti << "_enabled=" << (track.enabled ? 1 : 0) << "\n";
+                    file << "animTrack" << ti << "_path=" << track.path << "\n";
+                    file << "animTrack" << ti << "_label=" << track.label << "\n";
+                    file << "animTrack" << ti << "_default=" << track.defaultValue << "\n";
+                    file << "animTrack" << ti << "_keyCount=" << track.keyframes.size() << "\n";
+                    for (size_t ki = 0; ki < track.keyframes.size(); ++ki) {
+                        const auto& key = track.keyframes[ki];
+                        file << "animTrack" << ti << "_key" << ki << "_time=" << key.time << "\n";
+                        file << "animTrack" << ti << "_key" << ki << "_value=" << key.value << "\n";
+                        file << "animTrack" << ti << "_key" << ki << "_interp=" << static_cast<int>(key.interpolation) << "\n";
+                        file << "animTrack" << ti << "_key" << ki << "_curve=" << static_cast<int>(key.curveMode) << "\n";
+                        file << "animTrack" << ti << "_key" << ki << "_in=" << key.bezierIn.x << "," << key.bezierIn.y << "\n";
+                        file << "animTrack" << ti << "_key" << ki << "_out=" << key.bezierOut.x << "," << key.bezierOut.y << "\n";
+                    }
                 }
             }
             file << "hasSkeletalAnimation=" << (obj.hasSkeletalAnimation ? 1 : 0) << "\n";
@@ -904,6 +954,25 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"reverbRoomRolloffFactor", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.roomRolloffFactor = std::stof(value); }},
         {"reverbDiffusion", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.diffusion = std::stof(value); }},
         {"reverbDensity", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.density = std::stof(value); }},
+        {"hasGroundBakedType", +[](SceneObject& obj, const std::string& value) { obj.hasGroundBakedType = std::stoi(value) != 0; }},
+        {"groundBakedEnabled", +[](SceneObject& obj, const std::string& value) { obj.groundBakedType.enabled = std::stoi(value) != 0; }},
+        {"groundBakedInclude", +[](SceneObject& obj, const std::string& value) { obj.groundBakedType.includeInBake = std::stoi(value) != 0; }},
+        {"groundBakedAreaCost", +[](SceneObject& obj, const std::string& value) { obj.groundBakedType.areaCost = std::stof(value); }},
+        {"hasObsticleObject", +[](SceneObject& obj, const std::string& value) { obj.hasObsticleObject = std::stoi(value) != 0; }},
+        {"obsticleEnabled", +[](SceneObject& obj, const std::string& value) { obj.obsticleObject.enabled = std::stoi(value) != 0; }},
+        {"obsticleCarve", +[](SceneObject& obj, const std::string& value) { obj.obsticleObject.carve = std::stoi(value) != 0; }},
+        {"obsticlePadding", +[](SceneObject& obj, const std::string& value) { obj.obsticleObject.padding = std::stof(value); }},
+        {"hasAIAgent", +[](SceneObject& obj, const std::string& value) { obj.hasAIAgent = std::stoi(value) != 0; }},
+        {"aiAgentEnabled", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.enabled = std::stoi(value) != 0; }},
+        {"aiAgentUseTargetObject", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.useTargetObject = std::stoi(value) != 0; }},
+        {"aiAgentTargetId", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.targetId = std::stoi(value); }},
+        {"aiAgentDestination", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.aiAgent.destination); }},
+        {"aiAgentSpeed", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.speed = std::stof(value); }},
+        {"aiAgentStoppingDistance", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.stoppingDistance = std::stof(value); }},
+        {"aiAgentRepathInterval", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.repathInterval = std::stof(value); }},
+        {"aiAgentAutoRepath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.autoRepath = std::stoi(value) != 0; }},
+        {"aiAgentAlignToPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.alignToPath = std::stoi(value) != 0; }},
+        {"aiAgentDebugDrawPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.debugDrawPath = std::stoi(value) != 0; }},
         {"hasAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = std::stoi(value) != 0; }},
         {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.animation.enabled = std::stoi(value) != 0; }},
         {"animClipLength", +[](SceneObject& obj, const std::string& value) { obj.animation.clipLength = std::stof(value); }},
@@ -913,6 +982,14 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"animKeyCount", +[](SceneObject& obj, const std::string& value) {
              int count = std::stoi(value);
              obj.animation.keyframes.resize(std::max(0, count));
+         }},
+        {"animEventCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.animation.events.resize(std::max(0, count));
+         }},
+        {"animTrackCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.animation.tracks.resize(std::max(0, count));
          }},
         {"hasSkeletalAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasSkeletalAnimation = std::stoi(value) != 0; }},
         {"skelEnabled", +[](SceneObject& obj, const std::string& value) { obj.skeletal.enabled = std::stoi(value) != 0; }},
@@ -1209,6 +1286,69 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                                 sscanf(value.c_str(), "%f,%f",
                                        &keyframe.bezierOut.x,
                                        &keyframe.bezierOut.y);
+                            }
+                        }
+                    }
+                } else if (key.rfind("animEvent", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 9) {
+                        int idx = std::stoi(key.substr(9, underscore - 9));
+                        if (idx >= 0 && idx < static_cast<int>(currentObj->animation.events.size())) {
+                            std::string sub = key.substr(underscore + 1);
+                            auto& evt = currentObj->animation.events[idx];
+                            if (sub == "time") {
+                                evt.time = std::stof(value);
+                            } else if (sub == "id") {
+                                evt.eventId = value;
+                            } else if (sub == "payload") {
+                                evt.payload = value;
+                            }
+                        }
+                    }
+                } else if (key.rfind("animTrack", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 9) {
+                        int trackIdx = std::stoi(key.substr(9, underscore - 9));
+                        if (trackIdx >= 0 && trackIdx < static_cast<int>(currentObj->animation.tracks.size())) {
+                            std::string sub = key.substr(underscore + 1);
+                            auto& track = currentObj->animation.tracks[trackIdx];
+                            if (sub == "enabled") {
+                                track.enabled = std::stoi(value) != 0;
+                            } else if (sub == "path") {
+                                track.path = value;
+                            } else if (sub == "label") {
+                                track.label = value;
+                            } else if (sub == "default") {
+                                track.defaultValue = std::stof(value);
+                            } else if (sub == "keyCount") {
+                                int count = std::stoi(value);
+                                track.keyframes.resize(std::max(0, count));
+                            } else if (sub.rfind("key", 0) == 0) {
+                                size_t keyUnderscore = sub.find('_');
+                                if (keyUnderscore != std::string::npos && keyUnderscore > 3) {
+                                    int keyIdx = std::stoi(sub.substr(3, keyUnderscore - 3));
+                                    if (keyIdx >= 0 && keyIdx < static_cast<int>(track.keyframes.size())) {
+                                        std::string keySub = sub.substr(keyUnderscore + 1);
+                                        auto& kf = track.keyframes[keyIdx];
+                                        if (keySub == "time") {
+                                            kf.time = std::stof(value);
+                                        } else if (keySub == "value") {
+                                            kf.value = std::stof(value);
+                                        } else if (keySub == "interp") {
+                                            kf.interpolation = static_cast<AnimationInterpolation>(std::stoi(value));
+                                        } else if (keySub == "curve") {
+                                            kf.curveMode = static_cast<AnimationCurveMode>(std::stoi(value));
+                                        } else if (keySub == "in") {
+                                            sscanf(value.c_str(), "%f,%f",
+                                                   &kf.bezierIn.x,
+                                                   &kf.bezierIn.y);
+                                        } else if (keySub == "out") {
+                                            sscanf(value.c_str(), "%f,%f",
+                                                   &kf.bezierOut.x,
+                                                   &kf.bezierOut.y);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

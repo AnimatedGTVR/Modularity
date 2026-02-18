@@ -22,6 +22,7 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <cstdint>
 
 void window_size_callback(GLFWwindow* window, int width, int height);
 fs::path resolveScriptsConfigPath(const Project& project);
@@ -154,11 +155,49 @@ private:
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
     bool showAnimationWindow = false;
+    bool showAIPathfindingWindow = false;
     int animationTargetId = -1;
+    std::vector<int> animationEditTargetIds;
+    bool animationApplyToSelection = true;
     int animationSelectedKey = -1;
+    int animationSelectedEvent = -1;
+    bool animationLogEvents = false;
+    bool animationRecordMode = false;
     float animationCurrentTime = 0.0f;
     bool animationIsPlaying = false;
     float animationLastAppliedTime = -1.0f;
+    struct AIPathBakeSettings {
+        float cellSize = 0.75f;
+        float obstaclePadding = 0.2f;
+        bool allowDiagonal = true;
+        bool autoRebake = false;
+        int maxGridResolution = 512;
+    };
+    struct AIPathGrid {
+        bool baked = false;
+        glm::vec2 origin = glm::vec2(0.0f);
+        int width = 0;
+        int height = 0;
+        float cellSize = 1.0f;
+        std::vector<uint8_t> walkable;
+        std::vector<int> sourceGroundIds;
+        std::vector<int> sourceObstacleIds;
+    };
+    struct AIAgentRuntimeState {
+        std::vector<glm::vec3> path;
+        int nextIndex = 0;
+        float repathTimer = 0.0f;
+        glm::vec3 lastGoal = glm::vec3(0.0f);
+        bool hasLastGoal = false;
+    };
+    AIPathBakeSettings aiPathBakeSettings;
+    AIPathGrid aiPathGrid;
+    std::unordered_map<int, AIAgentRuntimeState> aiAgentRuntimeStates;
+    int aiPreviewAgentId = -1;
+    int aiPreviewTargetId = -1;
+    bool aiPathDrawGrid = true;
+    bool aiPathDrawPath = true;
+    uint64_t aiPathLastSourceHash = 0;
     bool hierarchyShowTexturePreview = false;
     bool audioPreviewLoop = false;
     bool audioPreviewAutoPlay = false;
@@ -418,6 +457,7 @@ private:
     void renderEnvironmentWindow();
     void renderCameraWindow();
     void renderAnimationWindow();
+    void renderAIPathfindingWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter,
                           std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep);
@@ -454,6 +494,7 @@ private:
     void updatePlayerController(float delta);
     void updateRigidbody2D(float delta);
     void updateCameraFollow2D(float delta);
+    void updateAIAgents(float delta);
     void updateSkeletalAnimations(float delta);
     void updateSkinningMatrices();
     void rebuildSkeletalBindings();
@@ -464,6 +505,8 @@ private:
     bool applyUIStylePresetByName(const std::string& name);
     void applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout);
     void buildWorkspaceLayout(WorkspaceMode mode);
+    bool bakeAIPathGrid(bool logResult);
+    bool findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vector<glm::vec3>& outPath) const;
     void autosaveWorkspaceLayout();
     void saveWorkspaceLayout(WorkspaceMode mode) const;
     fs::path getEditorUserSettingsPath() const;

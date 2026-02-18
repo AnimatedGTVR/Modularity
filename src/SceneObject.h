@@ -115,7 +115,9 @@ enum class AnimationInterpolation {
     SmoothStep = 1,
     EaseIn = 2,
     EaseOut = 3,
-    EaseInOut = 4
+    EaseInOut = 4,
+    Step = 5,
+    Cubic = 6
 };
 
 enum class AnimationCurveMode {
@@ -134,6 +136,29 @@ struct AnimationKeyframe {
     glm::vec2 bezierOut = glm::vec2(0.75f, 1.0f);
 };
 
+struct AnimationEvent {
+    float time = 0.0f;
+    std::string eventId;
+    std::string payload;
+};
+
+struct AnimationPropertyKeyframe {
+    float time = 0.0f;
+    float value = 0.0f;
+    AnimationInterpolation interpolation = AnimationInterpolation::SmoothStep;
+    AnimationCurveMode curveMode = AnimationCurveMode::Preset;
+    glm::vec2 bezierIn = glm::vec2(0.25f, 0.0f);
+    glm::vec2 bezierOut = glm::vec2(0.75f, 1.0f);
+};
+
+struct AnimationPropertyTrack {
+    bool enabled = true;
+    std::string path;
+    std::string label;
+    float defaultValue = 0.0f;
+    std::vector<AnimationPropertyKeyframe> keyframes;
+};
+
 struct AnimationComponent {
     bool enabled = true;
     float clipLength = 2.0f;
@@ -141,6 +166,8 @@ struct AnimationComponent {
     bool loop = true;
     bool applyOnScrub = true;
     std::vector<AnimationKeyframe> keyframes;
+    std::vector<AnimationEvent> events;
+    std::vector<AnimationPropertyTrack> tracks;
 };
 
 struct SkeletalAnimationComponent {
@@ -393,6 +420,31 @@ struct ReverbZoneComponent {
     float density = 100.0f;         // 0..100
 };
 
+struct GroundBakedTypeComponent {
+    bool enabled = true;
+    bool includeInBake = true;
+    float areaCost = 1.0f;
+};
+
+struct ObsticleObjectComponent {
+    bool enabled = true;
+    bool carve = true;
+    float padding = 0.2f;
+};
+
+struct AIAgentComponent {
+    bool enabled = true;
+    bool useTargetObject = true;
+    int targetId = -1;
+    glm::vec3 destination = glm::vec3(0.0f);
+    float speed = 2.5f;
+    float stoppingDistance = 0.2f;
+    float repathInterval = 0.5f;
+    bool autoRepath = true;
+    bool alignToPath = true;
+    bool debugDrawPath = true;
+};
+
 class SceneObject {
 public:
     std::string name;
@@ -451,6 +503,12 @@ public:
     AudioSourceComponent audioSource;
     bool hasReverbZone = false;
     ReverbZoneComponent reverbZone;
+    bool hasGroundBakedType = false;
+    GroundBakedTypeComponent groundBakedType;
+    bool hasObsticleObject = false;
+    ObsticleObjectComponent obsticleObject;
+    bool hasAIAgent = false;
+    AIAgentComponent aiAgent;
     bool hasAnimation = false;
     AnimationComponent animation;
     bool hasSkeletalAnimation = false;
