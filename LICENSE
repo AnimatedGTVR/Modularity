@@ -10,7 +10,7 @@ that *uses* the Engine (for example, a game or application) under the following 
    - You may not sell or distribute the Engine itself or any substantial part of it as a standalone product.
 
 2. Modifications to the Engine:
-   - Any modifications to the Engine’s source code must be released under this same license.
+   - Any modifications to Modularity's source code must be released under this same license.
    - Modifications must include a notice describing the changes made.
 
 3. Distribution:
@@ -23,7 +23,5 @@ that *uses* the Engine (for example, a game or application) under the following 
 
 5. Attribution:
    - You must include a visible attribution to the original Engine in your software documentation or about section.
-
----
 
 This license is designed to keep the Engine itself open source, allow closed-source commercial games, and prevent selling the Engine as a product.
