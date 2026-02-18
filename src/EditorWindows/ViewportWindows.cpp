@@ -2294,15 +2294,19 @@ void Engine::renderViewport() {
 
     if (rendererInitialized) {
         glm::mat4 proj = glm::perspective(
-            glm::radians(FOV),
+            glm::radians(buildSettings.editorCameraFov),
             (float)viewportWidth / (float)viewportHeight,
-            NEAR_PLANE, FAR_PLANE
+            buildSettings.editorCameraNear, buildSettings.editorCameraFar
         );
 
         glm::mat4 view = camera.getViewMatrix();
 
         renderer.beginRender(view, proj, camera.position);
-        renderer.renderScene(camera, sceneObjects, selectedObjectId, FOV, NEAR_PLANE, FAR_PLANE, collisionWireframe);
+        renderer.renderScene(camera, sceneObjects, selectedObjectId,
+                            buildSettings.editorCameraFov,
+                            buildSettings.editorCameraNear,
+                            buildSettings.editorCameraFar,
+                            collisionWireframe);
         unsigned int tex = renderer.getViewportTexture();
 
         ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
@@ -2327,7 +2331,7 @@ void Engine::renderViewport() {
             auto clipLineToScreen = [&](glm::vec3 a, glm::vec3 b, ImVec2& outA, ImVec2& outB) -> bool {
                 glm::vec4 va = view * glm::vec4(a, 1.0f);
                 glm::vec4 vb = view * glm::vec4(b, 1.0f);
-                const float nearZ = -NEAR_PLANE;
+                const float nearZ = -buildSettings.editorCameraNear;
                 if (va.z > nearZ && vb.z > nearZ) {
                     return false;
                 }
@@ -5557,6 +5561,15 @@ void Engine::renderPlayerViewport() {
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
         bool imageHovered = ImGui::IsItemHovered();
+        bool showingStartupSplash = false;
+
+        if (playerMode && buildSettings.splashEnabled && buildSettings.splashDurationSeconds > 0.0f) {
+            if (startupSplashStartTime < 0.0) {
+                startupSplashStartTime = glfwGetTime();
+            }
+            const double elapsed = glfwGetTime() - startupSplashStartTime;
+            showingStartupSplash = elapsed < static_cast<double>(buildSettings.splashDurationSeconds);
+        }
 
         auto updateUiCanvas3DInput = [&](const Camera& cam, float fovDeg, float nearPlane, float farPlane) {
             if (!imageHovered) return;
@@ -5617,7 +5630,26 @@ void Engine::renderPlayerViewport() {
             }
         };
 
-        updateUiCanvas3DInput(camera, FOV, NEAR_PLANE, FAR_PLANE);
+        float runtimeFov = buildSettings.editorCameraFov;
+        float runtimeNear = buildSettings.editorCameraNear;
+        float runtimeFar = buildSettings.editorCameraFar;
+        if (playerMode) {
+            const SceneObject* runtimeCam = nullptr;
+            for (const auto& obj : sceneObjects) {
+                if (!obj.enabled || !obj.hasCamera) continue;
+                if (!runtimeCam) runtimeCam = &obj;
+                if (obj.camera.type == SceneCameraType::Player) {
+                    runtimeCam = &obj;
+                    break;
+                }
+            }
+            if (runtimeCam) {
+                runtimeFov = runtimeCam->camera.fov;
+                runtimeNear = std::max(0.01f, runtimeCam->camera.nearClip);
+                runtimeFar = std::max(runtimeNear + 0.01f, runtimeCam->camera.farClip);
+            }
+        }
+        updateUiCanvas3DInput(camera, runtimeFov, runtimeNear, runtimeFar);
 
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float uiScaleX = (viewportWidth > 0) ? (imageSize.x / (float)viewportWidth) : 1.0f;
@@ -6112,7 +6144,50 @@ void Engine::renderPlayerViewport() {
         ImGui::EndChild();
         ImGui::PopStyleVar();
 
-        bool clicked = imageHovered && isPlaying && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !uiInteracting;
+        if (showingStartupSplash) {
+            ImDrawList* splashDraw = ImGui::GetWindowDrawList();
+            splashDraw->AddRectFilled(imageMin, imageMax, IM_COL32(0, 0, 0, 230));
+
+            fs::path splashPath = resolveSplashImagePath();
+            Texture* splashTex = nullptr;
+            if (!splashPath.empty() && fs::exists(splashPath)) {
+                splashTex = renderer.getTexture(splashPath.string());
+            }
+            if (splashTex) {
+                float availW = imageMax.x - imageMin.x;
+                float availH = imageMax.y - imageMin.y;
+                float texW = static_cast<float>(std::max(1, splashTex->GetWidth()));
+                float texH = static_cast<float>(std::max(1, splashTex->GetHeight()));
+                float scale = std::min(availW / texW, availH / texH);
+                scale = std::min(scale, 1.0f);
+                ImVec2 drawSize(texW * scale, texH * scale);
+                ImVec2 drawMin(imageMin.x + (availW - drawSize.x) * 0.5f,
+                               imageMin.y + (availH - drawSize.y) * 0.5f);
+                ImVec2 drawMax(drawMin.x + drawSize.x, drawMin.y + drawSize.y);
+                splashDraw->AddImage((ImTextureID)(intptr_t)splashTex->GetID(), drawMin, drawMax,
+                                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+            } else {
+                const char* fallback = "Loading...";
+                ImVec2 textSize = ImGui::CalcTextSize(fallback);
+                ImVec2 textPos((imageMin.x + imageMax.x) * 0.5f - textSize.x * 0.5f,
+                               (imageMin.y + imageMax.y) * 0.5f - textSize.y * 0.5f);
+                splashDraw->AddText(textPos, IM_COL32(240, 240, 240, 255), fallback);
+            }
+
+            std::string splashTitle = buildSettings.buildName;
+            if (splashTitle.empty()) splashTitle = "Game";
+            if (!buildSettings.version.empty()) splashTitle += " " + buildSettings.version;
+            ImVec2 titleSize = ImGui::CalcTextSize(splashTitle.c_str());
+            splashDraw->AddText(ImVec2((imageMin.x + imageMax.x) * 0.5f - titleSize.x * 0.5f,
+                                       imageMax.y - titleSize.y - 32.0f),
+                               IM_COL32(240, 240, 240, 230), splashTitle.c_str());
+        }
+
+        if (showingStartupSplash && gameViewCursorLocked) {
+            gameViewCursorLocked = false;
+        }
+        bool clicked = imageHovered && isPlaying && !showingStartupSplash &&
+                       ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !uiInteracting;
         if (clicked && !gameViewCursorLocked) {
             gameViewCursorLocked = true;
         }

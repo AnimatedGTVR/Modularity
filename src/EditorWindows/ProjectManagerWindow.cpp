@@ -215,6 +215,55 @@ static void DrawBlurredImageCover(ImDrawList* list, ImTextureID texId, const ImV
                        texW, texH, tint, 0.0f);
     }
 }
+
+static fs::path MakeRelativeIfInside(const fs::path& absolutePath, const fs::path& baseRoot) {
+    if (absolutePath.empty()) return absolutePath;
+    std::error_code ec;
+    fs::path abs = absolutePath.is_absolute() ? absolutePath : fs::absolute(absolutePath, ec);
+    if (ec) abs = absolutePath;
+    fs::path rel = fs::relative(abs, baseRoot, ec);
+    if (ec || rel.empty()) return abs;
+    for (const auto& part : rel) {
+        if (part == "..") return abs;
+    }
+    return rel;
+}
+
+static bool SaveScriptsConfig(const fs::path& path, const ScriptBuildConfig& config, const fs::path& projectRoot, std::string& error) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        error = "Failed to create config folder: " + ec.message();
+        return false;
+    }
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        error = "Failed to open scripts config for writing: " + path.string();
+        return false;
+    }
+
+    file << "# scripts.modu\n";
+    file << "cppStandard=" << config.cppStandard << "\n";
+    file << "scriptsDir=" << MakeRelativeIfInside(config.scriptsDir, projectRoot).generic_string() << "\n";
+    file << "outDir=" << MakeRelativeIfInside(config.outDir, projectRoot).generic_string() << "\n";
+    for (const auto& include : config.includeDirs) {
+        file << "includeDir=" << MakeRelativeIfInside(include, projectRoot).generic_string() << "\n";
+    }
+    for (const auto& define : config.defines) {
+        if (define.empty()) continue;
+        file << "define=" << define << "\n";
+    }
+    for (const auto& lib : config.linuxLinkLibs) {
+        if (lib.empty()) continue;
+        file << "linux.linkLib=" << lib << "\n";
+    }
+    for (const auto& lib : config.windowsLinkLibs) {
+        if (lib.empty()) continue;
+        file << "win.linkLib=" << lib << "\n";
+    }
+    return true;
+}
 } // namespace
 #pragma endregion
 
@@ -926,10 +975,16 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::Separator();
 
     static int selectedTab = 0;
-    const char* tabs[] = { "Scenes", "Packages", "Assets" };
+    const char* tabs[] = { "Scenes", "Packages", "Assets", "Editor", "Build", "Compilation" };
+    constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
+    if (selectedTab < 0 || selectedTab >= tabCount) {
+        selectedTab = 0;
+    }
 
     ImGui::BeginChild("SettingsNav", ImVec2(180, 0), true);
-    for (int i = 0; i < 3; ++i) {
+    ImGui::TextDisabled("Categories");
+    ImGui::Separator();
+    for (int i = 0; i < tabCount; ++i) {
         if (ImGui::Selectable(tabs[i], selectedTab == i, 0, ImVec2(0, 32))) {
             selectedTab = i;
         }
@@ -1184,6 +1239,403 @@ void Engine::renderProjectBrowserPanel() {
                     ImGui::EndTooltip();
                 }
             }
+        }
+    } else if (selectedTab == 3) {
+        bool editorSettingsChanged = false;
+        bool buildSettingsChanged = false;
+
+        if (ImGui::CollapsingHeader("Player / Viewport", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const char* resolutionOptions[] = { "Window", "1080p", "720p", "1440p", "Custom" };
+
+            if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= static_cast<int>(IM_ARRAYSIZE(resolutionOptions))) {
+                gameViewportResolutionIndex = 0;
+            }
+            int resolutionIndex = gameViewportResolutionIndex;
+            if (ImGui::Combo("Preview Resolution", &resolutionIndex, resolutionOptions, IM_ARRAYSIZE(resolutionOptions)))
+            {
+                gameViewportResolutionIndex = resolutionIndex;
+                editorSettingsChanged = true;
+            }
+
+            if (gameViewportResolutionIndex == 4) {
+                if (ImGui::DragInt("Custom Width", &gameViewportCustomWidth, 1.0f, 64, 8192)) {
+                    gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
+                    editorSettingsChanged = true;
+                }
+                if (ImGui::DragInt("Custom Height", &gameViewportCustomHeight, 1.0f, 64, 8192)) {
+                    gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
+                    editorSettingsChanged = true;
+                }
+            }
+            if (ImGui::Checkbox("Auto Fit Preview", &gameViewportAutoFit)) {
+                editorSettingsChanged = true;
+            }
+            ImGui::BeginDisabled(gameViewportAutoFit);
+            float zoomPercent = gameViewportZoom * 100.0f;
+            if (ImGui::SliderFloat("Preview Zoom", &zoomPercent, 20.0f, 400.0f, "%.0f%%")) {
+                gameViewportZoom = std::clamp(zoomPercent / 100.0f, 0.2f, 4.0f);
+                editorSettingsChanged = true;
+            }
+            ImGui::EndDisabled();
+
+            if (ImGui::Checkbox("Show Game Profiler", &showGameProfiler)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Canvas Guides", &showCanvasOverlay)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
+        }
+
+        if (ImGui::CollapsingHeader("Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
+            glm::vec3 ambient = renderer.getAmbientColor();
+            if (ImGui::ColorEdit3("Ambient Color", &ambient.x)) {
+                renderer.setAmbientColor(ambient);
+                buildSettings.rendererAmbientColor = ambient;
+                buildSettingsChanged = true;
+            }
+
+            int shadowResolution = renderer.getShadowMapResolution();
+            if (ImGui::SliderInt("Shadow Resolution", &shadowResolution, 128, 4096)) {
+                renderer.setShadowMapResolution(shadowResolution);
+                buildSettings.rendererShadowResolution = renderer.getShadowMapResolution();
+                buildSettingsChanged = true;
+            }
+
+            bool shaderAutoReload = renderer.isShaderAutoReloadEnabled();
+            if (ImGui::Checkbox("Auto Reload Shaders", &shaderAutoReload)) {
+                renderer.setShaderAutoReload(shaderAutoReload);
+                buildSettings.rendererAutoReloadShaders = shaderAutoReload;
+                buildSettingsChanged = true;
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Editor Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::DragFloat("Move Speed", &camera.moveSpeed, 0.1f, 0.01f, 100.0f, "%.2f")) {
+                camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
+                camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+                editorSettingsChanged = true;
+            }
+            if (ImGui::DragFloat("Sprint Speed", &camera.sprintSpeed, 0.1f, 0.01f, 200.0f, "%.2f")) {
+                camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+                editorSettingsChanged = true;
+            }
+            if (ImGui::Checkbox("Smooth Movement", &camera.smoothMovement)) editorSettingsChanged = true;
+            ImGui::BeginDisabled(!camera.smoothMovement);
+            if (ImGui::DragFloat("Acceleration", &camera.acceleration, 0.1f, 0.1f, 200.0f, "%.2f")) {
+                camera.acceleration = std::max(0.1f, camera.acceleration);
+                editorSettingsChanged = true;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::SliderFloat("Mouse Sensitivity", &camera.mouseSensitivity, 0.001f, 1.0f, "%.3f")) {
+                camera.mouseSensitivity = std::clamp(camera.mouseSensitivity, 0.001f, 1.0f);
+                editorSettingsChanged = true;
+            }
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Projection FOV", &buildSettings.editorCameraFov, 20.0f, 140.0f, "%.1f")) {
+                buildSettingsChanged = true;
+            }
+            if (ImGui::DragFloat("Near Clip", &buildSettings.editorCameraNear, 0.01f, 0.01f, buildSettings.editorCameraFar - 0.01f, "%.3f")) {
+                buildSettings.editorCameraNear = std::max(0.01f, std::min(buildSettings.editorCameraNear, buildSettings.editorCameraFar - 0.01f));
+                buildSettingsChanged = true;
+            }
+            if (ImGui::DragFloat("Far Clip", &buildSettings.editorCameraFar, 0.1f, buildSettings.editorCameraNear + 0.05f, 5000.0f, "%.1f")) {
+                buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 0.05f, buildSettings.editorCameraFar);
+                buildSettingsChanged = true;
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Debug / Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Checkbox("Scene Gizmos", &showSceneGizmos)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("3D Grid", &showSceneGrid3D)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Collision Wireframe", &collisionWireframe)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("FPS Cap", &fpsCapEnabled)) editorSettingsChanged = true;
+            ImGui::BeginDisabled(!fpsCapEnabled);
+            if (ImGui::DragFloat("FPS Target", &fpsCap, 1.0f, 1.0f, 500.0f, "%.0f")) {
+                fpsCap = std::max(1.0f, fpsCap);
+                editorSettingsChanged = true;
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (editorSettingsChanged) {
+            saveEditorUserSettings();
+        }
+        if (buildSettingsChanged) {
+            saveBuildSettings();
+        }
+    } else if (selectedTab == 4) {
+        bool changed = false;
+
+        if (ImGui::CollapsingHeader("Build Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const char* targets[] = {"Windows", "Linux", "Android"};
+            int targetIndex = static_cast<int>(buildSettings.platform);
+            if (ImGui::Combo("Platform", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
+                buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
+                changed = true;
+            }
+
+            const char* arches[] = {"x86_64", "x86"};
+            int archIndex = (buildSettings.architecture == "x86") ? 1 : 0;
+            if (ImGui::Combo("Architecture", &archIndex, arches, IM_ARRAYSIZE(arches))) {
+                buildSettings.architecture = arches[archIndex];
+                changed = true;
+            }
+
+            if (ImGui::Checkbox("Development Build", &buildSettings.developmentBuild)) changed = true;
+            if (ImGui::Checkbox("Script Debugging", &buildSettings.scriptDebugging)) changed = true;
+            if (ImGui::Checkbox("Auto-connect Profiler", &buildSettings.autoConnectProfiler)) changed = true;
+            if (ImGui::Checkbox("Deep Profiling", &buildSettings.deepProfiling)) changed = true;
+            if (ImGui::Checkbox("Scripts Only Build", &buildSettings.scriptsOnlyBuild)) changed = true;
+            if (ImGui::Checkbox("Server Build", &buildSettings.serverBuild)) changed = true;
+
+            const char* compressionOptions[] = {"Default", "None", "LZ4", "LZ4HC"};
+            int compressionIndex = 0;
+            for (int i = 0; i < IM_ARRAYSIZE(compressionOptions); ++i) {
+                if (buildSettings.compressionMethod == compressionOptions[i]) {
+                    compressionIndex = i;
+                    break;
+                }
+            }
+            if (ImGui::Combo("Compression", &compressionIndex, compressionOptions, IM_ARRAYSIZE(compressionOptions))) {
+                buildSettings.compressionMethod = compressionOptions[compressionIndex];
+                changed = true;
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Scenes In Build", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::BeginChild("ProjectBuildScenes", ImVec2(0, 180), true);
+            for (int i = 0; i < static_cast<int>(buildSettings.scenes.size()); ++i) {
+                BuildSceneEntry& entry = buildSettings.scenes[i];
+                ImGui::PushID(i);
+                bool enabled = entry.enabled;
+                if (ImGui::Checkbox("##enabled", &enabled)) {
+                    entry.enabled = enabled;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Selectable(entry.name.c_str(), buildSettingsSelectedIndex == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                    buildSettingsSelectedIndex = i;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Add Current Scene")) {
+                if (addSceneToBuildSettings(projectManager.currentProject.currentSceneName, true)) {
+                    changed = true;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add All Scenes")) {
+                auto scenes = projectManager.currentProject.getSceneList();
+                for (const auto& scene : scenes) {
+                    if (addSceneToBuildSettings(scene, scene == projectManager.currentProject.currentSceneName)) {
+                        changed = true;
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Remove Selected")) {
+                if (buildSettingsSelectedIndex >= 0 &&
+                    buildSettingsSelectedIndex < static_cast<int>(buildSettings.scenes.size())) {
+                    buildSettings.scenes.erase(buildSettings.scenes.begin() + buildSettingsSelectedIndex);
+                    if (buildSettingsSelectedIndex >= static_cast<int>(buildSettings.scenes.size())) {
+                        buildSettingsSelectedIndex = static_cast<int>(buildSettings.scenes.size()) - 1;
+                    }
+                    changed = true;
+                }
+            }
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Export");
+        if (ImGui::Button("Open Advanced Build Window")) {
+            showBuildSettings = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save Build Profile")) {
+            saveBuildSettings();
+        }
+
+        if (changed) {
+            saveBuildSettings();
+        }
+    } else if (selectedTab == 5) {
+        struct CompilationUiState {
+            fs::path configPath;
+            ScriptBuildConfig config;
+            bool loaded = false;
+            bool dirty = false;
+            std::string status;
+        };
+        static CompilationUiState ui;
+
+        fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
+        if (!ui.loaded || ui.configPath != configPath) {
+            ui = CompilationUiState{};
+            ui.configPath = configPath;
+            std::string error;
+            if (!scriptCompiler.loadConfig(configPath, ui.config, error)) {
+                ui.status = "Creating new scripts config (previous load failed): " + error;
+                ui.config = ScriptBuildConfig{};
+                ui.config.scriptsDir = projectManager.currentProject.projectPath / "Assets" / "Scripts";
+                ui.config.outDir = projectManager.currentProject.projectPath / "Library" / "CompiledScripts";
+                ui.loaded = true;
+            } else {
+                ui.status = "Loaded " + configPath.filename().string();
+                ui.loaded = true;
+            }
+        }
+
+        bool editorSettingsChanged = false;
+        if (ImGui::CollapsingHeader("Compiler Workflow", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::Checkbox("Auto-compile on Save", &scriptEditorState.autoCompileOnSave)) {
+                editorSettingsChanged = true;
+            }
+            float interval = static_cast<float>(scriptAutoCompileInterval);
+            if (ImGui::SliderFloat("Auto-compile Scan Interval (s)", &interval, 0.1f, 10.0f, "%.2f")) {
+                scriptAutoCompileInterval = std::clamp(static_cast<double>(interval), 0.1, 10.0);
+                editorSettingsChanged = true;
+            }
+        }
+
+        if (ImGui::CollapsingHeader("scripts.modu", ImGuiTreeNodeFlags_DefaultOpen)) {
+            auto editString = [&](const char* label, std::string& value, size_t capacity = 1024) {
+                std::vector<char> buf(capacity, '\0');
+                std::snprintf(buf.data(), buf.size(), "%s", value.c_str());
+                if (ImGui::InputText(label, buf.data(), buf.size())) {
+                    value = buf.data();
+                    ui.dirty = true;
+                }
+            };
+            auto editPath = [&](const char* label, fs::path& value, size_t capacity = 1024) {
+                std::string text = value.generic_string();
+                std::vector<char> buf(capacity, '\0');
+                std::snprintf(buf.data(), buf.size(), "%s", text.c_str());
+                if (ImGui::InputText(label, buf.data(), buf.size())) {
+                    value = fs::path(buf.data());
+                    ui.dirty = true;
+                }
+            };
+
+            const char* cppStd[] = {"c++17", "c++20", "c++23", "gnu++20"};
+            int cppIdx = 1;
+            for (int i = 0; i < IM_ARRAYSIZE(cppStd); ++i) {
+                if (ui.config.cppStandard == cppStd[i]) {
+                    cppIdx = i;
+                    break;
+                }
+            }
+            if (ImGui::Combo("C++ Standard", &cppIdx, cppStd, IM_ARRAYSIZE(cppStd))) {
+                ui.config.cppStandard = cppStd[cppIdx];
+                ui.dirty = true;
+            }
+
+            editPath("Scripts Directory", ui.config.scriptsDir);
+            editPath("Output Directory", ui.config.outDir);
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Include Directories");
+            for (size_t i = 0; i < ui.config.includeDirs.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                editPath("##inc", ui.config.includeDirs[i], 1200);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    ui.config.includeDirs.erase(ui.config.includeDirs.begin() + static_cast<long>(i));
+                    ui.dirty = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Add Include Directory")) {
+                ui.config.includeDirs.emplace_back(fs::path());
+                ui.dirty = true;
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Defines");
+            for (size_t i = 0; i < ui.config.defines.size(); ++i) {
+                ImGui::PushID(static_cast<int>(1000 + i));
+                editString("##def", ui.config.defines[i], 1024);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    ui.config.defines.erase(ui.config.defines.begin() + static_cast<long>(i));
+                    ui.dirty = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Add Define")) {
+                ui.config.defines.push_back("");
+                ui.dirty = true;
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Linux Link Libraries");
+            for (size_t i = 0; i < ui.config.linuxLinkLibs.size(); ++i) {
+                ImGui::PushID(static_cast<int>(2000 + i));
+                editString("##linlib", ui.config.linuxLinkLibs[i], 512);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    ui.config.linuxLinkLibs.erase(ui.config.linuxLinkLibs.begin() + static_cast<long>(i));
+                    ui.dirty = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Add Linux Lib")) {
+                ui.config.linuxLinkLibs.push_back("");
+                ui.dirty = true;
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Windows Link Libraries");
+            for (size_t i = 0; i < ui.config.windowsLinkLibs.size(); ++i) {
+                ImGui::PushID(static_cast<int>(3000 + i));
+                editString("##winlib", ui.config.windowsLinkLibs[i], 512);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove")) {
+                    ui.config.windowsLinkLibs.erase(ui.config.windowsLinkLibs.begin() + static_cast<long>(i));
+                    ui.dirty = true;
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("Add Windows Lib")) {
+                ui.config.windowsLinkLibs.push_back("");
+                ui.dirty = true;
+            }
+
+            ImGui::Spacing();
+            if (ImGui::Button("Reload scripts.modu")) {
+                ui.loaded = false;
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!ui.dirty);
+            if (ImGui::Button("Save scripts.modu")) {
+                std::string error;
+                if (SaveScriptsConfig(ui.configPath, ui.config, projectManager.currentProject.projectPath, error)) {
+                    ui.status = "Saved " + ui.configPath.filename().string();
+                    ui.dirty = false;
+                    scriptingFilesDirty = true;
+                    scriptLastAutoCompileTime.clear();
+                    autoCompileQueue.clear();
+                    autoCompileQueued.clear();
+                    addConsoleMessage("Saved scripts config: " + ui.configPath.string(), ConsoleMessageType::Success);
+                } else {
+                    ui.status = error;
+                    addConsoleMessage(error, ConsoleMessageType::Error);
+                }
+            }
+            ImGui::EndDisabled();
+            if (!ui.status.empty()) {
+                ImGui::TextDisabled("%s", ui.status.c_str());
+            }
+        }
+
+        if (editorSettingsChanged) {
+            saveEditorUserSettings();
         }
     }
 

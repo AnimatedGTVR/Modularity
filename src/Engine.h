@@ -160,8 +160,6 @@ private:
     bool animationIsPlaying = false;
     float animationLastAppliedTime = -1.0f;
     bool hierarchyShowTexturePreview = false;
-    bool hierarchyPreviewNearest = false;
-    std::unordered_map<std::string, bool> texturePreviewFilterOverrides;
     bool audioPreviewLoop = false;
     bool audioPreviewAutoPlay = false;
     std::string audioPreviewSelectedPath;
@@ -266,6 +264,13 @@ private:
     struct BuildSettings {
         BuildPlatform platform = BuildPlatform::Windows;
         std::string architecture = "x86_64";
+        std::string companyName = "DefaultCompany";
+        std::string buildName = "MyProject";
+        std::string version = "0.1.0";
+        std::string splashImagePath;
+        bool splashEnabled = false;
+        float splashDurationSeconds = 2.5f;
+        bool packageStandaloneArchive = true;
         bool developmentBuild = false;
         bool autoConnectProfiler = false;
         bool scriptDebugging = false;
@@ -273,6 +278,12 @@ private:
         bool scriptsOnlyBuild = false;
         bool serverBuild = false;
         std::string compressionMethod = "Default";
+        glm::vec3 rendererAmbientColor = glm::vec3(0.2f, 0.2f, 0.2f);
+        int rendererShadowResolution = 512;
+        bool rendererAutoReloadShaders = true;
+        float editorCameraFov = FOV;
+        float editorCameraNear = NEAR_PLANE;
+        float editorCameraFar = FAR_PLANE;
         std::vector<BuildSceneEntry> scenes;
     };
     BuildSettings buildSettings;
@@ -282,6 +293,8 @@ private:
         bool success = false;
         std::string message;
         fs::path outputDir;
+        std::string executableName;
+        fs::path archivePath;
     };
     struct ExportJobState {
         bool active = false;
@@ -292,6 +305,8 @@ private:
         std::string status;
         std::string log;
         fs::path outputDir;
+        std::string executableName;
+        fs::path archivePath;
         bool runAfter = false;
         std::future<ExportJobResult> future;
     };
@@ -319,6 +334,8 @@ private:
     std::unordered_map<std::string, fs::file_time_type> scriptLastAutoCompileTime;
     std::deque<fs::path> autoCompileQueue;
     std::unordered_set<std::string> autoCompileQueued;
+    std::unordered_set<std::string> nativeScriptMissingLogged;
+    std::unordered_set<std::string> nativeScriptLoadErrorLogged;
     bool managedAutoCompileQueued = false;
     double scriptAutoCompileLastCheck = 0.0;
     double scriptAutoCompileInterval = 0.5;
@@ -332,6 +349,7 @@ private:
     double projectLoadStartTime = 0.0;
     std::string projectLoadPath;
     std::future<ProjectLoadResult> projectLoadFuture;
+    double startupSplashStartTime = -1.0;
     bool sceneLoadInProgress = false;
     float sceneLoadProgress = 0.0f;
     std::string sceneLoadStatus;
@@ -458,6 +476,8 @@ private:
     void loadBuildSettings();
     void saveBuildSettings();
     bool addSceneToBuildSettings(const std::string& sceneName, bool enabled);
+    fs::path resolveSplashImagePath() const;
+    void applyBuildWindowTitle();
     void loadAutoStartConfig();
     void applyAutoStartMode();
     void startExportBuild(const fs::path& outputDir, bool runAfter);
@@ -529,6 +549,10 @@ public:
     void markProjectDirty();
     // Script-accessible logging wrapper
     void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
+    // Runtime input queries for script helpers.
+    bool isRuntimeKeyDown(int key) const;
+    bool isRuntimeMouseDown(int button) const;
+    glm::vec2 getRuntimeMouseDelta() const;
     int getSelectedObjectId() const;
     // Script-accessible physics helpers
     bool setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity);

@@ -6,7 +6,7 @@ This document explains how the Modularity C++ engine is structured, how projects
 Modularity is a native C++ engine with an integrated editor. The core is built around:
 - A scene graph made of `SceneObject` instances with component-style flags/data.
 - An OpenGL renderer with post-processing and UI rendering.
-- A scripting system that hot-compiles C++ into shared libraries and optionally hosts managed C# via Mono.
+- A scripting system that hot-compiles native C++/C into shared libraries and optionally hosts managed C# via Mono.
 - Optional PhysX-based 3D physics, plus a lightweight built-in 2D simulation.
 - Audio via miniaudio with spatial playback and reverb zones.
 
@@ -53,6 +53,8 @@ YourProject/
   ProjectUserSettings/
     ProjectLayout/
     ScriptSettings/
+  Scripts/
+    Managed/            # optional, created when managed C# scripting is set up
   project.modu
   scripts.modu
   packages.modu
@@ -60,7 +62,7 @@ YourProject/
 
 Key files:
 - `project.modu`: project name + last opened scene.
-- `scripts.modu`: script build configuration.
+- `scripts.modu`: native script build configuration (`Scripts.modu` legacy name is still detected).
 - `packages.modu`: script dependency manifest.
 - Scenes live in `Assets/Scenes` with extension `.scene`.
 
@@ -92,7 +94,7 @@ Examples of built-in types:
 - **Light**: light type, color, intensity, range, and light-specific parameters.
 - **Camera**: FOV, near/far, 2D settings, post-FX toggle.
 - **PostFX**: global effects settings (bloom, color adjust, motion blur, vignette, chromatic aberration, AO).
-- **Scripts**: one or more script components (C++ or managed C#).
+- **Scripts**: one or more script components (`C++`, `C`, or managed `C#`).
 
 ### Physics components
 3D (PhysX, optional):
@@ -171,6 +173,7 @@ For full details, see:
 
 ### Managed C# scripting (experimental)
 Modularity can host managed scripts using Mono, with a minimal API surface.
+Managed project files are under `Scripts/Managed` (separate from `Assets/Scripts` used for native scripts).
 
 For setup and caveats, see:
 - `docs/Scripting.md`

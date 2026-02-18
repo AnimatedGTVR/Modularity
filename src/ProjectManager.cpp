@@ -304,7 +304,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=17\n";
+        file << "version=18\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "objectCount=" << objects.size() << "\n";
@@ -483,6 +483,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
             file << "materialShininess=" << obj.material.shininess << "\n";
             file << "materialTextureMix=" << obj.material.textureMix << "\n";
+            file << "materialTextureFilter=" << static_cast<int>(obj.material.textureFilter) << "\n";
             file << "materialPath=" << obj.materialPath << "\n";
             file << "albedoTex=" << obj.albedoTexturePath << "\n";
             file << "overlayTex=" << obj.overlayTexturePath << "\n";
@@ -927,6 +928,12 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"materialSpecular", +[](SceneObject& obj, const std::string& value) { obj.material.specularStrength = std::stof(value); }},
         {"materialShininess", +[](SceneObject& obj, const std::string& value) { obj.material.shininess = std::stof(value); }},
         {"materialTextureMix", +[](SceneObject& obj, const std::string& value) { obj.material.textureMix = std::stof(value); }},
+        {"materialTextureFilter", +[](SceneObject& obj, const std::string& value) {
+             int filterValue = std::stoi(value);
+             obj.material.textureFilter = (filterValue == 1)
+                 ? MaterialProperties::TextureFilter::Point
+                 : MaterialProperties::TextureFilter::Bilinear;
+         }},
         {"materialPath", +[](SceneObject& obj, const std::string& value) { obj.materialPath = value; }},
         {"albedoTex", +[](SceneObject& obj, const std::string& value) { obj.albedoTexturePath = value; }},
         {"overlayTex", +[](SceneObject& obj, const std::string& value) { obj.overlayTexturePath = value; }},

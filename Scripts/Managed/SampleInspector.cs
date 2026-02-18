@@ -5,6 +5,7 @@ namespace ModuCPP;
 public class SampleInspector
 {
     private bool autoRotate = false;
+    private bool ensureRigidbody = false;
     [DragSpeed(1.0f)] private Vec3 spinSpeed = new Vec3(0f, 45f, 0f);
     [DragSpeed(0.1f)] private Vec3 offset = new Vec3(0f, 1f, 0f);
     private ModuObject targetObject;
@@ -13,7 +14,9 @@ public class SampleInspector
     {
         var context = new Context(ctx);
         context.AutoSettingsFrom(this, save: false);
-        context.EnsureRigidbody(useGravity: true, kinematic: false);
+        if (ensureRigidbody) {
+            context.EnsureRigidbody(useGravity: true, kinematic: false);
+        }
         context.AddConsoleMessage("Managed script begin (C#)", ConsoleMessageType.Info);
     }
 

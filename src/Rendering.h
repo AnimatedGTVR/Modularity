@@ -117,9 +117,8 @@ private:
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     unsigned int debugWhiteTexture = 0;
-    std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
-    std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheLinear;
-    std::unordered_map<std::string, std::unique_ptr<Texture>> previewTextureCacheNearest;
+    std::unordered_map<std::string, std::unique_ptr<Texture>> textureCacheBilinear;
+    std::unordered_map<std::string, std::unique_ptr<Texture>> textureCachePoint;
     struct ShaderEntry {
         std::unique_ptr<Shader> shader;
         fs::file_time_type vertTime;
@@ -179,12 +178,15 @@ public:
     ~Renderer();
 
     void initialize();
-    Texture* getTexture(const std::string& path);
-    Texture* getTexturePreview(const std::string& path, bool nearest);
+    Texture* getTexture(const std::string& path, MaterialProperties::TextureFilter filter = MaterialProperties::TextureFilter::Bilinear);
     Shader* getShader(const std::string& vert, const std::string& frag);
     bool forceReloadShader(const std::string& vert, const std::string& frag);
     void setAmbientColor(const glm::vec3& color) { ambientColor = color; }
     glm::vec3 getAmbientColor() const { return ambientColor; }
+    void setShadowMapResolution(int resolution) { shadowMapResolution = std::clamp(resolution, 128, 4096); }
+    int getShadowMapResolution() const { return shadowMapResolution; }
+    void setShaderAutoReload(bool enabled) { autoReloadShaders = enabled; }
+    bool isShaderAutoReloadEnabled() const { return autoReloadShaders; }
     void resize(int w, int h);
     int getWidth() const { return currentWidth; }
     int getHeight() const { return currentHeight; }

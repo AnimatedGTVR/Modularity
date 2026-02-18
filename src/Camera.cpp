@@ -10,8 +10,9 @@ void Camera::processMouse(double xpos, double ypos) {
         firstMouse = false;
     }
 
-    float xoffset = (xpos - lastX) * SENSITIVITY;
-    float yoffset = (lastY - ypos) * SENSITIVITY;
+    float sens = std::max(0.001f, mouseSensitivity);
+    float xoffset = (xpos - lastX) * sens;
+    float yoffset = (lastY - ypos) * sens;
     lastX = xpos;
     lastY = ypos;
 

@@ -13,6 +13,7 @@ public:
     float sprintSpeed = 10.0f;
     float acceleration = 15.0f;
     bool smoothMovement = true;
+    float mouseSensitivity = SENSITIVITY;
     float yaw = -90.0f;
     float pitch = 0.0f;
     float speed = CAMERA_SPEED;

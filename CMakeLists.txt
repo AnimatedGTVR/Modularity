@@ -57,6 +57,9 @@ option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
 
 # ==================== Third-party libraries ====================
 
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation" FORCE)
+set(ASSIMP_BUILD_DOCS OFF CACHE BOOL "Build Assimp documentation" FORCE)
+
 add_subdirectory(src/ThirdParty/glfw EXCLUDE_FROM_ALL)
 find_package(OpenGL REQUIRED)
 

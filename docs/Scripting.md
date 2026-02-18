@@ -1,10 +1,10 @@
 ---
-title: Native Scripting (C++ and C)
-description: Hot-compiled native C++ and C scripts, per-object state, ImGui inspectors, and runtime/editor hooks.
+title: Scripting (C++, C, and C#)
+description: Hot-compiled native C++/C scripts plus managed C# scripting, with per-object state, ImGui inspectors, and runtime/editor hooks.
 ---
 
-# Native Scripting (C++ and C)
-Scripts in Modularity are native C++ or C code compiled into shared libraries and loaded at runtime. They run per scene object and can optionally draw ImGui UI in the inspector and in custom editor windows.
+# Scripting (C++, C, and C#)
+Scripts in Modularity can be native C++/C (compiled to shared libraries) or managed C# (loaded through the embedded Mono host). They run per scene object and can optionally draw ImGui UI in the inspector and in custom editor windows.
 
 > Notes up front:
 > - Scripts are not sandboxed. They can crash the editor/game if they dereference bad pointers or do unsafe work.
@@ -14,10 +14,11 @@ Scripts in Modularity are native C++ or C code compiled into shared libraries an
 - [Quickstart](#quickstart)
 - [C scripting (C API bridge)](#c-scripting-c-api-bridge)
 - [C# managed scripting (experimental)](#c-managed-scripting-experimental)
-- [Scripts.modu](#scriptsmodu)
+- [scripts.modu](#scriptsmodu)
 - [How compilation works](#how-compilation-works)
 - [Lifecycle hooks](#lifecycle-hooks)
 - [ScriptContext](#scriptcontext)
+- [C API quick reference](#c-api-quick-reference)
 - [ImGui in scripts](#imgui-in-scripts)
 - [Per-script settings](#per-script-settings)
 - [UI scripting](#ui-scripting)
@@ -29,7 +30,7 @@ Scripts in Modularity are native C++ or C code compiled into shared libraries an
 - [Templates](#templates)
 
 ## Quickstart
-1. Create a script file under `Scripts/` (e.g. `Scripts/MyScript.cpp`).
+1. Create a script file under `Assets/Scripts/` (e.g. `Assets/Scripts/Runtime/MyScript.cpp`).
 2. Select an object in the scene.
 3. In the Inspector, add/enable a script component and set its path:
    - In the **Scripts** section, set `Path` OR click **Use Selection** after selecting the file in the File Browser.
@@ -38,10 +39,15 @@ Scripts in Modularity are native C++ or C code compiled into shared libraries an
    - In the Inspector’s script component menu, choose **Compile**.
 5. Implement a tick hook (`TickUpdate`) and observe behavior in play mode.
 
+Language options in the Script component:
+- `C++` - native script with `ScriptContext` helpers.
+- `C` - native script through `ScriptRuntimeCAPI.h` + `Modu_*` hooks.
+- `C#` - managed script loaded from an assembly + type name.
+
 ## C scripting (C API bridge)
 You can also write native scripts in plain C (`.c`). The compiler generates a C++ bridge automatically and links it with your C object file.
 
-1. Create `Scripts/MyScript.c` (or use **Project window -> New -> C Script**).
+1. Create `Assets/Scripts/Runtime/MyScript.c` (or use **Project window -> New -> C Script**).
 2. In Inspector -> Script component, set `Language` to **C** and assign the file.
 3. Compile as usual (right-click file -> **Compile Script** or script component menu -> **Compile**).
 
@@ -68,56 +74,59 @@ Supported C hook names (all optional):
 - `Modu_ExitRenderEditorWindow`
 
 ## C# managed scripting (experimental)
-Modularity can host managed C# scripts via the .NET runtime. This is an early, minimal integration
+Modularity can host managed C# scripts via Mono. This is an early, minimal integration
 intended for movement/transform tests and simple Rigidbody control.
 
-1. Build the managed project (this now happens automatically when you compile a C# script):
+1. Build the managed project (this also happens automatically when you compile a C# script):
    - `dotnet build Scripts/Managed/ModuCPP.csproj`
 2. In the Inspector, add a Script component and set:
    - `Language` = **C#**
-   - `Assembly Path` = `Scripts/Managed/bin/Debug/net10.0/ModuCPP.dll` (or point at `Scripts/Managed/SampleInspector.cs`)
+   - `Assembly Path` = `Scripts/Managed/bin/Debug/netstandard2.0/ModuCPP.dll` (or point at a `.cs` file in `Scripts/Managed/`)
    - `Type` = `ModuCPP.SampleInspector`
 3. Enter play mode. The sample script will auto-rotate the object.
 
 Notes:
-- The `ModuCPP.runtimeconfig.json` produced by `dotnet build` must sit next to the DLL.
 - The managed host currently expects the script assembly to also contain `ModuCPP.Host`
   (use the provided `Scripts/Managed/ModuCPP.csproj` as the entry assembly).
 - The managed API surface is tiny for now: position/rotation/scale, basic Rigidbody velocity/forces,
   settings, and console logging.
-- Requires a local .NET runtime (Windows/Linux). If the runtime is missing, the engine will fail to
+- Requires Mono runtime support in the engine build plus `dotnet` to compile the managed project.
+  If runtime setup is missing, the engine will fail to
   initialize managed scripts and report the error in the inspector.
-- Managed hooks should be exported as `Script_Begin`, `Script_TickUpdate`, etc. via
-  `[UnmanagedCallersOnly]` in the C# script class.
+- Managed hooks are discovered by method name (`Script_Begin` or `Begin`, `Script_TickUpdate` or `TickUpdate`, etc.)
+  with signatures that accept a context pointer and optional delta time.
 
-## Scripts.modu
-Each project has a `Scripts.modu` file (auto-created if missing). It controls compilation.
+## scripts.modu
+Each project has a `scripts.modu` file (auto-created if missing). It controls native compilation.
+Legacy `Scripts.modu` is still detected for older projects.
 
 Common keys:
-- `scriptsDir` - where script source files live (default: `Scripts`)
-- `outDir` - where compiled binaries go (default: `Cache/ScriptBin`)
+- `scriptsDir` - where script source files live (default: `Assets/Scripts`)
+- `outDir` - where compiled binaries go (default: `Library/CompiledScripts`)
 - `includeDir=...` - add include directories (repeatable)
 - `define=...` - add preprocessor defines (repeatable)
-- `linux.linkLib=...` - comma-separated link libs/flags for Linux (e.g. `dl,pthread`)
-- `win.linkLib=...` - comma-separated link libs for Windows (e.g. `User32,Advapi32`)
+- `linux.linkLib=...` - add one Linux link lib/flag per line (repeatable)
+- `win.linkLib=...` - add one Windows link lib per line (repeatable)
 - `cppStandard` - C++ standard (e.g. `c++20`)
 
 Example:
 ```ini
-scriptsDir=Scripts
-outDir=Cache/ScriptBin
+scriptsDir=Assets/Scripts
+outDir=Library/CompiledScripts
 includeDir=../src
 includeDir=../include
 cppStandard=c++20
-linux.linkLib=dl,pthread
-win.linkLib=User32,Advapi32
+linux.linkLib=pthread
+linux.linkLib=dl
+win.linkLib=User32.lib
+win.linkLib=Advapi32.lib
 ```
 
 ## How compilation works
 Modularity compiles scripts into shared libraries and loads them by symbol name.
 
-- Source lives under `Scripts/`.
-- Output binaries are written to `Cache/ScriptBin/`.
+- Source lives under `scriptsDir` (default `Assets/Scripts/`).
+- Output binaries are written to `outDir` (default `Library/CompiledScripts/`).
 - Binaries are platform-specific:
   - Windows: `.dll`
   - Linux: `.so`
@@ -168,12 +177,29 @@ Fields:
 ### Object lookup
 - `FindObjectByName(const std::string&)`
 - `FindObjectById(int)`
+- `ResolveObjectRef(const std::string&)`
+
+### Object state helpers
+- `IsObjectEnabled()`, `SetObjectEnabled(bool)`
+- `GetLayer()`, `SetLayer(int)`
+- `GetTag()`, `SetTag(const std::string&)`
+- `HasTag(const std::string&)`, `IsInLayer(int)`
 
 ### Transform helpers
 - `SetPosition(const glm::vec3&)`
 - `SetRotation(const glm::vec3&)` (degrees)
 - `SetScale(const glm::vec3&)`
 - `SetPosition2D(const glm::vec2&)` (UI position in pixels)
+- `GetPlanarYawPitchVectors(...)`
+- `GetMoveInputWASD(float pitchDeg, float yawDeg)`
+- `ApplyMouseLook(...)`
+- `ApplyVelocity(...)`
+
+### Ground + movement helpers
+- `ResolveGround(...)`
+- `BindStandaloneMovementSettings(...)`
+- `DrawStandaloneMovementInspector(...)`
+- `TickStandaloneMovement(...)`
 
 ### UI helpers (Buttons/Sliders)
 - `IsUIButtonPressed()`
@@ -186,13 +212,19 @@ Fields:
 - `SetUIButtonStyle(UIButtonStyle)`
 - `SetUIStylePreset(const std::string&)`
 - `RegisterUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace = false)`
+- `SetFPSCap(bool enabled, float cap = 120.0f)`
 
 ### Rigidbody helpers (3D)
 - `HasRigidbody()`
+- `EnsureCapsuleCollider(float height, float radius)`
+- `EnsureRigidbody(bool useGravity, bool kinematic)`
 - `SetRigidbodyVelocity(const glm::vec3&)`, `GetRigidbodyVelocity(glm::vec3& out)`
+- `AddRigidbodyVelocity(const glm::vec3&)`
 - `SetRigidbodyAngularVelocity(const glm::vec3&)`, `GetRigidbodyAngularVelocity(glm::vec3& out)`
 - `AddRigidbodyForce(const glm::vec3&)`, `AddRigidbodyImpulse(const glm::vec3&)`
 - `AddRigidbodyTorque(const glm::vec3&)`, `AddRigidbodyAngularImpulse(const glm::vec3&)`
+- `SetRigidbodyYaw(float yawDegrees)`
+- `RaycastClosest(...)`, `RaycastClosestDetailed(...)`
 - `SetRigidbodyRotation(const glm::vec3& rotDeg)`
 - `TeleportRigidbody(const glm::vec3& pos, const glm::vec3& rotDeg)`
 
@@ -210,10 +242,22 @@ Fields:
 ### Settings + utility
 - `GetSetting(key, fallback)`, `SetSetting(key, value)`
 - `GetSettingBool(key, fallback)`, `SetSettingBool(key, value)`
+- `GetSettingFloat(key, fallback)`, `SetSettingFloat(key, value)`
 - `GetSettingVec3(key, fallback)`, `SetSettingVec3(key, value)`
-- `AutoSetting(key, bool|glm::vec3|buffer)`, `SaveAutoSettings()`
+- `AutoSetting(key, bool|float|glm::vec3|buffer)`, `SaveAutoSettings()`
 - `AddConsoleMessage(text, type)`
 - `MarkDirty()`
+
+## C API quick reference
+Include `ScriptRuntimeCAPI.h` in `.c` scripts. The wrapper maps `Modu_*` calls to the same runtime systems used by C++ scripts.
+
+Available groups:
+- Object + transform: `Modu_GetObjectId`, `Modu_IsObjectEnabled`, `Modu_SetObjectEnabled`, `Modu_Get/SetPosition`, `Modu_Get/SetRotation`, `Modu_Get/SetScale`
+- Rigidbody + collision: `Modu_SetRigidbodyVelocity`, `Modu_GetRigidbodyVelocity`, `Modu_AddRigidbodyForce`, `Modu_SetRigidbodyRotation`, `Modu_EnsureCapsuleCollider`, `Modu_EnsureRigidbody`
+- Input + movement: `Modu_IsSprintDown`, `Modu_IsJumpDown`, `Modu_GetMoveInputWASD`, `Modu_ApplyMouseLook`, `Modu_RaycastClosestDetailed`
+- Script settings: `Modu_Get/SetSettingFloat`, `Modu_Get/SetSettingBool`, `Modu_Get/SetSettingString`
+- Inspector helpers: `Modu_InspectorText`, `Modu_InspectorSeparator`, `Modu_InspectorDragFloat(1/2/3)`, `Modu_InspectorCheckbox`
+- Console: `Modu_AddConsoleMessage`
 
 ## ImGui in scripts
 Modularity uses Dear ImGui for editor UI. Scripts can draw ImGui in two places:
@@ -379,20 +423,20 @@ extern "C" void ExitRenderEditorWindow(ScriptContext& ctx) {
 ```
 
 How to open:
-1. Compile the script so the binary is updated under `Cache/ScriptBin/`.
+1. Compile the script so the binary is updated under `outDir` (default `Library/CompiledScripts/`).
 2. In the main menu, go to **View -> Scripted Windows** and toggle the entry.
 
 ## Manual compile (CLI)
 Linux:
 ```bash
-g++ -std=c++20 -fPIC -O0 -g -I../src -I../include -c SampleInspector.cpp -o ../Cache/ScriptBin/SampleInspector.o
-g++ -shared ../Cache/ScriptBin/SampleInspector.o -o ../Cache/ScriptBin/SampleInspector.so -ldl -lpthread
+g++ -std=c++20 -fPIC -O0 -g -I../src -I../include -c SampleInspector.cpp -o ../Library/CompiledScripts/SampleInspector.o
+g++ -shared ../Library/CompiledScripts/SampleInspector.o -o ../Library/CompiledScripts/SampleInspector.so -ldl -lpthread
 ```
 
 Windows:
 ```bat
-cl /nologo /std:c++20 /EHsc /MD /Zi /Od /I ..\\src /I ..\\include /c SampleInspector.cpp /Fo ..\\Cache\\ScriptBin\\SampleInspector.obj
-link /nologo /DLL ..\\Cache\\ScriptBin\\SampleInspector.obj /OUT:..\\Cache\\ScriptBin\\SampleInspector.dll User32.lib Advapi32.lib
+cl /nologo /std:c++20 /EHsc /MD /Zi /Od /I ..\\src /I ..\\include /c SampleInspector.cpp /Fo ..\\Library\\CompiledScripts\\SampleInspector.obj
+link /nologo /DLL ..\\Library\\CompiledScripts\\SampleInspector.obj /OUT:..\\Library\\CompiledScripts\\SampleInspector.dll User32.lib Advapi32.lib
 ```
 
 ## Troubleshooting
@@ -449,4 +493,4 @@ void TickUpdate(ScriptContext& ctx, float) {
 ```
 
 ### FPS display example
-Attach `Scripts/FPSDisplay.cpp` to a **UI Text** object to show FPS. The inspector exposes a checkbox to clamp FPS to 120.
+Attach an FPS script (for example `Assets/Scripts/Runtime/FPSDisplay.cpp`) to a **UI Text** object to show FPS. The inspector exposes a checkbox to clamp FPS to 120.

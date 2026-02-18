@@ -64,6 +64,72 @@ glm::vec3 sanitizePlanar(const glm::vec3& value) {
     }
     return out;
 }
+
+bool isGlfwKeyDownFallback(int key) {
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (!window) return false;
+    return glfwGetKey(window, key) == GLFW_PRESS;
+}
+
+bool isGlfwMouseDownFallback(int button) {
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (!window) return false;
+    return glfwGetMouseButton(window, button) == GLFW_PRESS;
+}
+
+bool isMoveKeyDown(const ScriptContext* ctx, ImGuiKey imguiKey, int glfwKey) {
+    if (ImGui::IsKeyDown(imguiKey)) return true;
+    if (ctx && ctx->engine && ctx->engine->isRuntimeKeyDown(glfwKey)) return true;
+    return isGlfwKeyDownFallback(glfwKey);
+}
+
+bool isScriptMouseDown(const ScriptContext* ctx, int glfwButton) {
+    if (ctx && ctx->engine && ctx->engine->isRuntimeMouseDown(glfwButton)) return true;
+    return isGlfwMouseDownFallback(glfwButton);
+}
+
+glm::vec2 getScriptMouseDelta(const ScriptContext* ctx) {
+    if (ctx && ctx->engine) {
+        return ctx->engine->getRuntimeMouseDelta();
+    }
+
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (!window) {
+        return glm::vec2(0.0f);
+    }
+
+    struct CursorCache {
+        int frame = -1;
+        bool hasPos = false;
+        double lastX = 0.0;
+        double lastY = 0.0;
+        glm::vec2 delta = glm::vec2(0.0f);
+    };
+
+    static std::unordered_map<GLFWwindow*, CursorCache> cacheByWindow;
+    CursorCache& cache = cacheByWindow[window];
+    int frame = ImGui::GetFrameCount();
+    if (cache.frame == frame) {
+        return cache.delta;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(window, &x, &y);
+
+    glm::vec2 computed(0.0f);
+    if (cache.hasPos) {
+        computed.x = static_cast<float>(x - cache.lastX);
+        computed.y = static_cast<float>(y - cache.lastY);
+    }
+
+    cache.lastX = x;
+    cache.lastY = y;
+    cache.hasPos = true;
+    cache.frame = frame;
+    cache.delta = computed;
+    return computed;
+}
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -214,19 +280,21 @@ glm::vec3 ScriptContext::GetMoveInputWASD(float pitchDeg, float yawDeg) const {
     glm::vec3 right(0.0f);
     glm::vec3 move(0.0f);
     GetPlanarYawPitchVectors(pitchDeg, yawDeg, forward, right);
-    if (ImGui::IsKeyDown(ImGuiKey_W)) move += forward;
-    if (ImGui::IsKeyDown(ImGuiKey_S)) move -= forward;
-    if (ImGui::IsKeyDown(ImGuiKey_D)) move += right;
-    if (ImGui::IsKeyDown(ImGuiKey_A)) move -= right;
+    if (isMoveKeyDown(this, ImGuiKey_W, GLFW_KEY_W)) move += forward;
+    if (isMoveKeyDown(this, ImGuiKey_S, GLFW_KEY_S)) move -= forward;
+    if (isMoveKeyDown(this, ImGuiKey_D, GLFW_KEY_D)) move += right;
+    if (isMoveKeyDown(this, ImGuiKey_A, GLFW_KEY_A)) move -= right;
     if (glm::length(move) > 0.001f) move = glm::normalize(move);
     return move;
 }
 
 bool ScriptContext::ApplyMouseLook(float& pitchDeg, float& yawDeg, float sensitivity, float maxDelta,
                                    float deltaTime, bool requireMouseButton) const {
-    if (requireMouseButton && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) return false;
-    ImGuiIO& io = ImGui::GetIO();
-    glm::vec2 delta(io.MouseDelta.x, io.MouseDelta.y);
+    if (requireMouseButton &&
+        !(ImGui::IsMouseDown(ImGuiMouseButton_Right) || isScriptMouseDown(this, GLFW_MOUSE_BUTTON_RIGHT))) {
+        return false;
+    }
+    glm::vec2 delta = getScriptMouseDelta(this);
     float len = glm::length(delta);
     if (len > maxDelta) delta *= (maxDelta / len);
     yawDeg -= delta.x * 50.0f * sensitivity * deltaTime;
@@ -241,11 +309,12 @@ int ScriptContext::GetSelectedObjectId() const {
 }
 
 bool ScriptContext::IsSprintDown() const {
-    return ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+    return isMoveKeyDown(this, ImGuiKey_LeftShift, GLFW_KEY_LEFT_SHIFT) ||
+           isMoveKeyDown(this, ImGuiKey_RightShift, GLFW_KEY_RIGHT_SHIFT);
 }
 
 bool ScriptContext::IsJumpDown() const {
-    return ImGui::IsKeyDown(ImGuiKey_Space);
+    return isMoveKeyDown(this, ImGuiKey_Space, GLFW_KEY_SPACE);
 }
 
 bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,

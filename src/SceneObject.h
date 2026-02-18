@@ -51,11 +51,17 @@ enum class UIElementType {
 };
 
 struct MaterialProperties {
+    enum class TextureFilter {
+        Bilinear = 0,
+        Point = 1
+    };
+
     glm::vec3 color = glm::vec3(1.0f);
     float ambientStrength = 0.2f;
     float specularStrength = 0.5f;
     float shininess = 32.0f;
     float textureMix = 0.3f;  // Blend factor between albedo and overlay
+    TextureFilter textureFilter = TextureFilter::Bilinear;
 };
 
 enum class LightType {

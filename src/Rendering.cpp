@@ -649,28 +649,15 @@ Renderer::~Renderer() {
     if (debugWhiteTexture) glDeleteTextures(1, &debugWhiteTexture);
 }
 
-Texture* Renderer::getTexture(const std::string& path) {
+Texture* Renderer::getTexture(const std::string& path, MaterialProperties::TextureFilter filter) {
     if (path.empty()) return nullptr;
-    auto it = textureCache.find(path);
-    if (it != textureCache.end()) return it->second.get();
-
-    auto tex = std::make_unique<Texture>(path);
-    if (!tex->GetID()) {
-        return nullptr;
-    }
-    Texture* raw = tex.get();
-    textureCache[path] = std::move(tex);
-    return raw;
-}
-
-Texture* Renderer::getTexturePreview(const std::string& path, bool nearest) {
-    if (path.empty()) return nullptr;
-    auto& cache = nearest ? previewTextureCacheNearest : previewTextureCacheLinear;
+    bool point = (filter == MaterialProperties::TextureFilter::Point);
+    auto& cache = point ? textureCachePoint : textureCacheBilinear;
     auto it = cache.find(path);
     if (it != cache.end()) return it->second.get();
 
-    GLenum minFilter = nearest ? GL_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
-    GLenum magFilter = nearest ? GL_NEAREST : GL_LINEAR;
+    GLenum minFilter = point ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
+    GLenum magFilter = point ? GL_NEAREST : GL_LINEAR;
     auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter);
     if (!tex->GetID()) {
         return nullptr;
@@ -1160,7 +1147,7 @@ void Renderer::renderObject(const SceneObject& obj) {
 
     Texture* baseTex = texture1;
     if (!obj.albedoTexturePath.empty()) {
-        if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+        if (auto* t = getTexture(obj.albedoTexturePath, obj.material.textureFilter)) baseTex = t;
     }
     if (baseTex) baseTex->Bind(GL_TEXTURE0);
 
@@ -1174,7 +1161,7 @@ void Renderer::renderObject(const SceneObject& obj) {
         }
     }
     if (!overlayUsed && obj.useOverlay && !obj.overlayTexturePath.empty()) {
-        if (auto* t = getTexture(obj.overlayTexturePath)) {
+        if (auto* t = getTexture(obj.overlayTexturePath, obj.material.textureFilter)) {
             t->Bind(GL_TEXTURE1);
             overlayUsed = true;
         }
@@ -1186,7 +1173,7 @@ void Renderer::renderObject(const SceneObject& obj) {
 
     bool normalUsed = false;
     if (!obj.normalMapPath.empty()) {
-        if (auto* t = getTexture(obj.normalMapPath)) {
+        if (auto* t = getTexture(obj.normalMapPath, obj.material.textureFilter)) {
             t->Bind(GL_TEXTURE2);
             normalUsed = true;
         }
@@ -1647,7 +1634,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         Texture* baseTex = texture1;
         if (!usingUiTargetTex) {
             if (!obj.albedoTexturePath.empty()) {
-                if (auto* t = getTexture(obj.albedoTexturePath)) baseTex = t;
+                if (auto* t = getTexture(obj.albedoTexturePath, obj.material.textureFilter)) baseTex = t;
             }
             if (baseTex) baseTex->Bind(GL_TEXTURE0);
         }
@@ -1662,7 +1649,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             }
         }
         if (!overlayUsed && obj.useOverlay && !obj.overlayTexturePath.empty()) {
-            if (auto* t = getTexture(obj.overlayTexturePath)) {
+            if (auto* t = getTexture(obj.overlayTexturePath, obj.material.textureFilter)) {
                 t->Bind(GL_TEXTURE1);
                 overlayUsed = true;
             }
@@ -1674,7 +1661,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
         bool normalUsed = false;
         if (!obj.normalMapPath.empty()) {
-            if (auto* t = getTexture(obj.normalMapPath)) {
+            if (auto* t = getTexture(obj.normalMapPath, obj.material.textureFilter)) {
                 t->Bind(GL_TEXTURE2);
                 normalUsed = true;
             }

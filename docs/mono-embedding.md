@@ -15,3 +15,5 @@ You can override the runtime location at runtime with:
 Build notes:
 - The CMake cache variable `MONO_ROOT` controls where headers/libs are found.
 - Managed scripts target `netstandard2.0` and are built with `dotnet build`.
+- Project-managed C# sources/build files live under `<ProjectRoot>/Scripts/Managed/`.
+- Default managed output is `<ProjectRoot>/Scripts/Managed/bin/Debug/netstandard2.0/ModuCPP.dll`.

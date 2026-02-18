@@ -624,26 +624,6 @@ void Engine::renderHierarchyPanel() {
     ImGui::InputTextWithHint("##Search", "Search...", searchBuffer, sizeof(searchBuffer));
     ImGui::Spacing();
     ImGui::Checkbox("Texture Preview", &hierarchyShowTexturePreview);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!hierarchyShowTexturePreview);
-    ImGui::TextDisabled("Filter");
-    ImGui::SameLine();
-    const char* filterOptions[] = { "Bilinear", "Nearest" };
-    int filterIndex = hierarchyPreviewNearest ? 1 : 0;
-    ImGui::SetNextItemWidth(120.0f);
-    ImGui::SetNextWindowBgAlpha(0.85f);
-    if (ImGui::BeginCombo("##HierarchyTexFilter", filterOptions[filterIndex])) {
-        for (int i = 0; i < IM_ARRAYSIZE(filterOptions); ++i) {
-            bool selected = (i == filterIndex);
-            if (ImGui::Selectable(filterOptions[i], selected)) {
-                filterIndex = i;
-                hierarchyPreviewNearest = (filterIndex == 1);
-            }
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
@@ -985,11 +965,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         }
 
         if (previewPath) {
-            auto overrideIt = texturePreviewFilterOverrides.find(*previewPath);
-            bool previewNearest = (overrideIt != texturePreviewFilterOverrides.end())
-                ? overrideIt->second
-                : hierarchyPreviewNearest;
-            Texture* previewTex = renderer.getTexturePreview(*previewPath, previewNearest);
+            Texture* previewTex = renderer.getTexture(*previewPath, obj.material.textureFilter);
             if (previewTex && previewTex->GetID()) {
                 ImGuiStyle& style = ImGui::GetStyle();
                 ImVec2 itemMin = ImGui::GetItemRectMin();
@@ -1398,6 +1374,14 @@ void Engine::renderInspectorPanel() {
                 if (ImGui::SliderFloat("Detail Mix", &inspectedMaterial.textureMix, 0.0f, 1.0f)) {
                     matChanged = true;
                 }
+                const char* texFilterOptions[] = { "Bilinear", "Point" };
+                int texFilterIndex = (inspectedMaterial.textureFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
+                if (ImGui::Combo("Texture Filter", &texFilterIndex, texFilterOptions, IM_ARRAYSIZE(texFilterOptions))) {
+                    inspectedMaterial.textureFilter =
+                        (texFilterIndex == 1) ? MaterialProperties::TextureFilter::Point
+                                              : MaterialProperties::TextureFilter::Bilinear;
+                    matChanged = true;
+                }
 
                 ImGui::Spacing();
                 matChanged |= textureField("Base Map", "PreviewAlbedo", inspectedAlbedo);
@@ -1610,9 +1594,7 @@ void Engine::renderInspectorPanel() {
             ImGui::TextDisabled("%s", selectedTexturePath.filename().string().c_str());
             ImGui::TextColored(ImVec4(0.8f, 0.65f, 0.95f, 1.0f), "%s", selectedTexturePath.string().c_str());
 
-            bool hasOverride = texturePreviewFilterOverrides.find(selectedTexturePath.string()) != texturePreviewFilterOverrides.end();
-            bool previewNearest = hasOverride ? texturePreviewFilterOverrides[selectedTexturePath.string()] : hierarchyPreviewNearest;
-            Texture* previewTex = renderer.getTexturePreview(selectedTexturePath.string(), previewNearest);
+            Texture* previewTex = renderer.getTexture(selectedTexturePath.string());
 
             ImGui::Spacing();
             if (previewTex && previewTex->GetID()) {
@@ -1629,25 +1611,6 @@ void Engine::renderInspectorPanel() {
                 ImGui::Text("Size: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
             } else {
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "Unable to load texture preview.");
-            }
-
-            ImGui::Spacing();
-            if (ImGui::Checkbox("Override Hierarchy Filter", &hasOverride)) {
-                if (hasOverride) {
-                    texturePreviewFilterOverrides[selectedTexturePath.string()] = hierarchyPreviewNearest;
-                } else {
-                    texturePreviewFilterOverrides.erase(selectedTexturePath.string());
-                }
-            }
-            ImGui::BeginDisabled(!hasOverride);
-            const char* filterOptions[] = { "Bilinear", "Nearest" };
-            int filterIndex = previewNearest ? 1 : 0;
-            if (ImGui::Combo("Preview Filter", &filterIndex, filterOptions, IM_ARRAYSIZE(filterOptions))) {
-                texturePreviewFilterOverrides[selectedTexturePath.string()] = (filterIndex == 1);
-            }
-            ImGui::EndDisabled();
-            if (!hasOverride) {
-                ImGui::TextDisabled("Using global: %s", hierarchyPreviewNearest ? "Nearest" : "Bilinear");
             }
 
             ImGui::Unindent(8.0f);
@@ -2148,12 +2111,14 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
-            obj.hasCollider = true;
-            obj.collider.type = ColliderType::Capsule;
-            obj.collider.convex = true;
-            obj.hasRigidbody = true;
-            obj.rigidbody.enabled = true;
-            obj.rigidbody.useGravity = true;
+            if (obj.hasPlayerController) {
+                obj.hasCollider = true;
+                obj.collider.type = ColliderType::Capsule;
+                obj.collider.convex = true;
+                obj.hasRigidbody = true;
+                obj.rigidbody.enabled = true;
+                obj.rigidbody.useGravity = true;
+            }
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
@@ -3183,6 +3148,14 @@ void Engine::renderInspectorPanel() {
                 materialChanged = true;
             }
             if (ImGui::SliderFloat("Detail Mix", &obj.material.textureMix, 0.0f, 1.0f)) {
+                materialChanged = true;
+            }
+            const char* texFilterOptions[] = { "Bilinear", "Point" };
+            int texFilterIndex = (obj.material.textureFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
+            if (ImGui::Combo("Texture Filter", &texFilterIndex, texFilterOptions, IM_ARRAYSIZE(texFilterOptions))) {
+                obj.material.textureFilter =
+                    (texFilterIndex == 1) ? MaterialProperties::TextureFilter::Point
+                                          : MaterialProperties::TextureFilter::Bilinear;
                 materialChanged = true;
             }
 

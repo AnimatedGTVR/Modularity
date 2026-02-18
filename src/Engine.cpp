@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <cmath>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include "ThirdParty/glm/gtc/constants.hpp"
@@ -104,6 +105,15 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
             outData.props.shininess = std::stof(val);
         } else if (key == "textureMix") {
             outData.props.textureMix = std::stof(val);
+        } else if (key == "textureFilter") {
+            std::string lower = val;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (lower == "1" || lower == "point" || lower == "nearest") {
+                outData.props.textureFilter = MaterialProperties::TextureFilter::Point;
+            } else {
+                outData.props.textureFilter = MaterialProperties::TextureFilter::Bilinear;
+            }
         } else if (key == "albedo") {
             outData.albedo = val;
         } else if (key == "overlay") {
@@ -132,6 +142,7 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     f << "specular=" << data.props.specularStrength << "\n";
     f << "shininess=" << data.props.shininess << "\n";
     f << "textureMix=" << data.props.textureMix << "\n";
+    f << "textureFilter=" << static_cast<int>(data.props.textureFilter) << "\n";
     f << "useOverlay=" << (data.useOverlay ? 1 : 0) << "\n";
     f << "albedo=" << data.albedo << "\n";
     f << "overlay=" << data.overlay << "\n";
@@ -630,6 +641,42 @@ bool copyPrecompiledEnginePackages(const fs::path& buildRoot, const fs::path& ou
     return true;
 }
 
+std::string sanitizeBuildToken(const std::string& value, const char* fallback) {
+    std::string out;
+    out.reserve(value.size());
+    bool lastWasDash = false;
+    for (char c : value) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc)) {
+            out.push_back(c);
+            lastWasDash = false;
+        } else if (c == '.' || c == '_' || c == '-') {
+            out.push_back(c);
+            lastWasDash = (c == '-');
+        } else if (std::isspace(uc)) {
+            if (!lastWasDash && !out.empty()) {
+                out.push_back('-');
+                lastWasDash = true;
+            }
+        }
+    }
+    while (!out.empty() && (out.back() == '-' || out.back() == '.')) {
+        out.pop_back();
+    }
+    if (out.empty()) out = fallback;
+    return out;
+}
+
+std::string quotePath(const fs::path& path) {
+    std::string value = path.string();
+    size_t pos = 0;
+    while ((pos = value.find('"', pos)) != std::string::npos) {
+        value.insert(pos, "\\");
+        pos += 2;
+    }
+    return "\"" + value + "\"";
+}
+
 void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std::string& error) {
     std::error_code ec;
 #ifdef _WIN32
@@ -796,6 +843,23 @@ fs::path findManagedProjectRoot(const fs::path& start) {
         current = current.parent_path();
     }
     return {};
+}
+
+fs::path managedOutputPathFromProject(const fs::path& managedProject) {
+    if (managedProject.empty()) return {};
+    return managedProject.parent_path() / "bin" / "Debug" / "netstandard2.0" / "ModuCPP.dll";
+}
+
+bool isManagedGeneratedPath(const fs::path& path) {
+    for (const auto& part : path) {
+        std::string token = part.string();
+        std::transform(token.begin(), token.end(), token.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (token == "obj" || token == "bin" || token == ".vs" || token == ".git") {
+            return true;
+        }
+    }
+    return false;
 }
 
 fs::path findEngineManagedRoot() {
@@ -1120,14 +1184,31 @@ void Engine::run() {
             syncPlayerCamera();
         }
 
+        auto pickRuntimeCameraObject = [this]() -> const SceneObject* {
+            const SceneObject* playerCam = nullptr;
+            const SceneObject* sceneCam = nullptr;
+            const SceneObject* anyCam = nullptr;
+            for (const auto& obj : sceneObjects) {
+                if (!obj.enabled || !obj.hasCamera) continue;
+                if (!anyCam) anyCam = &obj;
+                if (!sceneCam && obj.camera.type == SceneCameraType::Scene) {
+                    sceneCam = &obj;
+                }
+                if (obj.camera.type == SceneCameraType::Player) {
+                    playerCam = &obj;
+                    break;
+                }
+            }
+            if (playerCam) return playerCam;
+            if (sceneCam) return sceneCam;
+            return anyCam;
+        };
+
         bool audioShouldPlay = isPlaying || specMode || testMode;
         Camera listenerCamera = camera;
-        for (const auto& obj : sceneObjects) {
-            if (obj.enabled && obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
-                listenerCamera = makeCameraFromObject(obj);
-                listenerCamera.position = obj.position;
-                break;
-            }
+        if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+            listenerCamera = makeCameraFromObject(*runtimeCam);
+            listenerCamera.position = runtimeCam->position;
         }
         audio.update(sceneObjects, listenerCamera, audioShouldPlay);
 
@@ -1151,12 +1232,29 @@ void Engine::run() {
 
         if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
+            float renderFov = buildSettings.editorCameraFov;
+            float renderNear = buildSettings.editorCameraNear;
+            float renderFar = buildSettings.editorCameraFar;
+            if (playerMode) {
+                if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+                    renderFov = runtimeCam->camera.fov;
+                    renderNear = std::max(0.01f, runtimeCam->camera.nearClip);
+                    renderFar = std::max(renderNear + 0.01f, runtimeCam->camera.farClip);
+                }
+            }
             float aspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
             if (aspect <= 0.0f) aspect = 1.0f;
-            glm::mat4 proj = glm::perspective(glm::radians(FOV), aspect, NEAR_PLANE, FAR_PLANE);
+            glm::mat4 proj = glm::perspective(glm::radians(renderFov),
+                                              aspect,
+                                              renderNear,
+                                              renderFar);
 
             renderer.beginRender(view, proj, camera.position);
-            renderer.renderScene(camera, sceneObjects, selectedObjectId, FOV, NEAR_PLANE, FAR_PLANE, collisionWireframe);
+            renderer.renderScene(camera, sceneObjects, selectedObjectId,
+                                 renderFov,
+                                 renderNear,
+                                 renderFar,
+                                 collisionWireframe);
             renderer.endRender();
         }
 
@@ -1276,11 +1374,18 @@ void Engine::run() {
 }
 
 void Engine::shutdown() {
-    if (ImGui::GetCurrentContext()) {
+    ImGuiContext* mainContext = ImGui::GetCurrentContext();
+    if (mainContext && !playerMode) {
         saveWorkspaceLayout(currentWorkspace);
     }
 
-    if (projectManager.currentProject.isLoaded && projectManager.currentProject.hasUnsavedChanges) {
+    if (
+#ifndef MODULARITY_PLAYER
+        projectManager.currentProject.isLoaded && projectManager.currentProject.hasUnsavedChanges
+#else
+        false
+#endif
+    ) {
         saveCurrentScene();
     }
 
@@ -1298,14 +1403,18 @@ void Engine::shutdown() {
         ImGui::SetCurrentContext(entry.second.context);
         if (entry.second.backendReady) {
             ImGui_ImplOpenGL3_Shutdown();
+            entry.second.backendReady = false;
         }
         ImGui::DestroyContext(entry.second.context);
     }
     uiCanvas3DContexts.clear();
 
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
+    if (mainContext) {
+        ImGui::SetCurrentContext(mainContext);
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext(mainContext);
+    }
     glfwTerminate();
 }
 #pragma endregion
@@ -1962,8 +2071,37 @@ void Engine::updateScripts(float delta) {
                 managedRuntime.tickModule(assembly, sc.managedType, ctx, delta, specMode, testMode);
             } else {
                 fs::path binary = resolveScriptBinary(sc.path);
-                if (binary.empty() || !fs::exists(binary)) continue;
+                std::error_code ec;
+                bool hasBinary = !binary.empty() && fs::exists(binary, ec) && !ec;
+                if (!hasBinary) {
+                    fs::path scriptPath(sc.path);
+                    std::string missingKey = scriptPath.lexically_normal().string();
+                    if (nativeScriptMissingLogged.insert(missingKey).second) {
+                        std::cerr << "[Script] Native script binary missing for '" << sc.path
+                                  << "'. Compile scripts before running/exporting.\n";
+                        addConsoleMessage(
+                            "Native script binary missing for '" + sc.path +
+                            "'. Compile scripts before running/exporting.",
+                            ConsoleMessageType::Warning);
+                    }
+                    continue;
+                }
+
+                std::string binaryKey = binary.lexically_normal().string();
+                nativeScriptMissingLogged.erase(fs::path(sc.path).lexically_normal().string());
                 scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+                const std::string& runtimeError = scriptRuntime.getLastError();
+                if (!runtimeError.empty()) {
+                    std::string errorKey = binaryKey + "|" + runtimeError;
+                    if (nativeScriptLoadErrorLogged.insert(errorKey).second) {
+                        std::cerr << "[Script] Failed to load native script '" << binary.filename().string()
+                                  << "': " << runtimeError << "\n";
+                        addConsoleMessage(
+                            "Failed to load native script '" + binary.filename().string() +
+                            "': " + runtimeError,
+                            ConsoleMessageType::Error);
+                    }
+                }
             }
         }
     }
@@ -2063,9 +2201,13 @@ void Engine::updateAutoCompileScripts() {
     }
 
     if (hasManagedScripts) {
-        fs::path managedProject = getManagedProjectPath();
-        fs::path managedOutput = getManagedOutputDll();
         std::error_code managedEc;
+        fs::path projectManagedProject =
+            projectManager.currentProject.projectPath / "Scripts" / "Managed" / "ModuCPP.csproj";
+        fs::path managedProject = fs::exists(projectManagedProject, managedEc)
+            ? projectManagedProject
+            : getManagedProjectPath();
+        fs::path managedOutput = managedOutputPathFromProject(managedProject);
         if (fs::exists(managedProject, managedEc)) {
             fs::file_time_type newestSource{};
             bool hasSource = false;
@@ -2073,8 +2215,14 @@ void Engine::updateAutoCompileScripts() {
             if (fs::exists(managedDir, managedEc)) {
                 for (auto it = fs::recursive_directory_iterator(managedDir, managedEc);
                      it != fs::recursive_directory_iterator(); ++it) {
-                    if (it->is_directory()) continue;
+                    if (it->is_directory()) {
+                        if (isManagedGeneratedPath(it->path())) {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
                     if (it->path().extension() != ".cs") continue;
+                    if (isManagedGeneratedPath(it->path())) continue;
                     auto sourceTime = fs::last_write_time(it->path(), managedEc);
                     if (managedEc) continue;
                     if (!hasSource || sourceTime > newestSource) {
@@ -3196,6 +3344,16 @@ void Engine::finalizeDeferredSceneLoad() {
         }
     }
 
+    // Deferred loading can complete after play mode was already entered.
+    // Rebuild runtime systems so physics/audio always match the loaded scene.
+    if (isPlaying || specMode || testMode) {
+        physics.onPlayStart(sceneObjects);
+        audio.onPlayStart(sceneObjects);
+        if (playerMode) {
+            syncPlayerCamera();
+        }
+    }
+
     sceneLoadInProgress = false;
     sceneLoadProgress = 1.0f;
     sceneLoadStatus.clear();
@@ -3273,27 +3431,38 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
         applyAutoStartMode();
     } else {
         playerMode = false;
+        startupSplashStartTime = -1.0;
     }
     #endif
     if (playerMode) {
         syncPlayerCamera();
     }
+    applyBuildWindowTitle();
     addConsoleMessage("Opened project: " + projectManager.currentProject.name, ConsoleMessageType::Info);
 }
 
 void Engine::syncPlayerCamera() {
-    SceneObject* playerCamObj = nullptr;
-    for (auto& obj : sceneObjects) {
-        if (obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
+    const SceneObject* playerCamObj = nullptr;
+    const SceneObject* sceneCamObj = nullptr;
+    const SceneObject* fallbackCamObj = nullptr;
+    for (const auto& obj : sceneObjects) {
+        if (!obj.enabled || !obj.hasCamera) continue;
+        if (!fallbackCamObj) fallbackCamObj = &obj;
+        if (!sceneCamObj && obj.camera.type == SceneCameraType::Scene) {
+            sceneCamObj = &obj;
+        }
+        if (obj.camera.type == SceneCameraType::Player) {
             playerCamObj = &obj;
             break;
         }
     }
-    if (!playerCamObj) {
+
+    const SceneObject* activeCam = playerCamObj ? playerCamObj : (sceneCamObj ? sceneCamObj : fallbackCamObj);
+    if (!activeCam) {
         return;
     }
-    Camera cam = makeCameraFromObject(*playerCamObj);
-    cam.position = playerCamObj->position;
+    Camera cam = makeCameraFromObject(*activeCam);
+    cam.position = activeCam->position;
     cam.firstMouse = true;
     camera = cam;
 }
@@ -3382,8 +3551,59 @@ void Engine::applyAutoStartMode() {
     showGameViewport = false;
     showBuildSettings = false;
     viewportFullscreen = true;
+    if (editorWindow) {
+        glfwFocusWindow(editorWindow);
+        glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        }
+    }
     physics.onPlayStart(sceneObjects);
     audio.onPlayStart(sceneObjects);
+    startupSplashStartTime = glfwGetTime();
+    applyBuildWindowTitle();
+}
+
+fs::path Engine::resolveSplashImagePath() const {
+    if (buildSettings.splashImagePath.empty()) {
+        return {};
+    }
+    fs::path path = fs::path(buildSettings.splashImagePath);
+    if (path.is_absolute()) {
+        return path;
+    }
+    if (projectManager.currentProject.isLoaded) {
+        return projectManager.currentProject.projectPath / path;
+    }
+    return fs::current_path() / path;
+}
+
+void Engine::applyBuildWindowTitle() {
+    if (!editorWindow) return;
+
+    std::string displayName = buildSettings.buildName;
+    if (displayName.empty()) {
+        displayName = projectManager.currentProject.isLoaded
+            ? projectManager.currentProject.name
+            : "Modularity";
+    }
+    std::string version = buildSettings.version;
+    std::string title;
+    if (playerMode) {
+        title = displayName;
+        if (!version.empty()) {
+            title += " " + version;
+        }
+    } else {
+        title = "Modularity";
+        if (!displayName.empty()) {
+            title += " - " + displayName;
+        }
+        if (!version.empty()) {
+            title += " (v" + version + ")";
+        }
+    }
+    glfwSetWindowTitle(editorWindow, title.c_str());
 }
 
 void Engine::resetBuildSettings() {
@@ -3393,6 +3613,15 @@ void Engine::resetBuildSettings() {
     buildSettings.platform = BuildPlatform::Linux;
 #endif
     buildSettings.architecture = "x86_64";
+    buildSettings.companyName = "DefaultCompany";
+    buildSettings.buildName = projectManager.currentProject.name.empty()
+        ? "MyProject"
+        : projectManager.currentProject.name;
+    buildSettings.version = "0.1.0";
+    buildSettings.splashImagePath.clear();
+    buildSettings.splashEnabled = false;
+    buildSettings.splashDurationSeconds = 2.5f;
+    buildSettings.packageStandaloneArchive = true;
     buildSettings.developmentBuild = false;
     buildSettings.autoConnectProfiler = false;
     buildSettings.scriptDebugging = false;
@@ -3400,6 +3629,12 @@ void Engine::resetBuildSettings() {
     buildSettings.scriptsOnlyBuild = false;
     buildSettings.serverBuild = false;
     buildSettings.compressionMethod = "Default";
+    buildSettings.rendererAmbientColor = glm::vec3(0.2f, 0.2f, 0.2f);
+    buildSettings.rendererShadowResolution = 512;
+    buildSettings.rendererAutoReloadShaders = true;
+    buildSettings.editorCameraFov = FOV;
+    buildSettings.editorCameraNear = NEAR_PLANE;
+    buildSettings.editorCameraFar = FAR_PLANE;
     buildSettings.scenes.clear();
     buildSettingsSelectedIndex = -1;
     buildSettingsDirty = false;
@@ -3452,6 +3687,24 @@ void Engine::loadBuildSettings() {
         } else if (line.rfind("architecture=", 0) == 0) {
             buildSettings.architecture = line.substr(13);
             trim(buildSettings.architecture);
+        } else if (line.rfind("companyName=", 0) == 0) {
+            buildSettings.companyName = line.substr(12);
+            trim(buildSettings.companyName);
+        } else if (line.rfind("buildName=", 0) == 0) {
+            buildSettings.buildName = line.substr(10);
+            trim(buildSettings.buildName);
+        } else if (line.rfind("version=", 0) == 0) {
+            buildSettings.version = line.substr(8);
+            trim(buildSettings.version);
+        } else if (line.rfind("splashImage=", 0) == 0) {
+            buildSettings.splashImagePath = line.substr(12);
+            trim(buildSettings.splashImagePath);
+        } else if (line.rfind("splashEnabled=", 0) == 0) {
+            buildSettings.splashEnabled = line.substr(14) == "1";
+        } else if (line.rfind("splashDuration=", 0) == 0) {
+            buildSettings.splashDurationSeconds = std::max(0.0f, std::stof(line.substr(15)));
+        } else if (line.rfind("packageStandaloneArchive=", 0) == 0) {
+            buildSettings.packageStandaloneArchive = line.substr(25) == "1";
         } else if (line.rfind("developmentBuild=", 0) == 0) {
             buildSettings.developmentBuild = line.substr(17) == "1";
         } else if (line.rfind("autoConnectProfiler=", 0) == 0) {
@@ -3467,6 +3720,24 @@ void Engine::loadBuildSettings() {
         } else if (line.rfind("compressionMethod=", 0) == 0) {
             buildSettings.compressionMethod = line.substr(18);
             trim(buildSettings.compressionMethod);
+        } else if (line.rfind("rendererAmbient=", 0) == 0) {
+            std::string value = line.substr(16);
+            trim(value);
+            std::replace(value.begin(), value.end(), ',', ' ');
+            std::stringstream ss(value);
+            ss >> buildSettings.rendererAmbientColor.x
+               >> buildSettings.rendererAmbientColor.y
+               >> buildSettings.rendererAmbientColor.z;
+        } else if (line.rfind("rendererShadowResolution=", 0) == 0) {
+            buildSettings.rendererShadowResolution = std::clamp(std::atoi(line.substr(25).c_str()), 128, 4096);
+        } else if (line.rfind("rendererAutoReloadShaders=", 0) == 0) {
+            buildSettings.rendererAutoReloadShaders = line.substr(26) == "1";
+        } else if (line.rfind("editorCameraFov=", 0) == 0) {
+            buildSettings.editorCameraFov = std::clamp(std::stof(line.substr(16)), 20.0f, 140.0f);
+        } else if (line.rfind("editorCameraNear=", 0) == 0) {
+            buildSettings.editorCameraNear = std::max(0.01f, std::stof(line.substr(17)));
+        } else if (line.rfind("editorCameraFar=", 0) == 0) {
+            buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 1.0f, std::stof(line.substr(16)));
         } else if (line.rfind("scene=", 0) == 0) {
             std::string value = line.substr(6);
             trim(value);
@@ -3486,6 +3757,27 @@ void Engine::loadBuildSettings() {
     if (buildSettings.scenes.empty() && !projectManager.currentProject.currentSceneName.empty()) {
         addSceneToBuildSettings(projectManager.currentProject.currentSceneName, true);
     }
+    if (buildSettings.buildName.empty()) {
+        buildSettings.buildName = projectManager.currentProject.name.empty()
+            ? "MyProject"
+            : projectManager.currentProject.name;
+    }
+    if (buildSettings.companyName.empty()) {
+        buildSettings.companyName = "DefaultCompany";
+    }
+    if (buildSettings.version.empty()) {
+        buildSettings.version = "0.1.0";
+    }
+    if (buildSettings.editorCameraFar <= buildSettings.editorCameraNear + 0.01f) {
+        buildSettings.editorCameraFar = buildSettings.editorCameraNear + 0.01f;
+    }
+    buildSettings.splashDurationSeconds = std::clamp(buildSettings.splashDurationSeconds, 0.0f, 30.0f);
+    if (rendererInitialized) {
+        renderer.setAmbientColor(buildSettings.rendererAmbientColor);
+        renderer.setShadowMapResolution(buildSettings.rendererShadowResolution);
+        renderer.setShaderAutoReload(buildSettings.rendererAutoReloadShaders);
+    }
+    applyBuildWindowTitle();
     buildSettingsDirty = false;
 }
 
@@ -3499,6 +3791,13 @@ void Engine::saveBuildSettings() {
     else if (buildSettings.platform == BuildPlatform::Android) platformName = "Android";
     file << "platform=" << platformName << "\n";
     file << "architecture=" << buildSettings.architecture << "\n";
+    file << "companyName=" << buildSettings.companyName << "\n";
+    file << "buildName=" << buildSettings.buildName << "\n";
+    file << "version=" << buildSettings.version << "\n";
+    file << "splashImage=" << buildSettings.splashImagePath << "\n";
+    file << "splashEnabled=" << (buildSettings.splashEnabled ? "1" : "0") << "\n";
+    file << "splashDuration=" << buildSettings.splashDurationSeconds << "\n";
+    file << "packageStandaloneArchive=" << (buildSettings.packageStandaloneArchive ? "1" : "0") << "\n";
     file << "developmentBuild=" << (buildSettings.developmentBuild ? "1" : "0") << "\n";
     file << "autoConnectProfiler=" << (buildSettings.autoConnectProfiler ? "1" : "0") << "\n";
     file << "scriptDebugging=" << (buildSettings.scriptDebugging ? "1" : "0") << "\n";
@@ -3506,9 +3805,19 @@ void Engine::saveBuildSettings() {
     file << "scriptsOnlyBuild=" << (buildSettings.scriptsOnlyBuild ? "1" : "0") << "\n";
     file << "serverBuild=" << (buildSettings.serverBuild ? "1" : "0") << "\n";
     file << "compressionMethod=" << buildSettings.compressionMethod << "\n";
+    file << "rendererAmbient="
+         << buildSettings.rendererAmbientColor.x << ","
+         << buildSettings.rendererAmbientColor.y << ","
+         << buildSettings.rendererAmbientColor.z << "\n";
+    file << "rendererShadowResolution=" << buildSettings.rendererShadowResolution << "\n";
+    file << "rendererAutoReloadShaders=" << (buildSettings.rendererAutoReloadShaders ? "1" : "0") << "\n";
+    file << "editorCameraFov=" << buildSettings.editorCameraFov << "\n";
+    file << "editorCameraNear=" << buildSettings.editorCameraNear << "\n";
+    file << "editorCameraFar=" << buildSettings.editorCameraFar << "\n";
     for (const auto& scene : buildSettings.scenes) {
         file << "scene=" << scene.name << "," << (scene.enabled ? "1" : "0") << "\n";
     }
+    applyBuildWindowTitle();
     buildSettingsDirty = false;
 }
 
@@ -3524,6 +3833,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     } else {
         projectManager.currentProject.saveProjectFile();
     }
+    saveBuildSettings();
 
     std::error_code ec;
     fs::path normalizedOut = fs::absolute(outputDir, ec);
@@ -3537,6 +3847,12 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         return;
     }
 
+    fs::path sourceRoot = findCMakeSourceRoot(fs::current_path());
+    if (sourceRoot.empty()) {
+        addConsoleMessage("Export failed: could not locate CMakeLists.txt.", ConsoleMessageType::Error);
+        return;
+    }
+
     std::string startScene = projectManager.currentProject.currentSceneName;
     if (startScene.empty()) {
         for (const auto& scene : buildSettings.scenes) {
@@ -3547,6 +3863,23 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         }
     }
 
+    std::string buildNameDisplay = buildSettings.buildName.empty()
+        ? (projectManager.currentProject.name.empty() ? "Game" : projectManager.currentProject.name)
+        : buildSettings.buildName;
+    std::string buildVersionDisplay = buildSettings.version.empty() ? "0.1.0" : buildSettings.version;
+    std::string executableStem = sanitizeBuildToken(buildNameDisplay, "Game");
+    std::string safeVersion = sanitizeBuildToken(buildVersionDisplay, "0.1.0");
+    std::string platformLabel = "Windows";
+    if (buildSettings.platform == BuildPlatform::Linux) platformLabel = "Linux";
+    else if (buildSettings.platform == BuildPlatform::Android) platformLabel = "Android";
+    std::string packageStem = executableStem + "-" + safeVersion + "-" + platformLabel;
+    fs::path exportRoot = normalizedOut / packageStem;
+    fs::path archivePath = normalizedOut / (packageStem + ".tar.gz");
+    std::string executableFileName = executableStem;
+#ifdef _WIN32
+    executableFileName += ".exe";
+#endif
+
     {
         std::lock_guard<std::mutex> lock(exportMutex);
         exportJob = ExportJobState{};
@@ -3554,22 +3887,42 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         exportJob.runAfter = runAfter;
         exportJob.progress = 0.02f;
         exportJob.status = "Preparing export...";
-        exportJob.outputDir = normalizedOut;
+        exportJob.outputDir = exportRoot;
+        exportJob.executableName = executableFileName;
+        exportJob.archivePath = buildSettings.packageStandaloneArchive ? archivePath : fs::path{};
     }
     exportCancelRequested = false;
 
-    fs::path sourceRoot = findCMakeSourceRoot(fs::current_path());
-    if (sourceRoot.empty()) {
-        addConsoleMessage("Export failed: could not locate CMakeLists.txt.", ConsoleMessageType::Error);
-        return;
-    }
     fs::path projectRoot = projectManager.currentProject.projectPath;
     bool usesNewLayout = projectManager.currentProject.usesNewLayout;
     fs::path scenesPath = projectManager.currentProject.scenesPath;
     fs::path scriptsPath = projectManager.currentProject.scriptsPath;
-    auto future = std::async(std::launch::async, [this, normalizedOut, sourceRoot, projectRoot, startScene, usesNewLayout, scenesPath, scriptsPath]() {
+    fs::path scriptsConfigPath = resolveScriptsConfigPath(projectManager.currentProject);
+    std::vector<fs::path> assignedNativeScriptSources;
+    {
+        std::unordered_set<std::string> seenSources;
+        for (const auto& obj : sceneObjects) {
+            for (const auto& sc : obj.scripts) {
+                if (sc.path.empty()) continue;
+                if (sc.language != ScriptLanguage::C && sc.language != ScriptLanguage::Cpp) continue;
+                fs::path sourcePath(sc.path);
+                std::string key = sourcePath.lexically_normal().string();
+                if (seenSources.insert(key).second) {
+                    assignedNativeScriptSources.push_back(sourcePath);
+                }
+            }
+        }
+    }
+    bool packageStandaloneArchive = buildSettings.packageStandaloneArchive;
+
+    auto future = std::async(std::launch::async,
+        [this, normalizedOut, exportRoot, archivePath, sourceRoot, projectRoot, startScene, usesNewLayout,
+         scenesPath, scriptsPath, scriptsConfigPath, assignedNativeScriptSources,
+         packageStandaloneArchive, executableStem, executableFileName, packageStem]() {
         ExportJobResult result;
-        result.outputDir = normalizedOut;
+        result.outputDir = exportRoot;
+        result.executableName = executableFileName;
+        result.archivePath = packageStandaloneArchive ? archivePath : fs::path{};
 
         auto setStatus = [this](float value, const std::string& status) {
             std::lock_guard<std::mutex> lock(exportMutex);
@@ -3590,7 +3943,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             result.success = false;
             return result;
         }
-        fs::create_directories(normalizedOut, ec);
+        fs::create_directories(exportRoot, ec);
         if (ec) {
             result.message = "Failed to create export directory.";
             return result;
@@ -3598,10 +3951,17 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
 
         setStatus(0.05f, "Cleaning export output...");
         std::string cleanError;
-        cleanExportOutput(normalizedOut, "ModularityPlayer", cleanError);
+        cleanExportOutput(exportRoot, executableStem.c_str(), cleanError);
         if (!cleanError.empty()) {
             result.message = cleanError;
             return result;
+        }
+        if (packageStandaloneArchive && fs::exists(archivePath)) {
+            fs::remove(archivePath, ec);
+            if (ec) {
+                result.message = "Failed to remove existing archive: " + archivePath.string();
+                return result;
+            }
         }
 
         fs::path sharedBuildRoot = sourceRoot / "build" / "player-cache";
@@ -3673,14 +4033,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             return result;
         }
 
-        fs::path exportRoot = normalizedOut;
-        fs::create_directories(exportRoot, ec);
-        if (ec) {
-            result.message = "Failed to create export root.";
-            return result;
-        }
-
-        fs::path destExe = exportRoot / exePath.filename();
+        fs::path destExe = exportRoot / executableFileName;
         fs::copy_file(exePath, destExe, fs::copy_options::overwrite_existing, ec);
         if (ec) {
             result.message = "Failed to copy executable.";
@@ -3703,6 +4056,167 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         if (!copyPrecompiledEnginePackages(buildRoot, exportRoot / "Packages" / "Engine", copyError)) {
             result.message = copyError;
             return result;
+        }
+
+        {
+            ScriptBuildConfig scriptConfig;
+            std::string configError;
+            if (scriptCompiler.loadConfig(scriptsConfigPath, scriptConfig, configError)) {
+                auto isNativeSourceFile = [](const fs::path& sourcePath) {
+                    std::string ext = sourcePath.extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".c++";
+                };
+
+                packageManager.applyToBuildConfig(scriptConfig);
+
+                auto resolveAssignedSource = [&](const fs::path& input) -> fs::path {
+                    if (input.empty()) return {};
+                    std::error_code sourceEc;
+                    fs::path abs = fs::absolute(input, sourceEc);
+                    if (sourceEc) abs = input;
+                    if (fs::exists(abs)) return abs;
+
+                    fs::path scriptsDir = scriptConfig.scriptsDir;
+                    if (!scriptsDir.is_absolute()) {
+                        scriptsDir = projectRoot / scriptsDir;
+                    }
+
+                    if (input.is_relative()) {
+                        fs::path candidate = projectRoot / input;
+                        if (fs::exists(candidate)) return candidate;
+                    }
+
+                    auto remapSuffix = [&](const fs::path& marker) -> fs::path {
+                        std::vector<fs::path> parts;
+                        for (const auto& p : abs) parts.push_back(p);
+                        std::vector<fs::path> markerParts;
+                        for (const auto& p : marker) markerParts.push_back(p);
+                        if (markerParts.empty()) return {};
+                        for (size_t i = 0; i + markerParts.size() <= parts.size(); ++i) {
+                            bool match = true;
+                            for (size_t k = 0; k < markerParts.size(); ++k) {
+                                if (parts[i + k] != markerParts[k]) {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            if (match) {
+                                fs::path suffix;
+                                for (size_t j = i + markerParts.size(); j < parts.size(); ++j) {
+                                    suffix /= parts[j];
+                                }
+                                if (!suffix.empty()) {
+                                    fs::path candidate = scriptsDir / suffix;
+                                    if (fs::exists(candidate)) return candidate;
+                                }
+                                break;
+                            }
+                        }
+                        return {};
+                    };
+
+                    fs::path remapped = remapSuffix(fs::path("Assets") / "Scripts");
+                    if (!remapped.empty()) return remapped;
+                    remapped = remapSuffix("Scripts");
+                    if (!remapped.empty()) return remapped;
+
+                    if (!abs.filename().empty()) {
+                        fs::path candidate = scriptsDir / abs.filename();
+                        if (fs::exists(candidate)) return candidate;
+                    }
+                    return {};
+                };
+
+                std::vector<fs::path> nativeSourcesToCompile;
+                std::unordered_set<std::string> seenNativeSources;
+                auto addNativeSource = [&](const fs::path& sourcePath) {
+                    if (sourcePath.empty()) return;
+                    std::error_code absEc;
+                    fs::path abs = fs::absolute(sourcePath, absEc);
+                    if (absEc) abs = sourcePath;
+                    std::string key = abs.lexically_normal().string();
+                    if (seenNativeSources.insert(key).second) {
+                        nativeSourcesToCompile.push_back(abs);
+                    }
+                };
+
+                for (const fs::path& sourceRef : assignedNativeScriptSources) {
+                    fs::path resolvedSource = resolveAssignedSource(sourceRef);
+                    if (resolvedSource.empty()) {
+                        appendLog("Warning: Native script source not found during export scan: " +
+                                  sourceRef.string());
+                        continue;
+                    }
+                    if (isNativeSourceFile(resolvedSource)) {
+                        addNativeSource(resolvedSource);
+                    }
+                }
+
+                std::vector<fs::path> scriptScanRoots;
+                scriptScanRoots.push_back(scriptConfig.scriptsDir);
+                scriptScanRoots.push_back(projectRoot / "Assets" / "Scripts");
+                scriptScanRoots.push_back(projectRoot / "Scripts");
+                if (!scriptsPath.empty()) {
+                    scriptScanRoots.push_back(scriptsPath);
+                }
+
+                std::unordered_set<std::string> seenScanRoots;
+                for (const auto& scanRoot : scriptScanRoots) {
+                    std::error_code absEc;
+                    fs::path absRoot = fs::absolute(scanRoot, absEc);
+                    if (absEc) absRoot = scanRoot;
+                    std::string rootKey = absRoot.lexically_normal().string();
+                    if (!seenScanRoots.insert(rootKey).second) continue;
+
+                    std::error_code scriptsEc;
+                    if (!fs::exists(absRoot, scriptsEc)) continue;
+
+                    for (auto it = fs::recursive_directory_iterator(absRoot, scriptsEc);
+                         it != fs::recursive_directory_iterator(); ++it) {
+                        if (scriptsEc) break;
+                        if (!it->is_regular_file()) continue;
+                        const fs::path sourcePath = it->path();
+                        if (!isNativeSourceFile(sourcePath)) continue;
+                        addNativeSource(sourcePath);
+                    }
+                }
+
+                if (!nativeSourcesToCompile.empty()) {
+                    setStatus(0.84f, "Compiling native scripts...");
+                    for (const fs::path& resolvedSource : nativeSourcesToCompile) {
+                        if (exportCancelRequested.load()) {
+                            result.message = "Export cancelled.";
+                            result.success = false;
+                            return result;
+                        }
+
+                        ScriptBuildCommands commands;
+                        std::string buildError;
+                        if (!scriptCompiler.makeCommands(scriptConfig, resolvedSource, commands, buildError)) {
+                            result.message = "Failed to prepare native script build for '" +
+                                             resolvedSource.filename().string() + "': " + buildError;
+                            return result;
+                        }
+
+                        appendLog("Compiling native script: " + resolvedSource.string());
+                        ScriptCompileOutput compileOutput;
+                        if (!scriptCompiler.compile(commands, compileOutput, buildError)) {
+                            if (!compileOutput.compileLog.empty()) appendLog(compileOutput.compileLog);
+                            if (!compileOutput.linkLog.empty()) appendLog(compileOutput.linkLog);
+                            result.message = "Failed to compile native script '" +
+                                             resolvedSource.filename().string() + "': " + buildError;
+                            return result;
+                        }
+                        if (!compileOutput.compileLog.empty()) appendLog(compileOutput.compileLog);
+                        if (!compileOutput.linkLog.empty()) appendLog(compileOutput.linkLog);
+                    }
+                }
+            } else if (!assignedNativeScriptSources.empty()) {
+                result.message = "Failed to load scripts config for export: " + configError;
+                return result;
+            }
         }
 
         setStatus(0.85f, "Copying project...");
@@ -3732,8 +4246,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         {
             ScriptBuildConfig scriptConfig;
             std::string configError;
-            fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
-            if (scriptCompiler.loadConfig(configPath, scriptConfig, configError)) {
+            if (scriptCompiler.loadConfig(scriptsConfigPath, scriptConfig, configError)) {
                 compiledScriptsSrc = scriptConfig.outDir;
                 if (!compiledScriptsSrc.is_absolute()) {
                     compiledScriptsSrc = projectRoot / compiledScriptsSrc;
@@ -3777,10 +4290,21 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
 
         std::vector<fs::path> projectFiles = {
             projectRoot / "project.modu",
+            projectRoot / "build.modu",
             projectRoot / "scripts.modu",
+            projectRoot / "Scripts.modu",
             projectRoot / "packages.modu"
         };
+        if (!scriptsConfigPath.empty()) {
+            projectFiles.push_back(scriptsConfigPath);
+        }
+        std::unordered_set<std::string> seenProjectFiles;
         for (const auto& src : projectFiles) {
+            std::error_code srcAbsEc;
+            fs::path srcAbs = fs::absolute(src, srcAbsEc);
+            if (srcAbsEc) srcAbs = src;
+            std::string srcKey = srcAbs.lexically_normal().string();
+            if (!seenProjectFiles.insert(srcKey).second) continue;
             if (!fs::exists(src)) continue;
             fs::path dst = projectOut / src.filename();
             fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
@@ -3831,9 +4355,31 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             buildAutoStart.close();
         }
 
+        if (packageStandaloneArchive) {
+#ifdef _WIN32
+            appendLog("Standalone archive packaging is skipped on Windows exports.");
+            result.archivePath.clear();
+#else
+            setStatus(0.97f, "Packing standalone archive...");
+            int archiveExit = 0;
+            std::string archiveCmd = "cd " + quotePath(normalizedOut) + " && tar -czf " +
+                                     quotePath(archivePath.filename()) + " " +
+                                     quotePath(fs::path(packageStem));
+            appendLog("Running: " + archiveCmd);
+            if (!runCommandStreaming(archiveCmd + " 2>&1", appendLog, &archiveExit)) {
+                result.message = "Failed to create standalone archive (exit code " + std::to_string(archiveExit) + ").";
+                return result;
+            }
+#endif
+        }
+
         setStatus(1.0f, "Export complete.");
         result.success = true;
-        result.message = "Export complete.";
+        if (packageStandaloneArchive && !result.archivePath.empty()) {
+            result.message = "Export complete. Archive: " + result.archivePath.string();
+        } else {
+            result.message = "Export complete.";
+        }
         return result;
     });
 
@@ -3860,24 +4406,31 @@ void Engine::pollExportBuild() {
         exportJob.success = result.success;
         exportJob.status = result.message;
         exportJob.outputDir = result.outputDir;
+        exportJob.executableName = result.executableName;
+        exportJob.archivePath = result.archivePath;
         exportJob.cancelled = exportCancelRequested.load() && !result.success;
     }
 
     bool runAfter = false;
+    std::string executableName;
     {
         std::lock_guard<std::mutex> lock(exportMutex);
         runAfter = exportJob.runAfter;
+        executableName = exportJob.executableName;
     }
 
     if (result.success) {
         addConsoleMessage("Export finished: " + result.outputDir.string(), ConsoleMessageType::Success);
         if (runAfter) {
-            fs::path exePath = result.outputDir /
+            if (executableName.empty()) {
+                executableName =
 #ifdef _WIN32
-                "ModularityPlayer.exe";
+                    "ModularityPlayer.exe";
 #else
-                "ModularityPlayer";
+                    "ModularityPlayer";
 #endif
+            }
+            fs::path exePath = result.outputDir / executableName;
             if (fs::exists(exePath)) {
 #ifdef _WIN32
                 std::string runCmd = "start \"\" \"" + exePath.string() + "\"";
@@ -4328,6 +4881,57 @@ void Engine::logToConsole(const std::string& message) {
 void Engine::addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type) {
     addConsoleMessage(message, type);
 }
+
+bool Engine::isRuntimeKeyDown(int key) const {
+    return editorWindow && glfwGetKey(editorWindow, key) == GLFW_PRESS;
+}
+
+bool Engine::isRuntimeMouseDown(int button) const {
+    return editorWindow && glfwGetMouseButton(editorWindow, button) == GLFW_PRESS;
+}
+
+glm::vec2 Engine::getRuntimeMouseDelta() const {
+    ImGuiIO& io = ImGui::GetIO();
+    glm::vec2 delta(io.MouseDelta.x, io.MouseDelta.y);
+    if (glm::dot(delta, delta) > 1e-8f) {
+        return delta;
+    }
+    if (!editorWindow) {
+        return glm::vec2(0.0f);
+    }
+
+    struct CursorCache {
+        int frame = -1;
+        bool hasPos = false;
+        double lastX = 0.0;
+        double lastY = 0.0;
+        glm::vec2 delta = glm::vec2(0.0f);
+    };
+    static std::unordered_map<const Engine*, CursorCache> cacheByEngine;
+    CursorCache& cache = cacheByEngine[this];
+
+    int frame = ImGui::GetFrameCount();
+    if (cache.frame == frame) {
+        return cache.delta;
+    }
+
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(editorWindow, &x, &y);
+
+    glm::vec2 computed(0.0f);
+    if (cache.hasPos) {
+        computed.x = static_cast<float>(x - cache.lastX);
+        computed.y = static_cast<float>(y - cache.lastY);
+    }
+
+    cache.lastX = x;
+    cache.lastY = y;
+    cache.hasPos = true;
+    cache.frame = frame;
+    cache.delta = computed;
+    return computed;
+}
 #pragma endregion
 
 #pragma region Object Lookup
@@ -4353,91 +4957,108 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
     ScriptBuildConfig config;
     std::string error;
     fs::path cfg = resolveScriptsConfigPath(projectManager.currentProject);
-    if (!scriptCompiler.loadConfig(cfg, config, error)) {
-        return {};
-    }
-    auto resolveSource = [&](const fs::path& input) -> fs::path {
-        if (input.empty()) return {};
-        std::error_code ec;
-        fs::path abs = fs::absolute(input, ec);
-        if (ec) abs = input;
-        if (fs::exists(abs)) return abs;
+    bool haveConfig = scriptCompiler.loadConfig(cfg, config, error);
+    if (haveConfig) {
+        auto resolveSource = [&](const fs::path& input) -> fs::path {
+            if (input.empty()) return {};
+            std::error_code ec;
+            fs::path abs = fs::absolute(input, ec);
+            if (ec) abs = input;
+            if (fs::exists(abs)) return abs;
 
-        fs::path scriptsDir = config.scriptsDir;
-        if (!scriptsDir.is_absolute()) {
-            scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
-        }
+            fs::path scriptsDir = config.scriptsDir;
+            if (!scriptsDir.is_absolute()) {
+                scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
+            }
 
-        if (input.is_relative()) {
-            fs::path candidate = projectManager.currentProject.projectPath / input;
-            if (fs::exists(candidate)) return candidate;
-        }
+            if (input.is_relative()) {
+                fs::path candidate = projectManager.currentProject.projectPath / input;
+                if (fs::exists(candidate)) return candidate;
+            }
 
-        auto remapSuffix = [&](const fs::path& marker) -> fs::path {
-            std::vector<fs::path> parts;
-            for (const auto& p : abs) parts.push_back(p);
-            std::vector<fs::path> markerParts;
-            for (const auto& p : marker) markerParts.push_back(p);
-            if (markerParts.empty()) return {};
-            for (size_t i = 0; i + markerParts.size() <= parts.size(); ++i) {
-                bool match = true;
-                for (size_t k = 0; k < markerParts.size(); ++k) {
-                    if (parts[i + k] != markerParts[k]) {
-                        match = false;
+            auto remapSuffix = [&](const fs::path& marker) -> fs::path {
+                std::vector<fs::path> parts;
+                for (const auto& p : abs) parts.push_back(p);
+                std::vector<fs::path> markerParts;
+                for (const auto& p : marker) markerParts.push_back(p);
+                if (markerParts.empty()) return {};
+                for (size_t i = 0; i + markerParts.size() <= parts.size(); ++i) {
+                    bool match = true;
+                    for (size_t k = 0; k < markerParts.size(); ++k) {
+                        if (parts[i + k] != markerParts[k]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        fs::path suffix;
+                        for (size_t j = i + markerParts.size(); j < parts.size(); ++j) {
+                            suffix /= parts[j];
+                        }
+                        if (!suffix.empty()) {
+                            fs::path candidate = scriptsDir / suffix;
+                            if (fs::exists(candidate)) return candidate;
+                        }
                         break;
                     }
                 }
-                if (match) {
-                    fs::path suffix;
-                    for (size_t j = i + markerParts.size(); j < parts.size(); ++j) {
-                        suffix /= parts[j];
-                    }
-                    if (!suffix.empty()) {
-                        fs::path candidate = scriptsDir / suffix;
-                        if (fs::exists(candidate)) return candidate;
-                    }
-                    break;
-                }
+                return {};
+            };
+
+            fs::path remapped = remapSuffix(fs::path("Assets") / "Scripts");
+            if (!remapped.empty()) return remapped;
+            remapped = remapSuffix("Scripts");
+            if (!remapped.empty()) return remapped;
+
+            if (!abs.filename().empty()) {
+                fs::path candidate = scriptsDir / abs.filename();
+                if (fs::exists(candidate)) return candidate;
             }
             return {};
         };
 
-        fs::path remapped = remapSuffix(fs::path("Assets") / "Scripts");
-        if (!remapped.empty()) return remapped;
-        remapped = remapSuffix("Scripts");
-        if (!remapped.empty()) return remapped;
-
-        if (!abs.filename().empty()) {
-            fs::path candidate = scriptsDir / abs.filename();
-            if (fs::exists(candidate)) return candidate;
-        }
-        return {};
-    };
-
-    fs::path resolvedSource = resolveSource(sourcePath);
-    if (!resolvedSource.empty()) {
-        ScriptBuildCommands cmds;
-        if (scriptCompiler.makeCommands(config, resolvedSource, cmds, error)) {
-            return cmds.binaryPath;
+        fs::path resolvedSource = resolveSource(sourcePath);
+        if (!resolvedSource.empty()) {
+            ScriptBuildCommands cmds;
+            if (scriptCompiler.makeCommands(config, resolvedSource, cmds, error)) {
+                return cmds.binaryPath;
+            }
         }
     }
 
-    fs::path compiledDir = config.outDir;
-    if (!compiledDir.is_absolute()) {
-        compiledDir = projectManager.currentProject.projectPath / compiledDir;
+    std::vector<fs::path> searchDirs;
+    if (haveConfig) {
+        fs::path compiledDir = config.outDir;
+        if (!compiledDir.is_absolute()) {
+            compiledDir = projectManager.currentProject.projectPath / compiledDir;
+        }
+        searchDirs.push_back(compiledDir);
     }
+    searchDirs.push_back(projectManager.currentProject.projectPath / "Cache" / "ScriptBin");
+    searchDirs.push_back(projectManager.currentProject.projectPath / "Library" / "CompiledScripts");
+
+    std::unordered_set<std::string> seenDirs;
     std::string stem = sourcePath.stem().string();
-    if (!stem.empty() && fs::exists(compiledDir)) {
-        std::error_code dirEc;
-        for (auto it = fs::recursive_directory_iterator(compiledDir, dirEc);
-             it != fs::recursive_directory_iterator(); ++it) {
-            if (it->is_directory()) continue;
-            fs::path p = it->path();
+    if (!stem.empty()) {
+        for (const auto& dir : searchDirs) {
+            std::error_code absEc;
+            fs::path absDir = fs::absolute(dir, absEc);
+            if (absEc) absDir = dir;
+            std::string dirKey = absDir.lexically_normal().string();
+            if (!seenDirs.insert(dirKey).second) continue;
+            if (!fs::exists(absDir)) continue;
+
+            std::error_code dirEc;
+            for (auto it = fs::recursive_directory_iterator(absDir, dirEc);
+                 it != fs::recursive_directory_iterator(); ++it) {
+                if (it->is_directory()) continue;
+                fs::path p = it->path();
 #ifdef _WIN32
-            if (p.stem() == stem && p.extension() == ".dll") return p;
+                if (p.stem() == stem && p.extension() == ".dll") return p;
 #else
-            if (p.stem() == stem && p.extension() == ".so") return p;
+                if (p.stem() == stem && p.extension() == ".so") return p;
 #endif
+            }
         }
     }
 
@@ -4460,9 +5081,12 @@ fs::path Engine::resolveManagedAssembly(const fs::path& sourcePath) {
 }
 
 fs::path Engine::getManagedProjectPath() const {
-    fs::path root = findManagedProjectRoot(fs::current_path());
-    if (root.empty() && projectManager.currentProject.isLoaded) {
+    fs::path root;
+    if (projectManager.currentProject.isLoaded) {
         root = findManagedProjectRoot(projectManager.currentProject.projectPath);
+    }
+    if (root.empty()) {
+        root = findManagedProjectRoot(fs::current_path());
     }
 #if defined(__linux__)
     if (root.empty()) {
@@ -4480,23 +5104,7 @@ fs::path Engine::getManagedProjectPath() const {
 }
 
 fs::path Engine::getManagedOutputDll() const {
-    fs::path root = findManagedProjectRoot(fs::current_path());
-    if (root.empty() && projectManager.currentProject.isLoaded) {
-        root = findManagedProjectRoot(projectManager.currentProject.projectPath);
-    }
-#if defined(__linux__)
-    if (root.empty()) {
-        std::error_code ec;
-        fs::path exe = fs::read_symlink("/proc/self/exe", ec);
-        if (!ec) {
-            root = findManagedProjectRoot(exe.parent_path());
-        }
-    }
-#endif
-    if (root.empty()) {
-        root = fs::current_path();
-    }
-    return root / "Scripts" / "Managed" / "bin" / "Debug" / "netstandard2.0" / "ModuCPP.dll";
+    return managedOutputPathFromProject(getManagedProjectPath());
 }
 
 void Engine::markProjectDirty() {
@@ -4801,7 +5409,7 @@ void Engine::compileManagedScripts() {
         } else {
             result.success = true;
             result.compileLog = output;
-            result.binaryPath = getManagedOutputDll();
+            result.binaryPath = managedOutputPathFromProject(managedProject);
             result.compiledSource = managedProject.string();
             setProgress(0.85f, "Reloading");
         }
@@ -5160,14 +5768,20 @@ fs::path Engine::getEditorLayoutPath() const {
 }
 
 fs::path Engine::getWorkspaceLayoutPath(WorkspaceMode mode) const {
-    fs::path settingsDir = fs::path("Resources");
     const char* filename = "imgui.ini";
     if (mode == WorkspaceMode::Animation) {
         filename = "anim.ini";
     } else if (mode == WorkspaceMode::Scripting) {
         filename = "scripter.ini";
     }
-    return settingsDir / filename;
+
+    if (projectManager.currentProject.isLoaded) {
+        fs::path settingsDir =
+            projectManager.currentProject.projectPath / "ProjectUserSettings" / "ProjectLayout";
+        return settingsDir / filename;
+    }
+
+    return fs::path("Resources") / filename;
 }
 
 void Engine::saveWorkspaceLayout(WorkspaceMode mode) const {
@@ -5286,6 +5900,46 @@ void Engine::loadEditorUserSettings() {
             consoleWrapText = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showAnimationWindow") {
             showAnimationWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showSceneGizmos") {
+            showSceneGizmos = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showSceneGrid3D") {
+            showSceneGrid3D = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showCanvasOverlay") {
+            showCanvasOverlay = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showUIWorldGrid") {
+            showUIWorldGrid = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showGameProfiler") {
+            showGameProfiler = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "collisionWireframe") {
+            collisionWireframe = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "fpsCapEnabled") {
+            fpsCapEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "fpsCap") {
+            try { fpsCap = std::max(1.0f, std::stof(value)); } catch (...) {}
+        } else if (key == "cameraMoveSpeed") {
+            try { camera.moveSpeed = std::max(0.01f, std::stof(value)); } catch (...) {}
+        } else if (key == "cameraSprintSpeed") {
+            try { camera.sprintSpeed = std::max(camera.moveSpeed, std::stof(value)); } catch (...) {}
+        } else if (key == "cameraSmoothMovement") {
+            camera.smoothMovement = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "cameraAcceleration") {
+            try { camera.acceleration = std::max(0.1f, std::stof(value)); } catch (...) {}
+        } else if (key == "cameraMouseSensitivity") {
+            try { camera.mouseSensitivity = std::max(0.001f, std::stof(value)); } catch (...) {}
+        } else if (key == "gameViewportResolutionIndex") {
+            try { gameViewportResolutionIndex = std::max(0, std::stoi(value)); } catch (...) {}
+        } else if (key == "gameViewportCustomWidth") {
+            try { gameViewportCustomWidth = std::clamp(std::stoi(value), 64, 8192); } catch (...) {}
+        } else if (key == "gameViewportCustomHeight") {
+            try { gameViewportCustomHeight = std::clamp(std::stoi(value), 64, 8192); } catch (...) {}
+        } else if (key == "gameViewportAutoFit") {
+            gameViewportAutoFit = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gameViewportZoom") {
+            try { gameViewportZoom = std::clamp(std::stof(value), 0.2f, 4.0f); } catch (...) {}
+        } else if (key == "scriptAutoCompileInterval") {
+            try { scriptAutoCompileInterval = std::clamp(std::stod(value), 0.1, 10.0); } catch (...) {}
+        } else if (key == "scriptAutoCompileOnSave") {
+            scriptEditorState.autoCompileOnSave = (value == "1" || value == "true" || value == "yes");
         } else if (key.rfind("color.", 0) == 0) {
             std::string name = key.substr(6);
             auto it = colorIndex.find(name);
@@ -5324,6 +5978,15 @@ void Engine::loadEditorUserSettings() {
 
     fileBrowserIconScale = std::clamp(fileBrowserIconScale, 0.6f, 2.0f);
     fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, 160.0f, 360.0f);
+    camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
+    camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+    camera.acceleration = std::max(0.1f, camera.acceleration);
+    camera.mouseSensitivity = std::clamp(camera.mouseSensitivity, 0.001f, 2.0f);
+    fpsCap = std::max(1.0f, fpsCap);
+    gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
+    gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
+    gameViewportZoom = std::clamp(gameViewportZoom, 0.2f, 4.0f);
+    scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
 
     applyUIStylePresetByName(uiStylePresetName);
     ImGuiStyle& style = ImGui::GetStyle();
@@ -5381,6 +6044,26 @@ void Engine::saveEditorUserSettings() const {
     file << "fileBrowserSidebarVisible=" << (showFileBrowserSidebar ? "1" : "0") << "\n";
     file << "consoleWrapText=" << (consoleWrapText ? "1" : "0") << "\n";
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
+    file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
+    file << "showSceneGrid3D=" << (showSceneGrid3D ? "1" : "0") << "\n";
+    file << "showCanvasOverlay=" << (showCanvasOverlay ? "1" : "0") << "\n";
+    file << "showUIWorldGrid=" << (showUIWorldGrid ? "1" : "0") << "\n";
+    file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";
+    file << "collisionWireframe=" << (collisionWireframe ? "1" : "0") << "\n";
+    file << "fpsCapEnabled=" << (fpsCapEnabled ? "1" : "0") << "\n";
+    file << "fpsCap=" << fpsCap << "\n";
+    file << "cameraMoveSpeed=" << camera.moveSpeed << "\n";
+    file << "cameraSprintSpeed=" << camera.sprintSpeed << "\n";
+    file << "cameraSmoothMovement=" << (camera.smoothMovement ? "1" : "0") << "\n";
+    file << "cameraAcceleration=" << camera.acceleration << "\n";
+    file << "cameraMouseSensitivity=" << camera.mouseSensitivity << "\n";
+    file << "gameViewportResolutionIndex=" << gameViewportResolutionIndex << "\n";
+    file << "gameViewportCustomWidth=" << gameViewportCustomWidth << "\n";
+    file << "gameViewportCustomHeight=" << gameViewportCustomHeight << "\n";
+    file << "gameViewportAutoFit=" << (gameViewportAutoFit ? "1" : "0") << "\n";
+    file << "gameViewportZoom=" << gameViewportZoom << "\n";
+    file << "scriptAutoCompileInterval=" << scriptAutoCompileInterval << "\n";
+    file << "scriptAutoCompileOnSave=" << (scriptEditorState.autoCompileOnSave ? "1" : "0") << "\n";
     const ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; ++i) {
         const ImVec4& c = style.Colors[i];
