@@ -28,6 +28,8 @@ void modu_ctx_add_console_message(ScriptContext* ctx, const char* message, int t
 int modu_ctx_find_object_id_by_name(ScriptContext* ctx, const char* name);
 void modu_ctx_get_object_name(ScriptContext* ctx, int id, char* outBuffer, int outBufferSize);
 int modu_ctx_get_selected_object_id(ScriptContext* ctx);
+int modu_ctx_get_scene_object_count(ScriptContext* ctx);
+int modu_ctx_get_scene_object_id_at(ScriptContext* ctx, int index);
 void modu_imgui_text(const char* text);
 void modu_imgui_separator();
 int modu_imgui_button(const char* label);
@@ -35,6 +37,9 @@ int modu_imgui_checkbox(const char* label, int* value);
 int modu_imgui_drag_float(const char* label, float* value, float speed, float minValue, float maxValue);
 int modu_imgui_drag_float3(const char* label, float* values, float speed, float minValue, float maxValue);
 int modu_imgui_input_text(const char* label, char* buffer, int bufferSize);
+int modu_imgui_begin_combo(const char* label, const char* previewValue);
+void modu_imgui_end_combo();
+int modu_imgui_selectable(const char* label, int selected);
 int modu_imgui_accept_scene_object_drop(int* outId);
 }
 
@@ -72,6 +77,12 @@ struct ManagedNativeApi {
     int (*imguiDragFloat3)(const char* label, float* values, float speed, float minValue, float maxValue) = nullptr;
     int (*imguiInputText)(const char* label, char* buffer, int bufferSize) = nullptr;
     int (*imguiAcceptSceneObjectDrop)(int* outId) = nullptr;
+    // Version 4+ additions appended to preserve ABI layout for older managed assemblies.
+    int (*getSceneObjectCount)(ScriptContext* ctx) = nullptr;
+    int (*getSceneObjectIdAt)(ScriptContext* ctx, int index) = nullptr;
+    int (*imguiBeginCombo)(const char* label, const char* previewValue) = nullptr;
+    void (*imguiEndCombo)() = nullptr;
+    int (*imguiSelectable)(const char* label, int selected) = nullptr;
 };
 
 ManagedNativeApi BuildManagedNativeApi();

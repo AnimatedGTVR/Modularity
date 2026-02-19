@@ -66,6 +66,7 @@ int Modu_InspectorDragFloat2(ModuScriptContext* ctx, const char* label, float* v
 int Modu_InspectorDragFloat3(ModuScriptContext* ctx, const char* label, float* value,
                              float speed, float minValue, float maxValue, const char* format);
 int Modu_InspectorCheckbox(ModuScriptContext* ctx, const char* label, int* value);
+int Modu_InspectorObject(ModuScriptContext* ctx, const char* label, int* objectId);
 
 #ifdef __cplusplus
 }

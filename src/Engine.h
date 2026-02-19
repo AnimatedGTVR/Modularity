@@ -371,13 +371,23 @@ private:
     std::mutex compileMutex;
     ScriptCompileJobResult compileResult;
     std::unordered_map<std::string, fs::file_time_type> scriptLastAutoCompileTime;
+    std::unordered_map<std::string, fs::file_time_type> scriptAutoCompileCheckedSourceTime;
+    std::unordered_map<std::string, fs::path> scriptAutoCompileBinaryCache;
+    std::unordered_set<std::string> scriptAutoCompileDiscoveredSources;
     std::deque<fs::path> autoCompileQueue;
     std::unordered_set<std::string> autoCompileQueued;
     std::unordered_set<std::string> nativeScriptMissingLogged;
     std::unordered_set<std::string> nativeScriptLoadErrorLogged;
     bool managedAutoCompileQueued = false;
+    double managedAutoCompileLastScan = 0.0;
+    double managedAutoCompileScanInterval = 5.0;
+    fs::path managedAutoCompileCachedProjectDir;
+    fs::file_time_type managedAutoCompileNewestSource{};
+    bool managedAutoCompileHasSource = false;
     double scriptAutoCompileLastCheck = 0.0;
     double scriptAutoCompileInterval = 0.5;
+    double scriptAutoCompileLastDirectoryScan = 0.0;
+    double scriptAutoCompileDirectoryScanInterval = 5.0;
     struct ProjectLoadResult {
         bool success = false;
         Project project;
@@ -621,6 +631,7 @@ public:
     bool setAudioVolumeFromScript(int id, float volume);
     bool setAudioClipFromScript(int id, const std::string& path);
     void syncLocalTransform(SceneObject& obj);
+    const std::vector<SceneObject>& getSceneObjects() const { return sceneObjects; }
     const std::vector<UIStylePreset>& getUIStylePresets() const { return uiStylePresets; }
     void registerUIStylePresetFromScript(const std::string& name, const ImGuiStyle& style, bool replace = false);
     void setFrameRateCapFromScript(bool enabled, float cap);

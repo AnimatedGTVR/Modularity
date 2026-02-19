@@ -4567,6 +4567,82 @@ void Engine::renderViewport() {
             }
         };
 
+        auto resolveMainObjectType = [](const SceneObject& obj) -> ObjectType {
+            if (obj.hasRenderer) {
+                switch (obj.renderType) {
+                    case RenderType::Cube: return ObjectType::Cube;
+                    case RenderType::Sphere: return ObjectType::Sphere;
+                    case RenderType::Capsule: return ObjectType::Capsule;
+                    case RenderType::OBJMesh: return ObjectType::OBJMesh;
+                    case RenderType::Model: return ObjectType::Model;
+                    case RenderType::Mirror: return ObjectType::Mirror;
+                    case RenderType::Plane: return ObjectType::Plane;
+                    case RenderType::Torus: return ObjectType::Torus;
+                    case RenderType::Sprite: return ObjectType::Sprite;
+                    case RenderType::None: break;
+                }
+            }
+            if (obj.hasUI) {
+                switch (obj.ui.type) {
+                    case UIElementType::Canvas: return ObjectType::Canvas;
+                    case UIElementType::Image: return ObjectType::UIImage;
+                    case UIElementType::Slider: return ObjectType::UISlider;
+                    case UIElementType::Button: return ObjectType::UIButton;
+                    case UIElementType::Text: return ObjectType::UIText;
+                    case UIElementType::Sprite2D: return ObjectType::Sprite2D;
+                    case UIElementType::None: break;
+                }
+            }
+            if (obj.hasLight) {
+                switch (obj.light.type) {
+                    case LightType::Directional: return ObjectType::DirectionalLight;
+                    case LightType::Point: return ObjectType::PointLight;
+                    case LightType::Spot: return ObjectType::SpotLight;
+                    case LightType::Area: return ObjectType::AreaLight;
+                }
+            }
+            if (obj.hasCamera) return ObjectType::Camera;
+            if (obj.hasPostFX) return ObjectType::PostFXNode;
+            return ObjectType::Empty;
+        };
+
+        auto getMainTypeGizmoIcon = [&](ObjectType type) -> Texture* {
+            switch (type) {
+                case ObjectType::Camera:
+                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Camera view.png");
+                case ObjectType::DirectionalLight:
+                case ObjectType::PointLight:
+                case ObjectType::SpotLight:
+                case ObjectType::AreaLight:
+                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Light bulb.png");
+                case ObjectType::UIText:
+                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Dynamic Text.png");
+                default:
+                    return nullptr;
+            }
+        };
+
+        auto drawMainTypeGizmoIcon = [&](const SceneObject& obj) {
+            Texture* icon = getMainTypeGizmoIcon(resolveMainObjectType(obj));
+            if (!icon || !icon->GetID()) return;
+
+            auto screen = projectToScreen(obj.position);
+            if (!screen) return;
+
+            const bool isSelected = std::find(selectedObjectIds.begin(), selectedObjectIds.end(), obj.id) != selectedObjectIds.end();
+            const float size = isSelected ? 74.0f : 56.0f;
+            const float half = size * 0.5f;
+            const ImVec2 min(screen->x - half, screen->y - half);
+            const ImVec2 max(screen->x + half, screen->y + half);
+            const ImU32 tint = obj.enabled ? IM_COL32(255, 255, 255, 232) : IM_COL32(170, 170, 170, 168);
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddImage((ImTextureID)(intptr_t)icon->GetID(), min, max, ImVec2(0, 1), ImVec2(1, 0), tint);
+            if (isSelected) {
+                dl->AddRect(min, max, IM_COL32(255, 255, 255, 170), 5.0f, 0, 1.8f);
+            }
+        };
+
         const float toolbarPadding = 6.0f;
         const float toolbarSpacing = 5.0f;
         const ImVec2 gizmoButtonSize(60.0f, 24.0f);
@@ -4579,6 +4655,9 @@ void Engine::renderViewport() {
             }
             for (const auto& obj : sceneObjects) {
                 drawArmatureOverlays(obj, idLookup);
+            }
+            for (const auto& obj : sceneObjects) {
+                drawMainTypeGizmoIcon(obj);
             }
         }
 

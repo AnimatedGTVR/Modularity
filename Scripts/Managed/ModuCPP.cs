@@ -70,6 +70,12 @@ namespace ModuCPP {
         public IntPtr ImGuiDragFloat3;
         public IntPtr ImGuiInputText;
         public IntPtr ImGuiAcceptSceneObjectDrop;
+        // Version 4+ additions appended to preserve ABI layout for older managed assemblies.
+        public IntPtr GetSceneObjectCount;
+        public IntPtr GetSceneObjectIdAt;
+        public IntPtr ImGuiBeginCombo;
+        public IntPtr ImGuiEndCombo;
+        public IntPtr ImGuiSelectable;
     }
 
     internal unsafe static class Native {
@@ -97,6 +103,8 @@ namespace ModuCPP {
         public static FindObjectIdByNameFn FindObjectIdByName;
         public static GetObjectNameFn GetObjectName;
         public static GetSelectedObjectIdFn GetSelectedObjectId;
+        public static GetSceneObjectCountFn GetSceneObjectCount;
+        public static GetSceneObjectIdAtFn GetSceneObjectIdAt;
         public static ImGuiTextFn ImGuiText;
         public static ImGuiSeparatorFn ImGuiSeparator;
         public static ImGuiButtonFn ImGuiButton;
@@ -104,6 +112,9 @@ namespace ModuCPP {
         public static ImGuiDragFloatFn ImGuiDragFloat;
         public static ImGuiDragFloat3Fn ImGuiDragFloat3;
         public static ImGuiInputTextFn ImGuiInputText;
+        public static ImGuiBeginComboFn ImGuiBeginCombo;
+        public static ImGuiEndComboFn ImGuiEndCombo;
+        public static ImGuiSelectableFn ImGuiSelectable;
         public static ImGuiAcceptSceneObjectDropFn ImGuiAcceptSceneObjectDrop;
 
         public static void BindDelegates() {
@@ -138,6 +149,33 @@ namespace ModuCPP {
             ImGuiDragFloat3 = Marshal.GetDelegateForFunctionPointer<ImGuiDragFloat3Fn>(Api.ImGuiDragFloat3);
             ImGuiInputText = Marshal.GetDelegateForFunctionPointer<ImGuiInputTextFn>(Api.ImGuiInputText);
             ImGuiAcceptSceneObjectDrop = Marshal.GetDelegateForFunctionPointer<ImGuiAcceptSceneObjectDropFn>(Api.ImGuiAcceptSceneObjectDrop);
+
+            // Optional API extensions (v4+). Keep safe fallbacks for older native layouts.
+            if (Api.Version >= 4 && Api.GetSceneObjectCount != IntPtr.Zero) {
+                GetSceneObjectCount = Marshal.GetDelegateForFunctionPointer<GetSceneObjectCountFn>(Api.GetSceneObjectCount);
+            } else {
+                GetSceneObjectCount = _ => 0;
+            }
+            if (Api.Version >= 4 && Api.GetSceneObjectIdAt != IntPtr.Zero) {
+                GetSceneObjectIdAt = Marshal.GetDelegateForFunctionPointer<GetSceneObjectIdAtFn>(Api.GetSceneObjectIdAt);
+            } else {
+                GetSceneObjectIdAt = (_, _) => -1;
+            }
+            if (Api.Version >= 4 && Api.ImGuiBeginCombo != IntPtr.Zero) {
+                ImGuiBeginCombo = Marshal.GetDelegateForFunctionPointer<ImGuiBeginComboFn>(Api.ImGuiBeginCombo);
+            } else {
+                ImGuiBeginCombo = (_, _) => 0;
+            }
+            if (Api.Version >= 4 && Api.ImGuiEndCombo != IntPtr.Zero) {
+                ImGuiEndCombo = Marshal.GetDelegateForFunctionPointer<ImGuiEndComboFn>(Api.ImGuiEndCombo);
+            } else {
+                ImGuiEndCombo = () => { };
+            }
+            if (Api.Version >= 4 && Api.ImGuiSelectable != IntPtr.Zero) {
+                ImGuiSelectable = Marshal.GetDelegateForFunctionPointer<ImGuiSelectableFn>(Api.ImGuiSelectable);
+            } else {
+                ImGuiSelectable = (_, _) => 0;
+            }
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -187,6 +225,10 @@ namespace ModuCPP {
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int GetSelectedObjectIdFn(IntPtr ctx);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetSceneObjectCountFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetSceneObjectIdAtFn(IntPtr ctx, int index);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate void ImGuiTextFn(byte* text);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate void ImGuiSeparatorFn();
@@ -200,6 +242,12 @@ namespace ModuCPP {
         public unsafe delegate int ImGuiDragFloat3Fn(byte* label, float* values, float speed, float minValue, float maxValue);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int ImGuiInputTextFn(byte* label, byte* buffer, int bufferSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int ImGuiBeginComboFn(byte* label, byte* previewValue);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void ImGuiEndComboFn();
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int ImGuiSelectableFn(byte* label, int selected);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int ImGuiAcceptSceneObjectDropFn(int* outId);
     }
@@ -236,6 +284,7 @@ namespace ModuCPP {
 
         public int ObjectId => Native.GetObjectId(handle);
         public int SelectedObjectId => Native.GetSelectedObjectId(handle);
+        public int SceneObjectCount => Native.GetSceneObjectCount(handle);
 
         public ModuObject FindObjectByName(string name) {
             if (string.IsNullOrEmpty(name)) return new ModuObject(-1, string.Empty);
@@ -247,6 +296,13 @@ namespace ModuCPP {
         }
 
         public ModuObject FindObjectById(int id) {
+            if (id < 0) return new ModuObject(-1, string.Empty);
+            return new ModuObject(id, GetObjectName(id));
+        }
+
+        public ModuObject GetObjectByIndex(int index) {
+            if (index < 0) return new ModuObject(-1, string.Empty);
+            int id = Native.GetSceneObjectIdAt(handle, index);
             if (id < 0) return new ModuObject(-1, string.Empty);
             return new ModuObject(id, GetObjectName(id));
         }
@@ -561,6 +617,26 @@ namespace ModuCPP {
             }
         }
 
+        public static bool BeginCombo(string label, string previewValue) {
+            byte[] labelBytes = Encoding.UTF8.GetBytes((label ?? string.Empty) + "\0");
+            byte[] previewBytes = Encoding.UTF8.GetBytes((previewValue ?? string.Empty) + "\0");
+            fixed (byte* labelPtr = labelBytes)
+            fixed (byte* previewPtr = previewBytes) {
+                return Native.ImGuiBeginCombo(labelPtr, previewPtr) != 0;
+            }
+        }
+
+        public static void EndCombo() {
+            Native.ImGuiEndCombo();
+        }
+
+        public static bool Selectable(string label, bool selected = false) {
+            byte[] labelBytes = Encoding.UTF8.GetBytes((label ?? string.Empty) + "\0");
+            fixed (byte* labelPtr = labelBytes) {
+                return Native.ImGuiSelectable(labelPtr, selected ? 1 : 0) != 0;
+            }
+        }
+
         public static bool AcceptSceneObjectDrop(out int id) {
             id = -1;
             int result = 0;
@@ -610,6 +686,8 @@ namespace ModuCPP {
     public static class Inspector {
         private static readonly System.Collections.Generic.HashSet<string> ErrorOnce =
             new System.Collections.Generic.HashSet<string>();
+        private static readonly System.Collections.Generic.Dictionary<string, string> ObjectPickerFilter =
+            new System.Collections.Generic.Dictionary<string, string>();
         private static bool AttributesEnabled = true;
         private static bool AutoSettingsEnabled = true;
         public static void RenderAuto(IntPtr ctx, object instance) {
@@ -779,20 +857,65 @@ namespace ModuCPP {
 
         private static bool ObjectField(Context context, string label, ref ModuObject value) {
             bool changed = false;
+            if (value.IsValid) {
+                string refreshedName = context.GetObjectName(value.Id);
+                if (!string.IsNullOrEmpty(refreshedName)) {
+                    value.Name = refreshedName;
+                }
+            }
+
             ImGui.Text(label);
             string display = value.IsValid ? value.ToString() : "<None>";
-            if (ImGui.Button(display)) {
-                // no-op, button is just a target
+            string stableKey = label ?? string.Empty;
+            if (!ObjectPickerFilter.TryGetValue(stableKey, out string filter)) {
+                filter = string.Empty;
+                ObjectPickerFilter[stableKey] = filter;
             }
+
+            bool comboOpen = ImGui.BeginCombo("##ObjectPicker_" + stableKey, display);
+
             int droppedId;
             if (ImGui.AcceptSceneObjectDrop(out droppedId)) {
                 value = context.FindObjectById(droppedId);
                 changed = true;
             }
-            if (ImGui.Button("Use Selected")) {
+
+            if (comboOpen) {
+                if (ImGui.InputText("Find##ObjectPicker_" + stableKey, ref filter, 128)) {
+                    ObjectPickerFilter[stableKey] = filter;
+                }
+
+                if (ImGui.Selectable("<None>", !value.IsValid)) {
+                    value = new ModuObject(-1, string.Empty);
+                    changed = true;
+                }
+
+                int objectCount = context.SceneObjectCount;
+                for (int i = 0; i < objectCount; ++i) {
+                    ModuObject candidate = context.GetObjectByIndex(i);
+                    if (!candidate.IsValid) continue;
+                    if (!PassesObjectFilter(candidate, filter)) continue;
+
+                    bool selected = value.IsValid && candidate.Id == value.Id;
+                    if (ImGui.Selectable(candidate.ToString(), selected)) {
+                        value = candidate;
+                        changed = true;
+                    }
+                }
+
+                ImGui.EndCombo();
+            }
+
+            if (ImGui.Button("Use Selected##" + stableKey)) {
                 int selected = context.SelectedObjectId;
                 if (selected >= 0) {
                     value = context.FindObjectById(selected);
+                    changed = true;
+                }
+            }
+            if (ImGui.Button("Clear##" + stableKey)) {
+                if (value.IsValid || !string.IsNullOrEmpty(value.Name)) {
+                    value = new ModuObject(-1, string.Empty);
                     changed = true;
                 }
             }
@@ -800,6 +923,16 @@ namespace ModuCPP {
                 value.Name = context.GetObjectName(value.Id);
             }
             return changed;
+        }
+
+        private static bool PassesObjectFilter(ModuObject candidate, string filter) {
+            if (string.IsNullOrWhiteSpace(filter)) return true;
+            string trimmed = filter.Trim();
+            if (candidate.Name != null &&
+                candidate.Name.IndexOf(trimmed, StringComparison.OrdinalIgnoreCase) >= 0) {
+                return true;
+            }
+            return candidate.Id.ToString().IndexOf(trimmed, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string Humanize(string name) {

@@ -1,4 +1,5 @@
 #include "ManagedBindings.h"
+#include "Engine.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -140,6 +141,19 @@ int modu_ctx_get_selected_object_id(ScriptContext* ctx) {
     return ctx->GetSelectedObjectId();
 }
 
+int modu_ctx_get_scene_object_count(ScriptContext* ctx) {
+    if (!ctx || !ctx->engine) return 0;
+    const auto& objects = ctx->engine->getSceneObjects();
+    return static_cast<int>(objects.size());
+}
+
+int modu_ctx_get_scene_object_id_at(ScriptContext* ctx, int index) {
+    if (!ctx || !ctx->engine || index < 0) return -1;
+    const auto& objects = ctx->engine->getSceneObjects();
+    if (index >= static_cast<int>(objects.size())) return -1;
+    return objects[static_cast<size_t>(index)].id;
+}
+
 void modu_imgui_text(const char* text) {
     if (!text) return;
     ImGui::TextUnformatted(text);
@@ -177,6 +191,20 @@ int modu_imgui_input_text(const char* label, char* buffer, int bufferSize) {
     return ImGui::InputText(label, buffer, static_cast<size_t>(bufferSize)) ? 1 : 0;
 }
 
+int modu_imgui_begin_combo(const char* label, const char* previewValue) {
+    if (!label) return 0;
+    return ImGui::BeginCombo(label, previewValue ? previewValue : "") ? 1 : 0;
+}
+
+void modu_imgui_end_combo() {
+    ImGui::EndCombo();
+}
+
+int modu_imgui_selectable(const char* label, int selected) {
+    if (!label) return 0;
+    return ImGui::Selectable(label, selected != 0) ? 1 : 0;
+}
+
 int modu_imgui_accept_scene_object_drop(int* outId) {
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
@@ -193,7 +221,7 @@ int modu_imgui_accept_scene_object_drop(int* outId) {
 
 ManagedNativeApi BuildManagedNativeApi() {
     ManagedNativeApi api;
-    api.version = 3;
+    api.version = 4;
     api.getObjectId = modu_ctx_get_object_id;
     api.getPosition = modu_ctx_get_position;
     api.setPosition = modu_ctx_set_position;
@@ -225,5 +253,10 @@ ManagedNativeApi BuildManagedNativeApi() {
     api.imguiDragFloat3 = modu_imgui_drag_float3;
     api.imguiInputText = modu_imgui_input_text;
     api.imguiAcceptSceneObjectDrop = modu_imgui_accept_scene_object_drop;
+    api.getSceneObjectCount = modu_ctx_get_scene_object_count;
+    api.getSceneObjectIdAt = modu_ctx_get_scene_object_id_at;
+    api.imguiBeginCombo = modu_imgui_begin_combo;
+    api.imguiEndCombo = modu_imgui_end_combo;
+    api.imguiSelectable = modu_imgui_selectable;
     return api;
 }

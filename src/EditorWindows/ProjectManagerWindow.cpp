@@ -1620,8 +1620,16 @@ void Engine::renderProjectBrowserPanel() {
                     ui.dirty = false;
                     scriptingFilesDirty = true;
                     scriptLastAutoCompileTime.clear();
+                    scriptAutoCompileCheckedSourceTime.clear();
+                    scriptAutoCompileBinaryCache.clear();
+                    scriptAutoCompileDiscoveredSources.clear();
                     autoCompileQueue.clear();
                     autoCompileQueued.clear();
+                    scriptAutoCompileLastDirectoryScan = 0.0;
+                    managedAutoCompileLastScan = 0.0;
+                    managedAutoCompileCachedProjectDir.clear();
+                    managedAutoCompileNewestSource = fs::file_time_type{};
+                    managedAutoCompileHasSource = false;
                     addConsoleMessage("Saved scripts config: " + ui.configPath.string(), ConsoleMessageType::Success);
                 } else {
                     ui.status = error;

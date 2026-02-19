@@ -2141,12 +2141,12 @@ void Engine::updateAutoCompileScripts() {
     packageManager.applyToBuildConfig(config);
 
     std::unordered_set<std::string> sources;
-    auto addSource = [&](const fs::path& path) {
+    auto addSourceTo = [&](std::unordered_set<std::string>& target, const fs::path& path) {
         if (path.empty()) return;
         std::error_code ec;
         fs::path absPath = fs::absolute(path, ec);
         if (ec) absPath = path;
-        sources.insert(absPath.lexically_normal().string());
+        target.insert(absPath.lexically_normal().string());
     };
 
     bool hasManagedScripts = false;
@@ -2157,23 +2157,55 @@ void Engine::updateAutoCompileScripts() {
                 continue;
             }
             if (sc.path.empty()) continue;
-            addSource(sc.path);
+            addSourceTo(sources, sc.path);
         }
     }
 
-    fs::path scriptsDir = config.scriptsDir;
-    if (!scriptsDir.is_absolute()) {
-        scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
-    }
-    std::error_code dirEc;
-    if (fs::exists(scriptsDir, dirEc)) {
-        for (auto it = fs::recursive_directory_iterator(scriptsDir, dirEc);
-             it != fs::recursive_directory_iterator(); ++it) {
-            if (it->is_directory()) continue;
-            std::string ext = it->path().extension().string();
-            if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") {
-                addSource(it->path());
+    if (now - scriptAutoCompileLastDirectoryScan >= scriptAutoCompileDirectoryScanInterval) {
+        scriptAutoCompileLastDirectoryScan = now;
+        scriptAutoCompileDiscoveredSources.clear();
+
+        fs::path scriptsDir = config.scriptsDir;
+        if (!scriptsDir.is_absolute()) {
+            scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
+        }
+        std::error_code dirEc;
+        if (fs::exists(scriptsDir, dirEc)) {
+            for (auto it = fs::recursive_directory_iterator(scriptsDir, dirEc);
+                 it != fs::recursive_directory_iterator(); ++it) {
+                if (it->is_directory()) continue;
+                std::string ext = it->path().extension().string();
+                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") {
+                    addSourceTo(scriptAutoCompileDiscoveredSources, it->path());
+                }
             }
+        }
+    }
+
+    sources.insert(scriptAutoCompileDiscoveredSources.begin(), scriptAutoCompileDiscoveredSources.end());
+
+    for (auto it = scriptAutoCompileCheckedSourceTime.begin();
+         it != scriptAutoCompileCheckedSourceTime.end();) {
+        if (sources.find(it->first) == sources.end()) {
+            it = scriptAutoCompileCheckedSourceTime.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = scriptAutoCompileBinaryCache.begin();
+         it != scriptAutoCompileBinaryCache.end();) {
+        if (sources.find(it->first) == sources.end()) {
+            it = scriptAutoCompileBinaryCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = scriptLastAutoCompileTime.begin();
+         it != scriptLastAutoCompileTime.end();) {
+        if (sources.find(it->first) == sources.end()) {
+            it = scriptLastAutoCompileTime.erase(it);
+        } else {
+            ++it;
         }
     }
 
@@ -2184,20 +2216,32 @@ void Engine::updateAutoCompileScripts() {
         auto sourceTime = fs::last_write_time(sourcePath, sourceEc);
         if (sourceEc) continue;
 
-        ScriptBuildCommands commands;
-        if (!scriptCompiler.makeCommands(config, sourcePath, commands, error)) {
-            continue;
+        fs::path binaryPath;
+        auto checkedIt = scriptAutoCompileCheckedSourceTime.find(sourceKey);
+        auto cachedBinaryIt = scriptAutoCompileBinaryCache.find(sourceKey);
+        bool canUseCachedBinary = (checkedIt != scriptAutoCompileCheckedSourceTime.end() &&
+                                   checkedIt->second == sourceTime &&
+                                   cachedBinaryIt != scriptAutoCompileBinaryCache.end());
+        if (canUseCachedBinary) {
+            binaryPath = cachedBinaryIt->second;
+        } else {
+            ScriptBuildCommands commands;
+            if (!scriptCompiler.makeCommands(config, sourcePath, commands, error)) {
+                continue;
+            }
+            binaryPath = commands.binaryPath;
+            scriptAutoCompileBinaryCache[sourceKey] = binaryPath;
+            scriptAutoCompileCheckedSourceTime[sourceKey] = sourceTime;
         }
 
         std::error_code binEc;
-        bool binaryExists = fs::exists(commands.binaryPath, binEc);
+        bool binaryExists = !binaryPath.empty() && fs::exists(binaryPath, binEc);
         fs::file_time_type binaryTime{};
         if (binaryExists && !binEc) {
-            binaryTime = fs::last_write_time(commands.binaryPath, binEc);
+            binaryTime = fs::last_write_time(binaryPath, binEc);
         }
 
-        bool needsCompile = !binaryExists || (!binEc && sourceTime > binaryTime);
-        if (!needsCompile) continue;
+        if (binaryExists && !binEc && sourceTime <= binaryTime) continue;
 
         auto it = scriptLastAutoCompileTime.find(sourceKey);
         if (it != scriptLastAutoCompileTime.end() && sourceTime <= it->second) continue;
@@ -2214,25 +2258,34 @@ void Engine::updateAutoCompileScripts() {
             : getManagedProjectPath();
         fs::path managedOutput = managedOutputPathFromProject(managedProject);
         if (fs::exists(managedProject, managedEc)) {
-            fs::file_time_type newestSource{};
-            bool hasSource = false;
             fs::path managedDir = managedProject.parent_path();
-            if (fs::exists(managedDir, managedEc)) {
-                for (auto it = fs::recursive_directory_iterator(managedDir, managedEc);
-                     it != fs::recursive_directory_iterator(); ++it) {
-                    if (it->is_directory()) {
-                        if (isManagedGeneratedPath(it->path())) {
-                            it.disable_recursion_pending();
+            bool refreshManagedScan =
+                (managedDir != managedAutoCompileCachedProjectDir) ||
+                (now - managedAutoCompileLastScan >= managedAutoCompileScanInterval);
+            if (refreshManagedScan) {
+                managedAutoCompileCachedProjectDir = managedDir;
+                managedAutoCompileLastScan = now;
+                managedAutoCompileHasSource = false;
+                managedAutoCompileNewestSource = fs::file_time_type{};
+
+                std::error_code scanEc;
+                if (fs::exists(managedDir, scanEc)) {
+                    for (auto it = fs::recursive_directory_iterator(managedDir, scanEc);
+                         it != fs::recursive_directory_iterator(); ++it) {
+                        if (it->is_directory()) {
+                            if (isManagedGeneratedPath(it->path())) {
+                                it.disable_recursion_pending();
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    if (it->path().extension() != ".cs") continue;
-                    if (isManagedGeneratedPath(it->path())) continue;
-                    auto sourceTime = fs::last_write_time(it->path(), managedEc);
-                    if (managedEc) continue;
-                    if (!hasSource || sourceTime > newestSource) {
-                        newestSource = sourceTime;
-                        hasSource = true;
+                        if (it->path().extension() != ".cs") continue;
+                        if (isManagedGeneratedPath(it->path())) continue;
+                        auto sourceTime = fs::last_write_time(it->path(), scanEc);
+                        if (scanEc) continue;
+                        if (!managedAutoCompileHasSource || sourceTime > managedAutoCompileNewestSource) {
+                            managedAutoCompileNewestSource = sourceTime;
+                            managedAutoCompileHasSource = true;
+                        }
                     }
                 }
             }
@@ -2240,9 +2293,9 @@ void Engine::updateAutoCompileScripts() {
             bool needsManaged = false;
             if (!fs::exists(managedOutput, managedEc)) {
                 needsManaged = true;
-            } else if (hasSource && !managedEc) {
+            } else if (managedAutoCompileHasSource && !managedEc) {
                 auto binaryTime = fs::last_write_time(managedOutput, managedEc);
-                if (!managedEc && newestSource > binaryTime) {
+                if (!managedEc && managedAutoCompileNewestSource > binaryTime) {
                     needsManaged = true;
                 }
             }
@@ -3418,9 +3471,17 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     scriptEditorWindowsDirty = true;
     scriptEditorWindows.clear();
     scriptLastAutoCompileTime.clear();
+    scriptAutoCompileCheckedSourceTime.clear();
+    scriptAutoCompileBinaryCache.clear();
+    scriptAutoCompileDiscoveredSources.clear();
     autoCompileQueue.clear();
     autoCompileQueued.clear();
     scriptAutoCompileLastCheck = 0.0;
+    scriptAutoCompileLastDirectoryScan = 0.0;
+    managedAutoCompileLastScan = 0.0;
+    managedAutoCompileCachedProjectDir.clear();
+    managedAutoCompileNewestSource = fs::file_time_type{};
+    managedAutoCompileHasSource = false;
     if (!sceneLoadInProgress) {
         if (launcherTransitionActive) {
             launcherTransitionPendingHide = true;
@@ -4492,9 +4553,17 @@ void Engine::createNewProject(const char* name, const char* location) {
         scriptEditorWindowsDirty = true;
         scriptEditorWindows.clear();
         scriptLastAutoCompileTime.clear();
+        scriptAutoCompileCheckedSourceTime.clear();
+        scriptAutoCompileBinaryCache.clear();
+        scriptAutoCompileDiscoveredSources.clear();
         autoCompileQueue.clear();
         autoCompileQueued.clear();
         scriptAutoCompileLastCheck = 0.0;
+        scriptAutoCompileLastDirectoryScan = 0.0;
+        managedAutoCompileLastScan = 0.0;
+        managedAutoCompileCachedProjectDir.clear();
+        managedAutoCompileNewestSource = fs::file_time_type{};
+        managedAutoCompileHasSource = false;
 
         showLauncher = false;
         firstFrame = true;

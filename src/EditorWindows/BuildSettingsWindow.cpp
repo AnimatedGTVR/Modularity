@@ -17,6 +17,8 @@ void Engine::renderBuildSettingsWindow() {
 
     bool changed = false;
     float buttonSpacing = ImGui::GetStyle().ItemSpacing.x;
+    const float footerReserve = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 8.0f;
+    ImGui::BeginChild("BuildSettingsContent", ImVec2(0.0f, -footerReserve), false);
     if (ImGui::BeginTabBar("BuildSettingsTabs")) {
         if (ImGui::BeginTabItem("Build")) {
             ImGui::BeginChild("BuildScenesList", ImVec2(0, 150), true);
@@ -192,6 +194,7 @@ void Engine::renderBuildSettingsWindow() {
         }
         ImGui::EndTabBar();
     }
+    ImGui::EndChild();
 
     ImGui::Separator();
     float buildWidth = 90.0f;

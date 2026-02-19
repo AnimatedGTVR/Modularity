@@ -222,16 +222,28 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
     // Heuristic: auto-add engine include roots if ScriptRuntime.h is discoverable nearby.
     auto tryAddEngineRoot = [&](const fs::path& start) {
         std::error_code ec;
+        auto addIfExists = [&](const fs::path& p) {
+            if (p.empty()) return;
+            if (fs::exists(p, ec)) {
+                outConfig.includeDirs.push_back(p);
+            }
+        };
         fs::path candidate = start;
         for (int depth = 0; depth < 5 && !candidate.empty(); ++depth) {
             if (fs::exists(candidate / "src" / "ScriptRuntime.h", ec)) {
-                outConfig.includeDirs.push_back(candidate / "src");
-                outConfig.includeDirs.push_back(candidate / "include");
-                outConfig.includeDirs.push_back(candidate / "src/ThirdParty");
-                outConfig.includeDirs.push_back(candidate / "src/ThirdParty/glm");
-                outConfig.includeDirs.push_back(candidate / "src/ThirdParty/glad");
-                outConfig.includeDirs.push_back(candidate / "src/ThirdParty/imgui");
-                outConfig.includeDirs.push_back(candidate / "src/ThirdParty/imgui/backends");
+                addIfExists(candidate / "src");
+                addIfExists(candidate / "include");
+                addIfExists(candidate / "src/ThirdParty");
+                addIfExists(candidate / "src/ThirdParty/glm");
+                addIfExists(candidate / "src/ThirdParty/glad");
+                addIfExists(candidate / "src/ThirdParty/imgui");
+                addIfExists(candidate / "src/ThirdParty/imgui/backends");
+
+                // Assimp headers live under include/, and generated config/revision headers
+                // are emitted under build/*/src/ThirdParty/assimp/include.
+                addIfExists(candidate / "src/ThirdParty/assimp/include");
+                addIfExists(candidate / "build/src/ThirdParty/assimp/include");
+                addIfExists(candidate / "build/player-cache/src/ThirdParty/assimp/include");
                 return true;
             }
             candidate = candidate.parent_path();
@@ -468,6 +480,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         };
 
         wrapper << "#include \"ScriptRuntime.h\"\n";
+        wrapper << "#include \"Engine.h\"\n";
         wrapper << "#include \"ThirdParty/imgui/imgui.h\"\n";
         wrapper << "#include <cstring>\n";
         wrapper << "#include <cstdio>\n\n";
@@ -708,6 +721,70 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         wrapper << "    bool checked = (*value != 0);\n";
         wrapper << "    bool changed = ImGui::Checkbox(label, &checked);\n";
         wrapper << "    *value = checked ? 1 : 0;\n";
+        wrapper << "    return changed ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_InspectorObject(ModuScriptContext* ctx, const char* label, int* objectId) {\n";
+        wrapper << "    if (!objectId) return 0;\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    int currentId = *objectId;\n";
+        wrapper << "    std::string labelText = (label && label[0]) ? label : \"Object\";\n";
+        wrapper << "    std::string pickerId = \"##ObjectPicker_\" + labelText;\n";
+        wrapper << "    std::string useSelectedId = \"Use Selected##ObjectPicker_\" + labelText;\n";
+        wrapper << "    std::string clearId = \"Clear##ObjectPicker_\" + labelText;\n";
+        wrapper << "    std::string display = \"None\";\n";
+        wrapper << "    if (cpp && currentId >= 0) {\n";
+        wrapper << "        if (SceneObject* current = cpp->FindObjectById(currentId)) {\n";
+        wrapper << "            display = current->name + \" (\" + std::to_string(current->id) + \")\";\n";
+        wrapper << "        } else {\n";
+        wrapper << "            currentId = -1;\n";
+        wrapper << "        }\n";
+        wrapper << "    }\n";
+        wrapper << "    bool changed = false;\n";
+        wrapper << "    ImGui::TextUnformatted(labelText.c_str());\n";
+        wrapper << "    bool comboOpen = ImGui::BeginCombo(pickerId.c_str(), display.c_str());\n";
+        wrapper << "    if (ImGui::BeginDragDropTarget()) {\n";
+        wrapper << "        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        wrapper << "            if (payload->DataSize == sizeof(int)) {\n";
+        wrapper << "                currentId = *(const int*)payload->Data;\n";
+        wrapper << "                changed = true;\n";
+        wrapper << "            }\n";
+        wrapper << "        }\n";
+        wrapper << "        ImGui::EndDragDropTarget();\n";
+        wrapper << "    }\n";
+        wrapper << "    if (comboOpen) {\n";
+        wrapper << "        if (ImGui::Selectable(\"None\", currentId < 0)) {\n";
+        wrapper << "            currentId = -1;\n";
+        wrapper << "            changed = true;\n";
+        wrapper << "        }\n";
+        wrapper << "        if (cpp && cpp->engine) {\n";
+        wrapper << "            const auto& objects = cpp->engine->getSceneObjects();\n";
+        wrapper << "            for (const SceneObject& candidate : objects) {\n";
+        wrapper << "                std::string candidateLabel = candidate.name + \" (\" + std::to_string(candidate.id) + \")\";\n";
+        wrapper << "                bool selected = (candidate.id == currentId);\n";
+        wrapper << "                if (ImGui::Selectable(candidateLabel.c_str(), selected)) {\n";
+        wrapper << "                    currentId = candidate.id;\n";
+        wrapper << "                    changed = true;\n";
+        wrapper << "                }\n";
+        wrapper << "            }\n";
+        wrapper << "        }\n";
+        wrapper << "        ImGui::EndCombo();\n";
+        wrapper << "    }\n";
+        wrapper << "    if (cpp && ImGui::Button(useSelectedId.c_str())) {\n";
+        wrapper << "        int selected = cpp->GetSelectedObjectId();\n";
+        wrapper << "        if (selected >= 0) {\n";
+        wrapper << "            currentId = selected;\n";
+        wrapper << "            changed = true;\n";
+        wrapper << "        }\n";
+        wrapper << "    }\n";
+        wrapper << "    if (ImGui::Button(clearId.c_str())) {\n";
+        wrapper << "        if (currentId >= 0) {\n";
+        wrapper << "            currentId = -1;\n";
+        wrapper << "            changed = true;\n";
+        wrapper << "        }\n";
+        wrapper << "    }\n";
+        wrapper << "    if (changed) {\n";
+        wrapper << "        *objectId = currentId;\n";
+        wrapper << "    }\n";
         wrapper << "    return changed ? 1 : 0;\n";
         wrapper << "}\n\n";
 
