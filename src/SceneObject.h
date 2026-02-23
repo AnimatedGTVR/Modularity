@@ -338,6 +338,12 @@ struct UIElementComponent {
     float textScale = 1.0f;
     bool renderIn3D = false;
     glm::ivec2 renderTargetSize = glm::ivec2(512, 512);
+    bool spriteSheetEnabled = false;
+    int spriteSheetColumns = 1;
+    int spriteSheetRows = 1;
+    int spriteSheetFrame = 0;
+    float spriteSheetFps = 12.0f;
+    bool spriteSheetLoop = true;
 };
 
 struct Rigidbody2DComponent {

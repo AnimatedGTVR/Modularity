@@ -52,6 +52,7 @@ namespace GizmoToolbar {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? accent : hover);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? accent : activeCol);
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(textColor));
+        ImGui::SetNextItemAllowOverlap();
         bool pressed = ImGui::Button(label, size);
         ImGui::PopStyleColor(4);
         return pressed;
@@ -743,6 +744,7 @@ namespace GizmoToolbar {
                            ImU32 baseColor, ImU32 hoverColor, ImU32 activeColor,
                            ImU32 accentColor, ImU32 iconColor) {
         ImGui::PushID(id);
+        ImGui::SetNextItemAllowOverlap();
         ImGui::InvisibleButton("##btn", size);
         bool hovered = ImGui::IsItemHovered();
         bool pressed = ImGui::IsItemClicked();
@@ -771,6 +773,7 @@ namespace GizmoToolbar {
     static bool TextButton(const char* id, const char* label, bool active, const ImVec2& size,
                            ImU32 baseColor, ImU32 hoverColor, ImU32 activeColor, ImU32 borderColor, ImVec4 textColor) {
         ImGui::PushID(id);
+        ImGui::SetNextItemAllowOverlap();
         ImGui::InvisibleButton("##btn", size);
         bool hovered = ImGui::IsItemHovered();
         bool pressed = ImGui::IsItemClicked();
@@ -803,6 +806,7 @@ namespace GizmoToolbar {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? activeColor : baseColor);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? activeColor : baseColor);
         ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+        ImGui::SetNextItemAllowOverlap();
         bool pressed = ImGui::Button(label, size);
         ImGui::PopStyleColor(4);
         return pressed;
@@ -844,6 +848,7 @@ void Engine::renderGameViewportWindow() {
             break;
         }
     }
+    const bool project2DPipeline = isProject2DPipeline();
 
     bool postFxChanged = false;
     if (!isPlaying && showGameViewportToolbar) {
@@ -865,7 +870,14 @@ void Engine::renderGameViewportWindow() {
         ImGui::SameLine();
         ImGui::Checkbox("Canvas Guides", &showCanvasOverlay);
         ImGui::SameLine();
-        ImGui::Checkbox("UI World", &uiWorldMode);
+        if (project2DPipeline) {
+            bool forced2DOverlay = true;
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("UI World", &forced2DOverlay);
+            ImGui::EndDisabled();
+        } else {
+            ImGui::Checkbox("UI World", &uiWorldMode);
+        }
         ImGui::SameLine();
         ImGui::Checkbox("UI Grid", &showUIWorldGrid);
         ImGui::EndDisabled();
@@ -1102,7 +1114,7 @@ void Engine::renderGameViewportWindow() {
         ImVec2 overlayPos = ImGui::GetWindowPos();
         ImVec2 overlaySize = ImGui::GetWindowSize();
         bool allowEditorUi = !isPlaying;
-        bool useWorldUi = uiWorldMode;
+        bool useWorldUi = is2DWorldEditingEnabled();
         UIWorldCamera2D uiWorldCameraBackup = uiWorldCamera;
         bool restoreUiWorldCamera = false;
         if (playerCam && playerCam->camera.use2D) {
@@ -1292,7 +1304,7 @@ void Engine::renderGameViewportWindow() {
             if (!obj.enabled || !isUIType(obj)) continue;
             uiDrawList.push_back(&obj);
         }
-        if (uiWorldMode) {
+        if (useWorldUi) {
             std::stable_sort(uiDrawList.begin(), uiDrawList.end(),
                              [](const SceneObject* a, const SceneObject* b) {
                                  int orderA = (a->hasParallaxLayer2D && a->parallaxLayer2D.enabled) ? a->parallaxLayer2D.order : 0;
@@ -1349,6 +1361,7 @@ void Engine::renderGameViewportWindow() {
                         texId = tex->GetID();
                     }
                 }
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 bool repeatX = useWorldUi && obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 bool repeatY = useWorldUi && obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
@@ -1382,7 +1395,7 @@ void Engine::renderGameViewportWindow() {
                         ImVec2 p3 = rotPt(-half.x,  half.y);
                         if (texId != 0) {
                             dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                             ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                             uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                              ImGui::GetColorU32(tint));
                         } else {
                             ImU32 fill = ImGui::GetColorU32(tint);
@@ -1396,7 +1409,7 @@ void Engine::renderGameViewportWindow() {
                     } else {
                         ImGui::SetCursorPos(ImVec2(min.x - overlayPos.x, min.y - overlayPos.y));
                         if (texId != 0) {
-                            ImGui::Image((ImTextureID)(intptr_t)texId, size, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                            ImGui::Image((ImTextureID)(intptr_t)texId, size, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                         } else {
                             ImDrawList* dl = ImGui::GetWindowDrawList();
                             ImU32 fill = ImGui::GetColorU32(tint);
@@ -1444,7 +1457,7 @@ void Engine::renderGameViewportWindow() {
                     ImVec2 p3 = rotPt(-half.x,  half.y);
                     if (texId != 0) {
                         dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                         ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                         uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                          ImGui::GetColorU32(tint));
                     } else {
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -1459,7 +1472,7 @@ void Engine::renderGameViewportWindow() {
                 } else {
                     ImGui::SetCursorPos(localMin);
                     if (texId != 0) {
-                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                     } else {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -1655,6 +1668,16 @@ void Engine::renderGameViewportWindow() {
                     DecomposeMatrix(model, pos, rot, scl);
                     glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(rot));
                     ImVec2 newPivot(imageMin.x + pos.x, imageMin.y + pos.y);
+                    const bool applyPixelSnap = pixelGridSnapEnabled;
+                    const float pixelStep = static_cast<float>(std::max(1, pixelGridSnapStep));
+                    auto snapScreenToPixel = [&](ImVec2 p) {
+                        p.x = imageMin.x + std::round((p.x - imageMin.x) / pixelStep) * pixelStep;
+                        p.y = imageMin.y + std::round((p.y - imageMin.y) / pixelStep) * pixelStep;
+                        return p;
+                    };
+                    if (applyPixelSnap && op == ImGuizmo::TRANSLATE) {
+                        newPivot = snapScreenToPixel(newPivot);
+                    }
                     if (op == ImGuizmo::ROTATE) {
                         selected->ui.rotation = euler.z;
                     } else if (op == ImGuizmo::TRANSLATE) {
@@ -1670,6 +1693,10 @@ void Engine::renderGameViewportWindow() {
                         }
                     } else if (op == ImGuizmo::SCALE) {
                         ImVec2 newSize(std::max(1.0f, scl.x), std::max(1.0f, scl.y));
+                        if (applyPixelSnap) {
+                            newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
+                            newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
+                        }
                         if (useWorldUi) {
                             glm::vec2 worldSize = glm::vec2(newSize.x, newSize.y) / uiWorldCamera.zoom;
                             selected->ui.position = pivotWorld - parentOffset - parallaxOffset(*selected);
@@ -1858,6 +1885,434 @@ void Engine::renderPlayControlsBar() {
 #pragma endregion
 
 #pragma region Main Menu Bar
+namespace {
+enum class DockDrawerSide {
+    Left,
+    Right,
+    Bottom
+};
+
+struct DockDrawerTarget {
+    ImGuiDockNode* splitParent = nullptr;
+    ImGuiDockNode* drawerBranch = nullptr;
+    ImGuiDockNode* oppositeBranch = nullptr;
+};
+
+struct DockDrawerState {
+    ImGuiID activeSplitParentId = 0;
+    bool collapsed = false;
+    float openAmount = 1.0f;
+    float expandedExtent = 0.0f;
+};
+
+void addRotatedText90CW(ImDrawList* drawList,
+                        ImFont* font,
+                        float fontSize,
+                        const ImRect& bounds,
+                        ImU32 color,
+                        const char* text) {
+    if (!drawList || !font || !text || !*text) return;
+    if ((color & IM_COL32_A_MASK) == 0) return;
+
+    ImFontBaked* baked = font->GetFontBaked(fontSize);
+    if (!baked) return;
+
+    const ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text, nullptr, nullptr);
+    if (textSize.x <= 0.0f || textSize.y <= 0.0f) return;
+
+    // Rotating CW maps original (w,h) text bounds to (h,w).
+    const float rotatedWidth = textSize.y;
+    const float rotatedHeight = textSize.x;
+    const float originX = bounds.Min.x + (bounds.GetWidth() - rotatedWidth) * 0.5f;
+    const float originY = bounds.Min.y + (bounds.GetHeight() - rotatedHeight) * 0.5f;
+    const float scale = (baked->Size > 0.0f) ? (fontSize / baked->Size) : 1.0f;
+
+    float cursorX = 0.0f;
+    const char* s = text;
+    while (s && *s) {
+        unsigned int c = 0;
+        const int bytes = ImTextCharFromUtf8(&c, s, nullptr);
+        if (bytes <= 0) break;
+        s += bytes;
+
+        if (c == '\n' || c == '\r') continue;
+        ImFontGlyph* glyph = baked->FindGlyphNoFallback(static_cast<ImWchar>(c));
+        if (!glyph) continue;
+
+        const float x1 = cursorX + glyph->X0 * scale;
+        const float x2 = cursorX + glyph->X1 * scale;
+        const float y1 = glyph->Y0 * scale;
+        const float y2 = glyph->Y1 * scale;
+        const float u1 = glyph->U0;
+        const float v1 = glyph->V0;
+        const float u2 = glyph->U1;
+        const float v2 = glyph->V1;
+
+        auto rotateCW = [&](float x, float y) -> ImVec2 {
+            // (x,y) -> (y, textWidth - x), then centered in target bounds.
+            return ImVec2(originX + y, originY + (textSize.x - x));
+        };
+
+        const ImVec2 pTL = rotateCW(x1, y1);
+        const ImVec2 pTR = rotateCW(x2, y1);
+        const ImVec2 pBR = rotateCW(x2, y2);
+        const ImVec2 pBL = rotateCW(x1, y2);
+
+        drawList->AddImageQuad(ImGui::GetIO().Fonts->TexRef,
+                               pTL, pTR, pBR, pBL,
+                               ImVec2(u1, v1), ImVec2(u2, v1),
+                               ImVec2(u2, v2), ImVec2(u1, v2),
+                               color);
+
+        cursorX += glyph->AdvanceX * scale;
+    }
+}
+
+struct DockTabInteractionState {
+    bool hovered = false;
+    bool clicked = false;
+    bool doubleClicked = false;
+};
+
+DockTabInteractionState queryDockTabInteraction(const DockDrawerTarget& target,
+                                                const char* const* anchorWindows,
+                                                int anchorCount) {
+    DockTabInteractionState out;
+
+    if (ImGuiTabBar* tabBar = target.drawerBranch ? target.drawerBranch->TabBar : nullptr) {
+        if (ImGui::IsMouseHoveringRect(tabBar->BarRect.Min, tabBar->BarRect.Max, false)) {
+            out.hovered = true;
+        }
+    }
+
+    for (int i = 0; i < anchorCount; ++i) {
+        ImGuiWindow* window = ImGui::FindWindowByName(anchorWindows[i]);
+        if (!window) continue;
+        ImRect tabRect = window->DC.DockTabItemRect;
+        if (tabRect.GetWidth() <= 0.0f || tabRect.GetHeight() <= 0.0f) continue;
+        if (ImGui::IsMouseHoveringRect(tabRect.Min, tabRect.Max, false)) {
+            out.hovered = true;
+            break;
+        }
+    }
+
+    if (!out.hovered && target.drawerBranch) {
+        const ImVec2 headerMin = target.drawerBranch->Pos;
+        const ImVec2 headerMax(target.drawerBranch->Pos.x + target.drawerBranch->Size.x,
+                               target.drawerBranch->Pos.y + ImGui::GetFrameHeight() + 8.0f);
+        if (ImGui::IsMouseHoveringRect(headerMin, headerMax, false)) {
+            out.hovered = true;
+        }
+    }
+
+    if (out.hovered) {
+        ImGuiIO& io = ImGui::GetIO();
+        out.doubleClicked = io.MouseClicked[ImGuiMouseButton_Left] &&
+                            io.MouseClickedCount[ImGuiMouseButton_Left] >= 2;
+        out.clicked = !out.doubleClicked && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    }
+    return out;
+}
+
+void renderCollapsedSideDockRail(DockDrawerState& state,
+                                 const DockDrawerTarget& target,
+                                 DockDrawerSide side,
+                                 float railWidth) {
+    if (side == DockDrawerSide::Bottom) return;
+    if (!target.drawerBranch || !target.splitParent) return;
+    ImGuiTabBar* tabBar = target.drawerBranch->TabBar;
+    if (!tabBar || tabBar->Tabs.Size <= 0) return;
+
+    ImVec2 railPos = target.drawerBranch->Pos;
+    ImVec2 railSize = target.drawerBranch->Size;
+    const float desiredRailWidth = ImMax(railWidth, 22.0f);
+    railSize.x = ImMin(desiredRailWidth, railSize.x);
+    if (side == DockDrawerSide::Right) {
+        railPos.x = target.drawerBranch->Pos.x + target.drawerBranch->Size.x - railSize.x;
+    }
+
+    char railWindowName[64];
+    std::snprintf(railWindowName, sizeof(railWindowName), "##DockRail_%c_%08X",
+                  side == DockDrawerSide::Left ? 'L' : 'R',
+                  target.splitParent->ID);
+
+    ImGuiWindowFlags railFlags = ImGuiWindowFlags_NoDecoration |
+                                 ImGuiWindowFlags_NoDocking |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoNav |
+                                 ImGuiWindowFlags_NoFocusOnAppearing;
+
+    ImGui::SetNextWindowPos(railPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(railSize, ImGuiCond_Always);
+    if (target.drawerBranch->HostWindow) {
+        ImGui::SetNextWindowViewport(target.drawerBranch->HostWindow->ViewportId);
+    }
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    if (ImGui::Begin(railWindowName, nullptr, railFlags)) {
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, 1.0f));
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const int tabCount = tabBar->Tabs.Size;
+        const float slotSpacing = style.ItemSpacing.y;
+        const float minSlotHeight = ImGui::GetFrameHeight() + 8.0f;
+        const float preferredSlotHeight = ImGui::GetFrameHeight() + 55.0f;
+        const float availableSlotHeight = (tabCount > 0)
+            ? ImMax(minSlotHeight, (avail.y - slotSpacing * (tabCount - 1)) / static_cast<float>(tabCount))
+            : preferredSlotHeight;
+        const float slotHeight = std::clamp(preferredSlotHeight, minSlotHeight, availableSlotHeight);
+        const float slotWidth = ImMax(12.0f, avail.x);
+        const float usedHeight = tabCount * slotHeight + ImMax(0, tabCount - 1) * slotSpacing;
+        const float topPad = ImMax(0.0f, (avail.y - usedHeight) * 0.5f);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + topPad);
+
+        for (int i = 0; i < tabBar->Tabs.Size; ++i) {
+            ImGuiTabItem* tab = &tabBar->Tabs[i];
+            const char* tabName = ImGui::TabBarGetTabName(tabBar, tab);
+            const bool selected = (tabBar->SelectedTabId == tab->ID) || (tabBar->VisibleTabId == tab->ID);
+
+            ImGui::PushID(static_cast<int>(tab->ID));
+            ImVec2 slotPos = ImGui::GetCursorScreenPos();
+            ImVec2 slotSize(slotWidth, slotHeight);
+            if (ImGui::InvisibleButton("##SideTab", slotSize)) {
+                ImGui::TabBarQueueFocus(tabBar, tab);
+                state.collapsed = false;
+            }
+            const bool hovered = ImGui::IsItemHovered();
+            const ImRect slotRect(slotPos, ImVec2(slotPos.x + slotSize.x, slotPos.y + slotSize.y));
+            ImU32 bg = 0;
+            if (selected) bg = ImGui::GetColorU32(ImGuiCol_TabActive);
+            else if (hovered) bg = ImGui::GetColorU32(ImGuiCol_TabHovered);
+            else bg = ImGui::GetColorU32(ImGuiCol_Tab);
+            draw->AddRectFilled(slotRect.Min, slotRect.Max, bg, style.TabRounding);
+            draw->AddRect(slotRect.Min, slotRect.Max, ImGui::GetColorU32(ImGuiCol_Border), style.TabRounding);
+
+            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
+            const float baseFontSize = ImGui::GetFontSize();
+            const float minRailFont = baseFontSize * 0.75f;
+            const float maxRailFont = baseFontSize * 1.35f;
+            float railFontSize = std::clamp(baseFontSize * 1.15f, minRailFont, maxRailFont);
+            const ImVec2 unscaledText = ImGui::GetFont()->CalcTextSizeA(railFontSize, FLT_MAX, 0.0f, tabName);
+            if (unscaledText.x > 1.0f) {
+                const float fitScale = (slotRect.GetHeight() - 6.0f) / unscaledText.x;
+                railFontSize = std::clamp(railFontSize * fitScale, minRailFont, maxRailFont);
+            }
+            addRotatedText90CW(draw, ImGui::GetFont(), railFontSize, slotRect, textCol, tabName);
+            ImGui::PopID();
+        }
+        ImGui::PopStyleVar();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+}
+
+DockDrawerTarget findDockDrawerTarget(const char* const* anchorWindows, int anchorCount, DockDrawerSide side) {
+    const ImGuiAxis axis = (side == DockDrawerSide::Bottom) ? ImGuiAxis_Y : ImGuiAxis_X;
+
+    for (int anchorIdx = 0; anchorIdx < anchorCount; ++anchorIdx) {
+        const char* name = anchorWindows[anchorIdx];
+        ImGuiWindow* anchor = ImGui::FindWindowByName(name);
+        if (!anchor || !anchor->DockNode) continue;
+
+        ImGuiDockNode* source = anchor->DockNode;
+        ImGuiDockNode* current = source;
+        while (current && current->ParentNode) {
+            ImGuiDockNode* parent = current->ParentNode;
+            if (parent->SplitAxis == axis && parent->ChildNodes[0] && parent->ChildNodes[1]) {
+                ImGuiDockNode* child0 = parent->ChildNodes[0];
+                ImGuiDockNode* child1 = parent->ChildNodes[1];
+
+                const bool sourceInChild0 = ImGui::DockNodeIsInHierarchyOf(source, child0);
+                const bool sourceInChild1 = ImGui::DockNodeIsInHierarchyOf(source, child1);
+                if (!sourceInChild0 && !sourceInChild1) {
+                    current = parent;
+                    continue;
+                }
+
+                ImGuiDockNode* drawerCandidate = sourceInChild0 ? child0 : child1;
+                ImGuiDockNode* oppositeCandidate = (drawerCandidate == child0) ? child1 : child0;
+
+                bool matchesSide = false;
+                if (side == DockDrawerSide::Bottom) {
+                    matchesSide = drawerCandidate->Pos.y >= oppositeCandidate->Pos.y - 0.5f;
+                } else if (side == DockDrawerSide::Left) {
+                    matchesSide = drawerCandidate->Pos.x <= oppositeCandidate->Pos.x + 0.5f;
+                } else {
+                    matchesSide = drawerCandidate->Pos.x >= oppositeCandidate->Pos.x - 0.5f;
+                }
+
+                if (matchesSide) {
+                    return DockDrawerTarget{parent, drawerCandidate, oppositeCandidate};
+                }
+            }
+            current = parent;
+        }
+    }
+
+    return {};
+}
+
+void updateDockDrawerAnimation(DockDrawerState& state,
+                               const DockDrawerTarget& target,
+                               DockDrawerSide side,
+                               const char* const* anchorWindows,
+                               int anchorCount) {
+    if (!target.splitParent || !target.drawerBranch || !target.oppositeBranch ||
+        !target.splitParent->ChildNodes[0] || !target.splitParent->ChildNodes[1]) {
+        state.activeSplitParentId = 0;
+        state.collapsed = false;
+        state.openAmount = 1.0f;
+        state.expandedExtent = 0.0f;
+        return;
+    }
+
+    if (state.activeSplitParentId != target.splitParent->ID) {
+        state.activeSplitParentId = target.splitParent->ID;
+        state.collapsed = false;
+        state.openAmount = 1.0f;
+        state.expandedExtent =
+            (side == DockDrawerSide::Bottom) ? ImMax(0.0f, target.drawerBranch->Size.y)
+                                             : ImMax(0.0f, target.drawerBranch->Size.x);
+    }
+
+    ImGuiTabBar* tabBar = target.drawerBranch->TabBar;
+    constexpr float kCollapsedSideRailWidth = 25.0f;
+    float collapsedExtent = (side == DockDrawerSide::Bottom)
+        ? (ImGui::GetFrameHeight() + 8.0f)
+        : kCollapsedSideRailWidth;
+    if (tabBar) {
+        if (side == DockDrawerSide::Bottom) {
+            collapsedExtent = ImMax(collapsedExtent, tabBar->BarRect.GetHeight() + 6.0f);
+        } else {
+            collapsedExtent = ImMax(collapsedExtent, kCollapsedSideRailWidth);
+        }
+    }
+
+    DockTabInteractionState interaction = queryDockTabInteraction(target, anchorWindows, anchorCount);
+    if (interaction.doubleClicked) {
+        if (!state.collapsed) {
+            const float liveExtent =
+                (side == DockDrawerSide::Bottom) ? target.drawerBranch->Size.y : target.drawerBranch->Size.x;
+            if (liveExtent > 1.0f) {
+                state.expandedExtent = liveExtent;
+            }
+        }
+        state.collapsed = !state.collapsed;
+    } else if (state.collapsed && interaction.clicked) {
+        state.collapsed = false;
+    }
+
+    const float totalExtent =
+        (side == DockDrawerSide::Bottom) ? ImMax(0.0f, target.splitParent->Size.y)
+                                         : ImMax(0.0f, target.splitParent->Size.x);
+    const float minOppositeExtent = (side == DockDrawerSide::Bottom) ? 96.0f : 220.0f;
+    const float maxDrawerExtent = ImMax(collapsedExtent, totalExtent - minOppositeExtent);
+    const float expandedMinExtent =
+        ImMin(collapsedExtent + ((side == DockDrawerSide::Bottom) ? 24.0f : 40.0f), maxDrawerExtent);
+
+    const bool captureExpandedExtent = !state.collapsed && state.openAmount >= 0.995f;
+    if (captureExpandedExtent) {
+        const float liveExtent =
+            (side == DockDrawerSide::Bottom) ? target.drawerBranch->Size.y : target.drawerBranch->Size.x;
+        const float clampedLiveExtent = std::clamp(liveExtent, collapsedExtent, maxDrawerExtent);
+        if (clampedLiveExtent > collapsedExtent + 1.0f) {
+            state.expandedExtent = clampedLiveExtent;
+        }
+    }
+
+    if (state.expandedExtent < collapsedExtent + 1.0f) {
+        const float defaultRatio = (side == DockDrawerSide::Bottom) ? 0.30f : 0.22f;
+        state.expandedExtent = std::clamp(totalExtent * defaultRatio, expandedMinExtent, maxDrawerExtent);
+    } else {
+        state.expandedExtent = std::clamp(state.expandedExtent, expandedMinExtent, maxDrawerExtent);
+    }
+
+    const float targetOpen = state.collapsed ? 0.0f : 1.0f;
+    const float blend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
+    state.openAmount += (targetOpen - state.openAmount) * blend;
+    if (std::fabs(state.openAmount - targetOpen) < 0.001f) {
+        state.openAmount = targetOpen;
+    }
+    state.openAmount = std::clamp(state.openAmount, 0.0f, 1.0f);
+
+    const float desiredDrawerExtent =
+        collapsedExtent + (state.expandedExtent - collapsedExtent) * state.openAmount;
+    const float drawerExtent = std::clamp(desiredDrawerExtent, collapsedExtent, maxDrawerExtent);
+    const float oppositeExtent = ImMax(minOppositeExtent, totalExtent - drawerExtent);
+
+    target.splitParent->AuthorityForSize = ImGuiDataAuthority_DockNode;
+    target.drawerBranch->AuthorityForSize = ImGuiDataAuthority_DockNode;
+    target.oppositeBranch->AuthorityForSize = ImGuiDataAuthority_DockNode;
+    if (side == DockDrawerSide::Bottom) {
+        target.drawerBranch->Size.y = drawerExtent;
+        target.drawerBranch->SizeRef.y = drawerExtent;
+        target.oppositeBranch->Size.y = oppositeExtent;
+        target.oppositeBranch->SizeRef.y = oppositeExtent;
+    } else {
+        target.drawerBranch->Size.x = drawerExtent;
+        target.drawerBranch->SizeRef.x = drawerExtent;
+        target.oppositeBranch->Size.x = oppositeExtent;
+        target.oppositeBranch->SizeRef.x = oppositeExtent;
+    }
+
+    if (side != DockDrawerSide::Bottom) {
+        const bool useSideRail = state.openAmount <= 0.02f;
+        ImGuiDockNodeFlags desiredFlags = target.drawerBranch->LocalFlags;
+        if (useSideRail) {
+            desiredFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+        } else {
+            desiredFlags &= ~ImGuiDockNodeFlags_HiddenTabBar;
+        }
+        if (desiredFlags != target.drawerBranch->LocalFlags) {
+            target.drawerBranch->SetLocalFlags(desiredFlags);
+        }
+        if (useSideRail) {
+            renderCollapsedSideDockRail(state, target, side, collapsedExtent);
+        }
+    }
+}
+
+void updateDockDrawerAnimations() {
+    static DockDrawerState leftState;
+    static DockDrawerState rightState;
+    static DockDrawerState bottomState;
+
+    static const char* kLeftAnchors[] = {
+        "Hierarchy",
+        "Camera"
+    };
+    static const char* kRightAnchors[] = {
+        "Inspector",
+        "Environment"
+    };
+    static const char* kBottomAnchors[] = {
+        "Project",
+        "Project Settings",
+        "Animation",
+        "AI Pathfinding"
+    };
+
+    updateDockDrawerAnimation(leftState,
+                              findDockDrawerTarget(kLeftAnchors, IM_ARRAYSIZE(kLeftAnchors), DockDrawerSide::Left),
+                              DockDrawerSide::Left,
+                              kLeftAnchors, IM_ARRAYSIZE(kLeftAnchors));
+    updateDockDrawerAnimation(rightState,
+                              findDockDrawerTarget(kRightAnchors, IM_ARRAYSIZE(kRightAnchors), DockDrawerSide::Right),
+                              DockDrawerSide::Right,
+                              kRightAnchors, IM_ARRAYSIZE(kRightAnchors));
+    updateDockDrawerAnimation(bottomState,
+                              findDockDrawerTarget(kBottomAnchors, IM_ARRAYSIZE(kBottomAnchors), DockDrawerSide::Bottom),
+                              DockDrawerSide::Bottom,
+                              kBottomAnchors, IM_ARRAYSIZE(kBottomAnchors));
+}
+} // namespace
+
 void Engine::renderMainMenuBar() {
     refreshScriptEditorWindows();
 
@@ -1932,9 +2387,21 @@ void Engine::renderMainMenuBar() {
             if (prevAIPathWindow != showAIPathfindingWindow) {
                 saveEditorUserSettings();
             }
+            bool prevSpritePreview = showSpritePreviewPanel;
+            ImGui::MenuItem("Sprite Preview", nullptr, &showSpritePreviewPanel);
+            if (prevSpritePreview != showSpritePreviewPanel) {
+                saveEditorUserSettings();
+            }
             ImGui::MenuItem("View Output", nullptr, &showViewOutput);
             ImGui::Separator();
-            ImGui::MenuItem("UI World Overlay", nullptr, &uiWorldMode);
+            if (isProject2DPipeline()) {
+                bool forced2DOverlay = true;
+                ImGui::BeginDisabled();
+                ImGui::MenuItem("UI World Overlay", nullptr, &forced2DOverlay);
+                ImGui::EndDisabled();
+            } else {
+                ImGui::MenuItem("UI World Overlay", nullptr, &uiWorldMode);
+            }
             ImGui::MenuItem("UI World Grid", nullptr, &showUIWorldGrid);
             ImGui::MenuItem("3D Grid", nullptr, &showSceneGrid3D);
             if (!scriptEditorWindows.empty()) {
@@ -2228,8 +2695,10 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
+        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
         ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
+        ImGui::DockBuilderDockWindow("Sprite Timeline", dockBottom);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     } else if (mode == WorkspaceMode::Animation) {
@@ -2241,10 +2710,12 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
+        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Animation", dockBottom);
         ImGui::DockBuilderDockWindow("AI Pathfinding", dockBottom);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
         ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
+        ImGui::DockBuilderDockWindow("Sprite Timeline", dockBottom);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
     } else {
         ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.25f, nullptr, &dockMain);
@@ -2256,7 +2727,9 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Scripting", dockRight);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
+        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Project Settings", dockRight);
+        ImGui::DockBuilderDockWindow("Sprite Timeline", dockMain);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     }
@@ -2300,6 +2773,8 @@ void Engine::renderViewport() {
 
     bool mouseOverViewportImage = false;
     bool blockSelection = false;
+    const bool project2DPipeline = isProject2DPipeline();
+    const bool worldUiEditing = is2DWorldEditingEnabled();
 
     if (rendererInitialized) {
         glm::mat4 proj = glm::perspective(
@@ -2315,7 +2790,8 @@ void Engine::renderViewport() {
                             buildSettings.editorCameraFov,
                             buildSettings.editorCameraNear,
                             buildSettings.editorCameraFar,
-                            collisionWireframe);
+                            false,
+                            &selectedObjectIds);
         unsigned int tex = renderer.getViewportTexture();
 
         ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
@@ -2325,7 +2801,7 @@ void Engine::renderViewport() {
         mouseOverViewportImage = ImGui::IsItemHovered();
         ImDrawList* viewportDrawList = ImGui::GetWindowDrawList();
 
-        if (uiWorldMode) {
+        if (worldUiEditing) {
             viewportDrawList->AddRectFilled(imageMin, imageMax, IM_COL32(14, 16, 20, 255));
         } else if (showSceneGrid3D) {
             auto projectToScreen = [&](const glm::vec3& p) -> std::optional<ImVec2> {
@@ -2467,7 +2943,7 @@ void Engine::renderViewport() {
         };
 
         // Draw small axis widget in top-right of viewport
-        if (!uiWorldMode) {
+        if (!worldUiEditing) {
             const float widgetSize = 94.0f;
             const float padding = 12.0f;
             ImVec2 center = ImVec2(
@@ -2567,22 +3043,40 @@ void Engine::renderViewport() {
     float toolbarHideOffset = toolbarSizeCache.y + 14.0f;
     ImVec2 toolbarRectMinAnim = ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset * toolbarHideAnim);
     ImVec2 toolbarRectMaxAnim = ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset * toolbarHideAnim);
-    ImVec2 toolbarMousePos = ImGui::GetIO().MousePos;
-    bool mouseInToolbar = (toolbarMousePos.x >= toolbarRectMinAnim.x && toolbarMousePos.x <= toolbarRectMaxAnim.x &&
-                           toolbarMousePos.y >= toolbarRectMinAnim.y && toolbarMousePos.y <= toolbarRectMaxAnim.y);
+    bool mouseInViewportRect = ImGui::IsMouseHoveringRect(imageMin, imageMax, true);
+    ImVec2 toolbarGuardMin(imageMin.x + 6.0f, imageMax.y - std::max(84.0f, toolbarSizeCache.y + 30.0f));
+    ImVec2 toolbarGuardMax(imageMin.x + std::min((imageMax.x - imageMin.x) - 6.0f, std::max(760.0f, toolbarSizeCache.x + 40.0f)),
+                           imageMax.y - 4.0f);
+    bool mouseInToolbarGuard = ImGui::IsMouseHoveringRect(toolbarGuardMin, toolbarGuardMax, true);
+    bool mouseInToolbar = ImGui::IsMouseHoveringRect(
+        ImVec2(toolbarRectMinAnim.x - 4.0f, toolbarRectMinAnim.y - 4.0f),
+        ImVec2(toolbarRectMaxAnim.x + 4.0f, toolbarRectMaxAnim.y + 4.0f),
+        true
+    ) || mouseInToolbarGuard;
     bool toolbarAllowed = !gameViewportFocused && !(isPlaying && showGameViewport);
     bool showViewportToolbar = toolbarAllowed &&
-                               (windowActive || mouseOverViewportImage || mouseInToolbar || toolbarHideAnim < 0.999f);
-    bool toolbarHover = toolbarAllowed && (mouseOverViewportImage || mouseInToolbar);
+                               (windowActive || mouseInViewportRect || mouseInToolbar || toolbarHideAnim < 0.999f);
+    bool toolbarHover = toolbarAllowed && (mouseInViewportRect || mouseInToolbar);
     float toolbarAnimSpeed = 10.0f;
     float toolbarTarget = toolbarHover ? 0.0f : 1.0f;
+    if (worldUiEditing && toolbarAllowed && mouseInViewportRect) {
+        toolbarTarget = 0.0f;
+    }
     float toolbarAnimStep = 1.0f - std::exp(-toolbarAnimSpeed * ImGui::GetIO().DeltaTime);
     toolbarHideAnim += (toolbarTarget - toolbarHideAnim) * toolbarAnimStep;
     toolbarRectMin.y += toolbarHideOffset * toolbarHideAnim;
     toolbarRectMax.y += toolbarHideOffset * toolbarHideAnim;
+    mouseInToolbar = ImGui::IsMouseHoveringRect(
+        ImVec2(toolbarRectMin.x - 4.0f, toolbarRectMin.y - 4.0f),
+        ImVec2(toolbarRectMax.x + 4.0f, toolbarRectMax.y + 4.0f),
+        true
+    ) || mouseInToolbarGuard;
+    if (showViewportToolbar && mouseInToolbar) {
+        blockSelection = true;
+    }
 
     bool uiWorldCameraActive = false;
-    if (uiWorldMode) {
+    if (worldUiEditing) {
         auto find3DCanvasId = [&](const SceneObject& target) -> int {
             const SceneObject* current = &target;
             while (current) {
@@ -2609,10 +3103,14 @@ void Engine::renderViewport() {
             int canvasId = find3DCanvasId(target);
             return (canvasId < 0) || (canvasId == editCanvas3DId);
         };
+        float overlayHeight = imageMax.y - imageMin.y;
+        if (showViewportToolbar) {
+            overlayHeight = std::min(overlayHeight, std::max(1.0f, (toolbarRectMin.y - imageMin.y) - 2.0f));
+        }
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
         ImGui::BeginChild("SceneUIWorldOverlay",
-                          ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y),
+                          ImVec2(imageMax.x - imageMin.x, overlayHeight),
                           false,
                           ImGuiWindowFlags_NoTitleBar |
                           ImGuiWindowFlags_NoResize |
@@ -2625,9 +3123,11 @@ void Engine::renderViewport() {
         ImVec2 overlayPos = ImGui::GetWindowPos();
         ImVec2 overlaySize = ImGui::GetWindowSize();
         uiWorldCamera.viewportSize = glm::vec2(overlaySize.x, overlaySize.y);
-        ImVec2 mousePos = ImGui::GetIO().MousePos;
-        bool mouseInToolbar = (mousePos.x >= toolbarRectMin.x && mousePos.x <= toolbarRectMax.x &&
-                               mousePos.y >= toolbarRectMin.y && mousePos.y <= toolbarRectMax.y);
+        bool mouseInToolbar = ImGui::IsMouseHoveringRect(
+            ImVec2(toolbarRectMin.x - 4.0f, toolbarRectMin.y - 4.0f),
+            ImVec2(toolbarRectMax.x + 4.0f, toolbarRectMax.y + 4.0f),
+            true
+        ) || mouseInToolbarGuard;
         bool uiWorldHover = (mouseOverViewportImage || ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) && !mouseInToolbar;
         auto worldToScreen = [&](const glm::vec2& world) {
             glm::vec2 local = uiWorldCamera.WorldToScreen(world);
@@ -2804,7 +3304,7 @@ void Engine::renderViewport() {
             if (!obj.enabled || !isUIType(obj)) continue;
             uiDrawList.push_back(&obj);
         }
-        if (uiWorldMode) {
+        if (worldUiEditing) {
             std::stable_sort(uiDrawList.begin(), uiDrawList.end(),
                              [](const SceneObject* a, const SceneObject* b) {
                                  int orderA = (a->hasParallaxLayer2D && a->parallaxLayer2D.enabled) ? a->parallaxLayer2D.order : 0;
@@ -2862,6 +3362,7 @@ void Engine::renderViewport() {
                         texId = tex->GetID();
                     }
                 }
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
@@ -2904,7 +3405,7 @@ void Engine::renderViewport() {
                         ImVec2 p3 = rotPt(-half.x,  half.y);
                         if (texId != 0) {
                             dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                             ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                             uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                              ImGui::GetColorU32(tint));
                         } else {
                             ImU32 fill = ImGui::GetColorU32(tint);
@@ -2918,7 +3419,7 @@ void Engine::renderViewport() {
                     } else {
                         ImGui::SetCursorPos(ImVec2(drawMinLocal.x - overlayPos.x, drawMinLocal.y - overlayPos.y));
                         if (texId != 0) {
-                            ImGui::Image((ImTextureID)(intptr_t)texId, size, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                            ImGui::Image((ImTextureID)(intptr_t)texId, size, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                         } else {
                             ImDrawList* dl = ImGui::GetWindowDrawList();
                             ImU32 fill = ImGui::GetColorU32(tint);
@@ -2966,7 +3467,7 @@ void Engine::renderViewport() {
                     ImVec2 p3 = rotPt(-half.x,  half.y);
                     if (texId != 0) {
                         dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                         ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                         uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                          ImGui::GetColorU32(tint));
                     } else {
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -2981,7 +3482,7 @@ void Engine::renderViewport() {
                 } else {
                     ImGui::SetCursorPos(localMin);
                     if (texId != 0) {
-                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                     } else {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -3197,6 +3698,16 @@ void Engine::renderViewport() {
                     DecomposeMatrix(model, pos, rot, scl);
                     glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(rot));
                     ImVec2 newCenter(imageMin.x + pos.x, imageMin.y + pos.y);
+                    const bool applyPixelSnap = pixelGridSnapEnabled;
+                    const float pixelStep = static_cast<float>(std::max(1, pixelGridSnapStep));
+                    auto snapScreenToPixel = [&](ImVec2 p) {
+                        p.x = imageMin.x + std::round((p.x - imageMin.x) / pixelStep) * pixelStep;
+                        p.y = imageMin.y + std::round((p.y - imageMin.y) / pixelStep) * pixelStep;
+                        return p;
+                    };
+                    if (applyPixelSnap && op == ImGuizmo::TRANSLATE) {
+                        newCenter = snapScreenToPixel(newCenter);
+                    }
                     glm::vec2 worldCenter = screenToWorld(newCenter);
                     if (op == ImGuizmo::ROTATE) {
                         selected->ui.rotation = euler.z;
@@ -3207,6 +3718,10 @@ void Engine::renderViewport() {
                         selected->ui.position = worldPivot - parentOffset - parallaxOffset(*selected);
                     } else if (op == ImGuizmo::SCALE) {
                         ImVec2 newSize(std::max(1.0f, scl.x), std::max(1.0f, scl.y));
+                        if (applyPixelSnap) {
+                            newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
+                            newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
+                        }
                         worldSize = glm::vec2(newSize.x, newSize.y) / uiWorldCamera.zoom;
                         ImVec2 pivotOffset = anchorToPivotUI(selected->ui.anchor, ImVec2(worldSize.x, worldSize.y));
                         glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
@@ -3242,7 +3757,7 @@ void Engine::renderViewport() {
         bool selectedIsUiCanvas3D = selectedObj && selectedObj->hasUI &&
                                     selectedObj->ui.type == UIElementType::Canvas &&
                                     selectedObj->ui.renderIn3D;
-        if (!uiWorldMode && selectedObj && !selectedObj->hasPostFX &&
+        if (!worldUiEditing && selectedObj && !selectedObj->hasPostFX &&
             (!HasUIComponent(*selectedObj) || selectedIsUiCanvas3D)) {
             ImGuizmo::BeginFrame();
             ImGuizmo::Enable(true);
@@ -4275,36 +4790,38 @@ void Engine::renderViewport() {
                     boundsSnapPtr
                 );
 
-                std::array<glm::vec3, 8> corners = {
-                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
-                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
-                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
-                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
-                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
-                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
-                    glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
-                    glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
-                };
-
-                std::array<ImVec2, 8> projected{};
-                bool allProjected = true;
-                for (size_t i = 0; i < corners.size(); ++i) {
-                    glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(corners[i], 1.0f));
-                    auto p = projectToScreen(world);
-                    if (!p.has_value()) { allProjected = false; break; }
-                    projected[i] = *p;
-                }
-
-                if (allProjected) {
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.35f, 0.45f));
-                    const int edges[12][2] = {
-                        {0,1},{1,2},{2,3},{3,0},
-                        {4,5},{5,6},{6,7},{7,4},
-                        {0,4},{1,5},{2,6},{3,7}
+                if (mCurrentGizmoOperation == ImGuizmo::BOUNDS) {
+                    std::array<glm::vec3, 8> corners = {
+                        glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                        glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMin.z),
+                        glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                        glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMin.z),
+                        glm::vec3(gizmoBoundsMin.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                        glm::vec3(gizmoBoundsMax.x, gizmoBoundsMin.y, gizmoBoundsMax.z),
+                        glm::vec3(gizmoBoundsMax.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
+                        glm::vec3(gizmoBoundsMin.x, gizmoBoundsMax.y, gizmoBoundsMax.z),
                     };
-                    for (auto& e : edges) {
-                        dl->AddLine(projected[e[0]], projected[e[1]], col, 2.0f);
+
+                    std::array<ImVec2, 8> projected{};
+                    bool allProjected = true;
+                    for (size_t i = 0; i < corners.size(); ++i) {
+                        glm::vec3 world = glm::vec3(modelMatrix * glm::vec4(corners[i], 1.0f));
+                        auto p = projectToScreen(world);
+                        if (!p.has_value()) { allProjected = false; break; }
+                        projected[i] = *p;
+                    }
+
+                    if (allProjected) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 col = ImGui::GetColorU32(ImVec4(1.0f, 0.93f, 0.35f, 0.45f));
+                        const int edges[12][2] = {
+                            {0,1},{1,2},{2,3},{3,0},
+                            {4,5},{5,6},{6,7},{7,4},
+                            {0,4},{1,5},{2,6},{3,7}
+                        };
+                        for (auto& e : edges) {
+                            dl->AddLine(projected[e[0]], projected[e[1]], col, 2.0f);
+                        }
                     }
                 }
 
@@ -4315,13 +4832,68 @@ void Engine::renderViewport() {
                     }
                     glm::mat4 delta = modelMatrix * glm::inverse(originalModel);
 
+                    auto unwrapNear = [](float angle, float reference) {
+                        float result = angle;
+                        while (result - reference > 180.0f) result -= 360.0f;
+                        while (reference - result > 180.0f) result += 360.0f;
+                        return result;
+                    };
+                    auto quatFromEulerXYZ = [](const glm::vec3& deg) {
+                        glm::mat4 m(1.0f);
+                        m = glm::rotate(m, glm::radians(deg.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                        m = glm::rotate(m, glm::radians(deg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                        m = glm::rotate(m, glm::radians(deg.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                        return glm::normalize(glm::quat_cast(glm::mat3(m)));
+                    };
+                    auto quatFromMatrixNoScale = [](const glm::mat4& m) {
+                        glm::vec3 x = glm::vec3(m[0]);
+                        glm::vec3 y = glm::vec3(m[1]);
+                        if (glm::length(x) < 1e-6f || glm::length(y) < 1e-6f) {
+                            return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                        }
+                        x = glm::normalize(x);
+                        y = glm::normalize(y - x * glm::dot(x, y));
+                        glm::vec3 z = glm::cross(x, y);
+                        if (glm::length(z) < 1e-6f) {
+                            z = glm::vec3(0.0f, 0.0f, 1.0f);
+                        } else {
+                            z = glm::normalize(z);
+                        }
+                        glm::mat3 rot(1.0f);
+                        rot[0] = x;
+                        rot[1] = y;
+                        rot[2] = z;
+                        return glm::normalize(glm::quat_cast(rot));
+                    };
+
                     auto applyDelta = [&](SceneObject& o) {
                         glm::mat4 m = compose(o);
                         glm::mat4 newM = delta * m;
                         glm::vec3 t, r, s;
                         DecomposeMatrix(newM, t, r, s);
+
+                        glm::vec3 rotDeg = glm::degrees(r);
+                        if (mCurrentGizmoOperation == ImGuizmo::ROTATE ||
+                            mCurrentGizmoOperation == ImGuizmo::UNIVERSAL) {
+                            glm::quat beforeQ = quatFromMatrixNoScale(m);
+                            glm::quat afterQ = quatFromMatrixNoScale(newM);
+                            glm::quat deltaQ = glm::normalize(afterQ * glm::inverse(beforeQ));
+                            glm::quat finalQ = glm::normalize(deltaQ * quatFromEulerXYZ(o.rotation));
+                            glm::vec3 tmpPos(0.0f), tmpRot(0.0f), tmpScale(1.0f);
+                            DecomposeMatrix(ComposeTransform(glm::vec3(0.0f), finalQ, glm::vec3(1.0f)),
+                                            tmpPos, tmpRot, tmpScale);
+                            rotDeg = glm::degrees(tmpRot);
+                        }
+
                         o.position = t;
-                        o.rotation = NormalizeEulerDegrees(glm::degrees(r));
+                        if (o.parentId != -1) {
+                            rotDeg.x = unwrapNear(rotDeg.x, o.rotation.x);
+                            rotDeg.y = unwrapNear(rotDeg.y, o.rotation.y);
+                            rotDeg.z = unwrapNear(rotDeg.z, o.rotation.z);
+                            o.rotation = rotDeg;
+                        } else {
+                            o.rotation = NormalizeEulerDegrees(rotDeg);
+                        }
                         o.scale = s;
                         syncLocalTransform(o);
                     };
@@ -4365,39 +4937,100 @@ void Engine::renderViewport() {
             }
         }
 
+        const float viewportAspect = std::max(0.1f, (imageMax.x - imageMin.x) / std::max(1.0f, imageMax.y - imageMin.y));
+        const float gizmoOverlayScaleClamped = std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f);
+        const float gizmoIconScaleClamped = std::clamp(sceneGizmoIconScale, 0.4f, 3.0f);
+
         auto drawCameraDirection = [&](const SceneObject& camObj) {
             glm::quat q = glm::quat(glm::radians(camObj.rotation));
             glm::mat3 rot = glm::mat3_cast(q);
             glm::vec3 forward = glm::normalize(rot * glm::vec3(0.0f, 0.0f, -1.0f));
             glm::vec3 upDir = glm::normalize(rot * glm::vec3(0.0f, 1.0f, 0.0f));
-            if (!std::isfinite(forward.x) || glm::length(forward) < 1e-3f) return;
+            glm::vec3 rightDir = glm::normalize(rot * glm::vec3(1.0f, 0.0f, 0.0f));
+            if (!std::isfinite(forward.x) || !std::isfinite(upDir.x) || !std::isfinite(rightDir.x) || glm::length(forward) < 1e-3f) return;
+            const float alpha = camObj.enabled ? 1.0f : 0.35f;
 
             auto start = projectToScreen(camObj.position);
-            auto end = projectToScreen(camObj.position + forward * 1.4f);
-            auto upTip = projectToScreen(camObj.position + upDir * 0.6f);
+            auto end = projectToScreen(camObj.position + forward * (1.4f * gizmoOverlayScaleClamped));
+            auto upTip = projectToScreen(camObj.position + upDir * (0.6f * gizmoOverlayScaleClamped));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
             if (start && end) {
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImU32 lineCol = ImGui::GetColorU32(ImVec4(0.3f, 0.8f, 1.0f, 0.9f));
-                ImU32 headCol = ImGui::GetColorU32(ImVec4(0.9f, 1.0f, 1.0f, 0.95f));
-                dl->AddLine(*start, *end, lineCol, 2.5f);
+                ImU32 lineCol = ImGui::GetColorU32(ImVec4(0.3f, 0.8f, 1.0f, 0.9f * alpha));
+                ImU32 headCol = ImGui::GetColorU32(ImVec4(0.9f, 1.0f, 1.0f, 0.95f * alpha));
+                dl->AddLine(*start, *end, lineCol, 2.5f * gizmoOverlayScaleClamped);
                 ImVec2 dir = ImVec2(end->x - start->x, end->y - start->y);
                 float len = sqrtf(dir.x * dir.x + dir.y * dir.y);
                 if (len > 1.0f) {
                     ImVec2 normDir = ImVec2(dir.x / len, dir.y / len);
                     ImVec2 left = ImVec2(-normDir.y, normDir.x);
-                    float head = 10.0f;
+                    float head = 10.0f * gizmoOverlayScaleClamped;
                     ImVec2 tip = *end;
                     ImVec2 p1 = ImVec2(tip.x - normDir.x * head + left.x * head * 0.6f, tip.y - normDir.y * head + left.y * head * 0.6f);
                     ImVec2 p2 = ImVec2(tip.x - normDir.x * head - left.x * head * 0.6f, tip.y - normDir.y * head - left.y * head * 0.6f);
                     dl->AddTriangleFilled(tip, p1, p2, headCol);
                 }
                 if (upTip) {
-                    dl->AddCircleFilled(*upTip, 3.0f, ImGui::GetColorU32(ImVec4(0.8f, 1.0f, 0.6f, 0.8f)));
+                    dl->AddCircleFilled(*upTip, 3.0f * gizmoOverlayScaleClamped, ImGui::GetColorU32(ImVec4(0.8f, 1.0f, 0.6f, 0.8f * alpha)));
                 }
+            }
+
+            auto drawWorldLine = [&](const glm::vec3& a, const glm::vec3& b, ImU32 color, float thickness) {
+                auto sa = projectToScreen(a);
+                auto sb = projectToScreen(b);
+                if (sa && sb) {
+                    dl->AddLine(*sa, *sb, color, thickness);
+                }
+            };
+
+            const float nearPlane = std::max(0.01f, camObj.camera.nearClip);
+            const float farPlane = std::max(nearPlane + 0.05f, camObj.camera.farClip);
+            const float drawDepth = std::clamp(farPlane, nearPlane + 0.05f, 14.0f * gizmoOverlayScaleClamped);
+            const float fovDeg = std::clamp(camObj.camera.fov, 5.0f, 170.0f);
+            const float tanHalfFov = std::tan(glm::radians(fovDeg) * 0.5f);
+            const float nearHalfH = tanHalfFov * nearPlane;
+            const float nearHalfW = nearHalfH * viewportAspect;
+            const float farHalfH = tanHalfFov * drawDepth;
+            const float farHalfW = farHalfH * viewportAspect;
+
+            glm::vec3 nearC = camObj.position + forward * nearPlane;
+            glm::vec3 farC = camObj.position + forward * drawDepth;
+            std::array<glm::vec3, 4> nearCorners = {
+                nearC + upDir * nearHalfH - rightDir * nearHalfW,
+                nearC + upDir * nearHalfH + rightDir * nearHalfW,
+                nearC - upDir * nearHalfH + rightDir * nearHalfW,
+                nearC - upDir * nearHalfH - rightDir * nearHalfW
+            };
+            std::array<glm::vec3, 4> farCorners = {
+                farC + upDir * farHalfH - rightDir * farHalfW,
+                farC + upDir * farHalfH + rightDir * farHalfW,
+                farC - upDir * farHalfH + rightDir * farHalfW,
+                farC - upDir * farHalfH - rightDir * farHalfW
+            };
+
+            ImU32 frustumLineCol = ImGui::GetColorU32(ImVec4(0.55f, 0.9f, 1.0f, 0.78f * alpha));
+            ImU32 frustumFaintCol = ImGui::GetColorU32(ImVec4(0.55f, 0.9f, 1.0f, 0.42f * alpha));
+            for (int i = 0; i < 4; ++i) {
+                drawWorldLine(nearCorners[i], nearCorners[(i + 1) % 4], frustumFaintCol, 1.4f * gizmoOverlayScaleClamped);
+                drawWorldLine(farCorners[i], farCorners[(i + 1) % 4], frustumLineCol, 1.6f * gizmoOverlayScaleClamped);
+                drawWorldLine(camObj.position, farCorners[i], frustumFaintCol, 1.25f * gizmoOverlayScaleClamped);
+            }
+            drawWorldLine(camObj.position, farC, frustumLineCol, 1.8f * gizmoOverlayScaleClamped);
+
+            auto labelAnchor = projectToScreen(farC + upDir * (farHalfH + 0.05f * gizmoOverlayScaleClamped) + rightDir * (farHalfW + 0.05f * gizmoOverlayScaleClamped));
+            if (gizmoShowCameraFrustumLabels && labelAnchor) {
+                char label[96];
+                std::snprintf(label, sizeof(label), "FOV %.0f | %.2fx%.2f @ %.1f", fovDeg, farHalfW * 2.0f, farHalfH * 2.0f, drawDepth);
+                ImVec2 textSize = ImGui::CalcTextSize(label);
+                ImVec2 pad(4.0f * gizmoOverlayScaleClamped, 2.0f * gizmoOverlayScaleClamped);
+                ImVec2 bgMin(labelAnchor->x, labelAnchor->y - textSize.y * 0.5f - pad.y);
+                ImVec2 bgMax(bgMin.x + textSize.x + pad.x * 2.0f, bgMin.y + textSize.y + pad.y * 2.0f);
+                dl->AddRectFilled(bgMin, bgMax, IM_COL32(16, 24, 34, static_cast<int>(195.0f * alpha)), 4.0f * gizmoOverlayScaleClamped);
+                dl->AddRect(bgMin, bgMax, IM_COL32(120, 200, 240, static_cast<int>(180.0f * alpha)), 4.0f * gizmoOverlayScaleClamped, 0, 1.0f);
+                dl->AddText(ImVec2(bgMin.x + pad.x, bgMin.y + pad.y), IM_COL32(214, 242, 255, static_cast<int>(235.0f * alpha)), label);
             }
         };
 
-        if (showSceneGizmos && !uiWorldMode) {
+        if (showSceneGizmos && gizmoShowCameraOverlays && !worldUiEditing) {
             for (const auto& obj : sceneObjects) {
                 if (obj.hasCamera) {
                     drawCameraDirection(obj);
@@ -4420,14 +5053,13 @@ void Engine::renderViewport() {
                 if (glm::length(f) < 1e-3f || !std::isfinite(f.x)) f = glm::vec3(0.0f, -1.0f, 0.0f);
                 return f;
             };
-
             if (lightObj.light.type == LightType::Point) {
                 auto center = projectToScreen(lightObj.position);
                 glm::vec3 offset = lightObj.position + glm::vec3(lightObj.light.range, 0.0f, 0.0f);
                 auto edge = projectToScreen(offset);
                 if (center && edge) {
                     float r = std::sqrt((center->x - edge->x)*(center->x - edge->x) + (center->y - edge->y)*(center->y - edge->y));
-                    dl->AddCircle(*center, r, faint, 48, 2.0f);
+                    dl->AddCircle(*center, r, faint, 48, 2.0f * gizmoOverlayScaleClamped);
                 }
             } else if (lightObj.light.type == LightType::Spot) {
                 glm::vec3 dir = forwardFromRotation(lightObj);
@@ -4451,7 +5083,7 @@ void Engine::renderViewport() {
                         auto sp = projectToScreen(p);
                         if (!sp) continue;
                         if (first) { prev = *sp; first = false; continue; }
-                        dl->AddLine(prev, *sp, color, 1.5f);
+                        dl->AddLine(prev, *sp, color, 1.5f * gizmoOverlayScaleClamped);
                         prev = *sp;
                     }
                 };
@@ -4459,7 +5091,7 @@ void Engine::renderViewport() {
                 auto sTip = projectToScreen(tip);
                 auto sEnd = projectToScreen(end);
                 if (sTip && sEnd) {
-                    dl->AddLine(*sTip, *sEnd, col, 2.0f);
+                    dl->AddLine(*sTip, *sEnd, col, 2.0f * gizmoOverlayScaleClamped);
                     drawConeRing(innerRad, col);
                     drawConeRing(outerRad, faint);
                 }
@@ -4485,20 +5117,21 @@ void Engine::renderViewport() {
                 }
                 if (ok) {
                     for (int i = 0; i < 4; ++i) {
-                        dl->AddLine(projected[i], projected[(i+1)%4], col, 2.0f);
+                        dl->AddLine(projected[i], projected[(i+1)%4], col, 2.0f * gizmoOverlayScaleClamped);
                     }
                     // normal indicator
                     auto cproj = projectToScreen(c);
                     auto nproj = projectToScreen(c + n * glm::max(lightObj.light.range, 0.5f));
                     if (cproj && nproj) {
-                        dl->AddLine(*cproj, *nproj, col, 2.0f);
-                        dl->AddCircleFilled(*nproj, 4.0f, col);
+                        dl->AddLine(*cproj, *nproj, col, 2.0f * gizmoOverlayScaleClamped);
+                        dl->AddCircleFilled(*nproj, 4.0f * gizmoOverlayScaleClamped, col);
                     }
                 }
+
             }
         };
 
-        if (showSceneGizmos && !uiWorldMode) {
+        if (showSceneGizmos && gizmoShowLightOverlays && !worldUiEditing) {
             for (const auto& obj : sceneObjects) {
                 if (!obj.hasLight) continue;
                 if (obj.light.type == LightType::Point || obj.light.type == LightType::Spot || obj.light.type == LightType::Area) {
@@ -4630,7 +5263,7 @@ void Engine::renderViewport() {
             if (!screen) return;
 
             const bool isSelected = std::find(selectedObjectIds.begin(), selectedObjectIds.end(), obj.id) != selectedObjectIds.end();
-            const float size = isSelected ? 74.0f : 56.0f;
+            const float size = (isSelected ? 74.0f : 56.0f) * gizmoIconScaleClamped;
             const float half = size * 0.5f;
             const ImVec2 min(screen->x - half, screen->y - half);
             const ImVec2 max(screen->x + half, screen->y + half);
@@ -4639,19 +5272,190 @@ void Engine::renderViewport() {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             dl->AddImage((ImTextureID)(intptr_t)icon->GetID(), min, max, ImVec2(0, 1), ImVec2(1, 0), tint);
             if (isSelected) {
-                dl->AddRect(min, max, IM_COL32(255, 255, 255, 170), 5.0f, 0, 1.8f);
+                dl->AddRect(min, max, IM_COL32(255, 255, 255, 170), 5.0f * gizmoIconScaleClamped, 0, 1.8f);
+            }
+            if (obj.hasLight && gizmoShowLightIntensityLabels) {
+                char brightness[24];
+                std::snprintf(brightness, sizeof(brightness), "%.3g", obj.light.intensity);
+                ImVec2 textSize = ImGui::CalcTextSize(brightness);
+                const ImVec2 pad(5.0f * gizmoIconScaleClamped, 2.0f * gizmoIconScaleClamped);
+                ImVec2 badgeMin(max.x - (textSize.x + pad.x * 2.0f) - 1.5f * gizmoIconScaleClamped, min.y + 1.5f * gizmoIconScaleClamped);
+                ImVec2 badgeMax(max.x - 1.5f, badgeMin.y + textSize.y + pad.y * 2.0f);
+                int bgA = obj.enabled ? 212 : 136;
+                int fgA = obj.enabled ? 242 : 168;
+                dl->AddRectFilled(badgeMin, badgeMax, IM_COL32(24, 28, 34, bgA), 5.0f * gizmoIconScaleClamped);
+                dl->AddRect(badgeMin, badgeMax, IM_COL32(255, 214, 118, fgA), 5.0f * gizmoIconScaleClamped, 0, 1.0f);
+                dl->AddText(ImVec2(badgeMin.x + pad.x, badgeMin.y + pad.y), IM_COL32(255, 238, 180, fgA), brightness);
+            }
+        };
+        auto drawWireCube = [&](const glm::mat4& worldFromLocal,
+                                const glm::vec3& localMin,
+                                const glm::vec3& localMax,
+                                ImU32 color,
+                                float thickness) {
+            std::array<glm::vec3, 8> corners = {
+                glm::vec3(localMin.x, localMin.y, localMin.z),
+                glm::vec3(localMax.x, localMin.y, localMin.z),
+                glm::vec3(localMax.x, localMax.y, localMin.z),
+                glm::vec3(localMin.x, localMax.y, localMin.z),
+                glm::vec3(localMin.x, localMin.y, localMax.z),
+                glm::vec3(localMax.x, localMin.y, localMax.z),
+                glm::vec3(localMax.x, localMax.y, localMax.z),
+                glm::vec3(localMin.x, localMax.y, localMax.z)
+            };
+            std::array<ImVec2, 8> projected = {};
+            for (size_t i = 0; i < corners.size(); ++i) {
+                glm::vec3 world = glm::vec3(worldFromLocal * glm::vec4(corners[i], 1.0f));
+                auto p = projectToScreen(world);
+                if (!p.has_value()) return;
+                projected[i] = *p;
+            }
+            const int edges[12][2] = {
+                {0,1},{1,2},{2,3},{3,0},
+                {4,5},{5,6},{6,7},{7,4},
+                {0,4},{1,5},{2,6},{3,7}
+            };
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            for (const auto& e : edges) {
+                dl->AddLine(projected[e[0]], projected[e[1]], color, thickness);
+            }
+        };
+        auto drawSelectionColliderBounds = [&](const SceneObject& obj, ImU32 color, float thickness) {
+            auto composeNoScale = [](const SceneObject& o) {
+                glm::mat4 m(1.0f);
+                m = glm::translate(m, o.position);
+                m = glm::rotate(m, glm::radians(o.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                m = glm::rotate(m, glm::radians(o.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                m = glm::rotate(m, glm::radians(o.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                return m;
+            };
+            auto composeWithScale = [](const SceneObject& o) {
+                glm::mat4 m(1.0f);
+                m = glm::translate(m, o.position);
+                m = glm::rotate(m, glm::radians(o.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+                m = glm::rotate(m, glm::radians(o.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+                m = glm::rotate(m, glm::radians(o.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+                m = glm::scale(m, o.scale);
+                return m;
+            };
+
+            if (obj.hasCollider && obj.collider.enabled) {
+                glm::vec3 localMin(-0.5f);
+                glm::vec3 localMax(0.5f);
+                glm::mat4 world = composeNoScale(obj);
+                switch (obj.collider.type) {
+                    case ColliderType::Box:
+                        world = glm::scale(world, obj.collider.boxSize);
+                        break;
+                    case ColliderType::Capsule:
+                        localMin = glm::vec3(-0.25f, -0.75f, -0.25f);
+                        localMax = glm::vec3(0.25f, 0.75f, 0.25f);
+                        world = glm::scale(world, obj.collider.boxSize);
+                        break;
+                    case ColliderType::Mesh:
+                    case ColliderType::ConvexMesh: {
+                        if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
+                            if (const auto* info = g_objLoader.getMeshInfo(obj.meshId)) {
+                                if (info->boundsMin.x < info->boundsMax.x) {
+                                    localMin = info->boundsMin;
+                                    localMax = info->boundsMax;
+                                }
+                            }
+                        } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
+                            if (const auto* info = getModelLoader().getMeshInfo(obj.meshId)) {
+                                if (info->boundsMin.x < info->boundsMax.x) {
+                                    localMin = info->boundsMin;
+                                    localMax = info->boundsMax;
+                                }
+                            }
+                        }
+                        world = glm::scale(world, obj.scale);
+                        break;
+                    }
+                }
+                drawWireCube(world, localMin, localMax, color, thickness);
+            }
+
+            if (obj.hasCollider2D && obj.collider2D.enabled) {
+                glm::mat4 world = composeWithScale(obj);
+                auto drawPolylineLocal = [&](const std::vector<glm::vec3>& pts, bool closed) {
+                    if (pts.size() < 2) return;
+                    std::vector<ImVec2> projected;
+                    projected.reserve(pts.size());
+                    for (const auto& p : pts) {
+                        auto sp = projectToScreen(glm::vec3(world * glm::vec4(p, 1.0f)));
+                        if (!sp.has_value()) return;
+                        projected.push_back(*sp);
+                    }
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    for (size_t i = 1; i < projected.size(); ++i) {
+                        dl->AddLine(projected[i - 1], projected[i], color, thickness);
+                    }
+                    if (closed && projected.size() > 2) {
+                        dl->AddLine(projected.back(), projected.front(), color, thickness);
+                    }
+                };
+
+                if (obj.collider2D.type == Collider2DType::Box) {
+                    glm::vec2 half = obj.collider2D.boxSize * 0.5f;
+                    std::vector<glm::vec3> pts = {
+                        glm::vec3(-half.x, -half.y, 0.0f),
+                        glm::vec3( half.x, -half.y, 0.0f),
+                        glm::vec3( half.x,  half.y, 0.0f),
+                        glm::vec3(-half.x,  half.y, 0.0f)
+                    };
+                    drawPolylineLocal(pts, true);
+                } else if (!obj.collider2D.points.empty()) {
+                    std::vector<glm::vec3> pts;
+                    pts.reserve(obj.collider2D.points.size());
+                    for (const auto& p : obj.collider2D.points) {
+                        pts.emplace_back(p.x, p.y, 0.0f);
+                    }
+                    drawPolylineLocal(pts, obj.collider2D.type == Collider2DType::Polygon || obj.collider2D.closed);
+                }
             }
         };
 
         const float toolbarPadding = 6.0f;
         const float toolbarSpacing = 5.0f;
-        const ImVec2 gizmoButtonSize(60.0f, 24.0f);
         const ImVec2 gizmoIconButtonSize(32.0f, 24.0f);
-        if (showSceneGizmos && !uiWorldMode) {
+        if (showSceneGizmos && !worldUiEditing) {
             std::unordered_map<int, const SceneObject*> idLookup;
             idLookup.reserve(sceneObjects.size());
             for (const auto& obj : sceneObjects) {
                 idLookup.emplace(obj.id, &obj);
+            }
+            if (collisionWireframe) {
+                std::vector<int> roots = selectedObjectIds;
+                if (roots.empty() && selectedObjectId >= 0) {
+                    roots.push_back(selectedObjectId);
+                }
+                if (!roots.empty()) {
+                    std::unordered_set<int> rootSet(roots.begin(), roots.end());
+                    std::unordered_set<int> visited;
+                    std::vector<int> stack = roots;
+                    while (!stack.empty()) {
+                        int id = stack.back();
+                        stack.pop_back();
+                        if (!visited.insert(id).second) continue;
+                        auto it = idLookup.find(id);
+                        if (it == idLookup.end() || !it->second) continue;
+                        const SceneObject* node = it->second;
+
+                        bool isRoot = rootSet.find(id) != rootSet.end();
+                        ImU32 col = isRoot
+                            ? ImGui::GetColorU32(ImVec4(0.24f, 0.95f, 1.0f, 0.95f))
+                            : ImGui::GetColorU32(ImVec4(0.38f, 1.0f, 0.78f, 0.85f));
+                        float lineThickness = isRoot ? 2.4f : 1.8f;
+                        drawSelectionColliderBounds(*node, col, lineThickness);
+
+                        for (int childId : node->childIds) {
+                            if (childId >= 0) {
+                                stack.push_back(childId);
+                            }
+                        }
+                    }
+                }
             }
             for (const auto& obj : sceneObjects) {
                 drawArmatureOverlays(obj, idLookup);
@@ -4701,23 +5505,10 @@ void Engine::renderViewport() {
                 ImGui::SetTooltip("%s", tooltip);
             }
         };
-
-        gizmoButton("##gizmo_move", GizmoToolbar::Icon::Translate, ImGuizmo::TRANSLATE, "Translate");
-        ImGui::SameLine(0.0f, toolbarSpacing);
-        gizmoButton("##gizmo_rotate", GizmoToolbar::Icon::Rotate, ImGuizmo::ROTATE, "Rotate");
-        ImGui::SameLine(0.0f, toolbarSpacing);
-        gizmoButton("##gizmo_scale", GizmoToolbar::Icon::Scale, ImGuizmo::SCALE, "Scale");
-        ImGui::SameLine(0.0f, toolbarSpacing);
-        bool canMeshEdit = false;
-        if (selectedObj) {
-            std::string ext = fs::path(selectedObj->meshPath).extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            canMeshEdit = ext == ".rmesh";
-        }
-        ImGui::BeginDisabled(!canMeshEdit);
-        if (GizmoToolbar::IconButton("##gizmo_mesh_edit", GizmoToolbar::Icon::Mesh, meshEditMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-            meshEditMode = !meshEditMode;
-            if (!meshEditMode) {
+        const bool use2DGizmos = worldUiEditing;
+        if (use2DGizmos) {
+            if (meshEditMode) {
+                meshEditMode = false;
                 meshEditLoaded = false;
                 meshEditPath.clear();
                 meshEditDirty = false;
@@ -4726,73 +5517,120 @@ void Engine::renderViewport() {
                 meshEditSelectedEdges.clear();
                 meshEditSelectedFaces.clear();
             }
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle mesh vertex edit mode");
-        ImGui::EndDisabled();
-        if (meshEditMode) {
-            ImGui::SameLine(0.0f, toolbarSpacing);
-            if (GizmoToolbar::ModeButton("Verts", meshEditSelectionMode == MeshEditSelectionMode::Vertex, ImVec2(50,24), baseCol, accentCol, textCol)) {
-                meshEditSelectionMode = MeshEditSelectionMode::Vertex;
+            if (mCurrentGizmoOperation != ImGuizmo::TRANSLATE &&
+                mCurrentGizmoOperation != ImGuizmo::ROTATE &&
+                mCurrentGizmoOperation != ImGuizmo::SCALE) {
+                mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
             }
-            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-            if (GizmoToolbar::ModeButton("Edges", meshEditSelectionMode == MeshEditSelectionMode::Edge, ImVec2(50,24), baseCol, accentCol, textCol)) {
-                meshEditSelectionMode = MeshEditSelectionMode::Edge;
-            }
-            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-            if (GizmoToolbar::ModeButton("Faces", meshEditSelectionMode == MeshEditSelectionMode::Face, ImVec2(50,24), baseCol, accentCol, textCol)) {
-                meshEditSelectionMode = MeshEditSelectionMode::Face;
-            }
-            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-            if (GizmoToolbar::ModeButton("Extrude", meshEditExtrudeMode, ImVec2(68,24), baseCol, accentCol, textCol)) {
-                meshEditExtrudeMode = !meshEditExtrudeMode;
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Toggle extrude mode (Shift to extrude, Shift+Ctrl for seams)");
-            }
-            ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-            ImGui::BeginDisabled(!meshEditLoaded || meshEditPath.empty());
-            if (GizmoToolbar::TextButton("Save", meshEditDirty, ImVec2(52,24), baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-                std::string err;
-                if (!saveMeshEditAsset(err)) {
-                    addConsoleMessage("Mesh save failed: " + err, ConsoleMessageType::Error);
-                } else {
-                    addConsoleMessage("Saved mesh: " + meshEditPath, ConsoleMessageType::Success);
-                }
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip(meshEditDirty ? "Save edited mesh to disk" : "Mesh is up to date");
-            }
-            ImGui::EndDisabled();
-        }
-        ImGui::SameLine(0.0f, toolbarSpacing);
-        gizmoButton("##gizmo_bounds", GizmoToolbar::Icon::Bounds, ImGuizmo::BOUNDS, "Rect scale");
-        ImGui::SameLine(0.0f, toolbarSpacing);
-        gizmoButton("##gizmo_universal", GizmoToolbar::Icon::Universal, ImGuizmo::UNIVERSAL, "Universal");
-
-        ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
-        if (GizmoToolbar::IconButton("##mode_local", GizmoToolbar::Icon::LocalMode, mCurrentGizmoMode == ImGuizmo::LOCAL, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
             mCurrentGizmoMode = ImGuizmo::LOCAL;
         }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Local");
+
+        gizmoButton("##gizmo_move", GizmoToolbar::Icon::Translate, ImGuizmo::TRANSLATE, "Translate");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("##gizmo_rotate", GizmoToolbar::Icon::Rotate, ImGuizmo::ROTATE, "Rotate");
+        ImGui::SameLine(0.0f, toolbarSpacing);
+        gizmoButton("##gizmo_scale", GizmoToolbar::Icon::Scale, ImGuizmo::SCALE, "Scale");
+        if (!use2DGizmos) {
+            ImGui::SameLine(0.0f, toolbarSpacing);
+            bool canMeshEdit = false;
+            if (selectedObj) {
+                std::string ext = fs::path(selectedObj->meshPath).extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                canMeshEdit = ext == ".rmesh";
+            }
+            ImGui::BeginDisabled(!canMeshEdit);
+            if (GizmoToolbar::IconButton("##gizmo_mesh_edit", GizmoToolbar::Icon::Mesh, meshEditMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                meshEditMode = !meshEditMode;
+                if (!meshEditMode) {
+                    meshEditLoaded = false;
+                    meshEditPath.clear();
+                    meshEditDirty = false;
+                    meshEditExtrudeMode = false;
+                    meshEditSelectedVertices.clear();
+                    meshEditSelectedEdges.clear();
+                    meshEditSelectedFaces.clear();
+                }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle mesh vertex edit mode");
+            ImGui::EndDisabled();
+            if (meshEditMode) {
+                ImGui::SameLine(0.0f, toolbarSpacing);
+                if (GizmoToolbar::ModeButton("Verts", meshEditSelectionMode == MeshEditSelectionMode::Vertex, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                    meshEditSelectionMode = MeshEditSelectionMode::Vertex;
+                }
+                ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
+                if (GizmoToolbar::ModeButton("Edges", meshEditSelectionMode == MeshEditSelectionMode::Edge, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                    meshEditSelectionMode = MeshEditSelectionMode::Edge;
+                }
+                ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
+                if (GizmoToolbar::ModeButton("Faces", meshEditSelectionMode == MeshEditSelectionMode::Face, ImVec2(50,24), baseCol, accentCol, textCol)) {
+                    meshEditSelectionMode = MeshEditSelectionMode::Face;
+                }
+                ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
+                if (GizmoToolbar::ModeButton("Extrude", meshEditExtrudeMode, ImVec2(68,24), baseCol, accentCol, textCol)) {
+                    meshEditExtrudeMode = !meshEditExtrudeMode;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Toggle extrude mode (Shift to extrude, Shift+Ctrl for seams)");
+                }
+                ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+                ImGui::BeginDisabled(!meshEditLoaded || meshEditPath.empty());
+                if (GizmoToolbar::TextButton("Save", meshEditDirty, ImVec2(52,24), baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                    std::string err;
+                    if (!saveMeshEditAsset(err)) {
+                        addConsoleMessage("Mesh save failed: " + err, ConsoleMessageType::Error);
+                    } else {
+                        addConsoleMessage("Saved mesh: " + meshEditPath, ConsoleMessageType::Success);
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(meshEditDirty ? "Save edited mesh to disk" : "Mesh is up to date");
+                }
+                ImGui::EndDisabled();
+            }
         }
-        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::IconButton("##mode_world", GizmoToolbar::Icon::WorldMode, mCurrentGizmoMode == ImGuizmo::WORLD, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-            mCurrentGizmoMode = ImGuizmo::WORLD;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("World");
+        if (!use2DGizmos) {
+            ImGui::SameLine(0.0f, toolbarSpacing);
+            gizmoButton("##gizmo_bounds", GizmoToolbar::Icon::Bounds, ImGuizmo::BOUNDS, "Rect scale");
+            ImGui::SameLine(0.0f, toolbarSpacing);
+            gizmoButton("##gizmo_universal", GizmoToolbar::Icon::Universal, ImGuizmo::UNIVERSAL, "Universal");
+
+            ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
+            if (GizmoToolbar::IconButton("##mode_local", GizmoToolbar::Icon::LocalMode, mCurrentGizmoMode == ImGuizmo::LOCAL, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                mCurrentGizmoMode = ImGuizmo::LOCAL;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Local");
+            }
+            ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+            if (GizmoToolbar::IconButton("##mode_world", GizmoToolbar::Icon::WorldMode, mCurrentGizmoMode == ImGuizmo::WORLD, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                mCurrentGizmoMode = ImGuizmo::WORLD;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("World");
+            }
         }
 
         ImGui::SameLine(0.0f, toolbarSpacing);
-        if (GizmoToolbar::IconButton("##snap_toggle", GizmoToolbar::Icon::SnapToggle, useSnap, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-            useSnap = !useSnap;
+        bool snapActive = use2DGizmos ? pixelGridSnapEnabled : useSnap;
+        if (GizmoToolbar::IconButton("##snap_toggle", GizmoToolbar::Icon::SnapToggle, snapActive, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+            if (use2DGizmos) {
+                pixelGridSnapEnabled = !pixelGridSnapEnabled;
+            } else {
+                useSnap = !useSnap;
+            }
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Snap");
+            ImGui::SetTooltip(use2DGizmos ? "Pixel snap" : "Snap");
         }
 
-        if (useSnap) {
+        if (use2DGizmos && pixelGridSnapEnabled) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(86.0f);
+            if (ImGui::DragInt("##pixelSnapStep", &pixelGridSnapStep, 0.5f, 1, 64, "%d px")) {
+                pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
+            }
+        } else if (!use2DGizmos && useSnap) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(100);
             if (mCurrentGizmoOperation == ImGuizmo::ROTATE) {
@@ -4803,26 +5641,84 @@ void Engine::renderViewport() {
             }
         }
 
+        bool toolbarEditorSettingsChanged = false;
         ImGui::SameLine(0.0f, toolbarSpacing * 1.25f);
         if (GizmoToolbar::IconButton("##gizmo_toggle", GizmoToolbar::Icon::GizmoToggle, showSceneGizmos, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
             showSceneGizmos = !showSceneGizmos;
+            toolbarEditorSettingsChanged = true;
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle light/camera scene symbols");
         }
-        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::IconButton("##grid_toggle", GizmoToolbar::Icon::GridToggle, showSceneGrid3D, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-            showSceneGrid3D = !showSceneGrid3D;
+        ImGui::SameLine(0.0f, toolbarSpacing * 0.35f);
+        if (ImGui::ArrowButton("##scene_gizmo_settings_arrow", ImGuiDir_Down)) {
+            ImGui::OpenPopup("##scene_gizmo_settings_popup");
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Toggle 3D grid");
+            ImGui::SetTooltip("Scene gizmo settings");
         }
-        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::IconButton("##ui_world_toggle", GizmoToolbar::Icon::UiWorldToggle, uiWorldMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
-            uiWorldMode = !uiWorldMode;
+        if (ImGui::BeginPopup("##scene_gizmo_settings_popup")) {
+            ImGui::TextUnformatted("Scene Gizmo Settings");
+            ImGui::Separator();
+
+            if (ImGui::Checkbox("Camera Overlays", &gizmoShowCameraOverlays)) {
+                toolbarEditorSettingsChanged = true;
+            }
+            ImGui::BeginDisabled(!gizmoShowCameraOverlays);
+            if (ImGui::Checkbox("Camera Frustum Labels", &gizmoShowCameraFrustumLabels)) {
+                toolbarEditorSettingsChanged = true;
+            }
+            ImGui::EndDisabled();
+
+            if (ImGui::Checkbox("Light Overlays", &gizmoShowLightOverlays)) {
+                toolbarEditorSettingsChanged = true;
+            }
+            ImGui::BeginDisabled(!gizmoShowLightOverlays);
+            if (ImGui::Checkbox("Light Intensity Labels", &gizmoShowLightIntensityLabels)) {
+                toolbarEditorSettingsChanged = true;
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Gizmo Icon Size", &sceneGizmoIconScale, 0.4f, 3.0f, "%.2fx")) {
+                toolbarEditorSettingsChanged = true;
+            }
+            if (ImGui::SliderFloat("Overlay Scale", &sceneGizmoOverlayScale, 0.4f, 3.0f, "%.2fx")) {
+                toolbarEditorSettingsChanged = true;
+            }
+            if (ImGui::Button("Reset Gizmo Defaults")) {
+                gizmoShowCameraOverlays = true;
+                gizmoShowCameraFrustumLabels = true;
+                gizmoShowLightOverlays = true;
+                gizmoShowLightIntensityLabels = true;
+                sceneGizmoIconScale = 1.0f;
+                sceneGizmoOverlayScale = 1.0f;
+                toolbarEditorSettingsChanged = true;
+            }
+
+            ImGui::EndPopup();
         }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Toggle 2D UI world overlay");
+        if (!use2DGizmos) {
+            ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+            if (GizmoToolbar::IconButton("##grid_toggle", GizmoToolbar::Icon::GridToggle, showSceneGrid3D, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                showSceneGrid3D = !showSceneGrid3D;
+                toolbarEditorSettingsChanged = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Toggle 3D grid");
+            }
+        }
+        if (!project2DPipeline) {
+            ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+            if (GizmoToolbar::IconButton("##ui_world_toggle", GizmoToolbar::Icon::UiWorldToggle, uiWorldMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
+                uiWorldMode = !uiWorldMode;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Toggle 2D UI world overlay");
+            }
+        }
+        if (toolbarEditorSettingsChanged) {
+            saveEditorUserSettings();
         }
 
             ImGui::EndGroup();
@@ -4850,7 +5746,7 @@ void Engine::renderViewport() {
             ImGui::PopStyleVar();
         }
 
-        if (uiWorldMode) {
+        if (worldUiEditing) {
             blockSelection = true;
         }
         // Left-click picking inside viewport
@@ -5167,10 +6063,17 @@ void Engine::renderViewport() {
 
     // Overlay hint
     ImGui::SetCursorPos(ImVec2(10, 30));
-    ImGui::TextColored(
-        ImVec4(1, 1, 1, 0.3f),
-        "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move | ESC: Release | F11: Fullscreen"
-    );
+    if (worldUiEditing) {
+        ImGui::TextColored(
+            ImVec4(1, 1, 1, 0.35f),
+            "MMB/Space+LMB: Pan | Wheel: Zoom | LMB: Select | Gizmo: Move/Rotate/Scale"
+        );
+    } else {
+        ImGui::TextColored(
+            ImVec4(1, 1, 1, 0.3f),
+            "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move | ESC: Release | F11: Fullscreen"
+        );
+    }
 
     if (cursorLocked) {
         ImGui::SetCursorPos(ImVec2(10, 50));
@@ -5184,6 +6087,163 @@ void Engine::renderViewport() {
     viewportController.updateFocusFromImGui(windowFocused, cursorLocked);
 
     ImGui::End();
+
+    if (showSpritePreviewPanel) {
+        bool previewOpen = showSpritePreviewPanel;
+        if (ImGui::Begin("Sprite Preview", &previewOpen)) {
+            SceneObject* selected = getSelectedObject();
+            bool validSprite = selected && selected->hasUI &&
+                (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D);
+            if (!validSprite) {
+                ImGui::TextDisabled("Select an Image or Sprite2D to preview.");
+            } else {
+                Texture* previewTex = nullptr;
+                if (!selected->albedoTexturePath.empty()) {
+                    previewTex = renderer.getTexture(selected->albedoTexturePath);
+                }
+                if (!previewTex || !previewTex->GetID()) {
+                    ImGui::TextDisabled("Assign a texture to preview this sprite.");
+                } else {
+                    std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(*selected);
+                    float availW = std::max(80.0f, ImGui::GetContentRegionAvail().x);
+                    float maxPreviewW = std::min(availW, 340.0f);
+                    float texW = static_cast<float>(std::max(1, previewTex->GetWidth()));
+                    float texH = static_cast<float>(std::max(1, previewTex->GetHeight()));
+                    float frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
+                    float frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
+                    if (!selected->ui.spriteSheetEnabled) {
+                        frameW = texW;
+                        frameH = texH;
+                    }
+                    float aspect = frameH > 0.0f ? (frameW / frameH) : 1.0f;
+                    ImVec2 previewSize(maxPreviewW, std::max(40.0f, maxPreviewW / std::max(0.1f, aspect)));
+                    ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvQuad[0], uvQuad[2]);
+                    int frameCount = std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
+                    ImGui::Separator();
+                    ImGui::Text("Object: %s", selected->name.c_str());
+                    ImGui::Text("Texture: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
+                    if (selected->ui.spriteSheetEnabled) {
+                        ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
+                        ImGui::Text("Grid: %d x %d  |  %.1f FPS",
+                                    std::max(1, selected->ui.spriteSheetColumns),
+                                    std::max(1, selected->ui.spriteSheetRows),
+                                    std::max(1.0f, selected->ui.spriteSheetFps));
+                    } else {
+                        ImGui::TextDisabled("Sprite sheet disabled (showing full texture).");
+                    }
+                }
+            }
+        }
+        ImGui::End();
+        showSpritePreviewPanel = previewOpen;
+    }
+
+    if (worldUiEditing) {
+        if (ImGui::Begin("Sprite Timeline")) {
+            SceneObject* selected = getSelectedObject();
+            bool validSprite = selected && selected->hasUI &&
+                (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D) &&
+                selected->ui.spriteSheetEnabled;
+            if (!validSprite) {
+                spriteTimelinePreviewPlaying = false;
+                spriteTimelineTargetId = -1;
+                ImGui::TextDisabled("Select a sprite sheet to animate.");
+            } else {
+                int columns = std::max(1, selected->ui.spriteSheetColumns);
+                int rows = std::max(1, selected->ui.spriteSheetRows);
+                int frameCount = std::max(1, columns * rows);
+                selected->ui.spriteSheetFrame = std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1);
+                if (spriteTimelineTargetId != selected->id) {
+                    spriteTimelineTargetId = selected->id;
+                    spriteTimelinePreviewPlaying = false;
+                    spriteTimelineLastTick = ImGui::GetTime();
+                }
+
+                double now = ImGui::GetTime();
+                if (spriteTimelinePreviewPlaying) {
+                    double step = 1.0 / std::max(1.0f, selected->ui.spriteSheetFps);
+                    int advance = (step > 0.0) ? static_cast<int>((now - spriteTimelineLastTick) / step) : 0;
+                    if (advance > 0) {
+                        int nextFrame = selected->ui.spriteSheetFrame + advance;
+                        if (selected->ui.spriteSheetLoop) {
+                            nextFrame %= frameCount;
+                        } else if (nextFrame >= frameCount) {
+                            nextFrame = frameCount - 1;
+                            spriteTimelinePreviewPlaying = false;
+                        }
+                        selected->ui.spriteSheetFrame = std::clamp(nextFrame, 0, frameCount - 1);
+                        spriteTimelineLastTick += static_cast<double>(advance) * step;
+                    }
+                } else {
+                    spriteTimelineLastTick = now;
+                }
+
+                if (ImGui::Button(spriteTimelinePreviewPlaying ? "Pause" : "Play")) {
+                    spriteTimelinePreviewPlaying = !spriteTimelinePreviewPlaying;
+                    spriteTimelineLastTick = ImGui::GetTime();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Stop")) {
+                    spriteTimelinePreviewPlaying = false;
+                    selected->ui.spriteSheetFrame = 0;
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(140.0f);
+                if (ImGui::DragFloat("FPS", &selected->ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
+                    selected->ui.spriteSheetFps = std::clamp(selected->ui.spriteSheetFps, 1.0f, 120.0f);
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Loop", &selected->ui.spriteSheetLoop)) {
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+
+                int frame = selected->ui.spriteSheetFrame;
+                if (ImGui::SliderInt("Frame", &frame, 0, frameCount - 1)) {
+                    selected->ui.spriteSheetFrame = std::clamp(frame, 0, frameCount - 1);
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                }
+
+                const float stripHeight = 18.0f;
+                ImVec2 stripStart = ImGui::GetCursorScreenPos();
+                float stripWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
+                ImGui::InvisibleButton("##SpriteFrameStrip", ImVec2(stripWidth, stripHeight));
+                bool stripHover = ImGui::IsItemHovered();
+                if ((stripHover && ImGui::IsMouseDown(ImGuiMouseButton_Left)) || ImGui::IsItemActivated()) {
+                    float t = (ImGui::GetIO().MousePos.x - stripStart.x) / std::max(1.0f, stripWidth);
+                    t = std::clamp(t, 0.0f, 0.9999f);
+                    int pickedFrame = std::clamp(static_cast<int>(t * frameCount), 0, frameCount - 1);
+                    if (pickedFrame != selected->ui.spriteSheetFrame) {
+                        selected->ui.spriteSheetFrame = pickedFrame;
+                        projectManager.currentProject.hasUnsavedChanges = true;
+                    }
+                }
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 stripBg = IM_COL32(46, 52, 66, 210);
+                ImU32 stripEdge = IM_COL32(190, 198, 216, 70);
+                ImU32 stripFill = IM_COL32(136, 186, 255, 220);
+                ImU32 stripTick = IM_COL32(220, 230, 255, 70);
+                ImVec2 stripEnd(stripStart.x + stripWidth, stripStart.y + stripHeight);
+                dl->AddRectFilled(stripStart, stripEnd, stripBg, 5.0f);
+                dl->AddRect(stripStart, stripEnd, stripEdge, 5.0f);
+                float filled = stripWidth * (static_cast<float>(selected->ui.spriteSheetFrame + 1) / static_cast<float>(frameCount));
+                dl->AddRectFilled(stripStart, ImVec2(stripStart.x + filled, stripEnd.y), stripFill, 5.0f);
+                int tickCount = std::min(frameCount, 96);
+                for (int i = 1; i < tickCount; ++i) {
+                    float x = stripStart.x + (stripWidth * static_cast<float>(i) / static_cast<float>(tickCount));
+                    dl->AddLine(ImVec2(x, stripStart.y + 2.0f), ImVec2(x, stripEnd.y - 2.0f), stripTick, 1.0f);
+                }
+                ImGui::TextDisabled("Frame %d / %d", selected->ui.spriteSheetFrame, frameCount - 1);
+            }
+        }
+        ImGui::End();
+    } else {
+        spriteTimelinePreviewPlaying = false;
+        spriteTimelineTargetId = -1;
+    }
+
+    // Run dock drawer interactions after docked windows are submitted so tab hit-rects are current.
+    updateDockDrawerAnimations();
 }
 #pragma endregion
 
@@ -5409,6 +6469,7 @@ void Engine::renderUiCanvas3DTargets() {
                         texId = tex->GetID();
                     }
                 }
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 float angle = glm::radians(obj.ui.rotation);
                 if (std::abs(angle) > 1e-4f) {
@@ -5426,7 +6487,7 @@ void Engine::renderUiCanvas3DTargets() {
                     ImVec2 p3 = rotPt(-half.x,  half.y);
                     if (texId != 0) {
                         dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                         ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                         uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                          ImGui::GetColorU32(tint));
                     } else {
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -5441,7 +6502,7 @@ void Engine::renderUiCanvas3DTargets() {
                 } else {
                     ImGui::SetCursorPos(localMin);
                     if (texId != 0) {
-                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                     } else {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -5844,7 +6905,7 @@ void Engine::renderPlayerViewport() {
 
         ImVec2 overlayPos = ImGui::GetWindowPos();
         ImVec2 overlaySize = ImGui::GetWindowSize();
-        bool useWorldUi = uiWorldMode;
+        bool useWorldUi = is2DWorldEditingEnabled();
         if (!useWorldUi) {
             uiWorldPanning = false;
         }
@@ -6053,6 +7114,7 @@ void Engine::renderPlayerViewport() {
                         texId = tex->GetID();
                     }
                 }
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 float angle = glm::radians(obj.ui.rotation);
                 if (std::abs(angle) > 1e-4f) {
@@ -6070,7 +7132,7 @@ void Engine::renderPlayerViewport() {
                     ImVec2 p3 = rotPt(-half.x,  half.y);
                     if (texId != 0) {
                         dl->AddImageQuad((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                         ImVec2(0, 1), ImVec2(1, 1), ImVec2(1, 0), ImVec2(0, 0),
+                                         uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
                                          ImGui::GetColorU32(tint));
                     } else {
                         ImU32 fill = ImGui::GetColorU32(tint);
@@ -6085,7 +7147,7 @@ void Engine::renderPlayerViewport() {
                 } else {
                     ImGui::SetCursorPos(localMin);
                     if (texId != 0) {
-                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, ImVec2(0, 1), ImVec2(1, 0), tint, ImVec4(0, 0, 0, 0));
+                        ImGui::Image((ImTextureID)(intptr_t)texId, drawSize, uvQuad[0], uvQuad[2], tint, ImVec4(0, 0, 0, 0));
                     } else {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         ImU32 fill = ImGui::GetColorU32(tint);

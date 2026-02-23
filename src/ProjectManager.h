@@ -9,6 +9,11 @@ struct RecentProject {
     std::string lastOpened;
 };
 
+enum class ProjectPipeline {
+    Pipeline3D = 0,
+    Pipeline2D = 1
+};
+
 class Project {
 public:
     std::string name;
@@ -21,6 +26,7 @@ public:
     bool isLoaded = false;
     bool hasUnsavedChanges = false;
     bool usesNewLayout = false;
+    ProjectPipeline pipeline = ProjectPipeline::Pipeline3D;
 
     Project() = default;
     Project(const std::string& projectName, const fs::path& basePath);
@@ -41,6 +47,7 @@ public:
     char openProjectPath[512] = "";
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
+    int newProjectPipelineMode = 0;
     std::string errorMessage;
     Project currentProject;
 

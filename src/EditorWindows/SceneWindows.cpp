@@ -856,6 +856,31 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), fontSize, textPos,
                                         ImGui::GetColorU32(textCol), obj.name.c_str());
 
+    if (obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled) {
+        std::string badgeText = "L" + std::to_string(obj.parallaxLayer2D.order);
+        ImVec2 badgeTextSize = ImGui::CalcTextSize(badgeText.c_str());
+        float badgePadX = 6.0f;
+        float badgePadY = 2.0f;
+        float rightEdge = itemMax.x - 8.0f;
+        if (hierarchyShowTexturePreview) {
+            float previewSize = std::max(12.0f, lineHeight - 4.0f);
+            rightEdge -= (previewSize + 8.0f);
+        }
+        ImVec2 badgeMin(rightEdge - badgeTextSize.x - badgePadX * 2.0f,
+                        itemMin.y + (lineHeight - (badgeTextSize.y + badgePadY * 2.0f)) * 0.5f);
+        ImVec2 badgeMax(rightEdge, badgeMin.y + badgeTextSize.y + badgePadY * 2.0f);
+        float minAllowedX = textPos.x + ImGui::CalcTextSize(obj.name.c_str()).x + 8.0f;
+        if (badgeMin.x > minAllowedX) {
+            ImU32 badgeBg = ImGui::GetColorU32(ImVec4(0.20f, 0.40f, 0.62f, 0.78f));
+            ImU32 badgeBorder = ImGui::GetColorU32(ImVec4(0.52f, 0.74f, 0.96f, 0.88f));
+            ImU32 badgeFg = ImGui::GetColorU32(ImVec4(0.92f, 0.96f, 1.0f, 0.96f));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(badgeMin, badgeMax, badgeBg, 4.0f);
+            dl->AddRect(badgeMin, badgeMax, badgeBorder, 4.0f, 0, 1.0f);
+            dl->AddText(ImVec2(badgeMin.x + badgePadX, badgeMin.y + badgePadY), badgeFg, badgeText.c_str());
+        }
+    }
+
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
         setPrimarySelection(obj.id, additive);
@@ -899,6 +924,11 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
             if (!ec) {
                 if (fileBrowser.isModelFile(entry)) {
                     importDroppedModel(fs::path(path), obj.id);
+                } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
+                    obj.materialPath = entry.path().string();
+                    loadMaterialFromFile(obj);
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    addConsoleMessage("Applied material to " + obj.name, ConsoleMessageType::Success);
                 } else if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
                     auto alreadyAssigned = std::any_of(obj.scripts.begin(), obj.scripts.end(),
                         [&](const ScriptComponent& sc) { return sc.path == path; });
@@ -1310,6 +1340,65 @@ void Engine::renderInspectorPanel() {
         return state;
     };
 
+    enum class MaterialShaderPreset : int {
+        Custom = 0,
+        EngineLit = 1,
+        ScrollingUV = 2
+    };
+
+    auto resolveScrollingShaderPaths = [&]() {
+        std::string vertPath = "Resources/Shaders/scroll_texture_vert.glsl";
+        std::string fragPath = "Resources/Shaders/scroll_texture_frag.glsl";
+        if (projectManager.currentProject.isLoaded) {
+            fs::path projVert = projectManager.currentProject.assetsPath / "Shaders" / "scroll_texture_vert.glsl";
+            fs::path projFrag = projectManager.currentProject.assetsPath / "Shaders" / "scroll_texture_frag.glsl";
+            std::error_code ec;
+            if (fs::exists(projVert, ec) && !ec) {
+                vertPath = projVert.string();
+            }
+            ec.clear();
+            if (fs::exists(projFrag, ec) && !ec) {
+                fragPath = projFrag.string();
+            }
+        }
+        return std::pair<std::string, std::string>{vertPath, fragPath};
+    };
+
+    auto shaderPresetFromPaths = [](const std::string& vert, const std::string& frag) {
+        if (vert.empty() && frag.empty()) {
+            return MaterialShaderPreset::EngineLit;
+        }
+        std::string vertFile = fs::path(vert).filename().string();
+        std::string fragFile = fs::path(frag).filename().string();
+        std::transform(vertFile.begin(), vertFile.end(), vertFile.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::transform(fragFile.begin(), fragFile.end(), fragFile.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (vertFile == "scroll_texture_vert.glsl" && fragFile == "scroll_texture_frag.glsl") {
+            return MaterialShaderPreset::ScrollingUV;
+        }
+        return MaterialShaderPreset::Custom;
+    };
+
+    auto applyShaderPreset = [&](MaterialShaderPreset preset, std::string& vert, std::string& frag) {
+        std::string nextVert = vert;
+        std::string nextFrag = frag;
+        if (preset == MaterialShaderPreset::EngineLit) {
+            nextVert.clear();
+            nextFrag.clear();
+        } else if (preset == MaterialShaderPreset::ScrollingUV) {
+            auto scrolling = resolveScrollingShaderPaths();
+            nextVert = scrolling.first;
+            nextFrag = scrolling.second;
+        }
+        bool changed = (nextVert != vert) || (nextFrag != frag);
+        if (changed) {
+            vert = std::move(nextVert);
+            frag = std::move(nextFrag);
+        }
+        return changed;
+    };
+
     auto renderMaterialAssetPanel = [&](const char* headerTitle, bool allowApply) {
         if (!browserHasMaterial) return;
 
@@ -1329,6 +1418,18 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::InputText("##Path", buf, sizeof(buf))) {
                         path = buf;
                         changed = true;
+                    }
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                            const char* dropped = static_cast<const char*>(payload->Data);
+                            std::error_code ec;
+                            fs::directory_entry droppedEntry(fs::path(dropped), ec);
+                            if (!ec && fileBrowser.isTextureFile(droppedEntry)) {
+                                path = dropped;
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Clear")) {
@@ -1393,6 +1494,18 @@ void Engine::renderInspectorPanel() {
 
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "Shader");
+                const char* shaderPresetOptions[] = { "Custom", "Engine Lit (Default)", "Scrolling UV" };
+                MaterialShaderPreset inspectedPreset = shaderPresetFromPaths(inspectedVertShader, inspectedFragShader);
+                int inspectedPresetIndex = static_cast<int>(inspectedPreset);
+                if (ImGui::Combo("Shader Type", &inspectedPresetIndex,
+                                 shaderPresetOptions, IM_ARRAYSIZE(shaderPresetOptions)))
+                {
+                    if (applyShaderPreset(static_cast<MaterialShaderPreset>(inspectedPresetIndex),
+                                          inspectedVertShader, inspectedFragShader))
+                    {
+                        matChanged = true;
+                    }
+                }
                 auto shaderField = [&](const char* label, const char* idSuffix, std::string& path) {
                     bool changed = false;
                     ImGui::PushID(idSuffix);
@@ -1403,6 +1516,18 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::InputText("##Path", buf, sizeof(buf))) {
                         path = buf;
                         changed = true;
+                    }
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                            const char* dropped = static_cast<const char*>(payload->Data);
+                            std::error_code ec;
+                            fs::directory_entry droppedEntry(fs::path(dropped), ec);
+                            if (!ec && fileBrowser.getFileCategory(droppedEntry) == FileCategory::Shader) {
+                                path = dropped;
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndDragDropTarget();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Clear")) {
@@ -1898,6 +2023,60 @@ void Engine::renderInspectorPanel() {
                     changed = true;
                 }
                 ImGui::EndDisabled();
+
+                if (!obj.albedoTexturePath.empty()) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Import Sheet##UISpriteSheet")) {
+                        pendingSpriteSheetPath = obj.albedoTexturePath;
+                        std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
+                        importSpriteSheetAsSprite2D = (obj.ui.type == UIElementType::Sprite2D);
+                        showImportSpriteSheetDialog = true;
+                    }
+                }
+
+                if (Texture* previewTex = (!obj.albedoTexturePath.empty() ? renderer.getTexture(obj.albedoTexturePath) : nullptr)) {
+                    if (previewTex->GetID()) {
+                        ImGui::Spacing();
+                        ImGui::TextDisabled("Sprite Preview");
+                        std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
+                        ImVec2 uvMin(uvQuad[0].x, uvQuad[0].y);
+                        ImVec2 uvMax(uvQuad[2].x, uvQuad[2].y);
+                        float previewWidth = std::min(ImGui::GetContentRegionAvail().x, 196.0f);
+                        float aspect = (previewTex->GetWidth() > 0)
+                            ? (static_cast<float>(previewTex->GetHeight()) / static_cast<float>(previewTex->GetWidth()))
+                            : 1.0f;
+                        ImVec2 previewSize(previewWidth, std::max(64.0f, previewWidth * aspect));
+                        ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvMin, uvMax);
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (ImGui::Checkbox("Enable Sprite Sheet", &obj.ui.spriteSheetEnabled)) {
+                        changed = true;
+                    }
+                    ImGui::BeginDisabled(!obj.ui.spriteSheetEnabled);
+                    if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
+                        obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
+                        changed = true;
+                    }
+                    if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
+                        obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
+                        changed = true;
+                    }
+                    int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+                    if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
+                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
+                        changed = true;
+                    }
+                    if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
+                        obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
+                        changed = true;
+                    }
+                    if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                }
             }
 
             if (obj.ui.type == UIElementType::Slider) {
@@ -2374,6 +2553,16 @@ void Engine::renderInspectorPanel() {
             if (ImGui::DragInt("Order", &obj.parallaxLayer2D.order, 1.0f)) {
                 changed = true;
             }
+            int lowerCount = 0;
+            int higherCount = 0;
+            for (const auto& other : sceneObjects) {
+                if (other.id == obj.id || !other.enabled) continue;
+                if (!other.hasParallaxLayer2D || !other.parallaxLayer2D.enabled) continue;
+                if (!isUIObject(other)) continue;
+                if (other.parallaxLayer2D.order < obj.parallaxLayer2D.order) ++lowerCount;
+                if (other.parallaxLayer2D.order > obj.parallaxLayer2D.order) ++higherCount;
+            }
+            ImGui::TextDisabled("Layer stack: %d behind, %d in front", lowerCount, higherCount);
             if (ImGui::DragFloat("Parallax Factor", &obj.parallaxLayer2D.factor, 0.01f, 0.0f, 1.0f, "%.2f")) {
                 obj.parallaxLayer2D.factor = std::clamp(obj.parallaxLayer2D.factor, 0.0f, 1.0f);
                 changed = true;
@@ -3030,10 +3219,16 @@ void Engine::renderInspectorPanel() {
             if (ImGui::Checkbox("Apply Post Processing", &obj.camera.applyPostFX)) {
                 changed = true;
             }
-            if (ImGui::Checkbox("2D Camera", &obj.camera.use2D)) {
-                changed = true;
+            bool project2D = isProject2DPipeline();
+            if (project2D) {
+                ImGui::TextDisabled("2D camera mode is controlled by Project Pipeline.");
+            } else {
+                if (ImGui::Checkbox("Legacy 2D Camera Override", &obj.camera.use2D)) {
+                    changed = true;
+                }
             }
-            if (obj.camera.use2D) {
+            bool cameraUses2D = project2D || obj.camera.use2D;
+            if (cameraUses2D) {
                 if (ImGui::DragFloat("Pixels Per Unit", &obj.camera.pixelsPerUnit, 1.0f, 1.0f, 2000.0f, "%.1f")) {
                     obj.camera.pixelsPerUnit = std::max(1.0f, obj.camera.pixelsPerUnit);
                     changed = true;
@@ -3294,6 +3489,18 @@ void Engine::renderInspectorPanel() {
                     path = buf;
                     changed = true;
                 }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                        const char* dropped = static_cast<const char*>(payload->Data);
+                        std::error_code ec;
+                        fs::directory_entry droppedEntry(fs::path(dropped), ec);
+                        if (!ec && fileBrowser.isTextureFile(droppedEntry)) {
+                            path = dropped;
+                            changed = true;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Clear")) {
                     path.clear();
@@ -3359,6 +3566,16 @@ void Engine::renderInspectorPanel() {
 
             ImGui::Spacing();
             ImGui::TextDisabled("Shader");
+            const char* shaderPresetOptions[] = { "Custom", "Engine Lit (Default)", "Scrolling UV" };
+            MaterialShaderPreset objectPreset = shaderPresetFromPaths(obj.vertexShaderPath, obj.fragmentShaderPath);
+            int objectPresetIndex = static_cast<int>(objectPreset);
+            if (ImGui::Combo("Shader Type", &objectPresetIndex, shaderPresetOptions, IM_ARRAYSIZE(shaderPresetOptions))) {
+                if (applyShaderPreset(static_cast<MaterialShaderPreset>(objectPresetIndex),
+                                      obj.vertexShaderPath, obj.fragmentShaderPath))
+                {
+                    materialChanged = true;
+                }
+            }
             auto shaderField = [&](const char* label, const char* idSuffix, std::string& path) {
                 bool changed = false;
                 ImGui::PushID(idSuffix);
@@ -3369,6 +3586,18 @@ void Engine::renderInspectorPanel() {
                 if (ImGui::InputText("##Path", buf, sizeof(buf))) {
                     path = buf;
                     changed = true;
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                        const char* dropped = static_cast<const char*>(payload->Data);
+                        std::error_code ec;
+                        fs::directory_entry droppedEntry(fs::path(dropped), ec);
+                        if (!ec && fileBrowser.getFileCategory(droppedEntry) == FileCategory::Shader) {
+                            path = dropped;
+                            changed = true;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Clear")) {
@@ -3410,6 +3639,19 @@ void Engine::renderInspectorPanel() {
             if (ImGui::InputText("##MaterialPath", matPathBuf, sizeof(matPathBuf))) {
                 obj.materialPath = matPathBuf;
                 materialChanged = true;
+            }
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                    const char* dropped = static_cast<const char*>(payload->Data);
+                    std::error_code ec;
+                    fs::directory_entry droppedEntry(fs::path(dropped), ec);
+                    if (!ec && fileBrowser.getFileCategory(droppedEntry) == FileCategory::Material) {
+                        obj.materialPath = dropped;
+                        loadMaterialFromFile(obj);
+                        materialChanged = true;
+                    }
+                }
+                ImGui::EndDragDropTarget();
             }
 
             bool hasMatPath = obj.materialPath.size() > 0;
@@ -5221,6 +5463,107 @@ void Engine::renderDialogs() {
                 showImportModelDialog = false;
                 pendingModelPath.clear();
                 memset(importModelName, 0, sizeof(importModelName));
+            }
+            ImGui::PopStyleColor(2);
+        }
+        ImGui::End();
+    }
+
+    if (showImportSpriteSheetDialog) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(460, 260), ImGuiCond_Appearing);
+
+        if (ImGui::Begin("Import Sprite Sheet", &showImportSpriteSheetDialog,
+                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
+            ImGui::Text("File: %s", fs::path(pendingSpriteSheetPath).filename().string().c_str());
+            ImGui::TextDisabled("%s", pendingSpriteSheetPath.c_str());
+            int texW = 0;
+            int texH = 0;
+            if (!pendingSpriteSheetPath.empty()) {
+                if (Texture* tex = renderer.getTexture(pendingSpriteSheetPath)) {
+                    texW = tex->GetWidth();
+                    texH = tex->GetHeight();
+                }
+            }
+            if (texW > 0 && texH > 0) {
+                ImGui::TextDisabled("Texture Size: %d x %d", texW, texH);
+            }
+
+            ImGui::Spacing();
+            ImGui::Text("Object Name:");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##ImportSpriteSheetName", importSpriteSheetName, sizeof(importSpriteSheetName));
+
+            ImGui::Spacing();
+            ImGui::DragInt("Columns", &importSpriteSheetColumns, 1.0f, 1, 1024);
+            ImGui::DragInt("Rows", &importSpriteSheetRows, 1.0f, 1, 1024);
+            importSpriteSheetColumns = std::max(1, importSpriteSheetColumns);
+            importSpriteSheetRows = std::max(1, importSpriteSheetRows);
+            ImGui::DragFloat("FPS", &importSpriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f");
+            importSpriteSheetFps = std::clamp(importSpriteSheetFps, 1.0f, 120.0f);
+            ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            float buttonWidth = 80;
+            ImGui::SetCursorPosX(ImGui::GetWindowWidth() - buttonWidth * 2 - 20);
+
+            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0))) {
+                showImportSpriteSheetDialog = false;
+                pendingSpriteSheetPath.clear();
+            }
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.6f, 0.4f, 1.0f));
+            if (ImGui::Button("Import", ImVec2(buttonWidth, 0))) {
+                std::string baseName = importSpriteSheetName;
+                if (baseName.empty()) {
+                    baseName = fs::path(pendingSpriteSheetPath).stem().string();
+                }
+
+                ObjectType type = importSpriteSheetAsSprite2D ? ObjectType::Sprite2D : ObjectType::UIImage;
+                int canvasId = -1;
+                for (const auto& obj : sceneObjects) {
+                    if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
+                        canvasId = obj.id;
+                        break;
+                    }
+                }
+                if (canvasId < 0) {
+                    addObject(ObjectType::Canvas, "Canvas");
+                    if (!sceneObjects.empty()) {
+                        canvasId = sceneObjects.back().id;
+                    }
+                }
+
+                addObject(type, baseName);
+                if (!sceneObjects.empty()) {
+                    SceneObject& created = sceneObjects.back();
+                    created.albedoTexturePath = pendingSpriteSheetPath;
+                    created.ui.spriteSheetEnabled = true;
+                    created.ui.spriteSheetColumns = std::max(1, importSpriteSheetColumns);
+                    created.ui.spriteSheetRows = std::max(1, importSpriteSheetRows);
+                    created.ui.spriteSheetFrame = 0;
+                    created.ui.spriteSheetFps = importSpriteSheetFps;
+                    created.ui.spriteSheetLoop = true;
+                    if (texW > 0 && texH > 0) {
+                        created.ui.size.x = std::max(1.0f, static_cast<float>(texW) / static_cast<float>(created.ui.spriteSheetColumns));
+                        created.ui.size.y = std::max(1.0f, static_cast<float>(texH) / static_cast<float>(created.ui.spriteSheetRows));
+                    }
+                    if (canvasId >= 0) {
+                        setParent(created.id, canvasId);
+                    }
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    addConsoleMessage("Imported sprite sheet: " + pendingSpriteSheetPath, ConsoleMessageType::Success);
+                }
+
+                showImportSpriteSheetDialog = false;
+                pendingSpriteSheetPath.clear();
             }
             ImGui::PopStyleColor(2);
         }

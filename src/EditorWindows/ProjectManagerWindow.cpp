@@ -462,6 +462,7 @@ void Engine::renderLauncher() {
             projectManager.showNewProjectDialog = true;
             projectManager.errorMessage.clear();
             std::memset(projectManager.newProjectName, 0, sizeof(projectManager.newProjectName));
+            projectManager.newProjectPipelineMode = 0;
 
             #ifdef _WIN32
             char documentsPath[MAX_PATH];
@@ -824,8 +825,10 @@ void Engine::renderNewProjectDialog() {
 
         ImGui::Spacing();
 
-        if (ImGui::Button("Choose Pipeline Mode")) {
-        }
+        const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("Pipeline", &projectManager.newProjectPipelineMode, pipelineOptions, IM_ARRAYSIZE(pipelineOptions));
+        ImGui::TextDisabled("This can be changed later in Project Settings.");
 
         ImGui::Spacing();
 
@@ -1244,6 +1247,30 @@ void Engine::renderProjectBrowserPanel() {
         bool editorSettingsChanged = false;
         bool buildSettingsChanged = false;
 
+        if (ImGui::CollapsingHeader("Project Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
+            int pipelineIndex = static_cast<int>(projectManager.currentProject.pipeline);
+            const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+            if (ImGui::Combo("Mode", &pipelineIndex, pipelineOptions, IM_ARRAYSIZE(pipelineOptions))) {
+                projectManager.currentProject.pipeline = static_cast<ProjectPipeline>(std::clamp(pipelineIndex, 0, 1));
+                projectManager.currentProject.saveProjectFile();
+                applyProjectPipelineDefaults(false);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D) {
+                ImGui::TextDisabled("2D world editing is always enabled in this project.");
+                if (ImGui::Checkbox("Show Sprite Preview Panel", &showSpritePreviewPanel)) editorSettingsChanged = true;
+                if (ImGui::Checkbox("Pixel Grid Snap", &pixelGridSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!pixelGridSnapEnabled);
+                if (ImGui::DragInt("Snap Step (px)", &pixelGridSnapStep, 1.0f, 1, 64)) {
+                    pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+            } else {
+                ImGui::TextDisabled("2D world overlay remains optional in 3D projects.");
+            }
+        }
+
         if (ImGui::CollapsingHeader("Player / Viewport", ImGuiTreeNodeFlags_DefaultOpen)) {
             const char* resolutionOptions[] = { "Window", "1080p", "720p", "1440p", "Custom" };
 
@@ -1344,7 +1371,7 @@ void Engine::renderProjectBrowserPanel() {
         if (ImGui::CollapsingHeader("Debug / Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Checkbox("Scene Gizmos", &showSceneGizmos)) editorSettingsChanged = true;
             if (ImGui::Checkbox("3D Grid", &showSceneGrid3D)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("Collision Wireframe", &collisionWireframe)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Selection Collider Bounds", &collisionWireframe)) editorSettingsChanged = true;
             if (ImGui::Checkbox("FPS Cap", &fpsCapEnabled)) editorSettingsChanged = true;
             ImGui::BeginDisabled(!fpsCapEnabled);
             if (ImGui::DragFloat("FPS Target", &fpsCap, 1.0f, 1.0f, 500.0f, "%.0f")) {

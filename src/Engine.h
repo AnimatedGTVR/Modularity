@@ -124,10 +124,17 @@ private:
     
     bool showImportOBJDialog = false;
     bool showImportModelDialog = false;  // For Assimp models
+    bool showImportSpriteSheetDialog = false;
     std::string pendingOBJPath;
     std::string pendingModelPath;  // For Assimp models
+    std::string pendingSpriteSheetPath;
     char importOBJName[128] = "";
     char importModelName[128] = "";  // For Assimp models
+    char importSpriteSheetName[128] = "";
+    int importSpriteSheetColumns = 4;
+    int importSpriteSheetRows = 4;
+    float importSpriteSheetFps = 12.0f;
+    bool importSpriteSheetAsSprite2D = true;
     
     char fileBrowserSearch[256] = "";
     float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
@@ -206,6 +213,12 @@ private:
     bool isPaused = false;
     bool showViewOutput = true;
     bool showSceneGizmos = true;
+    bool gizmoShowCameraOverlays = true;
+    bool gizmoShowCameraFrustumLabels = true;
+    bool gizmoShowLightOverlays = true;
+    bool gizmoShowLightIntensityLabels = true;
+    float sceneGizmoIconScale = 1.0f;
+    float sceneGizmoOverlayScale = 1.0f;
     bool showGameViewport = true;
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
@@ -214,6 +227,12 @@ private:
     bool showCanvasOverlay = false;
     bool showUIWorldGrid = true;
     bool showSceneGrid3D = false;
+    bool pixelGridSnapEnabled = true;
+    int pixelGridSnapStep = 1;
+    bool showSpritePreviewPanel = true;
+    bool spriteTimelinePreviewPlaying = false;
+    double spriteTimelineLastTick = 0.0;
+    int spriteTimelineTargetId = -1;
     int gameViewportResolutionIndex = 0;
     int gameViewportCustomWidth = 1920;
     int gameViewportCustomHeight = 1080;
@@ -525,6 +544,11 @@ private:
     void loadEditorUserSettings();
     void saveEditorUserSettings() const;
     void exportEditorThemeLayout();
+    bool isProject2DPipeline() const;
+    bool is2DWorldEditingEnabled() const;
+    void applyProjectPipelineDefaults(bool force = false);
+    int resolveSpriteSheetFrame(const SceneObject& obj) const;
+    std::array<ImVec2, 4> buildSpriteSheetUvs(const SceneObject& obj) const;
     void resetBuildSettings();
     void loadBuildSettings();
     void saveBuildSettings();

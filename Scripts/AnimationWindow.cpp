@@ -26,6 +26,14 @@ bool isPlaying = false;
 bool loop = true;
 bool applyOnScrub = true;
 
+enum class AnimDrawerTab {
+    Pose = 0,
+    Config = 1
+};
+AnimDrawerTab animDrawerActiveTab = AnimDrawerTab::Pose;
+bool animDrawerCollapsed = false;
+float animDrawerOpenAmount = 1.0f;
+
 glm::vec3 lerpVec3(const glm::vec3& a, const glm::vec3& b, float t) {
     return a + (b - a) * t;
 }
@@ -206,8 +214,24 @@ extern "C" void RenderEditorWindow(ScriptContext& ctx) {
     }
 
     ImGui::Spacing();
-    if (ImGui::BeginTabBar("AnimModeTabs")) {
-        if (ImGui::BeginTabItem("Pose Mode")) {
+    const float drawerTarget = animDrawerCollapsed ? 0.0f : 1.0f;
+    const float drawerBlend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
+    animDrawerOpenAmount += (drawerTarget - animDrawerOpenAmount) * drawerBlend;
+    if (std::abs(animDrawerOpenAmount - drawerTarget) < 0.001f) {
+        animDrawerOpenAmount = drawerTarget;
+    }
+    animDrawerOpenAmount = std::clamp(animDrawerOpenAmount, 0.0f, 1.0f);
+
+    const float tabRowHeight = ImGui::GetFrameHeightWithSpacing() + 4.0f;
+    const float transportReserve = ImGui::GetFrameHeightWithSpacing() * 2.2f + 24.0f;
+    float drawerMaxHeight = ImGui::GetContentRegionAvail().y - tabRowHeight - transportReserve;
+    if (drawerMaxHeight < 0.0f) drawerMaxHeight = 0.0f;
+    const float drawerHeight = drawerMaxHeight * animDrawerOpenAmount;
+    if (drawerHeight > 0.5f) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, animDrawerOpenAmount);
+        ImGui::BeginChild("AnimModeDrawerContent", ImVec2(0.0f, drawerHeight), false);
+
+        if (animDrawerActiveTab == AnimDrawerTab::Pose) {
             ImGui::TextDisabled("Pose Editor");
             ImGui::Separator();
 
@@ -227,20 +251,47 @@ extern "C" void RenderEditorWindow(ScriptContext& ctx) {
 
             ImGui::Spacing();
             drawKeyframeTable();
-
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Config Mode")) {
+        } else {
             ImGui::TextDisabled("Playback");
             ImGui::Separator();
             ImGui::Checkbox("Loop", &loop);
             ImGui::Checkbox("Apply On Scrub", &applyOnScrub);
             ImGui::SliderFloat("Length", &clipLength, 0.1f, 20.0f, "%.2fs");
             ImGui::SliderFloat("Speed", &playSpeed, 0.1f, 4.0f, "%.2fx");
-            ImGui::EndTabItem();
         }
-        ImGui::EndTabBar();
+
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
     }
+
+    const float tabSpacing = ImGui::GetStyle().ItemSpacing.x;
+    const float tabWidth = ImMax(72.0f, (ImGui::GetContentRegionAvail().x - tabSpacing) * 0.5f);
+    auto handleDrawerTabClick = [&](AnimDrawerTab tab) {
+        const bool isDoubleClick = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        if (animDrawerCollapsed) {
+            animDrawerCollapsed = false;
+            animDrawerActiveTab = tab;
+            return;
+        }
+        if (animDrawerActiveTab != tab) {
+            animDrawerActiveTab = tab;
+            return;
+        }
+        if (isDoubleClick) {
+            animDrawerCollapsed = true;
+        }
+    };
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    const ImGuiSelectableFlags drawerTabFlags = ImGuiSelectableFlags_AllowDoubleClick;
+    if (ImGui::Selectable("Pose Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Pose, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
+        handleDrawerTabClick(AnimDrawerTab::Pose);
+    }
+    ImGui::SameLine();
+    if (ImGui::Selectable("Config Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Config, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
+        handleDrawerTabClick(AnimDrawerTab::Config);
+    }
+    ImGui::PopStyleVar();
 
     ImGui::Spacing();
     ImGui::Separator();

@@ -281,7 +281,82 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             break;
     }
 }
+} // namespace
 
+bool Engine::isProject2DPipeline() const {
+    if (!projectManager.currentProject.isLoaded) {
+        return false;
+    }
+    return projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D;
+}
+
+bool Engine::is2DWorldEditingEnabled() const {
+    return isProject2DPipeline() || uiWorldMode;
+}
+
+void Engine::applyProjectPipelineDefaults(bool force) {
+    if (!projectManager.currentProject.isLoaded) {
+        return;
+    }
+
+    if (isProject2DPipeline()) {
+        uiWorldMode = true;
+        pixelGridSnapEnabled = true;
+        if (force || !useSnap) {
+            useSnap = true;
+        }
+        float step = static_cast<float>(std::max(1, pixelGridSnapStep));
+        if (force || snapValue[0] < 1.0f) {
+            snapValue[0] = step;
+            snapValue[1] = step;
+            snapValue[2] = step;
+        }
+    } else if (force) {
+        uiWorldMode = false;
+    }
+}
+
+int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
+    if (!obj.hasUI || !obj.ui.spriteSheetEnabled) {
+        return 0;
+    }
+    int columns = std::max(1, obj.ui.spriteSheetColumns);
+    int rows = std::max(1, obj.ui.spriteSheetRows);
+    int total = std::max(1, columns * rows);
+    int frame = std::max(0, obj.ui.spriteSheetFrame);
+    return frame % total;
+}
+
+std::array<ImVec2, 4> Engine::buildSpriteSheetUvs(const SceneObject& obj) const {
+    std::array<ImVec2, 4> uvs = {
+        ImVec2(0.0f, 1.0f),
+        ImVec2(1.0f, 1.0f),
+        ImVec2(1.0f, 0.0f),
+        ImVec2(0.0f, 0.0f)
+    };
+    if (!obj.hasUI || !obj.ui.spriteSheetEnabled) {
+        return uvs;
+    }
+
+    int columns = std::max(1, obj.ui.spriteSheetColumns);
+    int rows = std::max(1, obj.ui.spriteSheetRows);
+    int frame = resolveSpriteSheetFrame(obj);
+    int col = frame % columns;
+    int row = frame / columns;
+
+    float u0 = static_cast<float>(col) / static_cast<float>(columns);
+    float u1 = static_cast<float>(col + 1) / static_cast<float>(columns);
+    float vTop = 1.0f - static_cast<float>(row) / static_cast<float>(rows);
+    float vBottom = 1.0f - static_cast<float>(row + 1) / static_cast<float>(rows);
+
+    uvs[0] = ImVec2(u0, vTop);
+    uvs[1] = ImVec2(u1, vTop);
+    uvs[2] = ImVec2(u1, vBottom);
+    uvs[3] = ImVec2(u0, vBottom);
+    return uvs;
+}
+
+namespace {
 RawMeshAsset buildCubeRMesh() {
     RawMeshAsset mesh;
     mesh.positions.reserve(24);
@@ -1258,7 +1333,8 @@ void Engine::run() {
                                  renderFov,
                                  renderNear,
                                  renderFar,
-                                 collisionWireframe);
+                                 false,
+                                 &selectedObjectIds);
             renderer.endRender();
         }
 
@@ -2001,7 +2077,8 @@ void Engine::handleKeyboardShortcuts() {
 
     if (ImGui::IsKeyPressed(ImGuiKey_3)) {
         collisionWireframe = !collisionWireframe;
-        addConsoleMessage(std::string("Collision wireframe ") + (collisionWireframe ? "enabled" : "disabled"), ConsoleMessageType::Info);
+        addConsoleMessage(std::string("Selection collider bounds ") + (collisionWireframe ? "enabled" : "disabled"),
+                          ConsoleMessageType::Info);
     }
 
     static bool snapPressed = false;
@@ -3467,6 +3544,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     fileBrowser.setProjectRoot(contentRoot);
     fileBrowser.currentPath = contentRoot;
     loadEditorUserSettings();
+    applyProjectPipelineDefaults(false);
     fileBrowser.needsRefresh = true;
     scriptEditorWindowsDirty = true;
     scriptEditorWindows.clear();
@@ -4522,6 +4600,9 @@ void Engine::createNewProject(const char* name, const char* location) {
     fs::create_directories(basePath);
 
     Project newProject(name, basePath);
+    newProject.pipeline = (projectManager.newProjectPipelineMode == 1)
+        ? ProjectPipeline::Pipeline2D
+        : ProjectPipeline::Pipeline3D;
     if (newProject.create()) {
         projectManager.currentProject = newProject;
         projectManager.addToRecentProjects(name,
@@ -4570,9 +4651,11 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         addConsoleMessage("Created new project: " + std::string(name), ConsoleMessageType::Success);
         addConsoleMessage("Project location: " + newProject.projectPath.string(), ConsoleMessageType::Info);
+        addConsoleMessage("Pipeline: " + std::string(isProject2DPipeline() ? "2D" : "3D"), ConsoleMessageType::Info);
 
         saveCurrentScene();
         loadBuildSettings();
+        applyProjectPipelineDefaults(true);
     } else {
         projectManager.errorMessage = "Failed to create project directory";
     }
@@ -5985,12 +6068,30 @@ void Engine::loadEditorUserSettings() {
             showAIPathfindingWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGizmos") {
             showSceneGizmos = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowCameraOverlays") {
+            gizmoShowCameraOverlays = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowCameraFrustumLabels") {
+            gizmoShowCameraFrustumLabels = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowLightOverlays") {
+            gizmoShowLightOverlays = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowLightIntensityLabels") {
+            gizmoShowLightIntensityLabels = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "sceneGizmoIconScale") {
+            try { sceneGizmoIconScale = std::stof(value); } catch (...) {}
+        } else if (key == "sceneGizmoOverlayScale") {
+            try { sceneGizmoOverlayScale = std::stof(value); } catch (...) {}
         } else if (key == "showSceneGrid3D") {
             showSceneGrid3D = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showCanvasOverlay") {
             showCanvasOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showUIWorldGrid") {
             showUIWorldGrid = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showSpritePreviewPanel") {
+            showSpritePreviewPanel = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "pixelGridSnapEnabled") {
+            pixelGridSnapEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "pixelGridSnapStep") {
+            try { pixelGridSnapStep = std::clamp(std::stoi(value), 1, 64); } catch (...) {}
         } else if (key == "showGameProfiler") {
             showGameProfiler = (value == "1" || value == "true" || value == "yes");
         } else if (key == "collisionWireframe") {
@@ -6061,6 +6162,8 @@ void Engine::loadEditorUserSettings() {
 
     fileBrowserIconScale = std::clamp(fileBrowserIconScale, 0.6f, 2.0f);
     fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, 160.0f, 360.0f);
+    sceneGizmoIconScale = std::clamp(sceneGizmoIconScale, 0.4f, 3.0f);
+    sceneGizmoOverlayScale = std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f);
     camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
     camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
     camera.acceleration = std::max(0.1f, camera.acceleration);
@@ -6069,6 +6172,7 @@ void Engine::loadEditorUserSettings() {
     gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
     gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
     gameViewportZoom = std::clamp(gameViewportZoom, 0.2f, 4.0f);
+    pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
 
     applyUIStylePresetByName(uiStylePresetName);
@@ -6129,9 +6233,18 @@ void Engine::saveEditorUserSettings() const {
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
     file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
     file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
+    file << "gizmoShowCameraOverlays=" << (gizmoShowCameraOverlays ? "1" : "0") << "\n";
+    file << "gizmoShowCameraFrustumLabels=" << (gizmoShowCameraFrustumLabels ? "1" : "0") << "\n";
+    file << "gizmoShowLightOverlays=" << (gizmoShowLightOverlays ? "1" : "0") << "\n";
+    file << "gizmoShowLightIntensityLabels=" << (gizmoShowLightIntensityLabels ? "1" : "0") << "\n";
+    file << "sceneGizmoIconScale=" << std::clamp(sceneGizmoIconScale, 0.4f, 3.0f) << "\n";
+    file << "sceneGizmoOverlayScale=" << std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f) << "\n";
     file << "showSceneGrid3D=" << (showSceneGrid3D ? "1" : "0") << "\n";
     file << "showCanvasOverlay=" << (showCanvasOverlay ? "1" : "0") << "\n";
     file << "showUIWorldGrid=" << (showUIWorldGrid ? "1" : "0") << "\n";
+    file << "showSpritePreviewPanel=" << (showSpritePreviewPanel ? "1" : "0") << "\n";
+    file << "pixelGridSnapEnabled=" << (pixelGridSnapEnabled ? "1" : "0") << "\n";
+    file << "pixelGridSnapStep=" << std::clamp(pixelGridSnapStep, 1, 64) << "\n";
     file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";
     file << "collisionWireframe=" << (collisionWireframe ? "1" : "0") << "\n";
     file << "fpsCapEnabled=" << (fpsCapEnabled ? "1" : "0") << "\n";

@@ -2,6 +2,7 @@
 #include "Rendering.h"
 #include "ModelLoader.h"
 #include <cmath>
+#include <cctype>
 #include <unordered_map>
 
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
@@ -15,6 +16,7 @@ Project::Project(const std::string& projectName, const fs::path& basePath)
     scriptsPath = assetsPath / "Scripts";
     scriptsConfigPath = projectPath / "scripts.modu";
     usesNewLayout = true;
+    pipeline = ProjectPipeline::Pipeline3D;
 }
 
 bool Project::create() {
@@ -115,6 +117,16 @@ bool Project::load(const fs::path& projectFilePath) {
                 name = line.substr(5);
             } else if (line.find("lastScene=") == 0) {
                 currentSceneName = line.substr(10);
+            } else if (line.find("pipeline=") == 0) {
+                std::string value = line.substr(9);
+                std::string lower = value;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lower == "2d" || lower == "pipeline2d" || lower == "1") {
+                    pipeline = ProjectPipeline::Pipeline2D;
+                } else {
+                    pipeline = ProjectPipeline::Pipeline3D;
+                }
             }
         }
         file.close();
@@ -135,6 +147,7 @@ void Project::saveProjectFile() const {
     std::ofstream file(projectPath / "project.modu");
     file << "name=" << name << "\n";
     file << "lastScene=" << currentSceneName << "\n";
+    file << "pipeline=" << (pipeline == ProjectPipeline::Pipeline2D ? "2D" : "3D") << "\n";
     file.close();
 }
 
@@ -595,6 +608,11 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiTextScale=" << obj.ui.textScale << "\n";
             file << "uiRenderIn3D=" << (obj.ui.renderIn3D ? 1 : 0) << "\n";
             file << "uiRenderTargetSize=" << obj.ui.renderTargetSize.x << "," << obj.ui.renderTargetSize.y << "\n";
+            file << "uiSpriteSheetEnabled=" << (obj.ui.spriteSheetEnabled ? 1 : 0) << "\n";
+            file << "uiSpriteSheetGrid=" << obj.ui.spriteSheetColumns << "," << obj.ui.spriteSheetRows << "\n";
+            file << "uiSpriteSheetFrame=" << obj.ui.spriteSheetFrame << "\n";
+            file << "uiSpriteSheetFps=" << obj.ui.spriteSheetFps << "\n";
+            file << "uiSpriteSheetLoop=" << (obj.ui.spriteSheetLoop ? 1 : 0) << "\n";
             if (obj.hasPostFX) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
@@ -1068,6 +1086,16 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
         {"uiRenderIn3D", +[](SceneObject& obj, const std::string& value) { obj.ui.renderIn3D = (std::stoi(value) != 0); }},
         {"uiRenderTargetSize", +[](SceneObject& obj, const std::string& value) { ParseIVec2(value, obj.ui.renderTargetSize); }},
+        {"uiSpriteSheetEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetEnabled = (std::stoi(value) != 0); }},
+        {"uiSpriteSheetGrid", +[](SceneObject& obj, const std::string& value) {
+             glm::ivec2 grid(1, 1);
+             ParseIVec2(value, grid);
+             obj.ui.spriteSheetColumns = std::max(1, grid.x);
+             obj.ui.spriteSheetRows = std::max(1, grid.y);
+         }},
+        {"uiSpriteSheetFrame", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetFrame = std::max(0, std::stoi(value)); }},
+        {"uiSpriteSheetFps", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetFps = std::max(1.0f, std::stof(value)); }},
+        {"uiSpriteSheetLoop", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetLoop = (std::stoi(value) != 0); }},
         {"postEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.enabled = (std::stoi(value) != 0); }},
         {"postBloomEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomEnabled = (std::stoi(value) != 0); }},
         {"postBloomThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomThreshold = std::stof(value); }},

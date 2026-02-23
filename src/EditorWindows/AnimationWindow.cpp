@@ -965,8 +965,34 @@ void Engine::renderAnimationWindow() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    if (ImGui::BeginTabBar("AnimatorTabs")) {
-        if (ImGui::BeginTabItem("Pose")) {
+    enum AnimatorDrawerTab {
+        AnimatorDrawerTab_Pose = 0,
+        AnimatorDrawerTab_Config = 1
+    };
+    static int animationDrawerActiveTab = AnimatorDrawerTab_Pose;
+    static bool animationDrawerCollapsed = false;
+    static float animationDrawerOpenAmount = 1.0f;
+
+    const float animationDrawerTarget = animationDrawerCollapsed ? 0.0f : 1.0f;
+    const float animationDrawerBlend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
+    animationDrawerOpenAmount += (animationDrawerTarget - animationDrawerOpenAmount) * animationDrawerBlend;
+    if (std::abs(animationDrawerOpenAmount - animationDrawerTarget) < 0.001f) {
+        animationDrawerOpenAmount = animationDrawerTarget;
+    }
+    animationDrawerOpenAmount = std::clamp(animationDrawerOpenAmount, 0.0f, 1.0f);
+
+    const float drawerTabRowHeight = ImGui::GetFrameHeightWithSpacing() + 4.0f;
+    const float transportReserve = ImGui::GetFrameHeightWithSpacing() * 2.2f + 24.0f;
+    float drawerMaxContentHeight = ImGui::GetContentRegionAvail().y - drawerTabRowHeight - transportReserve;
+    if (drawerMaxContentHeight < 0.0f) drawerMaxContentHeight = 0.0f;
+    const float drawerContentHeight = drawerMaxContentHeight * animationDrawerOpenAmount;
+    const bool drawDrawerContent = drawerContentHeight > 0.5f;
+
+    if (drawDrawerContent) {
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, animationDrawerOpenAmount);
+        ImGui::BeginChild("AnimatorDrawerContent", ImVec2(0.0f, drawerContentHeight), false);
+
+        if (animationDrawerActiveTab == AnimatorDrawerTab_Pose) {
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
             ImGui::BeginDisabled(!anim.enabled);
             if (ImGui::Button("Capture Key")) {
@@ -1603,10 +1629,9 @@ void Engine::renderAnimationWindow() {
                 }
             }
 
-            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Config")) {
+        if (animationDrawerActiveTab == AnimatorDrawerTab_Config) {
             if (ImGui::DragFloat("Clip Length", &anim.clipLength, 0.05f, 0.1f, 120.0f, "%.2f")) {
                 anim.clipLength = std::max(0.1f, anim.clipLength);
                 animationCurrentTime = clampFloat(animationCurrentTime, 0.0f, anim.clipLength);
@@ -1647,11 +1672,41 @@ void Engine::renderAnimationWindow() {
                 anim.tracks.clear();
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
-            ImGui::EndTabItem();
         }
 
-        ImGui::EndTabBar();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
     }
+
+    ImGui::Spacing();
+    const float drawerTabSpacing = ImGui::GetStyle().ItemSpacing.x;
+    const float drawerTabWidth = ImMax(72.0f, (ImGui::GetContentRegionAvail().x - drawerTabSpacing) * 0.5f);
+    auto handleDrawerTabClick = [&](int tabId) {
+        const bool isDoubleClick = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        if (animationDrawerCollapsed) {
+            animationDrawerCollapsed = false;
+            animationDrawerActiveTab = tabId;
+            return;
+        }
+        if (animationDrawerActiveTab != tabId) {
+            animationDrawerActiveTab = tabId;
+            return;
+        }
+        if (isDoubleClick) {
+            animationDrawerCollapsed = true;
+        }
+    };
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    const ImGuiSelectableFlags drawerTabFlags = ImGuiSelectableFlags_AllowDoubleClick;
+    if (ImGui::Selectable("Pose##AnimatorDrawerTab", animationDrawerActiveTab == AnimatorDrawerTab_Pose, drawerTabFlags, ImVec2(drawerTabWidth, 0.0f))) {
+        handleDrawerTabClick(AnimatorDrawerTab_Pose);
+    }
+    ImGui::SameLine();
+    if (ImGui::Selectable("Config##AnimatorDrawerTab", animationDrawerActiveTab == AnimatorDrawerTab_Config, drawerTabFlags, ImVec2(drawerTabWidth, 0.0f))) {
+        handleDrawerTabClick(AnimatorDrawerTab_Config);
+    }
+    ImGui::PopStyleVar();
 
     struct PropertyRecordState {
         float lastValue = 0.0f;

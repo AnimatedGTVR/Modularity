@@ -561,6 +561,133 @@ namespace {
         return static_cast<bool>(out);
     }
 
+    bool createScrollingShaderPair(const fs::path& dir,
+                                   fs::path& outVertPath,
+                                   fs::path& outFragPath,
+                                   std::string& error) {
+        static const char* kVertSource =
+            "#version 330 core\n"
+            "layout (location = 0) in vec3 aPos;\n"
+            "layout (location = 1) in vec3 aNormal;\n"
+            "layout (location = 2) in vec2 aTexCoord;\n"
+            "layout (location = 3) in ivec4 aBoneIds;\n"
+            "layout (location = 4) in vec4 aBoneWeights;\n"
+            "\n"
+            "out vec3 FragPos;\n"
+            "out vec3 Normal;\n"
+            "out vec2 TexCoord;\n"
+            "\n"
+            "uniform mat4 model;\n"
+            "uniform mat4 view;\n"
+            "uniform mat4 projection;\n"
+            "uniform mat4 bones[256];\n"
+            "uniform int boneCount;\n"
+            "uniform bool useSkinning;\n"
+            "\n"
+            "void main()\n"
+            "{\n"
+            "    vec4 localPos = vec4(aPos, 1.0);\n"
+            "    vec3 localNormal = aNormal;\n"
+            "\n"
+            "    if (useSkinning) {\n"
+            "        vec4 skinnedPos = vec4(0.0);\n"
+            "        vec3 skinnedNormal = vec3(0.0);\n"
+            "        for (int i = 0; i < 4; ++i) {\n"
+            "            int id = aBoneIds[i];\n"
+            "            float w = aBoneWeights[i];\n"
+            "            if (w <= 0.0 || id < 0 || id >= boneCount) continue;\n"
+            "            mat4 b = bones[id];\n"
+            "            skinnedPos += (b * localPos) * w;\n"
+            "            skinnedNormal += mat3(b) * localNormal * w;\n"
+            "        }\n"
+            "        localPos = skinnedPos;\n"
+            "        localNormal = skinnedNormal;\n"
+            "    }\n"
+            "\n"
+            "    vec4 worldPos = model * localPos;\n"
+            "    FragPos = vec3(worldPos);\n"
+            "    Normal = mat3(transpose(inverse(model))) * localNormal;\n"
+            "    TexCoord = aTexCoord;\n"
+            "    gl_Position = projection * view * worldPos;\n"
+            "}\n";
+
+        static const char* kFragSource =
+            "#version 330 core\n"
+            "out vec4 FragColor;\n"
+            "\n"
+            "in vec3 FragPos;\n"
+            "in vec3 Normal;\n"
+            "in vec2 TexCoord;\n"
+            "\n"
+            "uniform sampler2D texture1;\n"
+            "uniform sampler2D overlayTex;\n"
+            "uniform float mixAmount = 0.2;\n"
+            "uniform bool hasOverlay = false;\n"
+            "uniform bool unlit = false;\n"
+            "\n"
+            "uniform float uTime = 0.0;\n"
+            "uniform vec3 materialColor = vec3(1.0);\n"
+            "uniform float ambientStrength = 0.2;\n"
+            "uniform float specularStrength = 0.5;\n"
+            "uniform float shininess = 32.0;\n"
+            "uniform vec3 viewPos;\n"
+            "\n"
+            "void main()\n"
+            "{\n"
+            "    float speed = mix(0.08, 1.2, clamp(mixAmount, 0.0, 1.0));\n"
+            "    vec2 baseDir = normalize(vec2(1.0, 0.3));\n"
+            "    vec2 baseUV = TexCoord + baseDir * (uTime * speed);\n"
+            "    vec4 baseSample = texture(texture1, baseUV);\n"
+            "\n"
+            "    vec3 color = baseSample.rgb;\n"
+            "    if (hasOverlay) {\n"
+            "        vec2 overlayDir = normalize(vec2(-0.65, 1.0));\n"
+            "        vec2 overlayUV = TexCoord + overlayDir * (uTime * speed * 0.65);\n"
+            "        vec3 overlayColor = texture(overlayTex, overlayUV).rgb;\n"
+            "        color = mix(color, overlayColor, clamp(mixAmount, 0.0, 1.0));\n"
+            "    }\n"
+            "    color *= materialColor;\n"
+            "\n"
+            "    if (unlit) {\n"
+            "        FragColor = vec4(color, baseSample.a);\n"
+            "        return;\n"
+            "    }\n"
+            "\n"
+            "    vec3 N = normalize(Normal);\n"
+            "    vec3 L = normalize(vec3(0.35, 0.9, 0.2));\n"
+            "    vec3 V = normalize(viewPos - FragPos);\n"
+            "    vec3 H = normalize(L + V);\n"
+            "\n"
+            "    float diffuse = max(dot(N, L), 0.0);\n"
+            "    float spec = pow(max(dot(N, H), 0.0), max(shininess, 1.0)) * clamp(specularStrength, 0.0, 2.0);\n"
+            "    vec3 lit = color * (clamp(ambientStrength, 0.0, 1.0) + diffuse) + vec3(spec);\n"
+            "\n"
+            "    FragColor = vec4(lit, baseSample.a);\n"
+            "}\n";
+
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec) {
+            error = ec.message();
+            return false;
+        }
+
+        outVertPath = makeUniquePath(dir / "scroll_texture_vert.glsl");
+        outFragPath = makeUniquePath(dir / "scroll_texture_frag.glsl");
+
+        if (!writeFileContents(outVertPath, kVertSource)) {
+            error = std::strerror(errno);
+            return false;
+        }
+        if (!writeFileContents(outFragPath, kFragSource)) {
+            error = std::strerror(errno);
+            std::error_code removeEc;
+            fs::remove(outVertPath, removeEc);
+            return false;
+        }
+        return true;
+    }
+
     bool openPathInShell(const fs::path& path) {
         #ifdef _WIN32
         std::wstring widePath = path.wstring();
@@ -659,7 +786,8 @@ void Engine::renderFileBrowserPanel() {
             logToConsole("Loaded scene: " + sceneName);
             return;
         }
-        if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
+        FileCategory category = fileBrowser.getFileCategory(entry);
+        if (category == FileCategory::Script || category == FileCategory::Shader) {
             openScriptInEditor(entry.path());
             return;
         }
@@ -1239,6 +1367,21 @@ void Engine::renderFileBrowserPanel() {
                         if (ImGui::MenuItem("Shader")) {
                             createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
                         }
+                        if (ImGui::MenuItem("Scrolling Shader Pair")) {
+                            fs::path vertPath;
+                            fs::path fragPath;
+                            std::string error;
+                            if (createScrollingShaderPair(entry.path(), vertPath, fragPath, error)) {
+                                fileBrowser.needsRefresh = true;
+                                addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
+                                                  ", " + fragPath.filename().string(),
+                                                  ConsoleMessageType::Success);
+                            } else {
+                                addConsoleMessage("Failed to create scrolling shaders in " +
+                                                  entry.path().string() + " (" + error + ")",
+                                                  ConsoleMessageType::Error);
+                            }
+                        }
                         if (ImGui::MenuItem("Material")) {
                             fs::path target = entry.path() / "NewMaterial.mat";
                             int counter = 1;
@@ -1288,6 +1431,32 @@ void Engine::renderFileBrowserPanel() {
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
                         if (ImGui::MenuItem("Compile Script")) {
                             compileScriptFile(entry.path());
+                        }
+                    }
+                    if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                        if (ImGui::MenuItem("Create Sprite2D")) {
+                            addObject(ObjectType::Sprite2D, entry.path().stem().string());
+                            if (!sceneObjects.empty()) {
+                                SceneObject& created = sceneObjects.back();
+                                created.albedoTexturePath = entry.path().string();
+                                if (Texture* tex = renderer.getTexture(created.albedoTexturePath)) {
+                                    if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
+                                        created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
+                                                                    static_cast<float>(tex->GetHeight()));
+                                    }
+                                }
+                                projectManager.currentProject.hasUnsavedChanges = true;
+                            }
+                        }
+                        if (ImGui::MenuItem("Import Sprite Sheet...")) {
+                            pendingSpriteSheetPath = entry.path().string();
+                            std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
+                                          entry.path().stem().string().c_str());
+                            importSpriteSheetAsSprite2D = true;
+                            importSpriteSheetColumns = 4;
+                            importSpriteSheetRows = 4;
+                            importSpriteSheetFps = 12.0f;
+                            showImportSpriteSheetDialog = true;
                         }
                     }
                     ImGui::Separator();
@@ -1440,6 +1609,21 @@ void Engine::renderFileBrowserPanel() {
                     if (ImGui::MenuItem("Shader")) {
                         createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
                     }
+                    if (ImGui::MenuItem("Scrolling Shader Pair")) {
+                        fs::path vertPath;
+                        fs::path fragPath;
+                        std::string error;
+                        if (createScrollingShaderPair(entry.path(), vertPath, fragPath, error)) {
+                            fileBrowser.needsRefresh = true;
+                            addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
+                                              ", " + fragPath.filename().string(),
+                                              ConsoleMessageType::Success);
+                        } else {
+                            addConsoleMessage("Failed to create scrolling shaders in " +
+                                              entry.path().string() + " (" + error + ")",
+                                              ConsoleMessageType::Error);
+                        }
+                    }
                     if (ImGui::MenuItem("Material")) {
                         fs::path target = entry.path() / "NewMaterial.mat";
                         int counter = 1;
@@ -1492,6 +1676,32 @@ void Engine::renderFileBrowserPanel() {
                 if (fileBrowser.getFileCategory(entry) == FileCategory::Script) {
                     if (ImGui::MenuItem("Compile Script")) {
                         compileScriptFile(entry.path());
+                    }
+                }
+                if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                    if (ImGui::MenuItem("Create Sprite2D")) {
+                        addObject(ObjectType::Sprite2D, entry.path().stem().string());
+                        if (!sceneObjects.empty()) {
+                            SceneObject& created = sceneObjects.back();
+                            created.albedoTexturePath = entry.path().string();
+                            if (Texture* tex = renderer.getTexture(created.albedoTexturePath)) {
+                                if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
+                                    created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
+                                                                static_cast<float>(tex->GetHeight()));
+                                }
+                            }
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                        }
+                    }
+                    if (ImGui::MenuItem("Import Sprite Sheet...")) {
+                        pendingSpriteSheetPath = entry.path().string();
+                        std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
+                                      entry.path().stem().string().c_str());
+                        importSpriteSheetAsSprite2D = true;
+                        importSpriteSheetColumns = 4;
+                        importSpriteSheetRows = 4;
+                        importSpriteSheetFps = 12.0f;
+                        showImportSpriteSheetDialog = true;
                     }
                 }
                 ImGui::Separator();
@@ -1558,6 +1768,21 @@ void Engine::renderFileBrowserPanel() {
             }
             if (ImGui::MenuItem("Shader")) {
                 createEntry(fileBrowser.currentPath, CreateKind::Shader, "NewShader.glsl");
+            }
+            if (ImGui::MenuItem("Scrolling Shader Pair")) {
+                fs::path vertPath;
+                fs::path fragPath;
+                std::string error;
+                if (createScrollingShaderPair(fileBrowser.currentPath, vertPath, fragPath, error)) {
+                    fileBrowser.needsRefresh = true;
+                    addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
+                                      ", " + fragPath.filename().string(),
+                                      ConsoleMessageType::Success);
+                } else {
+                    addConsoleMessage("Failed to create scrolling shaders in " +
+                                      fileBrowser.currentPath.string() + " (" + error + ")",
+                                      ConsoleMessageType::Error);
+                }
             }
             if (ImGui::MenuItem("Material")) {
                 fs::path target = fileBrowser.currentPath / "NewMaterial.mat";

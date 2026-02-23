@@ -102,6 +102,7 @@ private:
     RenderTarget historyTarget;
     RenderTarget bloomTargetA;
     RenderTarget bloomTargetB;
+    RenderTarget selectionMaskTarget;
     static constexpr int kMaxShadowMaps = 4;
     struct ShadowCubeMap {
         unsigned int fbo = 0;
@@ -117,6 +118,7 @@ private:
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     unsigned int debugWhiteTexture = 0;
+    unsigned int missingMaterialFallbackTexture = 0;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCacheBilinear;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCachePoint;
     struct ShaderEntry {
@@ -134,6 +136,9 @@ private:
     std::string postFragPath = "Resources/Shaders/postfx_frag.glsl";
     std::string postBrightFragPath = "Resources/Shaders/postfx_bright_frag.glsl";
     std::string postBlurFragPath = "Resources/Shaders/postfx_blur_frag.glsl";
+    std::string selectionMaskVertPath = "Resources/Shaders/selection_mask_vert.glsl";
+    std::string selectionMaskFragPath = "Resources/Shaders/selection_mask_frag.glsl";
+    std::string selectionOutlineFragPath = "Resources/Shaders/selection_outline_frag.glsl";
     std::string shadowDepthVertPath = "Resources/Shaders/shadow_depth_vert.glsl";
     std::string shadowDepthFragPath = "Resources/Shaders/shadow_depth_frag.glsl";
     bool autoReloadShaders = true;
@@ -155,6 +160,11 @@ private:
     RenderStats viewportStats;
     RenderStats previewStats;
     RenderStats* activeStats = nullptr;
+    float selectionOutlineBlend = 0.0f;
+    double selectionOutlineLastUpdateSec = 0.0;
+    std::vector<int> selectionOutlineVisualIds;
+    std::vector<int> selectionOutlinePrevIds;
+    float selectionOutlineSwapBlend = 1.0f;
 
     void setupFBO();
     void ensureRenderTarget(RenderTarget& target, int w, int h);
@@ -194,8 +204,8 @@ public:
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
-    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false);
-    void renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane);
+    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false, const std::vector<int>* selectedIds = nullptr);
+    void renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, const std::vector<int>& selectedIds, float fovDeg, float nearPlane, float farPlane);
     unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false, int previewSlot = 0);
     void renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
     void endRender();
