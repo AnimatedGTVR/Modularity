@@ -655,6 +655,14 @@ Renderer::~Renderer() {
 
 Texture* Renderer::getTexture(const std::string& path, MaterialProperties::TextureFilter filter) {
     if (path.empty()) return nullptr;
+    if (glfwGetCurrentContext() == nullptr) {
+        static bool warnedNoContext = false;
+        if (!warnedNoContext) {
+            std::cerr << "[Renderer] Texture request without an OpenGL context. Returning null texture.\n";
+            warnedNoContext = true;
+        }
+        return nullptr;
+    }
     bool point = (filter == MaterialProperties::TextureFilter::Point);
     auto& cache = point ? textureCachePoint : textureCacheBilinear;
     auto it = cache.find(path);
@@ -1020,12 +1028,19 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
 }
 
 Renderer::UiTargetInfo Renderer::ensureUiTarget(int id, int width, int height) {
+    if (glfwGetCurrentContext() == nullptr) {
+        return {};
+    }
     RenderTarget& target = uiTargets[id];
     ensureRenderTarget(target, width, height, true);
     return { target.fbo, target.texture, target.width, target.height };
 }
 
 void Renderer::cleanupUiTargets(const std::unordered_set<int>& active) {
+    if (glfwGetCurrentContext() == nullptr) {
+        uiTargets.clear();
+        return;
+    }
     for (auto it = uiTargets.begin(); it != uiTargets.end(); ) {
         if (active.find(it->first) == active.end()) {
             releaseRenderTarget(it->second);
@@ -1118,6 +1133,9 @@ void Renderer::resize(int w, int h) {
     
     currentWidth = w;
     currentHeight = h;
+    if (glfwGetCurrentContext() == nullptr) {
+        return;
+    }
     
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     
@@ -1963,6 +1981,9 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
 }
 
 unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot) {
+    if (glfwGetCurrentContext() == nullptr) {
+        return 0;
+    }
     resetStats(previewStats);
     activeStats = &previewStats;
     RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];

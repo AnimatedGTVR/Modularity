@@ -73,6 +73,6 @@ void applyEditorLayoutPreset(ImGuiStyle& style);
 void applyPixelStyle(ImGuiStyle& style);
 void applySuperRoundStyle(ImGuiStyle& style);
 
-// Setup ImGui dockspace for the editor
-void setupDockspace(const std::function<void()>& menuBarContent = nullptr);
+// Setup ImGui dockspace for the editor and return its stable dockspace ID.
+ImGuiID setupDockspace(const std::function<void()>& menuBarContent = nullptr);
 #pragma endregion

@@ -54,6 +54,18 @@ endif()
 # ==================== Optional PhysX ====================
 option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
 option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
+option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ON)
+
+set(MODULARITY_HAS_VULKAN OFF)
+if(MODULARITY_ENABLE_VULKAN)
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        set(MODULARITY_HAS_VULKAN ON)
+        message(STATUS "Experimental Vulkan backend enabled.")
+    else()
+        message(STATUS "Vulkan SDK not found; Vulkan backend disabled.")
+    endif()
+endif()
 
 # ==================== Third-party libraries ====================
 
@@ -110,7 +122,7 @@ target_link_libraries(imguizmo PUBLIC imgui glm)
 # Dear ImGui
 set(IMGUI_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/imgui)
 
-add_library(imgui STATIC
+set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_demo.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
@@ -119,6 +131,11 @@ add_library(imgui STATIC
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
+if(MODULARITY_HAS_VULKAN)
+    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+endif()
+
+add_library(imgui STATIC ${IMGUI_SOURCES})
 
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
@@ -127,6 +144,9 @@ target_include_directories(imgui PUBLIC
 )
 
 target_link_libraries(imgui PRIVATE glfw)
+if(MODULARITY_HAS_VULKAN)
+    target_link_libraries(imgui PRIVATE Vulkan::Vulkan)
+endif()
 
 # ==================== Your code (separated files) ====================
 file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
@@ -158,11 +178,15 @@ target_include_directories(core PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core PUBLIC glad glm imgui imguizmo)
+if(MODULARITY_HAS_VULKAN)
+    target_link_libraries(core PUBLIC Vulkan::Vulkan)
+endif()
 if(MODULARITY_USE_MONO)
     target_include_directories(core PUBLIC ${MONO_INCLUDE_DIR})
     target_link_libraries(core PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+target_compile_definitions(core PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 if(WIN32)
     target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES})
 endif()
@@ -177,11 +201,15 @@ target_include_directories(core_player PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core_player PUBLIC glad glm imgui imguizmo)
+if(MODULARITY_HAS_VULKAN)
+    target_link_libraries(core_player PUBLIC Vulkan::Vulkan)
+endif()
 if(MODULARITY_USE_MONO)
     target_include_directories(core_player PUBLIC ${MONO_INCLUDE_DIR})
     target_link_libraries(core_player PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+target_compile_definitions(core_player PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 if(WIN32)
     target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES})
 endif()
@@ -284,6 +312,14 @@ add_custom_command(TARGET ModularityPlayer POST_BUILD
         ${CMAKE_SOURCE_DIR}/Resources
         $<TARGET_FILE_DIR:ModularityPlayer>/Resources
 )
+
+if(MODULARITY_BUILD_EDITOR)
+    add_custom_command(TARGET Modularity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Resources
+            $<TARGET_FILE_DIR:Modularity>/Resources
+    )
+endif()
 
 # ==================== Copy PhysX DLLs (Windows) ====================
 if(WIN32 AND MODULARITY_ENABLE_PHYSX)

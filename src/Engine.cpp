@@ -81,6 +81,56 @@ std::string resolveTexturePath(const std::string& texPath, const fs::path& model
     return (modelPath.parent_path() / p).string();
 }
 
+float normalizeTimeOfDay(float timeOfDay) {
+    if (!std::isfinite(timeOfDay)) {
+        return 0.5f;
+    }
+    float wrapped = std::fmod(timeOfDay, 1.0f);
+    if (wrapped < 0.0f) {
+        wrapped += 1.0f;
+    }
+    return wrapped;
+}
+
+std::string shaderFilename(const std::string& shaderPath) {
+    if (shaderPath.empty()) {
+        return std::string();
+    }
+    return fs::path(shaderPath).filename().string();
+}
+
+bool isSupportedVulkanPreviewShaderPair(const SceneObject& obj) {
+    const std::string vert = shaderFilename(obj.vertexShaderPath);
+    const std::string frag = shaderFilename(obj.fragmentShaderPath);
+
+    const bool vertSupported = vert.empty() ||
+                               vert == "vert.glsl" ||
+                               vert == "scroll_texture_vert.glsl";
+    const bool fragSupported = frag.empty() ||
+                               frag == "frag.glsl" ||
+                               frag == "scroll_texture_frag.glsl";
+    return vertSupported && fragSupported;
+}
+
+bool hasUnsupportedVulkanPreviewFeature(const SceneObject& obj) {
+    if (!obj.enabled || !obj.hasRenderer || obj.renderType == RenderType::None) {
+        return false;
+    }
+
+    const bool supportedGeometry = obj.renderType == RenderType::Cube ||
+                                   obj.renderType == RenderType::Plane ||
+                                   obj.renderType == RenderType::Mirror;
+    if (!supportedGeometry) {
+        return true;
+    }
+
+    if (!isSupportedVulkanPreviewShaderPair(obj)) {
+        return true;
+    }
+
+    return false;
+}
+
 bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
     std::ifstream f(path);
     if (!f.is_open()) {
@@ -752,6 +802,92 @@ std::string quotePath(const fs::path& path) {
     return "\"" + value + "\"";
 }
 
+fs::path resolveCurrentExecutablePath() {
+#if defined(__linux__)
+    std::error_code ec;
+    fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec && !exe.empty()) {
+        return exe.lexically_normal();
+    }
+#elif defined(_WIN32)
+    wchar_t buffer[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (len > 0) {
+        return fs::path(buffer).lexically_normal();
+    }
+#endif
+
+    std::error_code cwdEc;
+#if defined(_WIN32)
+    fs::path fallback = fs::current_path(cwdEc) / "Modularity.exe";
+#else
+    fs::path fallback = fs::current_path(cwdEc) / "Modularity";
+#endif
+    return fallback.lexically_normal();
+}
+
+bool relaunchEditorWithBackend(Modularity::GraphicsBackend backend,
+                               const fs::path& projectFile,
+                               std::string& error) {
+    std::error_code ec;
+    fs::path normalizedProject = projectFile;
+    if (normalizedProject.empty()) {
+        error = "Project file path is empty.";
+        return false;
+    }
+    if (normalizedProject.is_relative()) {
+        normalizedProject = fs::absolute(normalizedProject, ec);
+        if (ec) {
+            error = "Failed to resolve project file path.";
+            return false;
+        }
+    }
+    normalizedProject = normalizedProject.lexically_normal();
+
+    fs::path autoStartPath = fs::current_path(ec) / "autostart.modu";
+    if (ec) {
+        error = "Failed to resolve autostart.modu path.";
+        return false;
+    }
+
+    std::ofstream autostart(autoStartPath, std::ios::trunc);
+    if (!autostart.is_open()) {
+        error = "Failed to write autostart.modu.";
+        return false;
+    }
+    autostart << "project=" << normalizedProject.string() << "\n";
+    autostart << "mode=editor\n";
+    autostart << "oneshot=1\n";
+    autostart.close();
+
+    fs::path executablePath = resolveCurrentExecutablePath();
+    if (executablePath.empty()) {
+        error = "Failed to resolve editor executable path.";
+        return false;
+    }
+    if (!fs::exists(executablePath, ec) || ec) {
+        error = "Editor executable not found: " + executablePath.string();
+        return false;
+    }
+
+    const std::string backendValue =
+        (backend == Modularity::GraphicsBackend::Vulkan) ? "vulkan" : "opengl";
+    std::string command;
+#if defined(_WIN32)
+    command = "cmd /C \"set MODULARITY_RENDER_BACKEND=" + backendValue + " && start \"\" " +
+              quotePath(executablePath) + "\"";
+#else
+    command = "MODULARITY_RENDER_BACKEND=" + backendValue + " " +
+              quotePath(executablePath) + " >/dev/null 2>&1 &";
+#endif
+
+    if (std::system(command.c_str()) != 0) {
+        error = "Failed to launch editor process.";
+        return false;
+    }
+    return true;
+}
+
 void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std::string& error) {
     std::error_code ec;
 #ifdef _WIN32
@@ -820,8 +956,12 @@ void cleanEditorExecutable(const fs::path& buildRoot) {
 
 #pragma region Window + Selection Utilities
 void window_size_callback(GLFWwindow* window, int width, int height) {
-    (void)window;
-    glViewport(0, 0, width, height);
+    if (auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window))) {
+        engine->onWindowResized(width, height);
+    }
+    if (glfwGetCurrentContext() != nullptr) {
+        glViewport(0, 0, width, height);
+    }
 }
 
 SceneObject* Engine::getSelectedObject() {
@@ -1120,13 +1260,77 @@ fs::path resolveScriptsConfigPath(const Project& project) {
 }
 
 #pragma region Engine Lifecycle
+Modularity::GraphicsBackend Engine::resolveRequestedBackend() const {
+    const char* value = std::getenv("MODULARITY_RENDER_BACKEND");
+    if (!value || !*value) {
+        value = std::getenv("MODULARITY_GFX_API");
+    }
+    if (!value || !*value) {
+        return Modularity::GraphicsBackend::OpenGL;
+    }
+
+    Modularity::GraphicsBackend backend = Modularity::GraphicsBackendFromString(value);
+#if !MODULARITY_HAS_VULKAN
+    if (backend == Modularity::GraphicsBackend::Vulkan) {
+        std::cerr << "[WARN] Vulkan was requested but this build has no Vulkan support. Falling back to OpenGL.\n";
+        return Modularity::GraphicsBackend::OpenGL;
+    }
+#endif
+    return backend;
+}
+
+void Engine::applySceneTimeOfDay(float timeOfDay) {
+    sceneTimeOfDay = normalizeTimeOfDay(timeOfDay);
+
+    if (Skybox* skybox = renderer.getSkybox()) {
+        skybox->setTimeOfDay(sceneTimeOfDay);
+    }
+
+    if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+        vulkanRenderer->setSkyboxTimeOfDay(sceneTimeOfDay);
+    }
+}
+
+float Engine::getSceneTimeOfDay() {
+    if (!usingVulkan()) {
+        if (Skybox* skybox = renderer.getSkybox()) {
+            sceneTimeOfDay = normalizeTimeOfDay(skybox->getTimeOfDay());
+        }
+    }
+    return sceneTimeOfDay;
+}
+
+void Engine::onWindowResized(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    viewportWidth = width;
+    viewportHeight = height;
+
+    if (usingVulkan()) {
+        if (vulkanRenderer) {
+            vulkanRenderer->notifyResize();
+        }
+        return;
+    }
+
+    if (rendererInitialized) {
+        renderer.resize(width, height);
+    }
+}
+
 bool Engine::init() {
     std::cerr << "[DEBUG] Creating window..." << std::endl;
-    editorWindow = window.makeWindow();
+    graphicsBackend = resolveRequestedBackend();
+    editorWindow = window.makeWindow(graphicsBackend);
+    if (!editorWindow && graphicsBackend == Modularity::GraphicsBackend::Vulkan) {
+        std::cerr << "[WARN] Vulkan window creation failed. Falling back to OpenGL.\n";
+        graphicsBackend = Modularity::GraphicsBackend::OpenGL;
+        editorWindow = window.makeWindow(graphicsBackend);
+    }
     if (!editorWindow) {
         std::cerr << "[DEBUG] Window creation failed!" << std::endl;
         return false;
     }
+    std::cerr << "[DEBUG] Graphics backend: " << Modularity::ToString(graphicsBackend) << std::endl;
     std::cerr << "[DEBUG] Window created successfully" << std::endl;
 
     glfwSetWindowUserPointer(editorWindow, this);
@@ -1149,6 +1353,13 @@ bool Engine::init() {
     setupImGui();
     std::cerr << "[DEBUG] ImGui setup complete" << std::endl;
 
+    if (usingVulkan()) {
+        if (!initVulkanRenderer()) {
+            std::cerr << "[DEBUG] Vulkan renderer init failed!" << std::endl;
+            return false;
+        }
+    }
+
     if (!audio.init()) {
         std::cerr << "[DEBUG] Audio init failed\n";
         addConsoleMessage("Audio initialization failed. Audio playback will be disabled.", ConsoleMessageType::Warning);
@@ -1167,15 +1378,56 @@ bool Engine::init() {
 }
 
 bool Engine::initRenderer() {
+    if (usingVulkan()) {
+        return vulkanRendererInitialized;
+    }
     if (rendererInitialized) return true;
 
     try {
         renderer.initialize();
         rendererInitialized = true;
+        applySceneTimeOfDay(sceneTimeOfDay);
         return true;
     } catch (...) {
         return false;
     }
+}
+
+bool Engine::initVulkanRenderer() {
+    if (!usingVulkan()) {
+        return false;
+    }
+    if (vulkanRendererInitialized) {
+        return true;
+    }
+
+#if !MODULARITY_HAS_VULKAN
+    addConsoleMessage("Vulkan backend requested, but this build was compiled without Vulkan support.",
+                      ConsoleMessageType::Error);
+    return false;
+#else
+    vulkanRenderer = std::make_unique<Modularity::VulkanRenderer>();
+    if (!vulkanRenderer->initialize(editorWindow)) {
+        addConsoleMessage("Vulkan initialization failed: " + vulkanRenderer->getLastError(),
+                          ConsoleMessageType::Error);
+        vulkanRenderer.reset();
+        return false;
+    }
+    if (!vulkanRenderer->initImGuiBackend()) {
+        addConsoleMessage("Vulkan ImGui backend initialization failed: " + vulkanRenderer->getLastError(),
+                          ConsoleMessageType::Error);
+        vulkanRenderer->shutdown();
+        vulkanRenderer.reset();
+        return false;
+    }
+
+    vulkanRendererInitialized = true;
+    applySceneTimeOfDay(sceneTimeOfDay);
+    addConsoleMessage("Initialized Vulkan backend (experimental).", ConsoleMessageType::Info);
+    addConsoleMessage("Vulkan viewport preview supports built-in GLSL materials, albedo/overlay/normal textures, scene lights, and sky time-of-day.",
+                      ConsoleMessageType::Warning);
+    return true;
+#endif
 }
 
 void Engine::run() {
@@ -1283,6 +1535,48 @@ void Engine::run() {
             return anyCam;
         };
 
+        if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+            if (!showLauncher && projectManager.currentProject.isLoaded) {
+                vulkanRenderer->setSkyboxTimeOfDay(getSceneTimeOfDay());
+
+                if (!vulkanMaterialFeatureWarningShown) {
+                    const bool hasUnsupportedVulkanMaterials = std::any_of(
+                        sceneObjects.begin(), sceneObjects.end(),
+                        [](const SceneObject& obj) { return hasUnsupportedVulkanPreviewFeature(obj); });
+                    if (hasUnsupportedVulkanMaterials) {
+                        addConsoleMessage(
+                            "Vulkan preview fallback is active for some scene features. "
+                            "Unsupported in Vulkan preview: custom shader pairs and non-cube primitive/mesh geometry.",
+                            ConsoleMessageType::Warning);
+                        vulkanMaterialFeatureWarningShown = true;
+                    }
+                }
+
+                vulkanRenderer->setViewportSceneData(
+                    sceneObjects,
+                    camera,
+                    buildSettings.editorCameraFov,
+                    buildSettings.editorCameraNear,
+                    buildSettings.editorCameraFar);
+
+                if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+                    Camera gameCamera = makeCameraFromObject(*runtimeCam);
+                    gameCamera.position = runtimeCam->position;
+                    vulkanRenderer->setGameSceneData(
+                        sceneObjects,
+                        &gameCamera,
+                        runtimeCam->camera.fov,
+                        runtimeCam->camera.nearClip,
+                        runtimeCam->camera.farClip);
+                } else {
+                    vulkanRenderer->clearGameSceneData();
+                }
+            } else {
+                vulkanRenderer->clearViewportSceneData();
+                vulkanRenderer->clearGameSceneData();
+            }
+        }
+
         bool audioShouldPlay = isPlaying || specMode || testMode;
         Camera listenerCamera = camera;
         if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
@@ -1305,6 +1599,8 @@ void Engine::run() {
                 viewportHeight = displayH;
                 if (rendererInitialized) {
                     renderer.resize(viewportWidth, viewportHeight);
+                } else if (vulkanRendererInitialized && vulkanRenderer) {
+                    vulkanRenderer->notifyResize();
                 }
             }
         }
@@ -1342,25 +1638,36 @@ void Engine::run() {
             std::cerr << "[DEBUG] First frame: starting ImGui NewFrame" << std::endl;
         }
         
-        ImGui_ImplOpenGL3_NewFrame();
+        if (usingVulkan()) {
+#if MODULARITY_HAS_VULKAN
+            if (vulkanRendererInitialized &&
+                vulkanRenderer &&
+                projectManager.currentProject.isLoaded &&
+                !showLauncher) {
+                if (!vulkanRenderer->prepareFrameResources()) {
+                    static bool loggedVulkanPrepareError = false;
+                    if (!loggedVulkanPrepareError) {
+                        addConsoleMessage("Vulkan scene target preparation failed: " + vulkanRenderer->getLastError(),
+                                          ConsoleMessageType::Error);
+                        loggedVulkanPrepareError = true;
+                    }
+                }
+            }
+            ImGui_ImplVulkan_NewFrame();
+#endif
+        } else {
+            ImGui_ImplOpenGL3_NewFrame();
+        }
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         uiCanvas3DInputs.clear();
-
-        if (pendingWorkspaceReload) {
-            ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
-            ImGui::DockBuilderRemoveNode(dockspaceId);
-            if (!pendingWorkspaceIniPath.empty() && fs::exists(pendingWorkspaceIniPath)) {
-                ImGui::LoadIniSettingsFromDisk(pendingWorkspaceIniPath.string().c_str());
-            }
-            pendingWorkspaceReload = false;
-        }
 
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame: ImGui NewFrame complete, rendering UI..." << std::endl;
         }
 
         if (showLauncher) {
+            mainDockspaceId = 0;
             if (firstFrame) {
                 std::cerr << "[DEBUG] First frame: calling renderLauncher()" << std::endl;
             }
@@ -1370,7 +1677,7 @@ void Engine::run() {
             renderLauncher();
             #endif
         } else if (!playerMode) {
-            setupDockspace([this]() { renderPlayControlsBar(); });
+            mainDockspaceId = setupDockspace([this]() { renderPlayControlsBar(); });
             renderMainMenuBar();
 
             if (!viewportFullscreen) {
@@ -1394,6 +1701,7 @@ void Engine::run() {
         renderDialogs();
         renderLatestErrorBar();
     } else {
+        mainDockspaceId = 0;
         renderPlayerViewport();
     }
 
@@ -1403,22 +1711,37 @@ void Engine::run() {
 
         autosaveWorkspaceLayout();
         renderUiCanvas3DTargets();
-
-        int displayW, displayH;
-        glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
-        glViewport(0, 0, displayW, displayH);
-        glClearColor(0.1f, 0.1f, 0.12f, 1.00f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
         ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-        ImGuiIO& io = ImGui::GetIO();
-        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            GLFWwindow* backup_current_context = glfwGetCurrentContext();
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
-            glfwMakeContextCurrent(backup_current_context);
+        if (usingVulkan()) {
+            if (vulkanRendererInitialized && vulkanRenderer) {
+                const ImVec4 clearColor(0.1f, 0.1f, 0.12f, 1.0f);
+                if (!vulkanRenderer->renderFrame(ImGui::GetDrawData(), clearColor)) {
+                    static bool loggedVulkanFrameError = false;
+                    if (!loggedVulkanFrameError) {
+                        addConsoleMessage("Vulkan frame submission failed: " + vulkanRenderer->getLastError(),
+                                          ConsoleMessageType::Error);
+                        loggedVulkanFrameError = true;
+                    }
+                }
+            }
+        } else {
+            int displayW = 0;
+            int displayH = 0;
+            glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
+            glViewport(0, 0, displayW, displayH);
+            glClearColor(0.1f, 0.1f, 0.12f, 1.00f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+            ImGuiIO& io = ImGui::GetIO();
+            if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+                GLFWwindow* backup_current_context = glfwGetCurrentContext();
+                ImGui::UpdatePlatformWindows();
+                ImGui::RenderPlatformWindowsDefault();
+                glfwMakeContextCurrent(backup_current_context);
+            }
         }
 
         // Enforce cursor lock state at the end of the frame based on latest flags.
@@ -1433,7 +1756,9 @@ void Engine::run() {
             }
         }
 
-        glfwSwapBuffers(editorWindow);
+        if (!usingVulkan()) {
+            glfwSwapBuffers(editorWindow);
+        }
 
         if (fpsCapEnabled && fpsCap > 1.0f) {
             double target = 1.0 / fpsCap;
@@ -1456,7 +1781,7 @@ void Engine::run() {
 
 void Engine::shutdown() {
     ImGuiContext* mainContext = ImGui::GetCurrentContext();
-    if (mainContext && !playerMode) {
+    if (mainContext && !playerMode && projectManager.currentProject.isLoaded && !showLauncher) {
         saveWorkspaceLayout(currentWorkspace);
     }
 
@@ -1482,7 +1807,7 @@ void Engine::shutdown() {
     for (auto& entry : uiCanvas3DContexts) {
         if (!entry.second.context) continue;
         ImGui::SetCurrentContext(entry.second.context);
-        if (entry.second.backendReady) {
+        if (entry.second.backendReady && !usingVulkan()) {
             ImGui_ImplOpenGL3_Shutdown();
             entry.second.backendReady = false;
         }
@@ -1492,10 +1817,25 @@ void Engine::shutdown() {
 
     if (mainContext) {
         ImGui::SetCurrentContext(mainContext);
-        ImGui_ImplOpenGL3_Shutdown();
+#if MODULARITY_HAS_VULKAN
+        if (usingVulkan()) {
+            if (vulkanRenderer) {
+                vulkanRenderer->shutdownImGuiBackend();
+            }
+        } else
+#endif
+        {
+            ImGui_ImplOpenGL3_Shutdown();
+        }
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext(mainContext);
     }
+
+    if (vulkanRenderer) {
+        vulkanRenderer->shutdown();
+        vulkanRenderer.reset();
+    }
+    vulkanRendererInitialized = false;
     glfwTerminate();
 }
 #pragma endregion
@@ -3365,6 +3705,7 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     if (!fs::exists(scenePath)) {
         sceneLoadInProgress = false;
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
+        applySceneTimeOfDay(0.5f);
         addObject(ObjectType::Cube, "Cube");
         showLauncher = false;
         return;
@@ -3373,6 +3714,7 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     if (!SceneSerializer::loadSceneDeferred(scenePath, sceneLoadObjects, sceneLoadNextId, sceneLoadVersion, &sceneLoadTimeOfDay)) {
         sceneLoadInProgress = false;
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
+        applySceneTimeOfDay(0.5f);
         addObject(ObjectType::Cube, "Cube");
         showLauncher = false;
         return;
@@ -3474,9 +3816,7 @@ void Engine::finalizeDeferredSceneLoad() {
     recordState("sceneLoaded");
     addConsoleMessage("Loaded scene: " + sceneLoadSceneName, ConsoleMessageType::Success);
     if (sceneLoadTimeOfDay >= 0.0f) {
-        if (Skybox* skybox = renderer.getSkybox()) {
-            skybox->setTimeOfDay(sceneLoadTimeOfDay);
-        }
+        applySceneTimeOfDay(sceneLoadTimeOfDay);
     }
 
     // Deferred loading can complete after play mode was already entered.
@@ -3511,6 +3851,26 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
 
     projectManager.currentProject = std::move(result.project);
     projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
+    vulkanMaterialFeatureWarningShown = false;
+
+    if (projectManager.currentProject.rendererBackend != graphicsBackend) {
+        const Modularity::GraphicsBackend targetBackend = projectManager.currentProject.rendererBackend;
+        std::string relaunchError;
+        if (relaunchEditorWithBackend(targetBackend, result.path, relaunchError)) {
+            addConsoleMessage(
+                "Project renderer is " + std::string(Modularity::ToString(targetBackend)) +
+                ". Restarting editor with matching backend...",
+                ConsoleMessageType::Info);
+            glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
+            return;
+        }
+
+        addConsoleMessage(
+            "Project renderer is " + std::string(Modularity::ToString(targetBackend)) +
+            ", current session is " + std::string(Modularity::ToString(graphicsBackend)) +
+            ". Automatic backend switch failed (" + relaunchError + "). Restart editor to apply project renderer.",
+            ConsoleMessageType::Warning);
+    }
 
     // Make sure project folders exist even for older/minimal projects
     if (!fs::exists(projectManager.currentProject.assetsPath)) {
@@ -3636,6 +3996,7 @@ void Engine::loadAutoStartConfig() {
     std::string line;
     bool modeSpecified = false;
     bool sawKey = false;
+    bool oneShot = false;
     while (std::getline(file, line)) {
         trim(line);
         if (line.empty() || line[0] == '#') continue;
@@ -3658,6 +4019,11 @@ void Engine::loadAutoStartConfig() {
         } else if (key == "mode") {
             autoStartPlayerMode = (value == "player");
             modeSpecified = true;
+        } else if (key == "oneshot") {
+            std::string lower = value;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            oneShot = (lower == "1" || lower == "true" || lower == "yes");
         }
     }
 
@@ -3671,6 +4037,11 @@ void Engine::loadAutoStartConfig() {
         if (!modeSpecified) {
             autoStartPlayerMode = true;
         }
+    }
+
+    if (oneShot) {
+        std::error_code removeEc;
+        fs::remove(configPath, removeEc);
     }
 }
 
@@ -4603,6 +4974,16 @@ void Engine::createNewProject(const char* name, const char* location) {
     newProject.pipeline = (projectManager.newProjectPipelineMode == 1)
         ? ProjectPipeline::Pipeline2D
         : ProjectPipeline::Pipeline3D;
+    newProject.rendererBackend = (projectManager.newProjectRendererMode == 1)
+        ? Modularity::GraphicsBackend::Vulkan
+        : Modularity::GraphicsBackend::OpenGL;
+#if !MODULARITY_HAS_VULKAN
+    if (newProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) {
+        newProject.rendererBackend = Modularity::GraphicsBackend::OpenGL;
+        addConsoleMessage("Vulkan was selected for new project, but this build does not include Vulkan. Using OpenGL.",
+                          ConsoleMessageType::Warning);
+    }
+#endif
     if (newProject.create()) {
         projectManager.currentProject = newProject;
         projectManager.addToRecentProjects(name,
@@ -4724,10 +5105,7 @@ void Engine::saveCurrentScene() {
     if (!projectManager.currentProject.isLoaded) return;
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
-    float timeOfDay = 0.0f;
-    if (Skybox* skybox = renderer.getSkybox()) {
-        timeOfDay = skybox->getTimeOfDay();
-    }
+    float timeOfDay = getSceneTimeOfDay();
     if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay)) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
@@ -4766,9 +5144,7 @@ void Engine::loadScene(const std::string& sceneName) {
         recordState("sceneLoaded");
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
         if (loadedTimeOfDay >= 0.0f) {
-            if (Skybox* skybox = renderer.getSkybox()) {
-                skybox->setTimeOfDay(loadedTimeOfDay);
-            }
+            applySceneTimeOfDay(loadedTimeOfDay);
         }
     } else {
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
@@ -4790,6 +5166,7 @@ void Engine::createNewScene(const std::string& sceneName) {
 
     projectManager.currentProject.currentSceneName = sceneName;
     projectManager.currentProject.hasUnsavedChanges = true;
+    applySceneTimeOfDay(0.5f);
 
     addObject(ObjectType::Cube, "Cube");
     addObject(ObjectType::DirectionalLight, "Directional Light");
@@ -5798,9 +6175,13 @@ void Engine::setupImGui() {
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    if (usingVulkan()) {
+        io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    } else {
     #ifndef __linux__
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     #endif
+    }
     io.IniFilename = nullptr;
 
     std::cerr << "[DEBUG] setupImGui: applying theme..." << std::endl;
@@ -5817,12 +6198,21 @@ void Engine::setupImGui() {
     initUIStylePresets();
 
     std::cerr << "[DEBUG] setupImGui: initializing ImGui GLFW backend..." << std::endl;
-    ImGui_ImplGlfw_InitForOpenGL(editorWindow, true);
-    
-    std::cerr << "[DEBUG] setupImGui: initializing ImGui OpenGL3 backend..." << std::endl;
-    if (!ImGui_ImplOpenGL3_Init("#version 330")) {
-        std::cerr << "[DEBUG] ImGui OpenGL3 init failed!" << std::endl;
-        throw std::runtime_error("ImGui error");
+    if (usingVulkan()) {
+        if (!ImGui_ImplGlfw_InitForVulkan(editorWindow, true)) {
+            throw std::runtime_error("ImGui GLFW Vulkan init failed");
+        }
+        std::cerr << "[DEBUG] setupImGui: Vulkan backend selected; renderer backend will be initialized after Vulkan setup." << std::endl;
+    } else {
+        if (!ImGui_ImplGlfw_InitForOpenGL(editorWindow, true)) {
+            throw std::runtime_error("ImGui GLFW OpenGL init failed");
+        }
+
+        std::cerr << "[DEBUG] setupImGui: initializing ImGui OpenGL3 backend..." << std::endl;
+        if (!ImGui_ImplOpenGL3_Init("#version 330")) {
+            std::cerr << "[DEBUG] ImGui OpenGL3 init failed!" << std::endl;
+            throw std::runtime_error("ImGui error");
+        }
     }
     std::cerr << "[DEBUG] setupImGui: complete!" << std::endl;
 }
@@ -5932,11 +6322,12 @@ fs::path Engine::getEditorLayoutPath() const {
 }
 
 fs::path Engine::getWorkspaceLayoutPath(WorkspaceMode mode) const {
-    const char* filename = "imgui.ini";
+    const bool vulkanLayout = usingVulkan();
+    const char* filename = vulkanLayout ? "imgui_vulkan.ini" : "imgui.ini";
     if (mode == WorkspaceMode::Animation) {
-        filename = "anim.ini";
+        filename = vulkanLayout ? "anim_vulkan.ini" : "anim.ini";
     } else if (mode == WorkspaceMode::Scripting) {
-        filename = "scripter.ini";
+        filename = vulkanLayout ? "scripter_vulkan.ini" : "scripter.ini";
     }
 
     if (projectManager.currentProject.isLoaded) {
@@ -5950,6 +6341,15 @@ fs::path Engine::getWorkspaceLayoutPath(WorkspaceMode mode) const {
 
 void Engine::saveWorkspaceLayout(WorkspaceMode mode) const {
     if (!ImGui::GetCurrentContext()) {
+        return;
+    }
+    if (showLauncher || !projectManager.currentProject.isLoaded) {
+        return;
+    }
+    if (pendingWorkspaceReload || workspaceLayoutDirty) {
+        return;
+    }
+    if (mainDockspaceId == 0 || ImGui::DockBuilderGetNode(mainDockspaceId) == nullptr) {
         return;
     }
 
@@ -5968,6 +6368,58 @@ void Engine::autosaveWorkspaceLayout() {
     if (!context || showLauncher || playerMode) {
         return;
     }
+    if (!projectManager.currentProject.isLoaded) {
+        return;
+    }
+    if (pendingWorkspaceReload || workspaceLayoutDirty) {
+        return;
+    }
+
+    if (workspaceLayoutAutoRepairPending &&
+        mainDockspaceId != 0 &&
+        ImGui::DockBuilderGetNode(mainDockspaceId) != nullptr) {
+        int trackedWindows = 0;
+        int undockedWindows = 0;
+        auto countDockState = [&](const char* name, bool shouldBeVisible) {
+            if (!shouldBeVisible || !name) {
+                return;
+            }
+            ImGuiWindow* window = ImGui::FindWindowByName(name);
+            if (!window) {
+                return;
+            }
+            ++trackedWindows;
+            if (window->DockId == 0 || ImGui::DockBuilderGetNode(window->DockId) == nullptr) {
+                ++undockedWindows;
+            }
+        };
+
+        countDockState("Hierarchy", showHierarchy);
+        countDockState("Inspector", showInspector);
+        countDockState("Project", showFileBrowser);
+        countDockState("Console", showConsole);
+        countDockState("Viewport", true);
+        countDockState("Game Viewport", showGameViewport);
+        countDockState("Environment", showEnvironmentWindow);
+        countDockState("Camera", showCameraWindow);
+        countDockState("Animation", showAnimationWindow);
+        countDockState("AI Pathfinding", showAIPathfindingWindow);
+        countDockState("Scripting", showScriptingWindow);
+        countDockState("Project Settings", showProjectBrowser);
+
+        if (trackedWindows >= 4) {
+            if (undockedWindows >= 2) {
+                buildWorkspaceLayout(currentWorkspace);
+                workspaceLayoutSavePending = true;
+                workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
+            }
+            workspaceLayoutAutoRepairPending = false;
+        }
+    }
+
+    if (glfwGetTime() < workspaceLayoutStabilizeUntil) {
+        return;
+    }
 
     if (context->SettingsDirtyTimer > 0.0f) {
         workspaceLayoutSavePending = true;
@@ -5977,6 +6429,51 @@ void Engine::autosaveWorkspaceLayout() {
     if (workspaceLayoutSavePending) {
         saveWorkspaceLayout(currentWorkspace);
         workspaceLayoutSavePending = false;
+
+        auto layoutFileHasDockNodesForDockspace = [](const fs::path& path, ImGuiID dockspaceId) -> bool {
+            if (dockspaceId == 0) {
+                return false;
+            }
+            std::ifstream in(path);
+            if (!in.is_open()) {
+                return false;
+            }
+            char dockspaceIdHex[16];
+            std::snprintf(dockspaceIdHex, sizeof(dockspaceIdHex), "0x%08X", dockspaceId);
+            bool hasDockingData = false;
+            bool hasDockNodes = false;
+            bool hasMatchingDockspace = false;
+            std::string line;
+            while (std::getline(in, line)) {
+                if (line == "[Docking][Data]") {
+                    hasDockingData = true;
+                    continue;
+                }
+                if (!hasDockingData) {
+                    continue;
+                }
+                if (!line.empty() && line.front() == '[') {
+                    break;
+                }
+                if (line.find("DockNode") != std::string::npos) {
+                    hasDockNodes = true;
+                }
+                if (line.find("DockSpace") != std::string::npos &&
+                    line.find(dockspaceIdHex) != std::string::npos) {
+                    hasMatchingDockspace = true;
+                }
+            }
+            return hasDockingData && hasDockNodes && hasMatchingDockspace;
+        };
+
+        fs::path layoutPath = getWorkspaceLayoutPath(currentWorkspace);
+        if (!layoutPath.empty() &&
+            fs::exists(layoutPath) &&
+            !layoutFileHasDockNodesForDockspace(layoutPath, mainDockspaceId) &&
+            mainDockspaceId != 0) {
+            buildWorkspaceLayout(currentWorkspace);
+            saveWorkspaceLayout(currentWorkspace);
+        }
     }
 }
 

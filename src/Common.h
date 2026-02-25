@@ -21,11 +21,15 @@
 #include "ThirdParty/imgui/imgui_internal.h"
 #include "ThirdParty/imgui/backends/imgui_impl_glfw.h"
 #include "ThirdParty/imgui/backends/imgui_impl_opengl3.h"
+#if MODULARITY_HAS_VULKAN
+#include "ThirdParty/imgui/backends/imgui_impl_vulkan.h"
+#endif
 #include "ThirdParty/ImGuizmo/ImGuizmo.h"
 #include "ThirdParty/glm/glm.hpp"
 #include "ThirdParty/glm/gtc/matrix_transform.hpp"
 #include "ThirdParty/glm/gtc/type_ptr.hpp"
 #include "ThirdParty/glm/gtc/quaternion.hpp"
+#include "../include/Graphics/GraphicsBackend.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -57,6 +61,7 @@ class OBJLoader;
 class Renderer;
 class Camera;
 class ViewportController;
+class SceneObject;
 class Project;
 class ProjectManager;
 class Engine;

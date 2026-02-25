@@ -21,9 +21,15 @@ GLFWwindow* tryCreateWindow(int major, int minor, int profile) {
   }
   return glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
 }
+
+GLFWwindow* tryCreateVulkanWindow() {
+  glfwDefaultWindowHints();
+  glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+  return glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
+}
 }  // namespace
 
-GLFWwindow *Window::makeWindow() {
+GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend) {
   unsigned char *pixels = stbi_load("Resources/Engine-Root/Modu-Logo.png",
                                     &width, &height, &channels, 4);
 #if defined(__linux__)
@@ -46,18 +52,26 @@ GLFWwindow *Window::makeWindow() {
     return nullptr;
   }
 
-  GLFWwindow *window = tryCreateWindow(3, 3, GLFW_OPENGL_CORE_PROFILE);
-  if (!window) {
-    std::cerr << "Failed to create GLFW window (OpenGL 3.3 core). Retrying...\n";
-    window = tryCreateWindow(3, 3, kAnyProfile);
-  }
-  if (!window) {
-    std::cerr << "Failed to create GLFW window (OpenGL 3.3 any). Retrying...\n";
-    window = tryCreateWindow(3, 0, kAnyProfile);
-  }
-  if (!window) {
-    std::cerr << "Failed to create GLFW window (OpenGL 3.0 any). Retrying...\n";
-    window = tryCreateWindow(2, 1, kAnyProfile);
+  GLFWwindow* window = nullptr;
+  if (backend == Modularity::GraphicsBackend::Vulkan) {
+    window = tryCreateVulkanWindow();
+    if (!window) {
+      std::cerr << "Failed to create GLFW window (Vulkan no-API)\n";
+    }
+  } else {
+    window = tryCreateWindow(3, 3, GLFW_OPENGL_CORE_PROFILE);
+    if (!window) {
+      std::cerr << "Failed to create GLFW window (OpenGL 3.3 core). Retrying...\n";
+      window = tryCreateWindow(3, 3, kAnyProfile);
+    }
+    if (!window) {
+      std::cerr << "Failed to create GLFW window (OpenGL 3.3 any). Retrying...\n";
+      window = tryCreateWindow(3, 0, kAnyProfile);
+    }
+    if (!window) {
+      std::cerr << "Failed to create GLFW window (OpenGL 3.0 any). Retrying...\n";
+      window = tryCreateWindow(2, 1, kAnyProfile);
+    }
   }
   if (!window) {
     std::cerr << "Failed to create GLFW window\n";
@@ -65,15 +79,17 @@ GLFWwindow *Window::makeWindow() {
     return nullptr;
   }
 
-  glfwMakeContextCurrent(window);
-  glfwSwapInterval(0);
+  if (backend == Modularity::GraphicsBackend::OpenGL) {
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(0);
 
-  if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-    std::cerr << "Failed to initialize GLAD\n";
-    return nullptr;
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+      std::cerr << "Failed to initialize GLAD\n";
+      return nullptr;
+    }
+
+    std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n";
   }
-
-  std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n";
 
   if (pixels) {
     GLFWimage icon;

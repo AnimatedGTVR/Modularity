@@ -4927,10 +4927,16 @@ void Engine::renderConsolePanel() {
 
     ImGui::Separator();
 
-    Texture* infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
-    Texture* warningLogo = renderer.getTexture("Resources/Engine-Root/Warning Logo.png");
-    Texture* errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
-    Texture* successLogo = renderer.getTexture("Resources/Engine-Root/Modu-Logo.png");
+    Texture* infoLogo = nullptr;
+    Texture* warningLogo = nullptr;
+    Texture* errorLogo = nullptr;
+    Texture* successLogo = nullptr;
+    if (rendererInitialized) {
+        infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+        warningLogo = renderer.getTexture("Resources/Engine-Root/Warning Logo.png");
+        errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
+        successLogo = renderer.getTexture("Resources/Engine-Root/Modu-Logo.png");
+    }
 
     auto typeLabel = [](ConsoleMessageType type) -> const char* {
         switch (type) {
@@ -5064,8 +5070,12 @@ void Engine::renderLatestErrorBar() {
     if (!viewport) return;
 
     const bool hasError = !latestErrorMessage.empty();
-    Texture* errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
-    Texture* infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+    Texture* errorLogo = nullptr;
+    Texture* infoLogo = nullptr;
+    if (rendererInitialized) {
+        errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
+        infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+    }
     Texture* icon = hasError ? errorLogo : infoLogo;
 
     std::string bodyText = hasError

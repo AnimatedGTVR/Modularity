@@ -14,6 +14,7 @@
 #include "PackageManager.h"
 #include "ManagedScriptRuntime.h"
 #include "ThirdParty/ImGuiColorTextEdit/TextEditor.h"
+#include "Vulkan/VulkanRenderer.h"
 #include "../include/Window/Window.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -28,10 +29,13 @@ void window_size_callback(GLFWwindow* window, int width, int height);
 fs::path resolveScriptsConfigPath(const Project& project);
 
 class Engine {
+    friend void window_size_callback(GLFWwindow* window, int width, int height);
 private:
     Window window;
     GLFWwindow* editorWindow = nullptr;
+    Modularity::GraphicsBackend graphicsBackend = Modularity::GraphicsBackend::OpenGL;
     Renderer renderer;
+    std::unique_ptr<Modularity::VulkanRenderer> vulkanRenderer;
     Camera camera;
     ViewportController viewportController;
     float deltaTime = 0.0f;
@@ -121,6 +125,8 @@ private:
     std::vector<ScriptEditorWindowEntry> scriptEditorWindows;
     bool scriptEditorWindowsDirty = true;
     bool rendererInitialized = false;
+    bool vulkanRendererInitialized = false;
+    bool vulkanMaterialFeatureWarningShown = false;
     
     bool showImportOBJDialog = false;
     bool showImportModelDialog = false;  // For Assimp models
@@ -157,7 +163,10 @@ private:
     bool workspaceLayoutDirty = false;
     bool pendingWorkspaceReload = false;
     bool workspaceLayoutSavePending = false;
+    bool workspaceLayoutAutoRepairPending = false;
+    double workspaceLayoutStabilizeUntil = 0.0;
     fs::path pendingWorkspaceIniPath;
+    ImGuiID mainDockspaceId = 0;
     bool editorSettingsDirty = false;
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
@@ -428,6 +437,7 @@ private:
     int sceneLoadNextId = 0;
     int sceneLoadVersion = 9;
     float sceneLoadTimeOfDay = -1.0f;
+    float sceneTimeOfDay = 0.5f;
     bool specMode = false;
     bool testMode = false;
     bool collisionWireframe = false;
@@ -578,6 +588,8 @@ private:
     fs::path getProjectPreviewPath(const fs::path& projectPathOrFile) const;
     void loadScene(const std::string& sceneName);
     void createNewScene(const std::string& sceneName);
+    void applySceneTimeOfDay(float timeOfDay);
+    float getSceneTimeOfDay();
     
     // Scene object management
     void addObject(ObjectType type, const std::string& baseName);
@@ -609,6 +621,10 @@ private:
     // ImGui setup
     void setupImGui();
     bool initRenderer();
+    bool initVulkanRenderer();
+    Modularity::GraphicsBackend resolveRequestedBackend() const;
+    bool usingVulkan() const { return graphicsBackend == Modularity::GraphicsBackend::Vulkan; }
+    void onWindowResized(int width, int height);
 
 public:
     Engine() = default;

@@ -17,6 +17,7 @@ Project::Project(const std::string& projectName, const fs::path& basePath)
     scriptsConfigPath = projectPath / "scripts.modu";
     usesNewLayout = true;
     pipeline = ProjectPipeline::Pipeline3D;
+    rendererBackend = Modularity::GraphicsBackend::OpenGL;
 }
 
 bool Project::create() {
@@ -127,6 +128,9 @@ bool Project::load(const fs::path& projectFilePath) {
                 } else {
                     pipeline = ProjectPipeline::Pipeline3D;
                 }
+            } else if (line.find("renderer=") == 0) {
+                std::string value = line.substr(9);
+                rendererBackend = Modularity::GraphicsBackendFromString(value);
             }
         }
         file.close();
@@ -148,6 +152,7 @@ void Project::saveProjectFile() const {
     file << "name=" << name << "\n";
     file << "lastScene=" << currentSceneName << "\n";
     file << "pipeline=" << (pipeline == ProjectPipeline::Pipeline2D ? "2D" : "3D") << "\n";
+    file << "renderer=" << Modularity::ToString(rendererBackend) << "\n";
     file.close();
 }
 

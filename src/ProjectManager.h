@@ -27,6 +27,7 @@ public:
     bool hasUnsavedChanges = false;
     bool usesNewLayout = false;
     ProjectPipeline pipeline = ProjectPipeline::Pipeline3D;
+    Modularity::GraphicsBackend rendererBackend = Modularity::GraphicsBackend::OpenGL;
 
     Project() = default;
     Project(const std::string& projectName, const fs::path& basePath);
@@ -48,6 +49,7 @@ public:
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     int newProjectPipelineMode = 0;
+    int newProjectRendererMode = 0;
     std::string errorMessage;
     Project currentProject;
 

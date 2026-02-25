@@ -419,7 +419,7 @@ void applySuperRoundStyle(ImGuiStyle& style) {
 
 #pragma region Dockspace
 // Call once per frame before rendering editor panels.
-void setupDockspace(const std::function<void()>& menuBarContent) {
+ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
     static bool dockspaceOpen = true;
     static ImGuiDockNodeFlags dockspaceFlags = ImGuiDockNodeFlags_None;
 
@@ -450,5 +450,6 @@ void setupDockspace(const std::function<void()>& menuBarContent) {
     ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), dockspaceFlags);
 
     ImGui::End();
+    return dockspaceId;
 }
 #pragma endregion

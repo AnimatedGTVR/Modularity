@@ -363,27 +363,39 @@ void Engine::renderLauncher() {
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
 
-        Texture* previewTexture = nullptr;
+        ImTextureID previewImageId = static_cast<ImTextureID>(0);
+        int previewImageWidth = 0;
+        int previewImageHeight = 0;
         if ((projectLoadInProgress || sceneLoadInProgress || launcherTransitionActive || launcherTransitionPendingHide) &&
             !launcherLoadingPreviewPath.empty()) {
             fs::path previewPath = launcherLoadingPreviewPath;
             if (fs::exists(previewPath)) {
-                previewTexture = renderer.getTexture(previewPath.string());
+                if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+                    previewImageId = vulkanRenderer->getOrCreateUIImage(previewPath.string(),
+                                                                       &previewImageWidth,
+                                                                       &previewImageHeight);
+                } else if (!usingVulkan()) {
+                    if (Texture* previewTexture = renderer.getTexture(previewPath.string())) {
+                        previewImageId = (ImTextureID)(intptr_t)previewTexture->GetID();
+                        previewImageWidth = previewTexture->GetWidth();
+                        previewImageHeight = previewTexture->GetHeight();
+                    }
+                }
             }
         }
 
-        if (previewTexture) {
+        if (previewImageId != static_cast<ImTextureID>(0)) {
             DrawBlurredImageCover(drawList,
-                                  (ImTextureID)(intptr_t)previewTexture->GetID(),
+                                  previewImageId,
                                   windowPos,
                                   ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
-                                  previewTexture->GetWidth(),
-                                  previewTexture->GetHeight(),
+                                  previewImageWidth,
+                                  previewImageHeight,
                                   0.55f,
                                   10.0f * uiScale);
         }
 
-        const float bgAlpha = previewTexture ? 0.60f : 1.0f;
+        const float bgAlpha = (previewImageId != static_cast<ImTextureID>(0)) ? 0.60f : 1.0f;
         ImVec4 gradTL = bgTopLeft; gradTL.w = bgAlpha;
         ImVec4 gradTR = bgTopRight; gradTR.w = bgAlpha;
         ImVec4 gradBR = bgBottomRight; gradBR.w = bgAlpha;
@@ -452,17 +464,21 @@ void Engine::renderLauncher() {
 
         ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "GET STARTED");
         ImGui::Spacing();
+        const bool launcherBusy = projectLoadInProgress || sceneLoadInProgress ||
+                                  launcherTransitionActive || launcherTransitionPendingHide;
 
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.32f, 0.22f, 0.54f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.43f, 0.30f, 0.70f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.26f, 0.60f, 1.0f));
 
+        ImGui::BeginDisabled(launcherBusy);
         if (ImGui::Button("New Project", ImVec2(-1, 40.0f * uiScale)))
         {
             projectManager.showNewProjectDialog = true;
             projectManager.errorMessage.clear();
             std::memset(projectManager.newProjectName, 0, sizeof(projectManager.newProjectName));
             projectManager.newProjectPipelineMode = 0;
+            projectManager.newProjectRendererMode = 0;
 
             #ifdef _WIN32
             char documentsPath[MAX_PATH];
@@ -486,6 +502,7 @@ void Engine::renderLauncher() {
             projectManager.showOpenProjectDialog = true;
             projectManager.errorMessage.clear();
         }
+        ImGui::EndDisabled();
 
         ImGui::PopStyleColor(3);
 
@@ -555,7 +572,7 @@ void Engine::renderLauncher() {
 
                 if (ImGui::BeginPopupContextItem("RecentProjectContext"))
                 {
-                    if (ImGui::MenuItem("Open"))
+                    if (ImGui::MenuItem("Open", nullptr, false, !launcherBusy))
                     {
                         if (audio.isReady()) {
                             audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
@@ -587,18 +604,30 @@ void Engine::renderLauncher() {
                 }
 
                 ImDrawList* list = ImGui::GetWindowDrawList();
-                Texture* previewTex = nullptr;
+                ImTextureID previewTexId = static_cast<ImTextureID>(0);
+                int previewTexWidth = 0;
+                int previewTexHeight = 0;
                 fs::path previewPath = getProjectPreviewPath(rp.path);
                 if (!previewPath.empty() && fs::exists(previewPath)) {
-                    previewTex = renderer.getTexture(previewPath.string());
+                    if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+                        previewTexId = vulkanRenderer->getOrCreateUIImage(previewPath.string(),
+                                                                          &previewTexWidth,
+                                                                          &previewTexHeight);
+                    } else if (!usingVulkan()) {
+                        if (Texture* previewTex = renderer.getTexture(previewPath.string())) {
+                            previewTexId = (ImTextureID)(intptr_t)previewTex->GetID();
+                            previewTexWidth = previewTex->GetWidth();
+                            previewTexHeight = previewTex->GetHeight();
+                        }
+                    }
                 }
-                if (previewTex) {
+                if (previewTexId != static_cast<ImTextureID>(0)) {
                     DrawImageCover(list,
-                                   (ImTextureID)(intptr_t)previewTex->GetID(),
+                                   previewTexId,
                                    cardPos,
                                    ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                                   previewTex->GetWidth(),
-                                   previewTex->GetHeight(),
+                                   previewTexWidth,
+                                   previewTexHeight,
                                    ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)),
                                    14.0f * uiScale);
                     ImVec4 overlayCol = hovered ? ImVec4(0.08f, 0.09f, 0.13f, 0.55f)
@@ -626,10 +655,12 @@ void Engine::renderLauncher() {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.32f, 0.38f, 0.55f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.35f, 0.50f, 1.0f));
+                ImGui::BeginDisabled(launcherBusy);
                 bool openClicked = ImGui::Button("Open", ImVec2(buttonWidth, 30.0f * uiScale));
+                ImGui::EndDisabled();
                 ImGui::PopStyleColor(3);
 
-                if ((clicked && !openClicked) || openClicked)
+                if (!launcherBusy && ((clicked && !openClicked) || openClicked))
                 {
                     if (audio.isReady()) {
                         audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
@@ -813,7 +844,7 @@ void Engine::renderNewProjectDialog() {
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 250), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_Appearing);
 
     if (ImGui::Begin("New Project", &projectManager.showNewProjectDialog,
                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
@@ -829,6 +860,19 @@ void Engine::renderNewProjectDialog() {
         ImGui::SetNextItemWidth(-1);
         ImGui::Combo("Pipeline", &projectManager.newProjectPipelineMode, pipelineOptions, IM_ARRAYSIZE(pipelineOptions));
         ImGui::TextDisabled("This can be changed later in Project Settings.");
+
+        ImGui::Spacing();
+
+        const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("Renderer", &projectManager.newProjectRendererMode, rendererOptions, IM_ARRAYSIZE(rendererOptions));
+#if !MODULARITY_HAS_VULKAN
+        if (projectManager.newProjectRendererMode == 1) {
+            projectManager.newProjectRendererMode = 0;
+            ImGui::TextDisabled("Vulkan is unavailable in this build.");
+        }
+#endif
+        ImGui::TextDisabled("OpenGL is default. Renderer selection applies after restart.");
 
         ImGui::Spacing();
 
@@ -1256,6 +1300,26 @@ void Engine::renderProjectBrowserPanel() {
                 applyProjectPipelineDefaults(false);
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
+
+            int rendererIndex = (projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
+            const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
+            if (ImGui::Combo("Renderer API##ProjectRendererApi", &rendererIndex, rendererOptions, IM_ARRAYSIZE(rendererOptions))) {
+#if !MODULARITY_HAS_VULKAN
+                if (rendererIndex == 1) {
+                    rendererIndex = 0;
+                    addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
+                                      ConsoleMessageType::Warning);
+                }
+#endif
+                projectManager.currentProject.rendererBackend =
+                    (rendererIndex == 1) ? Modularity::GraphicsBackend::Vulkan : Modularity::GraphicsBackend::OpenGL;
+                projectManager.currentProject.saveProjectFile();
+            }
+            if (projectManager.currentProject.rendererBackend != graphicsBackend) {
+                ImGui::TextDisabled("Current session renderer: %s", Modularity::ToString(graphicsBackend));
+                ImGui::TextDisabled("Restart editor to apply project renderer.");
+            }
+
             if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D) {
                 ImGui::TextDisabled("2D world editing is always enabled in this project.");
                 if (ImGui::Checkbox("Show Sprite Preview Panel", &showSpritePreviewPanel)) editorSettingsChanged = true;
@@ -1310,7 +1374,13 @@ void Engine::renderProjectBrowserPanel() {
             if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
         }
 
-        if (ImGui::CollapsingHeader("Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Renderer##ProjectRendererSection", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const bool openGlSettingsAvailable = rendererInitialized && !usingVulkan();
+            if (!openGlSettingsAvailable) {
+                ImGui::TextDisabled("OpenGL renderer settings are editable only in OpenGL sessions.");
+                ImGui::TextDisabled("Current session renderer: %s", Modularity::ToString(graphicsBackend));
+            }
+            ImGui::BeginDisabled(!openGlSettingsAvailable);
             glm::vec3 ambient = renderer.getAmbientColor();
             if (ImGui::ColorEdit3("Ambient Color", &ambient.x)) {
                 renderer.setAmbientColor(ambient);
@@ -1331,6 +1401,7 @@ void Engine::renderProjectBrowserPanel() {
                 buildSettings.rendererAutoReloadShaders = shaderAutoReload;
                 buildSettingsChanged = true;
             }
+            ImGui::EndDisabled();
         }
 
         if (ImGui::CollapsingHeader("Editor Camera", ImGuiTreeNodeFlags_DefaultOpen)) {

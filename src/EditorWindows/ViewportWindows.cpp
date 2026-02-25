@@ -848,6 +848,7 @@ void Engine::renderGameViewportWindow() {
             break;
         }
     }
+    const bool hasVulkanSceneTexture = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
     const bool project2DPipeline = isProject2DPipeline();
 
     bool postFxChanged = false;
@@ -953,24 +954,112 @@ void Engine::renderGameViewportWindow() {
         gameViewCursorLocked = false;
     }
 
-    if (playerCam && rendererInitialized) {
-        unsigned int tex = renderer.renderScenePreview(
-            makeCameraFromObject(*playerCam),
-            sceneObjects,
-            renderWidth,
-            renderHeight,
-            playerCam->camera.fov,
-            playerCam->camera.nearClip,
-            playerCam->camera.farClip,
-            playerCam->camera.applyPostFX
-        );
+    if (!rendererInitialized && !hasVulkanSceneTexture) {
+        ImVec2 imageSize(std::max(1.0f, renderWidth * zoom), std::max(1.0f, renderHeight * zoom));
+        ImVec2 cursorPos = ImGui::GetCursorPos();
+        float offsetX = std::max(0.0f, (avail.x - imageSize.x) * 0.5f);
+        float offsetY = std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
+        ImGui::SetCursorPos(ImVec2(cursorPos.x + offsetX, cursorPos.y + offsetY));
+        ImGui::Dummy(imageSize);
+
+        ImVec2 imageMin = ImGui::GetItemRectMin();
+        ImVec2 imageMax = ImGui::GetItemRectMax();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(imageMin, imageMax, IM_COL32(14, 18, 30, 255), 8.0f);
+        drawList->AddRect(imageMin, imageMax, IM_COL32(78, 96, 128, 210), 8.0f, 0, 1.5f);
+
+        const char* title = usingVulkan()
+            ? "Vulkan Game Viewport Unavailable"
+            : "Game Viewport Unavailable";
+        const char* line1 = usingVulkan()
+            ? "Vulkan game render target is not ready."
+            : "Renderer is not initialized for this session.";
+        const char* line2 = usingVulkan()
+            ? "Open a project scene or retry after renderer initialization."
+            : "Open or create a project to initialize rendering.";
+
+        ImVec2 titleSize = ImGui::CalcTextSize(title);
+        ImVec2 line1Size = ImGui::CalcTextSize(line1);
+        ImVec2 line2Size = ImGui::CalcTextSize(line2);
+        float centerX = imageMin.x + imageSize.x * 0.5f;
+        float baseY = imageMin.y + imageSize.y * 0.5f - 28.0f;
+        drawList->AddText(ImVec2(centerX - titleSize.x * 0.5f, baseY),
+                          IM_COL32(220, 228, 244, 255),
+                          title);
+        drawList->AddText(ImVec2(centerX - line1Size.x * 0.5f, baseY + 24.0f),
+                          IM_COL32(170, 184, 212, 255),
+                          line1);
+        drawList->AddText(ImVec2(centerX - line2Size.x * 0.5f, baseY + 44.0f),
+                          IM_COL32(170, 184, 212, 255),
+                          line2);
+
+        gameViewportFocused = ImGui::IsWindowFocused();
+    } else if (!playerCam && (rendererInitialized || hasVulkanSceneTexture)) {
+        ImVec2 imageSize(std::max(1.0f, renderWidth * zoom), std::max(1.0f, renderHeight * zoom));
+        ImVec2 cursorPos = ImGui::GetCursorPos();
+        float offsetX = std::max(0.0f, (avail.x - imageSize.x) * 0.5f);
+        float offsetY = std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
+        ImGui::SetCursorPos(ImVec2(cursorPos.x + offsetX, cursorPos.y + offsetY));
+        ImGui::Dummy(imageSize);
+
+        ImVec2 imageMin = ImGui::GetItemRectMin();
+        ImVec2 imageMax = ImGui::GetItemRectMax();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(imageMin, imageMax, IM_COL32(14, 18, 30, 255), 8.0f);
+        drawList->AddRect(imageMin, imageMax, IM_COL32(78, 96, 128, 210), 8.0f, 0, 1.5f);
+
+        const char* title = "Game Viewport Camera Missing";
+        const char* line1 = "No enabled Player camera was found in the scene.";
+        const char* line2 = "Create a Camera and set its type to Player.";
+        ImVec2 titleSize = ImGui::CalcTextSize(title);
+        ImVec2 line1Size = ImGui::CalcTextSize(line1);
+        ImVec2 line2Size = ImGui::CalcTextSize(line2);
+        float centerX = imageMin.x + imageSize.x * 0.5f;
+        float baseY = imageMin.y + imageSize.y * 0.5f - 28.0f;
+        drawList->AddText(ImVec2(centerX - titleSize.x * 0.5f, baseY),
+                          IM_COL32(220, 228, 244, 255),
+                          title);
+        drawList->AddText(ImVec2(centerX - line1Size.x * 0.5f, baseY + 24.0f),
+                          IM_COL32(170, 184, 212, 255),
+                          line1);
+        drawList->AddText(ImVec2(centerX - line2Size.x * 0.5f, baseY + 44.0f),
+                          IM_COL32(170, 184, 212, 255),
+                          line2);
+        gameViewportFocused = ImGui::IsWindowFocused();
+    } else if (playerCam && (rendererInitialized || hasVulkanSceneTexture)) {
+        ImTextureID texId = static_cast<ImTextureID>(0);
+        if (rendererInitialized) {
+            unsigned int tex = renderer.renderScenePreview(
+                makeCameraFromObject(*playerCam),
+                sceneObjects,
+                renderWidth,
+                renderHeight,
+                playerCam->camera.fov,
+                playerCam->camera.nearClip,
+                playerCam->camera.farClip,
+                playerCam->camera.applyPostFX
+            );
+            texId = (ImTextureID)(intptr_t)tex;
+        } else if (vulkanRenderer) {
+            vulkanRenderer->setGameSceneSize(static_cast<uint32_t>(std::max(1, renderWidth)),
+                                             static_cast<uint32_t>(std::max(1, renderHeight)));
+            texId = vulkanRenderer->getGameSceneTextureID();
+        }
 
         ImVec2 imageSize(std::max(1.0f, renderWidth * zoom), std::max(1.0f, renderHeight * zoom));
         ImVec2 cursorPos = ImGui::GetCursorPos();
         float offsetX = std::max(0.0f, (avail.x - imageSize.x) * 0.5f);
         float offsetY = std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
         ImGui::SetCursorPos(ImVec2(cursorPos.x + offsetX, cursorPos.y + offsetY));
-        ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+        if (texId != static_cast<ImTextureID>(0)) {
+            if (rendererInitialized) {
+                ImGui::Image(texId, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+            } else {
+                ImGui::Image(texId, imageSize, ImVec2(0, 0), ImVec2(1, 1));
+            }
+        } else {
+            ImGui::Dummy(imageSize);
+        }
         bool imageHovered = ImGui::IsItemHovered();
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
@@ -987,7 +1076,8 @@ void Engine::renderGameViewportWindow() {
             float fps = ImGui::GetIO().Framerate;
             float frameMs = (fps > 0.0f) ? (1000.0f / fps) : 0.0f;
             int zoomPercent = (int)std::round(zoom * 100.0f);
-            const Renderer::RenderStats& stats = renderer.getLastPreviewStats();
+            static const Renderer::RenderStats zeroStats{};
+            const Renderer::RenderStats& stats = rendererInitialized ? renderer.getLastPreviewStats() : zeroStats;
 
             char line1[128];
             char line2[128];
@@ -1356,7 +1446,7 @@ void Engine::renderGameViewportWindow() {
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
-                if (!obj.albedoTexturePath.empty()) {
+                if (rendererInitialized && !obj.albedoTexturePath.empty()) {
                     if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
                         texId = tex->GetID();
                     }
@@ -1974,6 +2064,36 @@ struct DockTabInteractionState {
     bool doubleClicked = false;
 };
 
+bool matchesVisibleWindowTitle(const char* windowName, const char* expectedTitle) {
+    if (!windowName || !expectedTitle) return false;
+    const char* idSep = std::strstr(windowName, "###");
+    if (!idSep) {
+        idSep = std::strstr(windowName, "##");
+    }
+    const size_t visibleLen = idSep ? static_cast<size_t>(idSep - windowName) : std::strlen(windowName);
+    return std::strlen(expectedTitle) == visibleLen &&
+           std::strncmp(windowName, expectedTitle, visibleLen) == 0;
+}
+
+ImGuiWindow* findWindowByVisibleTitle(const char* expectedTitle) {
+    if (!expectedTitle || !*expectedTitle) return nullptr;
+    if (ImGuiWindow* exact = ImGui::FindWindowByName(expectedTitle)) {
+        return exact;
+    }
+
+    ImGuiContext* ctx = ImGui::GetCurrentContext();
+    if (!ctx) return nullptr;
+    for (ImGuiWindow* window : ctx->Windows) {
+        if (!window) continue;
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0) continue;
+        if (!window->DockNode) continue;
+        if (window && matchesVisibleWindowTitle(window->Name, expectedTitle)) {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
 DockTabInteractionState queryDockTabInteraction(const DockDrawerTarget& target,
                                                 const char* const* anchorWindows,
                                                 int anchorCount) {
@@ -1986,7 +2106,7 @@ DockTabInteractionState queryDockTabInteraction(const DockDrawerTarget& target,
     }
 
     for (int i = 0; i < anchorCount; ++i) {
-        ImGuiWindow* window = ImGui::FindWindowByName(anchorWindows[i]);
+        ImGuiWindow* window = findWindowByVisibleTitle(anchorWindows[i]);
         if (!window) continue;
         ImRect tabRect = window->DC.DockTabItemRect;
         if (tabRect.GetWidth() <= 0.0f || tabRect.GetHeight() <= 0.0f) continue;
@@ -2117,7 +2237,7 @@ DockDrawerTarget findDockDrawerTarget(const char* const* anchorWindows, int anch
 
     for (int anchorIdx = 0; anchorIdx < anchorCount; ++anchorIdx) {
         const char* name = anchorWindows[anchorIdx];
-        ImGuiWindow* anchor = ImGui::FindWindowByName(name);
+        ImGuiWindow* anchor = findWindowByVisibleTitle(name);
         if (!anchor || !anchor->DockNode) continue;
 
         ImGuiDockNode* source = anchor->DockNode;
@@ -2558,7 +2678,67 @@ void Engine::renderMainMenuBar() {
         ImGui::EndMainMenuBar();
     }
 
-    if (workspaceLayoutDirty) {
+    auto layoutFileHasDockNodesForDockspace = [](const fs::path& layoutPath, ImGuiID dockspaceId) {
+        if (dockspaceId == 0) {
+            return false;
+        }
+        std::ifstream in(layoutPath);
+        if (!in.is_open()) {
+            return false;
+        }
+
+        char dockspaceIdHex[16];
+        std::snprintf(dockspaceIdHex, sizeof(dockspaceIdHex), "0x%08X", dockspaceId);
+
+        bool hasDockingData = false;
+        bool hasDockNodes = false;
+        bool hasMatchingDockspace = false;
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line == "[Docking][Data]") {
+                hasDockingData = true;
+                continue;
+            }
+            if (!hasDockingData) {
+                continue;
+            }
+            if (!line.empty() && line.front() == '[') {
+                break;
+            }
+            if (line.find("DockNode") != std::string::npos) {
+                hasDockNodes = true;
+            }
+            if (line.find("DockSpace") != std::string::npos &&
+                line.find(dockspaceIdHex) != std::string::npos) {
+                hasMatchingDockspace = true;
+            }
+        }
+        return hasDockingData && hasDockNodes && hasMatchingDockspace;
+    };
+
+    if (pendingWorkspaceReload) {
+        if (mainDockspaceId != 0) {
+            const bool hasLayoutFile = !pendingWorkspaceIniPath.empty() && fs::exists(pendingWorkspaceIniPath);
+            const bool hasMatchingDockspace =
+                hasLayoutFile && layoutFileHasDockNodesForDockspace(pendingWorkspaceIniPath, mainDockspaceId);
+            if (hasMatchingDockspace) {
+                ImGui::LoadIniSettingsFromDisk(pendingWorkspaceIniPath.string().c_str());
+                if (ImGui::DockBuilderGetNode(mainDockspaceId) == nullptr) {
+                    ImGui::DockBuilderRemoveNode(mainDockspaceId);
+                    workspaceLayoutDirty = true;
+                }
+            } else {
+                // No persisted layout to load (or stale DockSpace ID): force deterministic rebuild.
+                ImGui::DockBuilderRemoveNode(mainDockspaceId);
+                workspaceLayoutDirty = true;
+            }
+            pendingWorkspaceReload = false;
+            workspaceLayoutSavePending = false;
+            workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
+        }
+    }
+
+    if (!pendingWorkspaceReload && workspaceLayoutDirty) {
         buildWorkspaceLayout(currentWorkspace);
     }
 
@@ -2584,6 +2764,8 @@ void Engine::renderMainMenuBar() {
 void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
     currentWorkspace = mode;
     workspaceLayoutSavePending = false;
+    workspaceLayoutAutoRepairPending = true;
+    workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
     switch (mode) {
         case WorkspaceMode::Default:
             showHierarchy = true;
@@ -2628,13 +2810,22 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
         if (!in.is_open()) return false;
 
         bool hasDockingData = false;
+        bool hasDockNodes = false;
+        bool hasDockspace = false;
         std::string line;
         while (std::getline(in, line)) {
             if (line == "[Docking][Data]") {
                 hasDockingData = true;
+                continue;
+            }
+            if (hasDockingData && line.find("DockNode") != std::string::npos) {
+                hasDockNodes = true;
+            }
+            if (hasDockingData && line.find("DockSpace") != std::string::npos) {
+                hasDockspace = true;
             }
         }
-        return hasDockingData;
+        return hasDockingData && hasDockNodes && hasDockspace;
     };
 
     fs::path layoutPath = getWorkspaceLayoutPath(mode);
@@ -2642,12 +2833,14 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
         pendingWorkspaceIniPath = layoutPath;
         pendingWorkspaceReload = true;
         workspaceLayoutDirty = false;
+        workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
         return;
     }
 
     if (rebuildLayout) {
         buildWorkspaceLayout(mode);
         workspaceLayoutDirty = false;
+        workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
         return;
     }
 
@@ -2657,6 +2850,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
     pendingWorkspaceIniPath.clear();
     pendingWorkspaceReload = true;
     workspaceLayoutDirty = true;
+    workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
 }
 
 void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
@@ -2665,15 +2859,11 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         return;
     }
 
-    ImGuiID dockspaceId = 0;
-    if (ImGuiWindow* dockHost = ImGui::FindWindowByName("DockSpace")) {
-        dockspaceId = dockHost->GetID("MainDockspace");
-    } else if (ImGui::GetCurrentWindowRead()) {
-        dockspaceId = ImGui::GetID("MainDockspace");
-    } else {
+    if (mainDockspaceId == 0) {
         workspaceLayoutDirty = true;
         return;
     }
+    const ImGuiID dockspaceId = mainDockspaceId;
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     if (!viewport) {
@@ -2683,7 +2873,11 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
 
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
+    ImVec2 dockspaceSize = viewport->WorkSize;
+    if (ImGuiWindow* dockHost = ImGui::FindWindowByName("DockSpace")) {
+        dockspaceSize = dockHost->Size;
+    }
+    ImGui::DockBuilderSetNodeSize(dockspaceId, dockspaceSize);
 
     ImGuiID dockMain = dockspaceId;
     if (mode == WorkspaceMode::Default) {
@@ -2736,6 +2930,8 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
 
     ImGui::DockBuilderFinish(dockspaceId);
     workspaceLayoutDirty = false;
+    workspaceLayoutSavePending = false;
+    workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
 }
 
 #pragma endregion
@@ -2775,8 +2971,51 @@ void Engine::renderViewport() {
     bool blockSelection = false;
     const bool project2DPipeline = isProject2DPipeline();
     const bool worldUiEditing = is2DWorldEditingEnabled();
+    const bool hasVulkanSceneTexture = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
 
-    if (rendererInitialized) {
+    if (hasVulkanSceneTexture && imageSize.x > 0.0f && imageSize.y > 0.0f) {
+        vulkanRenderer->setViewportSceneSize(static_cast<uint32_t>(std::max(1.0f, imageSize.x)),
+                                             static_cast<uint32_t>(std::max(1.0f, imageSize.y)));
+    }
+
+    if (!rendererInitialized && !hasVulkanSceneTexture) {
+        ImVec2 drawSize(std::max(1.0f, imageSize.x), std::max(1.0f, imageSize.y));
+        ImGui::Dummy(drawSize);
+        ImVec2 imageMin = ImGui::GetItemRectMin();
+        ImVec2 imageMax = ImGui::GetItemRectMax();
+        mouseOverViewportImage = ImGui::IsItemHovered();
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(imageMin, imageMax, IM_COL32(14, 18, 30, 255), 8.0f);
+        dl->AddRect(imageMin, imageMax, IM_COL32(78, 96, 128, 210), 8.0f, 0, 1.5f);
+
+        const char* title = usingVulkan()
+            ? "Vulkan Scene Viewport Unavailable"
+            : "Scene Viewport Unavailable";
+        const char* line1 = usingVulkan()
+            ? "Vulkan scene render target is not ready."
+            : "Renderer is not initialized for this session.";
+        const char* line2 = usingVulkan()
+            ? "Open a project scene or retry after renderer initialization."
+            : "Open or create a project to initialize rendering.";
+
+        ImVec2 titleSize = ImGui::CalcTextSize(title);
+        ImVec2 line1Size = ImGui::CalcTextSize(line1);
+        ImVec2 line2Size = ImGui::CalcTextSize(line2);
+        float centerX = imageMin.x + drawSize.x * 0.5f;
+        float baseY = imageMin.y + drawSize.y * 0.5f - 28.0f;
+        dl->AddText(ImVec2(centerX - titleSize.x * 0.5f, baseY),
+                    IM_COL32(220, 228, 244, 255),
+                    title);
+        dl->AddText(ImVec2(centerX - line1Size.x * 0.5f, baseY + 24.0f),
+                    IM_COL32(170, 184, 212, 255),
+                    line1);
+        dl->AddText(ImVec2(centerX - line2Size.x * 0.5f, baseY + 44.0f),
+                    IM_COL32(170, 184, 212, 255),
+                    line2);
+    }
+
+    if (rendererInitialized || hasVulkanSceneTexture) {
         glm::mat4 proj = glm::perspective(
             glm::radians(buildSettings.editorCameraFov),
             (float)viewportWidth / (float)viewportHeight,
@@ -2784,17 +3023,24 @@ void Engine::renderViewport() {
         );
 
         glm::mat4 view = camera.getViewMatrix();
-
-        renderer.beginRender(view, proj, camera.position);
-        renderer.renderScene(camera, sceneObjects, selectedObjectId,
-                            buildSettings.editorCameraFov,
-                            buildSettings.editorCameraNear,
-                            buildSettings.editorCameraFar,
-                            false,
-                            &selectedObjectIds);
-        unsigned int tex = renderer.getViewportTexture();
-
-        ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+        if (rendererInitialized) {
+            renderer.beginRender(view, proj, camera.position);
+            renderer.renderScene(camera, sceneObjects, selectedObjectId,
+                                buildSettings.editorCameraFov,
+                                buildSettings.editorCameraNear,
+                                buildSettings.editorCameraFar,
+                                false,
+                                &selectedObjectIds);
+            unsigned int tex = renderer.getViewportTexture();
+            ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+        } else {
+            ImTextureID texId = vulkanRenderer ? vulkanRenderer->getViewportSceneTextureID() : static_cast<ImTextureID>(0);
+            if (texId != static_cast<ImTextureID>(0)) {
+                ImGui::Image(texId, imageSize, ImVec2(0, 0), ImVec2(1, 1));
+            } else {
+                ImGui::Dummy(imageSize);
+            }
+        }
 
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
@@ -3357,7 +3603,7 @@ void Engine::renderViewport() {
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
-                if (!obj.albedoTexturePath.empty()) {
+                if (rendererInitialized && !obj.albedoTexturePath.empty()) {
                     if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
                         texId = tex->GetID();
                     }
@@ -5239,25 +5485,50 @@ void Engine::renderViewport() {
             return ObjectType::Empty;
         };
 
-        auto getMainTypeGizmoIcon = [&](ObjectType type) -> Texture* {
+        struct GizmoIconImage {
+            ImTextureID id = static_cast<ImTextureID>(0);
+            bool flipY = false;
+        };
+
+        auto getMainTypeGizmoIcon = [&](ObjectType type) -> GizmoIconImage {
+            const char* iconPath = nullptr;
             switch (type) {
                 case ObjectType::Camera:
-                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Camera view.png");
+                    iconPath = "Resources/Engine-Root/Gizmos/Placeholder/Camera view.png";
+                    break;
                 case ObjectType::DirectionalLight:
                 case ObjectType::PointLight:
                 case ObjectType::SpotLight:
                 case ObjectType::AreaLight:
-                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Light bulb.png");
+                    iconPath = "Resources/Engine-Root/Gizmos/Placeholder/Light bulb.png";
+                    break;
                 case ObjectType::UIText:
-                    return renderer.getTexture("Resources/Engine-Root/Gizmos/Placeholder/Dynamic Text.png");
+                    iconPath = "Resources/Engine-Root/Gizmos/Placeholder/Dynamic Text.png";
+                    break;
                 default:
-                    return nullptr;
+                    return {};
             }
+
+            if (rendererInitialized) {
+                if (Texture* icon = renderer.getTexture(iconPath); icon && icon->GetID()) {
+                    return { static_cast<ImTextureID>(icon->GetID()), true };
+                }
+                return {};
+            }
+
+            if (hasVulkanSceneTexture && vulkanRenderer) {
+                ImTextureID vkIcon = vulkanRenderer->getOrCreateUIImage(iconPath);
+                if (vkIcon != static_cast<ImTextureID>(0)) {
+                    return { vkIcon, false };
+                }
+            }
+
+            return {};
         };
 
         auto drawMainTypeGizmoIcon = [&](const SceneObject& obj) {
-            Texture* icon = getMainTypeGizmoIcon(resolveMainObjectType(obj));
-            if (!icon || !icon->GetID()) return;
+            const GizmoIconImage icon = getMainTypeGizmoIcon(resolveMainObjectType(obj));
+            if (icon.id == static_cast<ImTextureID>(0)) return;
 
             auto screen = projectToScreen(obj.position);
             if (!screen) return;
@@ -5270,7 +5541,9 @@ void Engine::renderViewport() {
             const ImU32 tint = obj.enabled ? IM_COL32(255, 255, 255, 232) : IM_COL32(170, 170, 170, 168);
 
             ImDrawList* dl = ImGui::GetWindowDrawList();
-            dl->AddImage((ImTextureID)(intptr_t)icon->GetID(), min, max, ImVec2(0, 1), ImVec2(1, 0), tint);
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0, 1) : ImVec2(0, 0);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1, 0) : ImVec2(1, 1);
+            dl->AddImage(icon.id, min, max, uvMin, uvMax, tint);
             if (isSelected) {
                 dl->AddRect(min, max, IM_COL32(255, 255, 255, 170), 5.0f * gizmoIconScaleClamped, 0, 1.8f);
             }
@@ -5977,7 +6250,7 @@ void Engine::renderViewport() {
             viewportController.setFocused(true);
         }
 
-        if (isPlaying && showViewOutput) {
+        if (isPlaying && showViewOutput && rendererInitialized) {
             std::vector<const SceneObject*> playerCams;
             for (const auto& obj : sceneObjects) {
                 if (obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
@@ -6091,45 +6364,50 @@ void Engine::renderViewport() {
     if (showSpritePreviewPanel) {
         bool previewOpen = showSpritePreviewPanel;
         if (ImGui::Begin("Sprite Preview", &previewOpen)) {
-            SceneObject* selected = getSelectedObject();
-            bool validSprite = selected && selected->hasUI &&
-                (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D);
-            if (!validSprite) {
-                ImGui::TextDisabled("Select an Image or Sprite2D to preview.");
+            if (!rendererInitialized) {
+                ImGui::TextDisabled("Sprite Preview uses OpenGL textures.");
+                ImGui::TextDisabled("Switch to OpenGL renderer mode to use this panel.");
             } else {
-                Texture* previewTex = nullptr;
-                if (!selected->albedoTexturePath.empty()) {
-                    previewTex = renderer.getTexture(selected->albedoTexturePath);
-                }
-                if (!previewTex || !previewTex->GetID()) {
-                    ImGui::TextDisabled("Assign a texture to preview this sprite.");
+                SceneObject* selected = getSelectedObject();
+                bool validSprite = selected && selected->hasUI &&
+                    (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D);
+                if (!validSprite) {
+                    ImGui::TextDisabled("Select an Image or Sprite2D to preview.");
                 } else {
-                    std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(*selected);
-                    float availW = std::max(80.0f, ImGui::GetContentRegionAvail().x);
-                    float maxPreviewW = std::min(availW, 340.0f);
-                    float texW = static_cast<float>(std::max(1, previewTex->GetWidth()));
-                    float texH = static_cast<float>(std::max(1, previewTex->GetHeight()));
-                    float frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
-                    float frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
-                    if (!selected->ui.spriteSheetEnabled) {
-                        frameW = texW;
-                        frameH = texH;
+                    Texture* previewTex = nullptr;
+                    if (!selected->albedoTexturePath.empty()) {
+                        previewTex = renderer.getTexture(selected->albedoTexturePath);
                     }
-                    float aspect = frameH > 0.0f ? (frameW / frameH) : 1.0f;
-                    ImVec2 previewSize(maxPreviewW, std::max(40.0f, maxPreviewW / std::max(0.1f, aspect)));
-                    ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvQuad[0], uvQuad[2]);
-                    int frameCount = std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
-                    ImGui::Separator();
-                    ImGui::Text("Object: %s", selected->name.c_str());
-                    ImGui::Text("Texture: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
-                    if (selected->ui.spriteSheetEnabled) {
-                        ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
-                        ImGui::Text("Grid: %d x %d  |  %.1f FPS",
-                                    std::max(1, selected->ui.spriteSheetColumns),
-                                    std::max(1, selected->ui.spriteSheetRows),
-                                    std::max(1.0f, selected->ui.spriteSheetFps));
+                    if (!previewTex || !previewTex->GetID()) {
+                        ImGui::TextDisabled("Assign a texture to preview this sprite.");
                     } else {
-                        ImGui::TextDisabled("Sprite sheet disabled (showing full texture).");
+                        std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(*selected);
+                        float availW = std::max(80.0f, ImGui::GetContentRegionAvail().x);
+                        float maxPreviewW = std::min(availW, 340.0f);
+                        float texW = static_cast<float>(std::max(1, previewTex->GetWidth()));
+                        float texH = static_cast<float>(std::max(1, previewTex->GetHeight()));
+                        float frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
+                        float frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
+                        if (!selected->ui.spriteSheetEnabled) {
+                            frameW = texW;
+                            frameH = texH;
+                        }
+                        float aspect = frameH > 0.0f ? (frameW / frameH) : 1.0f;
+                        ImVec2 previewSize(maxPreviewW, std::max(40.0f, maxPreviewW / std::max(0.1f, aspect)));
+                        ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvQuad[0], uvQuad[2]);
+                        int frameCount = std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
+                        ImGui::Separator();
+                        ImGui::Text("Object: %s", selected->name.c_str());
+                        ImGui::Text("Texture: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
+                        if (selected->ui.spriteSheetEnabled) {
+                            ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
+                            ImGui::Text("Grid: %d x %d  |  %.1f FPS",
+                                        std::max(1, selected->ui.spriteSheetColumns),
+                                        std::max(1, selected->ui.spriteSheetRows),
+                                        std::max(1.0f, selected->ui.spriteSheetFps));
+                        } else {
+                            ImGui::TextDisabled("Sprite sheet disabled (showing full texture).");
+                        }
                     }
                 }
             }
@@ -6464,7 +6742,7 @@ void Engine::renderUiCanvas3DTargets() {
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
-                if (!obj.albedoTexturePath.empty()) {
+                if (rendererInitialized && !obj.albedoTexturePath.empty()) {
                     if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
                         texId = tex->GetID();
                     }
@@ -7109,7 +7387,7 @@ void Engine::renderPlayerViewport() {
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
-                if (!obj.albedoTexturePath.empty()) {
+                if (rendererInitialized && !obj.albedoTexturePath.empty()) {
                     if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
                         texId = tex->GetID();
                     }

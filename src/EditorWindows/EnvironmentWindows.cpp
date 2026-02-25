@@ -23,16 +23,18 @@ void Engine::renderEnvironmentWindow() {
     if (!showEnvironmentWindow) return;
     ImGui::Begin("Environment", &showEnvironmentWindow);
 
-    Skybox* skybox = renderer.getSkybox();
-    if (skybox) {
-        float tod = skybox->getTimeOfDay();
-        ImGui::TextDisabled("Day / Night Cycle");
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderFloat("##EnvDayNight", &tod, 0.0f, 1.0f, "%.2f")) {
-            skybox->setTimeOfDay(tod);
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
+    const bool vulkanPreviewMode = usingVulkan();
 
+    Skybox* skybox = renderer.getSkybox();
+    float tod = getSceneTimeOfDay();
+    ImGui::TextDisabled("Day / Night Cycle");
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::SliderFloat("##EnvDayNight", &tod, 0.0f, 1.0f, "%.2f")) {
+        applySceneTimeOfDay(tod);
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+
+    if (skybox && !vulkanPreviewMode) {
         static char skyVertBuf[256] = {};
         static char skyFragBuf[256] = {};
         if (skyVertBuf[0] == '\0') std::snprintf(skyVertBuf, sizeof(skyVertBuf), "%s", skybox->getVertPath().c_str());
@@ -61,8 +63,12 @@ void Engine::renderEnvironmentWindow() {
         if (ImGui::Button("Reload Skybox Shader")) {
             skybox->setShaderPaths(skyVertBuf, skyFragBuf);
         }
+    } else if (vulkanPreviewMode) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Vulkan Preview Mode");
+        ImGui::TextWrapped("Built-in Vulkan sky rendering is active. Custom OpenGL skybox shader paths are edited only in OpenGL mode.");
     } else {
-        ImGui::TextDisabled("Skybox not available");
+        ImGui::TextDisabled("Skybox not available in this backend");
     }
 
     ImGui::Separator();
