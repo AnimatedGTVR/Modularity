@@ -12406,6 +12406,8 @@ static ImVec2 CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window)
 {
     ImVec2 scroll = window->Scroll;
     ImVec2 decoration_size(window->DecoOuterSizeX1 + window->DecoInnerSizeX1 + window->DecoOuterSizeX2, window->DecoOuterSizeY1 + window->DecoInnerSizeY1 + window->DecoOuterSizeY2);
+    const bool allow_elastic_overscroll = (window->Flags & ImGuiWindowFlags_NoScrollWithMouse) == 0 &&
+                                          (window->Flags & ImGuiWindowFlags_NoMouseInputs) == 0;
     for (int axis = 0; axis < 2; axis++)
     {
         if (window->ScrollTarget[axis] < FLT_MAX)
@@ -12420,9 +12422,18 @@ static ImVec2 CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window)
             }
             scroll[axis] = scroll_target - center_ratio * (window->SizeFull[axis] - decoration_size[axis]);
         }
-        scroll[axis] = ImRound64(ImMax(scroll[axis], 0.0f));
-        if (!window->Collapsed && !window->SkipItems)
-            scroll[axis] = ImMin(scroll[axis], window->ScrollMax[axis]);
+        if (allow_elastic_overscroll && !window->Collapsed && !window->SkipItems)
+        {
+            const float axis_extent = (axis == 0) ? window->InnerRect.GetWidth() : window->InnerRect.GetHeight();
+            const float overscroll_limit = ImClamp(ImMin(axis_extent * 0.14f, window->ScrollMax[axis] * 0.35f + 6.0f), 6.0f, 26.0f);
+            scroll[axis] = ImClamp(ImRound64(scroll[axis]), -overscroll_limit, window->ScrollMax[axis] + overscroll_limit);
+        }
+        else
+        {
+            scroll[axis] = ImRound64(ImMax(scroll[axis], 0.0f));
+            if (!window->Collapsed && !window->SkipItems)
+                scroll[axis] = ImMin(scroll[axis], window->ScrollMax[axis]);
+        }
     }
     return scroll;
 }

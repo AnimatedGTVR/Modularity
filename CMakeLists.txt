@@ -74,6 +74,10 @@ set(ASSIMP_BUILD_DOCS OFF CACHE BOOL "Build Assimp documentation" FORCE)
 
 add_subdirectory(src/ThirdParty/glfw EXCLUDE_FROM_ALL)
 find_package(OpenGL REQUIRED)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(SNDFILE QUIET IMPORTED_TARGET sndfile)
+endif()
 
 # ==================== Mono (managed scripting) ====================
 option(MODULARITY_USE_MONO "Enable Mono embedding for managed scripts" ON)
@@ -170,7 +174,14 @@ set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "Disable Assimp tests" FORCE)
 set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "Disable Assimp samples" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "Disable Assimp tools" FORCE)
 set(ASSIMP_INSTALL OFF CACHE BOOL "Disable Assimp install targets" FORCE)
+# Force vendored zlib/minizip in assimp to avoid host minizip/unzip.h dependency on clean builds.
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "Build Assimp zlib/minizip from source" FORCE)
+set(ASSIMP_BUILD_MINIZIP ON CACHE BOOL "Build Assimp minizip from source" FORCE)
+# Some distros expose broken minizip pkg-config include dirs (/usr/include instead of /usr/include/minizip).
+# Ensure assimp does not prefer that cached result.
+set(UNZIP_FOUND FALSE CACHE INTERNAL "Force Assimp to use vendored unzip headers" FORCE)
 add_subdirectory(src/ThirdParty/assimp EXCLUDE_FROM_ALL)
+target_include_directories(assimp PRIVATE ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/contrib/unzip)
 target_link_libraries(core PUBLIC assimp)
 target_include_directories(core PUBLIC 
     ${PROJECT_SOURCE_DIR}/src
@@ -187,8 +198,12 @@ if(MODULARITY_USE_MONO)
 endif()
 target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
+target_compile_definitions(core PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 if(WIN32)
     target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+endif()
+if(SNDFILE_FOUND)
+    target_link_libraries(core PUBLIC PkgConfig::SNDFILE)
 endif()
 target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
 
@@ -210,8 +225,12 @@ if(MODULARITY_USE_MONO)
 endif()
 target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
+target_compile_definitions(core_player PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 if(WIN32)
     target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+endif()
+if(SNDFILE_FOUND)
+    target_link_libraries(core_player PUBLIC PkgConfig::SNDFILE)
 endif()
 target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
 
@@ -307,17 +326,24 @@ else()
     target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
 endif()
 
-add_custom_command(TARGET ModularityPlayer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/Resources
-        $<TARGET_FILE_DIR:ModularityPlayer>/Resources
-)
-
+# Copy resources once to avoid parallel target races writing the same directory.
 if(MODULARITY_BUILD_EDITOR)
     add_custom_command(TARGET Modularity POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Resources
             $<TARGET_FILE_DIR:Modularity>/Resources
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Template-Projects
+            $<TARGET_FILE_DIR:Modularity>/Template-Projects
+    )
+else()
+    add_custom_command(TARGET ModularityPlayer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Resources
+            $<TARGET_FILE_DIR:ModularityPlayer>/Resources
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Template-Projects
+            $<TARGET_FILE_DIR:ModularityPlayer>/Template-Projects
     )
 endif()
 
@@ -371,6 +397,10 @@ if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
 endif()
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
+    DESTINATION ./bin/
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/Template-Projects
     DESTINATION ./bin/
 )
 

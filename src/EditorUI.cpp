@@ -1,4 +1,69 @@
 #include "EditorUI.h"
+#include <unordered_map>
+
+namespace {
+struct TouchSwipeWindowState {
+    ImVec2 virtualScroll = ImVec2(0.0f, 0.0f);
+    ImVec2 velocity = ImVec2(0.0f, 0.0f);
+    bool initialized = false;
+    bool touchedThisFrame = false;
+    bool isDragging = false;
+};
+
+struct TouchSwipeRuntimeState {
+    std::unordered_map<ImGuiID, TouchSwipeWindowState> windowStates;
+    ImGuiID activeWindowId = 0;
+    ImVec2 dragStartPos = ImVec2(0.0f, 0.0f);
+    ImVec2 lastPointerPos = ImVec2(0.0f, 0.0f);
+    bool dragging = false;
+};
+
+bool hasScrollableAxis(const ImGuiWindow* window, int axis) {
+    if (!window || axis < 0 || axis > 1) {
+        return false;
+    }
+    if ((window->Flags & ImGuiWindowFlags_NoInputs) != 0) {
+        return false;
+    }
+    if ((window->Flags & ImGuiWindowFlags_NoScrollWithMouse) != 0) {
+        return false;
+    }
+    return window->ScrollMax[axis] > 0.0f;
+}
+
+bool isTouchScrollableWindow(const ImGuiWindow* window) {
+    if (!window || !window->Active || window->Collapsed || window->SkipItems) {
+        return false;
+    }
+    return hasScrollableAxis(window, 0) || hasScrollableAxis(window, 1);
+}
+
+ImGuiWindow* findScrollableWindowFromHover(ImGuiWindow* hovered) {
+    for (ImGuiWindow* window = hovered; window != nullptr; window = window->ParentWindow) {
+        if (isTouchScrollableWindow(window)) {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+float applyEdgeResistance(float value, float minValue, float maxValue, float resistance) {
+    if (value < minValue) {
+        return minValue + (value - minValue) * resistance;
+    }
+    if (value > maxValue) {
+        return maxValue + (value - maxValue) * resistance;
+    }
+    return value;
+}
+
+float computeElasticOverscrollLimit(float axisExtent, float scrollMax) {
+    const float byViewport = axisExtent * 0.14f;
+    const float byRange = scrollMax * 0.35f + 6.0f;
+    return ImClamp(std::min(byViewport, byRange), 6.0f, 26.0f);
+}
+
+}
 
 #pragma region File Browser
 FileBrowser::FileBrowser() {
@@ -451,5 +516,287 @@ ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
 
     ImGui::End();
     return dockspaceId;
+}
+#pragma endregion
+
+#pragma region Touch Swipe Scroll
+void updateTouchSwipeScrolling() {
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    if (!context) {
+        return;
+    }
+
+    ImGuiContext& g = *context;
+    ImGuiIO& io = ImGui::GetIO();
+    static TouchSwipeRuntimeState runtime;
+
+    const bool touchScreenMode = (io.ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+
+    const float dt = std::max(io.DeltaTime, 1.0f / 240.0f);
+    const float dragThresholdSqr = 16.0f;
+    const float edgeResistance = 0.18f;
+    const float wheelEdgeResistance = 0.52f;
+    const float freeScrollFriction = 5.8f;
+    const float overscrollReturnRate = 2.2f;
+    const float overscrollVelocityDamping = 9.0f;
+    const float settleVelocityEpsilon = 0.35f;
+    const float settlePositionEpsilon = 0.20f;
+
+    for (auto& [id, state] : runtime.windowStates) {
+        state.touchedThisFrame = false;
+        if (id != runtime.activeWindowId) {
+            state.isDragging = false;
+        }
+    }
+
+    for (ImGuiWindow* window : g.Windows) {
+        if (!isTouchScrollableWindow(window)) {
+            continue;
+        }
+        TouchSwipeWindowState& state = runtime.windowStates[window->ID];
+        state.touchedThisFrame = true;
+        if (!state.initialized) {
+            state.initialized = true;
+            state.virtualScroll = window->Scroll;
+            state.velocity = ImVec2(0.0f, 0.0f);
+            continue;
+        }
+
+        const bool stateIsIdle = !state.isDragging &&
+                                 std::abs(state.velocity.x) < 1.0f &&
+                                 std::abs(state.velocity.y) < 1.0f;
+        if (stateIsIdle) {
+            state.virtualScroll = window->Scroll;
+        }
+    }
+
+    if (runtime.activeWindowId != 0) {
+        ImGuiWindow* activeWindow = ImGui::FindWindowByID(runtime.activeWindowId);
+        auto it = runtime.windowStates.find(runtime.activeWindowId);
+        if (!activeWindow || !isTouchScrollableWindow(activeWindow) ||
+            it == runtime.windowStates.end() || !it->second.touchedThisFrame) {
+            runtime.activeWindowId = 0;
+            runtime.dragging = false;
+        }
+    }
+
+    ImVec2 wheel(io.MouseWheelH, io.MouseWheel);
+    if (io.MouseWheelRequestAxisSwap) {
+        wheel = ImVec2(wheel.y, 0.0f);
+    }
+    if ((std::abs(wheel.x) > 0.0001f || std::abs(wheel.y) > 0.0001f) && g.MovingWindow == nullptr) {
+        ImGuiWindow* baseWindow = g.WheelingWindow ? g.WheelingWindow : g.HoveredWindow;
+        ImGuiWindow* wheelWindow = findScrollableWindowFromHover(baseWindow);
+        if (wheelWindow) {
+            TouchSwipeWindowState& state = runtime.windowStates[wheelWindow->ID];
+            state.touchedThisFrame = true;
+            if (!state.initialized) {
+                state.initialized = true;
+                state.virtualScroll = wheelWindow->Scroll;
+                state.velocity = ImVec2(0.0f, 0.0f);
+            }
+            for (int axis = 0; axis < 2; ++axis) {
+                const float wheelDelta = (axis == 0) ? wheel.x : wheel.y;
+                if (!hasScrollableAxis(wheelWindow, axis) || std::abs(wheelDelta) < 0.0001f) {
+                    continue;
+                }
+                const float maxScroll = wheelWindow->ScrollMax[axis];
+                const float currentScroll = wheelWindow->Scroll[axis];
+                const bool pushingMin = wheelDelta > 0.0f;
+                const bool pushingMax = wheelDelta < 0.0f;
+                const bool atMin = currentScroll <= 0.5f;
+                const bool atMax = currentScroll >= maxScroll - 0.5f;
+                const bool outside = state.virtualScroll[axis] < 0.0f || state.virtualScroll[axis] > maxScroll;
+                if (!outside && !((pushingMin && atMin) || (pushingMax && atMax))) {
+                    continue;
+                }
+
+                const float maxStep = (axis == 0)
+                    ? (wheelWindow->InnerRect.GetWidth() * 0.67f)
+                    : (wheelWindow->InnerRect.GetHeight() * 0.67f);
+                const float baseStep = (axis == 0)
+                    ? (2.0f * wheelWindow->FontRefSize)
+                    : (5.0f * wheelWindow->FontRefSize);
+                const float scrollStep = ImTrunc(ImMin(baseStep, maxStep));
+                const float delta = -wheelDelta * scrollStep;
+                const float axisExtent = (axis == 0)
+                    ? wheelWindow->InnerRect.GetWidth()
+                    : wheelWindow->InnerRect.GetHeight();
+                const float overscrollLimit = computeElasticOverscrollLimit(axisExtent, maxScroll);
+                const float clampedValue = ImClamp(state.virtualScroll[axis], 0.0f, maxScroll);
+                const float overshoot = std::abs(state.virtualScroll[axis] - clampedValue);
+                const float remainingFactor = ImClamp(
+                    1.0f - (overshoot / std::max(overscrollLimit, 0.001f)),
+                    0.12f,
+                    1.0f);
+
+                const float previousValue = state.virtualScroll[axis];
+                const float stretchedValue = applyEdgeResistance(
+                    previousValue + delta * 0.50f * remainingFactor,
+                    0.0f,
+                    maxScroll,
+                    wheelEdgeResistance);
+                state.virtualScroll[axis] = stretchedValue;
+                const float frameVelocity = (stretchedValue - previousValue) / dt;
+                state.velocity[axis] = ImLerp(state.velocity[axis], frameVelocity, 0.35f);
+            }
+        }
+    }
+
+    if (touchScreenMode) {
+        if (io.MouseClicked[0] && runtime.activeWindowId == 0 &&
+            g.ActiveId == 0 && g.MovingWindow == nullptr) {
+            ImGuiWindow* hovered = findScrollableWindowFromHover(g.HoveredWindow);
+            if (hovered) {
+                const bool clickInTitleBar = hovered->TitleBarHeight > 0.0f &&
+                                             hovered->TitleBarRect().Contains(io.MouseClickedPos[0]);
+                if (!clickInTitleBar) {
+                    runtime.activeWindowId = hovered->ID;
+                    runtime.dragStartPos = io.MouseClickedPos[0];
+                    runtime.lastPointerPos = io.MousePos;
+                    runtime.dragging = false;
+                    TouchSwipeWindowState& state = runtime.windowStates[hovered->ID];
+                    state.isDragging = false;
+                    state.velocity = ImVec2(0.0f, 0.0f);
+                    state.virtualScroll = hovered->Scroll;
+                    state.initialized = true;
+                }
+            }
+        }
+
+        if (!io.MouseDown[0]) {
+            if (runtime.activeWindowId != 0) {
+                auto it = runtime.windowStates.find(runtime.activeWindowId);
+                if (it != runtime.windowStates.end()) {
+                    it->second.isDragging = false;
+                }
+            }
+            runtime.activeWindowId = 0;
+            runtime.dragging = false;
+        } else if (runtime.activeWindowId != 0) {
+            ImGuiWindow* activeWindow = ImGui::FindWindowByID(runtime.activeWindowId);
+            auto it = runtime.windowStates.find(runtime.activeWindowId);
+            if (activeWindow && it != runtime.windowStates.end()) {
+                TouchSwipeWindowState& state = it->second;
+                const ImVec2 totalDragDelta(
+                    io.MousePos.x - runtime.dragStartPos.x,
+                    io.MousePos.y - runtime.dragStartPos.y);
+                if (!runtime.dragging && ImLengthSqr(totalDragDelta) >= dragThresholdSqr) {
+                    runtime.dragging = true;
+                    state.isDragging = true;
+                }
+
+                const ImVec2 pointerDelta(
+                    io.MousePos.x - runtime.lastPointerPos.x,
+                    io.MousePos.y - runtime.lastPointerPos.y);
+                runtime.lastPointerPos = io.MousePos;
+
+                if (runtime.dragging && g.ActiveId == 0 && g.MovingWindow == nullptr) {
+                    for (int axis = 0; axis < 2; ++axis) {
+                        if (!hasScrollableAxis(activeWindow, axis)) {
+                            continue;
+                        }
+                        const float maxScroll = activeWindow->ScrollMax[axis];
+                        const float previousValue = state.virtualScroll[axis];
+                        const float draggedValue = previousValue - pointerDelta[axis];
+                        state.virtualScroll[axis] = applyEdgeResistance(
+                            draggedValue, 0.0f, maxScroll, edgeResistance);
+                        const float frameVelocity = (state.virtualScroll[axis] - previousValue) / dt;
+                        state.velocity[axis] = ImLerp(state.velocity[axis], frameVelocity, 0.65f);
+                    }
+                }
+            } else {
+                runtime.activeWindowId = 0;
+                runtime.dragging = false;
+            }
+        }
+    } else {
+        if (runtime.activeWindowId != 0) {
+            auto it = runtime.windowStates.find(runtime.activeWindowId);
+            if (it != runtime.windowStates.end()) {
+                it->second.isDragging = false;
+            }
+        }
+        runtime.activeWindowId = 0;
+        runtime.dragging = false;
+    }
+
+    for (auto& [windowId, state] : runtime.windowStates) {
+        if (!state.touchedThisFrame) {
+            continue;
+        }
+
+        ImGuiWindow* window = ImGui::FindWindowByID(windowId);
+        if (!window) {
+            continue;
+        }
+
+        const bool draggingThisWindow = runtime.dragging &&
+                                        runtime.activeWindowId == windowId &&
+                                        io.MouseDown[0] &&
+                                        state.isDragging;
+
+        for (int axis = 0; axis < 2; ++axis) {
+            if (!hasScrollableAxis(window, axis)) {
+                state.virtualScroll[axis] = 0.0f;
+                state.velocity[axis] = 0.0f;
+                continue;
+            }
+
+            const float maxScroll = window->ScrollMax[axis];
+            if (!draggingThisWindow) {
+                if (!touchScreenMode &&
+                    state.virtualScroll[axis] >= -0.05f &&
+                    state.virtualScroll[axis] <= maxScroll + 0.05f) {
+                    state.virtualScroll[axis] = window->Scroll[axis];
+                    state.velocity[axis] *= 0.5f;
+                }
+
+                float value = state.virtualScroll[axis];
+                float velocity = state.velocity[axis];
+                value += velocity * dt;
+
+                const float clampedValue = ImClamp(value, 0.0f, maxScroll);
+                const float stretch = value - clampedValue;
+                if (std::abs(stretch) > 0.0f) {
+                    const float returnBlend = 1.0f - std::exp(-overscrollReturnRate * dt);
+                    value = ImLerp(value, clampedValue, returnBlend);
+                    velocity *= std::exp(-overscrollVelocityDamping * dt);
+                } else {
+                    velocity *= std::exp(-freeScrollFriction * dt);
+                }
+
+                if (std::abs(velocity) < settleVelocityEpsilon &&
+                    std::abs(value - clampedValue) < settlePositionEpsilon) {
+                    value = clampedValue;
+                    velocity = 0.0f;
+                }
+
+                state.virtualScroll[axis] = value;
+                state.velocity[axis] = velocity;
+            }
+
+            const float axisExtent = (axis == 0) ? window->InnerRect.GetWidth() : window->InnerRect.GetHeight();
+            const float overscrollLimit = computeElasticOverscrollLimit(axisExtent, maxScroll);
+            const float targetScroll = ImClamp(
+                state.virtualScroll[axis],
+                -overscrollLimit,
+                maxScroll + overscrollLimit);
+            state.virtualScroll[axis] = targetScroll;
+            if (axis == 0) {
+                ImGui::SetScrollX(window, targetScroll);
+            } else {
+                ImGui::SetScrollY(window, targetScroll);
+            }
+        }
+    }
+
+    for (auto it = runtime.windowStates.begin(); it != runtime.windowStates.end();) {
+        if (!it->second.touchedThisFrame && it->first != runtime.activeWindowId) {
+            it = runtime.windowStates.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 #pragma endregion

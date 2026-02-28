@@ -15,6 +15,7 @@ uniform mat4 projection;
 uniform mat4 bones[256];
 uniform int boneCount;
 uniform bool useSkinning;
+uniform vec4 uvRect;
 
 void main()
 {
@@ -38,7 +39,7 @@ void main()
     vec4 worldPos = model * localPos;
     FragPos = vec3(worldPos);
     Normal = mat3(transpose(inverse(model))) * localNormal;
-    TexCoord = aTexCoord;
+    TexCoord = uvRect.xy + aTexCoord * uvRect.zw;
 
     gl_Position = projection * view * worldPos;
 }

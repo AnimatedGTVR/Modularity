@@ -2,10 +2,12 @@
 #include "ModelLoader.h"
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <sstream>
 #include <unordered_set>
@@ -264,6 +266,216 @@ static bool SaveScriptsConfig(const fs::path& path, const ScriptBuildConfig& con
     }
     return true;
 }
+
+static float SmoothApproach(float current, float target, float speed, float dt) {
+    const float blend = 1.0f - std::exp(-speed * dt);
+    return current + (target - current) * blend;
+}
+
+static float EaseOutCubic(float t) {
+    t = ImClamp(t, 0.0f, 1.0f);
+    const float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
+}
+
+struct LauncherPackageSnapshot {
+    std::string fingerprint;
+    std::string sourceProjectName;
+    fs::path sourceProjectRoot;
+    std::vector<std::string> packageLabels;
+    size_t externalCount = 0;
+    bool hasSource = false;
+};
+
+static std::string TrimCopy(const std::string& value) {
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+static std::vector<std::string> SplitString(const std::string& input, char delim) {
+    std::vector<std::string> out;
+    std::stringstream ss(input);
+    std::string token;
+    while (std::getline(ss, token, delim)) {
+        out.push_back(token);
+    }
+    return out;
+}
+
+static fs::path ResolveRecentProjectRoot(const std::string& recentPath) {
+    fs::path path(recentPath);
+    if (path.empty()) return {};
+    if (path.extension() == ".modu") {
+        return path.parent_path();
+    }
+    if (fs::is_directory(path)) {
+        return path;
+    }
+    if (path.has_parent_path()) {
+        return path.parent_path();
+    }
+    return path;
+}
+
+static bool ParsePackageManifestLabels(const fs::path& manifestPath,
+                                       std::vector<std::string>& outLabels,
+                                       size_t& outExternalCount) {
+    outLabels.clear();
+    outExternalCount = 0;
+
+    std::ifstream file(manifestPath);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::unordered_set<std::string> seen;
+    std::string line;
+    while (std::getline(file, line)) {
+        const std::string cleaned = TrimCopy(line);
+        if (cleaned.empty() || cleaned[0] == '#') continue;
+
+        if (cleaned.rfind("package=", 0) == 0) {
+            const std::string id = TrimCopy(cleaned.substr(8));
+            if (!id.empty() && seen.insert(id).second) {
+                outLabels.push_back(id);
+            }
+            continue;
+        }
+
+        if (cleaned.rfind("git=", 0) == 0) {
+            const auto parts = SplitString(cleaned.substr(4), '|');
+            if (parts.empty()) continue;
+
+            const std::string id = TrimCopy(parts[0]);
+            std::string label = id;
+            if (parts.size() > 1) {
+                const std::string parsedName = TrimCopy(parts[1]);
+                if (!parsedName.empty()) {
+                    label = parsedName;
+                }
+            }
+            if (!label.empty()) {
+                const std::string key = "git:" + id;
+                if (seen.insert(key).second) {
+                    outLabels.push_back(label + " (Git)");
+                    outExternalCount++;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static std::string BuildLauncherSnapshotFingerprint(const ProjectManager& manager) {
+    std::ostringstream oss;
+    const size_t count = std::min<size_t>(manager.recentProjects.size(), 16);
+    oss << count << "|";
+    for (size_t i = 0; i < count; ++i) {
+        const auto& rp = manager.recentProjects[i];
+        oss << rp.name << "|" << rp.path << "|" << rp.lastOpened << ";";
+    }
+    return oss.str();
+}
+
+static const LauncherPackageSnapshot& GetLauncherPackageSnapshot(const ProjectManager& manager, bool forceRefresh = false) {
+    static LauncherPackageSnapshot cache;
+
+    const std::string fingerprint = BuildLauncherSnapshotFingerprint(manager);
+    if (!forceRefresh && cache.fingerprint == fingerprint) {
+        return cache;
+    }
+
+    cache = LauncherPackageSnapshot{};
+    cache.fingerprint = fingerprint;
+
+    for (const auto& rp : manager.recentProjects) {
+        const fs::path projectRoot = ResolveRecentProjectRoot(rp.path);
+        if (projectRoot.empty()) continue;
+
+        const fs::path manifestPath = projectRoot / "packages.modu";
+        if (!fs::exists(manifestPath)) continue;
+
+        std::vector<std::string> labels;
+        size_t externalCount = 0;
+        if (!ParsePackageManifestLabels(manifestPath, labels, externalCount)) {
+            continue;
+        }
+
+        cache.hasSource = true;
+        cache.sourceProjectRoot = projectRoot;
+        cache.sourceProjectName = rp.name.empty() ? projectRoot.filename().string() : rp.name;
+        cache.packageLabels = std::move(labels);
+        cache.externalCount = externalCount;
+        break;
+    }
+
+    return cache;
+}
+
+struct LauncherTemplateEntry {
+    std::string displayName;
+    fs::path projectRoot;
+    fs::path projectFile;
+    fs::path previewImage;
+};
+
+static fs::path GetTemplateProjectsRoot() {
+    std::error_code ec;
+    fs::path root = fs::current_path() / "Template-Projects";
+    fs::create_directories(root, ec);
+    return root;
+}
+
+static fs::path FindTemplateProjectFile(const fs::path& candidateRoot) {
+    const fs::path direct = candidateRoot / "project.modu";
+    if (fs::exists(direct)) {
+        return direct;
+    }
+
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(candidateRoot, ec);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (ec) break;
+        if (!it->is_regular_file()) continue;
+        if (it->path().filename() == "project.modu") {
+            return it->path();
+        }
+    }
+    return {};
+}
+
+static std::vector<LauncherTemplateEntry> GatherTemplateEntries() {
+    std::vector<LauncherTemplateEntry> templates;
+    const fs::path templatesRoot = GetTemplateProjectsRoot();
+    if (!fs::exists(templatesRoot)) {
+        return templates;
+    }
+
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(templatesRoot, ec)) {
+        if (ec) break;
+        if (!entry.is_directory()) continue;
+
+        fs::path projectFile = FindTemplateProjectFile(entry.path());
+        if (projectFile.empty()) continue;
+
+        LauncherTemplateEntry t;
+        t.projectFile = projectFile;
+        t.projectRoot = projectFile.parent_path();
+        t.displayName = entry.path().filename().string();
+        t.previewImage = t.projectRoot / "ProjectUserSettings" / "ProjectPreview.png";
+        templates.push_back(std::move(t));
+    }
+
+    std::sort(templates.begin(), templates.end(),
+              [](const LauncherTemplateEntry& a, const LauncherTemplateEntry& b) {
+                  return a.displayName < b.displayName;
+              });
+    return templates;
+}
 } // namespace
 #pragma endregion
 
@@ -322,8 +534,6 @@ void Engine::renderLauncher() {
     const float uiScale = 1.0f + 0.06f * transitionEase;
     const float introOffsetT = launcherIntroFinished ? 0.0f : (1.0f - slideEase);
     const float contentAlpha = launcherIntroFinished ? 1.0f : slideEase;
-    const float introLeftOffsetX = -140.0f * uiScale * introOffsetT;
-    const float introRightOffsetX = 140.0f * uiScale * introOffsetT;
     const float introHeroOffsetY = -90.0f * uiScale * introOffsetT;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -346,18 +556,84 @@ void Engine::renderLauncher() {
         ImGuiWindowFlags_NoDocking  |
         ImGuiWindowFlags_NoBringToFrontOnFocus;
 
-    if (ImGui::Begin("Launcher", nullptr, flags))
-    {
-        const float leftPanelWidth = 300.0f * uiScale;
-        const float heroHeight = 120.0f * uiScale;
-        const ImVec4 bgTopLeft = ImVec4(0.10f, 0.11f, 0.16f, 1.0f);
-        const ImVec4 bgTopRight = ImVec4(0.15f, 0.16f, 0.22f, 1.0f);
-        const ImVec4 bgBottomRight = ImVec4(0.07f, 0.08f, 0.12f, 1.0f);
-        const ImVec4 bgBottomLeft = ImVec4(0.08f, 0.09f, 0.13f, 1.0f);
-        const ImVec4 cardBg = ImVec4(0.14f, 0.15f, 0.21f, 0.98f);
-        const ImVec4 cardOutline = ImVec4(0.20f, 0.22f, 0.30f, 0.70f);
-        const ImVec4 accent = ImVec4(0.91f, 0.42f, 0.78f, 1.0f);
-        const ImVec4 accentCool = ImVec4(0.42f, 0.72f, 0.96f, 1.0f);
+    if (ImGui::Begin("Launcher", nullptr, flags)) {
+        const float sidebarWidth = ImClamp(displaySize.x * 0.25f,
+                                           230.0f * uiScale,
+                                           320.0f * uiScale);
+        const ImVec4 bgTopLeft = ImVec4(0.09f, 0.10f, 0.13f, 1.0f);
+        const ImVec4 bgTopRight = ImVec4(0.11f, 0.13f, 0.17f, 1.0f);
+        const ImVec4 bgBottomRight = ImVec4(0.06f, 0.07f, 0.10f, 1.0f);
+        const ImVec4 bgBottomLeft = ImVec4(0.08f, 0.09f, 0.12f, 1.0f);
+        const ImVec4 shellBg = ImVec4(0.10f, 0.11f, 0.14f, 0.97f);
+        const ImVec4 sidebarBg = ImVec4(0.12f, 0.13f, 0.17f, 1.0f);
+
+        static int launcherSection = 0; // 0 = Projects, 1 = Installed Packages, 2 = Settings
+        static int launcherSectionPrevious = 0;
+        static double launcherSectionSwitchTime = 0.0;
+        static char launcherSearch[160] = "";
+        static float projectsPanelVisual = 0.0f;
+
+        const float frameDt = ImGui::GetIO().DeltaTime;
+        const float projectsPanelTarget = projectManager.showNewProjectDialog ? 1.0f : 0.0f;
+        projectsPanelVisual = SmoothApproach(projectsPanelVisual, projectsPanelTarget, 12.0f, frameDt);
+        const float sectionAnimDuration = 0.26f;
+        const float sectionAnimT = ImClamp(static_cast<float>((glfwGetTime() - launcherSectionSwitchTime) / sectionAnimDuration), 0.0f, 1.0f);
+        const float sectionAnimEase = EaseOutCubic(sectionAnimT);
+
+        const bool launcherBusy = projectLoadInProgress || sceneLoadInProgress ||
+                                  launcherTransitionActive || launcherTransitionPendingHide;
+
+        auto openNewProjectDialog = [&]() {
+            projectManager.showNewProjectDialog = true;
+            projectManager.errorMessage.clear();
+            projectManager.newProjectImportLastPackages = true;
+            projectManager.newProjectTemplatePath.clear();
+            projectManager.newProjectTemplateName.clear();
+            std::memset(projectManager.newProjectName, 0, sizeof(projectManager.newProjectName));
+            projectManager.newProjectPipelineMode = 0;
+            projectManager.newProjectRendererMode = 0;
+            (void)GetTemplateProjectsRoot();
+            if (projectManager.defaultProjectLocation[0] != '\0') {
+                std::snprintf(projectManager.newProjectLocation,
+                              sizeof(projectManager.newProjectLocation),
+                              "%s",
+                              projectManager.defaultProjectLocation);
+            } else {
+                const std::string fallback = (fs::current_path() / "Projects").string();
+                std::snprintf(projectManager.newProjectLocation,
+                              sizeof(projectManager.newProjectLocation),
+                              "%s",
+                              fallback.c_str());
+            }
+        };
+
+        auto openProjectDialog = [&]() {
+            projectManager.showOpenProjectDialog = true;
+            projectManager.errorMessage.clear();
+        };
+
+        auto setLauncherSection = [&](int newSection) {
+            if (launcherSection == newSection) return;
+            launcherSectionPrevious = launcherSection;
+            launcherSection = newSection;
+            launcherSectionSwitchTime = glfwGetTime();
+        };
+
+        auto launchRecentProject = [&](const RecentProject& rp, const ImVec2& focus) {
+            if (launcherBusy) return;
+            if (audio.isReady()) {
+                audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
+            }
+            launcherTransitionActive = true;
+            launcherTransitionPendingHide = false;
+            launcherTransitionStartTime = glfwGetTime();
+            launcherTransitionFocus = focus;
+            fs::path previewPath = getProjectPreviewPath(rp.path);
+            if (!previewPath.empty() && fs::exists(previewPath)) {
+                launcherLoadingPreviewPath = previewPath.string();
+            }
+            OpenProjectPath(rp.path);
+        };
 
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         ImVec2 windowPos = ImGui::GetWindowPos();
@@ -395,20 +671,18 @@ void Engine::renderLauncher() {
                                   10.0f * uiScale);
         }
 
-        const float bgAlpha = (previewImageId != static_cast<ImTextureID>(0)) ? 0.60f : 1.0f;
+        const float bgAlpha = (previewImageId != static_cast<ImTextureID>(0)) ? 0.58f : 1.0f;
         ImVec4 gradTL = bgTopLeft; gradTL.w = bgAlpha;
         ImVec4 gradTR = bgTopRight; gradTR.w = bgAlpha;
         ImVec4 gradBR = bgBottomRight; gradBR.w = bgAlpha;
         ImVec4 gradBL = bgBottomLeft; gradBL.w = bgAlpha;
-
         drawList->AddRectFilledMultiColor(
             windowPos,
             ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
             ImGui::GetColorU32(gradTL),
             ImGui::GetColorU32(gradTR),
             ImGui::GetColorU32(gradBR),
-            ImGui::GetColorU32(gradBL)
-        );
+            ImGui::GetColorU32(gradBL));
 
         if (launcherTransitionActive) {
             ImVec2 focus = launcherTransitionFocus;
@@ -428,182 +702,160 @@ void Engine::renderLauncher() {
             ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
         }
 
-        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + introHeroOffsetY));
-        ImGui::BeginChild("LauncherHero", ImVec2(0, heroHeight), true,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
+        const float shellInsetX = 10.0f * uiScale;
+        const float shellInsetTop = 10.0f * uiScale;
+        const float shellInsetBottom = 10.0f * uiScale;
+        const float paneGap = 12.0f * uiScale;
+        const float shellHeight = ImMax(0.0f, ImGui::GetContentRegionAvail().y - shellInsetTop - shellInsetBottom);
 
-        ImDrawList* heroDraw = ImGui::GetWindowDrawList();
-        ImVec2 heroPos = ImGui::GetWindowPos();
-        ImVec2 heroSize = ImGui::GetWindowSize();
-        heroDraw->AddRectFilled(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
-                                ImGui::GetColorU32(cardBg), 18.0f * uiScale);
-        heroDraw->AddRect(heroPos, ImVec2(heroPos.x + heroSize.x, heroPos.y + heroSize.y),
-                          ImGui::GetColorU32(cardBg), 18.0f * uiScale);
-
-        ImGui::SetCursorPos(ImVec2(28.0f * uiScale, 24.0f * uiScale));
-        ImGui::TextDisabled("Project Manager");
-        ImGui::SetWindowFontScale(1.4f * uiScale);
-        ImGui::TextColored(ImVec4(0.95f, 0.96f, 0.98f, 1.0f), "Modularity");
-        ImGui::SetWindowFontScale(1.0f * uiScale);
-        ImGui::TextColored(ImVec4(0.70f, 0.73f, 0.80f, 1.0f), "Modularity | Beta V6.3");
-
-
-        ImGui::EndChild();
-
-        ImVec2 heroItemSize = ImGui::GetItemRectSize();
-        ImGui::SetCursorPos(ImVec2(contentStart.x, contentStart.y + heroItemSize.y));
-
-        ImGui::Spacing();
-        ImGui::Spacing();
-
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
-        ImVec2 leftStart = ImGui::GetCursorPos();
-        ImGui::SetCursorPos(ImVec2(leftStart.x + introLeftOffsetX, leftStart.y));
-        ImGui::BeginChild("LauncherLeft", ImVec2(leftPanelWidth, 0), true);
+        ImGui::SetCursorPos(ImVec2(contentStart.x + shellInsetX, contentStart.y + introHeroOffsetY + shellInsetTop));
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, shellBg);
+        ImGui::BeginChild("LauncherShell", ImVec2(-shellInsetX, shellHeight), false);
         ImGui::PopStyleColor();
 
-        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "GET STARTED");
+        const ImVec2 sidebarPadding(14.0f * uiScale, 14.0f * uiScale);
+        const ImVec2 contentPadding(14.0f * uiScale, 12.0f * uiScale);
+        const ImVec2 sectionInset(0.0f, 0.0f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sidebarPadding);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebarBg);
+        ImGui::BeginChild("LauncherSidebar", ImVec2(sidebarWidth, 0), false);
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+
+        ImGui::TextColored(ImVec4(0.86f, 0.89f, 0.96f, 1.0f), "Modularity Project Manager");
         ImGui::Spacing();
-        const bool launcherBusy = projectLoadInProgress || sceneLoadInProgress ||
-                                  launcherTransitionActive || launcherTransitionPendingHide;
-
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.32f, 0.22f, 0.54f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.43f, 0.30f, 0.70f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.26f, 0.60f, 1.0f));
-
-        ImGui::BeginDisabled(launcherBusy);
-        if (ImGui::Button("New Project", ImVec2(-1, 40.0f * uiScale)))
-        {
-            projectManager.showNewProjectDialog = true;
-            projectManager.errorMessage.clear();
-            std::memset(projectManager.newProjectName, 0, sizeof(projectManager.newProjectName));
-            projectManager.newProjectPipelineMode = 0;
-            projectManager.newProjectRendererMode = 0;
-
-            #ifdef _WIN32
-            char documentsPath[MAX_PATH];
-            SHGetFolderPathA(NULL, CSIDL_MYDOCUMENTS, NULL, 0, documentsPath);
-            std::strcpy(projectManager.newProjectLocation, documentsPath);
-            std::strcat(projectManager.newProjectLocation, "\\ModularityProjects");
-            #else
-            const char* home = std::getenv("HOME");
-            if (home)
-            {
-                std::strcpy(projectManager.newProjectLocation, home);
-                std::strcat(projectManager.newProjectLocation, "/ModularityProjects");
-            }
-            #endif
-        }
-
-        ImGui::Spacing();
-
-        if (ImGui::Button("Open Project", ImVec2(-1, 40.0f * uiScale)))
-        {
-            projectManager.showOpenProjectDialog = true;
-            projectManager.errorMessage.clear();
-        }
-        ImGui::EndDisabled();
-
-        ImGui::PopStyleColor(3);
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "QUICK ACTIONS");
-        ImGui::Spacing();
-
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.22f, 0.32f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.30f, 0.42f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
-
-        if (ImGui::Button("Documentation", ImVec2(-1, 34.0f * uiScale)))
-        {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f * uiScale, 10.0f * uiScale));
+        ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 0 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
+        if (ImGui::Button("Projects", ImVec2(-1, 38.0f * uiScale))) {
+            setLauncherSection(0);
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 1 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
+        if (ImGui::Button("Installed Packages", ImVec2(-1, 38.0f * uiScale))) {
+            setLauncherSection(1);
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 2 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
+        if (ImGui::Button("Settings", ImVec2(-1, 38.0f * uiScale))) {
+            setLauncherSection(2);
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+        const float footerY = ImGui::GetWindowHeight() - 60.0f * uiScale;
+        if (ImGui::GetCursorPosY() < footerY) {
+            ImGui::SetCursorPosY(footerY);
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Modularity Website", ImVec2(-1, 28.0f * uiScale))) {
             #ifdef _WIN32
-            system("start https://docs.shockinteractive.xyz");
+            system("start https://moduengine.xyz");
             #else
-            system("xdg-open https://docs.shockinteractive.xyz &");
+            system("xdg-open https://moduengine.xyz &");
             #endif
         }
-
-        if (ImGui::Button("Exit", ImVec2(-1, 34.0f * uiScale)))
-        {
+        if (ImGui::Button("Documentation", ImVec2(-1, 28.0f * uiScale))) {
+            #ifdef _WIN32
+            system("start https://moduengine.xyz/docs");
+            #else
+            system("xdg-open https://moduengine.xyz/docs &");
+            #endif
+        }
+        if (ImGui::Button("Exit", ImVec2(-1, 28.0f * uiScale))) {
             glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
         }
-
-        ImGui::PopStyleColor(3);
-
         ImGui::EndChild();
 
-        ImVec2 leftSize = ImGui::GetItemRectSize();
-        ImGui::SetCursorPos(leftStart);
-        ImGui::Dummy(leftSize);
+        ImGui::SameLine(0.0f, paneGap);
 
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, cardBg);
-        ImVec2 rightStart = ImGui::GetCursorPos();
-        ImGui::SetCursorPos(ImVec2(rightStart.x + introRightOffsetX, rightStart.y));
-        ImGui::BeginChild("LauncherRight", ImVec2(0, 0), true);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, contentPadding);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::BeginChild("LauncherContent", ImVec2(0, 0), false);
         ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
 
-        ImGui::TextColored(ImVec4(0.78f, 0.80f, 0.86f, 1.0f), "RECENT PROJECTS");
-        ImGui::Spacing();
+        auto toLower = [](std::string value) {
+            std::transform(value.begin(), value.end(), value.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return value;
+        };
 
-        if (projectManager.recentProjects.empty())
-        {
-            ImGui::Spacing();
-            ImGui::TextDisabled("There are no recent projects yet.\nCreate or open a project to get started.");
-        }
-        else
-        {
-            float availWidth = ImGui::GetContentRegionAvail().x;
-            for (size_t i = 0; i < projectManager.recentProjects.size(); ++i)
-            {
+        auto renderProjectsView = [&]() {
+            const float projectsInsetX = 10.0f * uiScale;
+            const float projectsInsetY = 6.0f * uiScale;
+            const float projectsHeaderGap = 12.0f * uiScale;
+            ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + projectsInsetX,
+                                       ImGui::GetCursorPosY() + projectsInsetY));
+            ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "Projects");
+            const float buttonWidth = 112.0f * uiScale;
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float headerWidth = ImGui::GetContentRegionAvail().x;
+
+            if (headerWidth < (560.0f * uiScale)) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputTextWithHint("##ProjectSearch", "Search projects", launcherSearch, sizeof(launcherSearch));
+                ImGui::BeginDisabled(launcherBusy);
+                const float twoButtonWidth = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
+                if (ImGui::Button("Open...", ImVec2(twoButtonWidth, 0))) {
+                    openProjectDialog();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("New Project", ImVec2(twoButtonWidth, 0))) {
+                    openNewProjectDialog();
+                }
+                ImGui::EndDisabled();
+            } else {
+                ImGui::SameLine();
+                float searchWidth = ImGui::GetContentRegionAvail().x - ((buttonWidth * 2.0f) + (spacing * 2.0f));
+                searchWidth = std::max(searchWidth, 160.0f * uiScale);
+
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - (searchWidth + buttonWidth * 2.0f + spacing * 2.0f));
+                ImGui::SetNextItemWidth(searchWidth);
+                ImGui::InputTextWithHint("##ProjectSearch", "Search projects", launcherSearch, sizeof(launcherSearch));
+                ImGui::SameLine();
+                ImGui::BeginDisabled(launcherBusy);
+                if (ImGui::Button("Open...", ImVec2(buttonWidth, 0))) {
+                    openProjectDialog();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("New Project", ImVec2(buttonWidth, 0))) {
+                    openNewProjectDialog();
+                }
+                ImGui::EndDisabled();
+            }
+
+            ImGui::Dummy(ImVec2(0.0f, projectsHeaderGap));
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0.0f, projectsHeaderGap));
+
+            const std::string filter = toLower(TrimCopy(launcherSearch));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::BeginChild("RecentProjectsList", ImVec2(0, 0), false);
+            bool hadVisible = false;
+            bool removedProject = false;
+
+            for (size_t i = 0; i < projectManager.recentProjects.size(); ++i) {
                 const auto& rp = projectManager.recentProjects[i];
-                ImGui::PushID(static_cast<int>(i));
-
-                const ImVec2 cardSize(availWidth, 72.0f * uiScale);
-                const ImVec2 cardPos = ImGui::GetCursorScreenPos();
-                ImGui::InvisibleButton("RecentCard", cardSize);
-                bool hovered = ImGui::IsItemHovered();
-                bool clicked = ImGui::IsItemClicked();
-                ImVec2 afterPos = ImGui::GetCursorScreenPos();
-
-                if (ImGui::BeginPopupContextItem("RecentProjectContext"))
-                {
-                    if (ImGui::MenuItem("Open", nullptr, false, !launcherBusy))
-                    {
-                        if (audio.isReady()) {
-                            audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
-                        }
-                        launcherTransitionActive = true;
-                        launcherTransitionPendingHide = false;
-                        launcherTransitionStartTime = glfwGetTime();
-                        launcherTransitionFocus = ImVec2(cardPos.x + cardSize.x * 0.5f,
-                                                         cardPos.y + cardSize.y * 0.5f);
-                        fs::path previewPath = getProjectPreviewPath(rp.path);
-                        if (!previewPath.empty() && fs::exists(previewPath)) {
-                            launcherLoadingPreviewPath = previewPath.string();
-                        }
-                        OpenProjectPath(rp.path);
-                    }
-
-                    if (ImGui::MenuItem("Remove from Recent"))
-                    {
-                        projectManager.recentProjects.erase(
-                            projectManager.recentProjects.begin() + i
-                        );
-                        projectManager.saveRecentProjects();
-                        ImGui::EndPopup();
-                        ImGui::PopID();
-                        break;
-                    }
-
-                    ImGui::EndPopup();
+                const std::string haystack = toLower(rp.name + " " + rp.path);
+                if (!filter.empty() && haystack.find(filter) == std::string::npos) {
+                    continue;
                 }
 
-                ImDrawList* list = ImGui::GetWindowDrawList();
+                hadVisible = true;
+                ImGui::PushID(static_cast<int>(i));
+
                 ImTextureID previewTexId = static_cast<ImTextureID>(0);
                 int previewTexWidth = 0;
                 int previewTexHeight = 0;
@@ -621,77 +873,522 @@ void Engine::renderLauncher() {
                         }
                     }
                 }
+
+                const float cardHeight = 92.0f * uiScale;
+                const ImVec2 cardSize(ImGui::GetContentRegionAvail().x, cardHeight);
+                const ImVec2 cardPos = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton("RecentProjectCard", cardSize);
+                const bool hovered = ImGui::IsItemHovered();
+                const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+                const bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+                bool shouldOpen = clicked || doubleClicked;
+                bool shouldRemove = false;
+                const ImVec2 cardMin = ImGui::GetItemRectMin();
+                const ImVec2 cardMax = ImGui::GetItemRectMax();
+                const ImVec2 rowCenter((cardMin.x + cardMax.x) * 0.5f, (cardMin.y + cardMax.y) * 0.5f);
+
+                if (ImGui::BeginPopupContextItem("RecentProjectRowContext")) {
+                    if (ImGui::MenuItem("Open", nullptr, false, !launcherBusy)) {
+                        shouldOpen = true;
+                    }
+                    if (ImGui::MenuItem("Remove from Recent")) {
+                        shouldRemove = true;
+                    }
+                    ImGui::EndPopup();
+                }
+
+                ImDrawList* list = ImGui::GetWindowDrawList();
+                const float hoverT = EaseOutCubic(hovered ? 1.0f : 0.0f);
+                const ImU32 cardBg = ImGui::GetColorU32(hovered
+                    ? ImVec4(0.18f, 0.22f, 0.31f, 1.0f)
+                    : ImVec4(0.14f, 0.16f, 0.22f, 0.98f));
+                const ImU32 cardBorder = ImGui::GetColorU32(hovered
+                    ? ImVec4(0.30f, 0.52f, 0.80f, 1.0f)
+                    : ImVec4(0.22f, 0.27f, 0.36f, 0.95f));
+                const float cardRounding = 12.0f * uiScale;
+                list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardBg, cardRounding);
+                list->AddRect(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardBorder, cardRounding, 0, hovered ? 2.0f : 1.0f);
+                if (hovered) {
+                    list->AddRectFilled(cardPos,
+                                        ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
+                                        ImGui::GetColorU32(ImVec4(0.22f, 0.36f, 0.58f, 0.06f + 0.08f * hoverT)),
+                                        cardRounding);
+                }
+
+                const float padding = 14.0f * uiScale;
+                const ImVec2 thumbMin(cardPos.x + padding, cardPos.y + padding);
+                const ImVec2 thumbSize(118.0f * uiScale, cardHeight - padding * 2.0f);
+                const ImVec2 thumbMax(thumbMin.x + thumbSize.x, thumbMin.y + thumbSize.y);
                 if (previewTexId != static_cast<ImTextureID>(0)) {
-                    DrawImageCover(list,
-                                   previewTexId,
-                                   cardPos,
-                                   ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                                   previewTexWidth,
-                                   previewTexHeight,
-                                   ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)),
-                                   14.0f * uiScale);
-                    ImVec4 overlayCol = hovered ? ImVec4(0.08f, 0.09f, 0.13f, 0.55f)
-                                                : ImVec4(0.08f, 0.09f, 0.13f, 0.65f);
-                    list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                                        ImGui::GetColorU32(overlayCol), 14.0f * uiScale);
+                    DrawImageCover(list, previewTexId, thumbMin, thumbMax, previewTexWidth, previewTexHeight,
+                                   ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 8.0f * uiScale);
                 } else {
-                    ImU32 cardCol = ImGui::GetColorU32(hovered ? ImVec4(0.18f, 0.19f, 0.27f, 1.0f)
-                                                              : ImVec4(0.16f, 0.17f, 0.24f, 1.0f));
-                    list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                                        cardCol, 14.0f * uiScale);
+                    list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.11f, 0.13f, 0.18f, 1.0f)), 8.0f * uiScale);
+                    const char* noPreview = "No Preview";
+                    ImVec2 txt = ImGui::CalcTextSize(noPreview);
+                    list->AddText(ImVec2(thumbMin.x + (thumbSize.x - txt.x) * 0.5f,
+                                         thumbMin.y + (thumbSize.y - txt.y) * 0.5f),
+                                  ImGui::GetColorU32(ImVec4(0.66f, 0.70f, 0.78f, 1.0f)),
+                                  noPreview);
                 }
-                list->AddRect(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                              ImGui::GetColorU32(cardOutline), 14.0f * uiScale);
+                list->AddRect(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.24f, 0.28f, 0.38f, 0.95f)), 8.0f * uiScale);
 
-                ImVec2 textPos = ImVec2(cardPos.x + 16.0f * uiScale, cardPos.y + 14.0f * uiScale);
-                ImGui::SetCursorScreenPos(textPos);
-                ImGui::TextColored(ImVec4(0.92f, 0.93f, 0.96f, 1.0f), "%s", rp.name.c_str());
-                ImGui::SetCursorScreenPos(ImVec2(textPos.x, textPos.y + 22.0f * uiScale));
+                const float actionWidth = 112.0f * uiScale;
+                const float textStartX = thumbMax.x + 16.0f * uiScale;
+                const float textWidth = std::max(140.0f * uiScale, cardMax.x - textStartX - actionWidth - 28.0f * uiScale);
+                ImGui::SetCursorScreenPos(ImVec2(textStartX, cardPos.y + 15.0f * uiScale));
+                ImGui::PushTextWrapPos(textStartX + textWidth);
+                ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "%s",
+                                   rp.name.empty() ? "(Unnamed Project)" : rp.name.c_str());
+                ImGui::PopTextWrapPos();
+
+                ImGui::SetCursorScreenPos(ImVec2(textStartX, cardPos.y + 44.0f * uiScale));
+                ImGui::PushTextWrapPos(textStartX + textWidth);
                 ImGui::TextDisabled("%s", rp.path.c_str());
+                ImGui::PopTextWrapPos();
 
-                const float buttonWidth = 88.0f * uiScale;
-                ImGui::SetCursorScreenPos(ImVec2(cardPos.x + cardSize.x - buttonWidth - 16.0f * uiScale,
-                                                 cardPos.y + 20.0f * uiScale));
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.28f, 0.40f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.32f, 0.38f, 0.55f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.35f, 0.50f, 1.0f));
+                ImGui::SetCursorScreenPos(ImVec2(textStartX, cardPos.y + 66.0f * uiScale));
+                ImGui::TextColored(ImVec4(0.63f, 0.69f, 0.78f, 1.0f), "Last opened: %s",
+                                   rp.lastOpened.empty() ? "-" : rp.lastOpened.c_str());
+
+                ImGui::SetCursorScreenPos(ImVec2(cardMax.x - actionWidth - padding, cardPos.y + (cardHeight - 34.0f * uiScale) * 0.5f));
                 ImGui::BeginDisabled(launcherBusy);
-                bool openClicked = ImGui::Button("Open", ImVec2(buttonWidth, 30.0f * uiScale));
-                ImGui::EndDisabled();
+                ImGui::PushStyleColor(ImGuiCol_Button, hovered ? ImVec4(0.20f, 0.48f, 0.83f, 1.0f) : ImVec4(0.18f, 0.40f, 0.70f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.54f, 0.90f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.17f, 0.42f, 0.75f, 1.0f));
+                if (ImGui::Button("Open", ImVec2(actionWidth, 34.0f * uiScale))) {
+                    shouldOpen = true;
+                }
                 ImGui::PopStyleColor(3);
+                ImGui::EndDisabled();
 
-                if (!launcherBusy && ((clicked && !openClicked) || openClicked))
-                {
-                    if (audio.isReady()) {
-                        audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
-                    }
-                    launcherTransitionActive = true;
-                    launcherTransitionPendingHide = false;
-                    launcherTransitionStartTime = glfwGetTime();
-                    launcherTransitionFocus = ImVec2(cardPos.x + cardSize.x * 0.5f,
-                                                     cardPos.y + cardSize.y * 0.5f);
-                    fs::path previewPath = getProjectPreviewPath(rp.path);
-                    if (!previewPath.empty() && fs::exists(previewPath)) {
-                        launcherLoadingPreviewPath = previewPath.string();
-                    }
-                    OpenProjectPath(rp.path);
+                if (shouldRemove) {
+                    projectManager.recentProjects.erase(
+                        projectManager.recentProjects.begin() +
+                        static_cast<std::vector<RecentProject>::difference_type>(i));
+                    projectManager.saveRecentProjects();
+                    removedProject = true;
+                    ImGui::PopID();
+                    break;
                 }
 
-                ImGui::SetCursorScreenPos(afterPos);
+                if (shouldOpen && !launcherBusy) {
+                    launchRecentProject(rp, rowCenter);
+                }
 
+                ImGui::SetCursorScreenPos(ImVec2(cardPos.x, cardPos.y + cardHeight));
+                ImGui::Dummy(ImVec2(cardSize.x, 5.0f * uiScale));
                 ImGui::PopID();
-                ImGui::Spacing();
             }
-        }
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextDisabled("Modularity Engine - Beta V6.3");
-        ImGui::EndChild();
 
-        ImVec2 rightSize = ImGui::GetItemRectSize();
-        ImGui::SetCursorPos(rightStart);
-        ImGui::Dummy(rightSize);
+            if (!hadVisible && !removedProject) {
+                if (projectManager.recentProjects.empty()) {
+                    ImGui::TextDisabled("No recent projects yet. Create or open one to get started.");
+                } else {
+                    ImGui::TextDisabled("No projects match your search.");
+                }
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+        };
+
+        auto renderNewProjectView = [&]() {
+            static char templateSearch[128] = "";
+            const std::vector<LauncherTemplateEntry> templates = GatherTemplateEntries();
+            const fs::path templatesRoot = GetTemplateProjectsRoot();
+            const std::string templateFilter = toLower(TrimCopy(templateSearch));
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.21f, 0.30f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.31f, 0.44f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.28f, 0.40f, 1.0f));
+            if (ImGui::Button("< Back to Projects", ImVec2(170.0f * uiScale, 0))) {
+                projectManager.showNewProjectDialog = false;
+                projectManager.errorMessage.clear();
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.93f, 0.95f, 0.99f, 1.0f), "New Project");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            auto renderTemplatePane = [&]() {
+                ImGui::TextColored(ImVec4(0.88f, 0.91f, 0.97f, 1.0f), "Templates");
+                ImGui::TextDisabled("Drop template project folders into Template-Projects.");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                    ImGui::SetTooltip("%s", templatesRoot.string().c_str());
+                }
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputTextWithHint("##TemplateSearch", "Search templates", templateSearch, sizeof(templateSearch));
+                ImGui::Spacing();
+
+                ImGui::BeginChild("TemplateGrid", ImVec2(0, 0), false);
+                const float cardWidth = 250.0f * uiScale;
+                const float cardHeight = 212.0f * uiScale;
+                const float imageHeight = 145.0f * uiScale;
+                float availWidth = ImGui::GetContentRegionAvail().x;
+                int columnCount = std::max(1, static_cast<int>(std::floor(availWidth / (cardWidth + 10.0f * uiScale))));
+                if (ImGui::BeginTable("TemplateCards", columnCount, ImGuiTableFlags_SizingFixedFit)) {
+                    bool hadVisible = false;
+                    for (const auto& t : templates) {
+                        const std::string lowerName = toLower(t.displayName);
+                        if (!templateFilter.empty() && lowerName.find(templateFilter) == std::string::npos) {
+                            continue;
+                        }
+                        hadVisible = true;
+                        ImGui::TableNextColumn();
+                        ImGui::PushID(t.projectRoot.string().c_str());
+
+                        const bool selected = (!projectManager.newProjectTemplatePath.empty() &&
+                            fs::path(projectManager.newProjectTemplatePath) == t.projectRoot);
+
+                        ImVec2 cardPos = ImGui::GetCursorScreenPos();
+                        ImGui::InvisibleButton("TemplateCardHit", ImVec2(cardWidth, cardHeight));
+                        if (ImGui::IsItemClicked()) {
+                            projectManager.newProjectTemplatePath = t.projectRoot.string();
+                            projectManager.newProjectTemplateName = t.displayName;
+                        }
+
+                        ImDrawList* list = ImGui::GetWindowDrawList();
+                        ImU32 bg = ImGui::GetColorU32(ImVec4(0.15f, 0.18f, 0.25f, 1.0f));
+                        ImU32 border = ImGui::GetColorU32(selected ? ImVec4(0.24f, 0.60f, 0.98f, 1.0f)
+                                                                   : ImVec4(0.24f, 0.28f, 0.37f, 0.95f));
+                        list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardWidth, cardPos.y + cardHeight), bg, 8.0f * uiScale);
+
+                        ImTextureID templateTexId = static_cast<ImTextureID>(0);
+                        int templateTexWidth = 0;
+                        int templateTexHeight = 0;
+                        if (!t.previewImage.empty() && fs::exists(t.previewImage)) {
+                            if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+                                templateTexId = vulkanRenderer->getOrCreateUIImage(t.previewImage.string(),
+                                                                                   &templateTexWidth,
+                                                                                   &templateTexHeight);
+                            } else if (!usingVulkan()) {
+                                if (Texture* templateTex = renderer.getTexture(t.previewImage.string())) {
+                                    templateTexId = (ImTextureID)(intptr_t)templateTex->GetID();
+                                    templateTexWidth = templateTex->GetWidth();
+                                    templateTexHeight = templateTex->GetHeight();
+                                }
+                            }
+                        }
+
+                        ImVec2 imageMin = cardPos;
+                        ImVec2 imageMax(cardPos.x + cardWidth, cardPos.y + imageHeight);
+                        if (templateTexId != static_cast<ImTextureID>(0)) {
+                            DrawImageCover(list, templateTexId, imageMin, imageMax,
+                                           templateTexWidth, templateTexHeight,
+                                           ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 8.0f * uiScale);
+                        } else {
+                            list->AddRectFilled(imageMin, imageMax,
+                                                ImGui::GetColorU32(ImVec4(0.12f, 0.14f, 0.20f, 1.0f)),
+                                                8.0f * uiScale);
+                            const char* noPreview = "No Template Preview";
+                            ImVec2 txt = ImGui::CalcTextSize(noPreview);
+                            list->AddText(ImVec2(imageMin.x + (cardWidth - txt.x) * 0.5f,
+                                                 imageMin.y + (imageHeight - txt.y) * 0.5f),
+                                          ImGui::GetColorU32(ImVec4(0.66f, 0.70f, 0.78f, 1.0f)), noPreview);
+                        }
+                        list->AddRect(cardPos, ImVec2(cardPos.x + cardWidth, cardPos.y + cardHeight), border, 8.0f * uiScale, 0, 2.0f);
+
+                        ImGui::SetCursorScreenPos(ImVec2(cardPos.x + 12.0f * uiScale, cardPos.y + imageHeight + 10.0f * uiScale));
+                        ImGui::TextColored(ImVec4(0.91f, 0.93f, 0.98f, 1.0f), "%s", t.displayName.c_str());
+
+                        if (selected) {
+                            ImGui::SetCursorScreenPos(ImVec2(cardPos.x + cardWidth - 86.0f * uiScale, cardPos.y + cardHeight - 30.0f * uiScale));
+                            ImGui::TextColored(ImVec4(0.24f, 0.60f, 0.98f, 1.0f), "Selected");
+                        }
+
+                        ImGui::SetCursorScreenPos(ImVec2(cardPos.x, cardPos.y + cardHeight + 10.0f * uiScale));
+                        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+                        ImGui::PopID();
+                    }
+
+                    if (!hadVisible) {
+                        ImGui::TableNextColumn();
+                        if (templates.empty()) {
+                            ImGui::TextDisabled("No templates found.");
+                            ImGui::TextDisabled("Add a folder with project.modu in Template-Projects.");
+                        } else {
+                            ImGui::TextDisabled("No templates match your search.");
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::EndChild();
+            };
+
+            auto renderSettingsPane = [&]() {
+                ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "Project");
+                ImGui::TextUnformatted("Project Name");
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##ProjectNameInline", projectManager.newProjectName, sizeof(projectManager.newProjectName));
+
+                ImGui::Spacing();
+                if (projectManager.newProjectTemplatePath.empty()) {
+                    ImGui::TextDisabled("Template: None (blank project)");
+                } else {
+                    ImGui::TextWrapped("Template: %s", projectManager.newProjectTemplateName.c_str());
+                }
+
+                ImGui::Spacing();
+                const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+                ImGui::TextUnformatted("Pipeline");
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##Pipeline", &projectManager.newProjectPipelineMode, pipelineOptions, IM_ARRAYSIZE(pipelineOptions));
+
+                const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
+                ImGui::TextUnformatted("Renderer");
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##Renderer", &projectManager.newProjectRendererMode, rendererOptions, IM_ARRAYSIZE(rendererOptions));
+#if !MODULARITY_HAS_VULKAN
+                if (projectManager.newProjectRendererMode == 1) {
+                    projectManager.newProjectRendererMode = 0;
+                    ImGui::TextDisabled("Vulkan is unavailable in this build.");
+                }
+#endif
+
+                ImGui::TextDisabled("Project location is set in Settings.");
+
+                const LauncherPackageSnapshot& packageSnapshot = GetLauncherPackageSnapshot(projectManager);
+                if (packageSnapshot.hasSource) {
+                    ImGui::Checkbox("Import packages from latest project", &projectManager.newProjectImportLastPackages);
+                    if (projectManager.newProjectImportLastPackages) {
+                        ImGui::TextWrapped("Source: %s", packageSnapshot.sourceProjectName.c_str());
+                    }
+                } else {
+                    projectManager.newProjectImportLastPackages = false;
+                    ImGui::TextDisabled("No installed-package snapshot found.");
+                }
+
+                if (!projectManager.errorMessage.empty()) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", projectManager.errorMessage.c_str());
+                }
+
+                const float buttonY = ImGui::GetWindowHeight() - 44.0f * uiScale;
+                if (ImGui::GetCursorPosY() < buttonY) {
+                    ImGui::SetCursorPosY(buttonY);
+                }
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.17f, 0.53f, 0.94f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.60f, 0.98f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.13f, 0.46f, 0.86f, 1.0f));
+                if (ImGui::Button("+ Create Project", ImVec2(-1, 32.0f * uiScale))) {
+                    if (strlen(projectManager.newProjectName) == 0) {
+                        projectManager.errorMessage = "Please enter a project name";
+                    } else if (strlen(projectManager.newProjectLocation) == 0) {
+                        projectManager.errorMessage = "Set a default location in Settings first.";
+                    } else {
+                        createNewProject(projectManager.newProjectName, projectManager.newProjectLocation);
+                        if (projectManager.errorMessage.empty()) {
+                            projectManager.showNewProjectDialog = false;
+                        }
+                    }
+                }
+                ImGui::PopStyleColor(3);
+            };
+
+            const float contentWidth = ImGui::GetContentRegionAvail().x;
+            const float contentHeight = ImGui::GetContentRegionAvail().y;
+            const bool useStackedLayout = contentWidth < (1100.0f * uiScale);
+
+            if (useStackedLayout) {
+                const float templateHeight = std::max(260.0f * uiScale, contentHeight * 0.52f);
+                ImGui::BeginChild("TemplateCatalogPane", ImVec2(0, templateHeight), true);
+                renderTemplatePane();
+                ImGui::EndChild();
+
+                ImGui::Spacing();
+                ImGui::BeginChild("NewProjectSettingsPane", ImVec2(0, 0), true);
+                renderSettingsPane();
+                ImGui::EndChild();
+            } else {
+                const float settingsWidth = 400.0f * uiScale;
+                const float gap = ImGui::GetStyle().ItemSpacing.x;
+                float templatePaneWidth = ImGui::GetContentRegionAvail().x - settingsWidth - gap;
+                templatePaneWidth = std::max(templatePaneWidth, 280.0f * uiScale);
+
+                ImGui::BeginChild("TemplateCatalogPane", ImVec2(templatePaneWidth, 0), true);
+                renderTemplatePane();
+                ImGui::EndChild();
+
+                ImGui::SameLine();
+                ImGui::BeginChild("NewProjectSettingsPane", ImVec2(0, 0), true);
+                renderSettingsPane();
+                ImGui::EndChild();
+            }
+        };
+
+        auto renderPackagesView = [&]() {
+            if (ImGui::Button("Refresh##PackageSnapshot")) {
+                (void)GetLauncherPackageSnapshot(projectManager, true);
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(launcherBusy);
+            if (ImGui::Button("New Project...", ImVec2(130.0f * uiScale, 0))) {
+                openNewProjectDialog();
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "Installed Packages");
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const LauncherPackageSnapshot& snapshot = GetLauncherPackageSnapshot(projectManager);
+            if (!snapshot.hasSource) {
+                ImGui::TextDisabled("No recent project with a packages manifest was found.");
+                ImGui::TextDisabled("Open or create a project first, then return here.");
+            } else {
+                ImGui::TextDisabled("Source Project: %s", snapshot.sourceProjectName.c_str());
+                ImGui::TextDisabled("Packages: %zu (%zu external)",
+                                    snapshot.packageLabels.size(),
+                                    snapshot.externalCount);
+                ImGui::Spacing();
+
+                ImGui::BeginChild("InstalledPackagesList", ImVec2(0, 0), true);
+                if (snapshot.packageLabels.empty()) {
+                    ImGui::TextDisabled("No optional packages were saved in the source manifest.");
+                } else {
+                    for (const auto& label : snapshot.packageLabels) {
+                        ImGui::BulletText("%s", label.c_str());
+                    }
+                }
+                ImGui::EndChild();
+            }
+        };
+
+        auto renderSettingsView = [&]() {
+            static std::string settingsStatus;
+            static bool settingsStatusError = false;
+
+            ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "Settings");
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::TextUnformatted("Default Project Location");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##DefaultProjectLocation",
+                             projectManager.defaultProjectLocation,
+                             sizeof(projectManager.defaultProjectLocation));
+            ImGui::TextDisabled("New projects will be created in this folder by default.");
+
+            if (ImGui::Button("Save Settings", ImVec2(140.0f * uiScale, 0))) {
+                const std::string trimmed = TrimCopy(projectManager.defaultProjectLocation);
+                if (trimmed.empty()) {
+                    settingsStatus = "Default project location cannot be empty.";
+                    settingsStatusError = true;
+                } else {
+                    std::error_code ec;
+                    fs::create_directories(trimmed, ec);
+                    if (ec) {
+                        settingsStatus = "Failed to create folder: " + ec.message();
+                        settingsStatusError = true;
+                    } else {
+                        std::snprintf(projectManager.defaultProjectLocation,
+                                      sizeof(projectManager.defaultProjectLocation),
+                                      "%s",
+                                      trimmed.c_str());
+                        std::snprintf(projectManager.newProjectLocation,
+                                      sizeof(projectManager.newProjectLocation),
+                                      "%s",
+                                      projectManager.defaultProjectLocation);
+                        projectManager.saveLauncherSettings();
+                        settingsStatus = "Saved.";
+                        settingsStatusError = false;
+                    }
+                }
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Use Home Default", ImVec2(150.0f * uiScale, 0))) {
+#ifdef _WIN32
+                const char* userProfile = std::getenv("USERPROFILE");
+                const std::string fallback = userProfile && *userProfile
+                    ? (fs::path(userProfile) / "Documents" / "ModularityProjects").string()
+                    : (fs::current_path() / "Projects").string();
+#else
+                const char* home = std::getenv("HOME");
+                const std::string fallback = home && *home
+                    ? (fs::path(home) / "ModularityProjects").string()
+                    : (fs::current_path() / "Projects").string();
+#endif
+                std::snprintf(projectManager.defaultProjectLocation,
+                              sizeof(projectManager.defaultProjectLocation),
+                              "%s",
+                              fallback.c_str());
+                std::snprintf(projectManager.newProjectLocation,
+                              sizeof(projectManager.newProjectLocation),
+                              "%s",
+                              projectManager.defaultProjectLocation);
+                projectManager.saveLauncherSettings();
+                settingsStatus = "Reset to home default.";
+                settingsStatusError = false;
+            }
+
+            if (!settingsStatus.empty()) {
+                ImGui::Spacing();
+                ImGui::TextColored(settingsStatusError
+                                       ? ImVec4(1.0f, 0.42f, 0.42f, 1.0f)
+                                       : ImVec4(0.61f, 0.86f, 0.70f, 1.0f),
+                                   "%s",
+                                   settingsStatus.c_str());
+            }
+        };
+
+        const ImVec2 contentOrigin = ImGui::GetCursorPos();
+        const ImVec2 contentAvail = ImGui::GetContentRegionAvail();
+        const int sectionDirection = (launcherSection >= launcherSectionPrevious) ? 1 : -1;
+        const float sectionOffsetY = (1.0f - sectionAnimEase) * 42.0f * uiScale * static_cast<float>(sectionDirection);
+        const ImVec2 sectionPos(contentOrigin.x + sectionInset.x, contentOrigin.y + sectionInset.y + sectionOffsetY);
+        const ImVec2 sectionSize(ImMax(0.0f, contentAvail.x - sectionInset.x * 2.0f),
+                                 ImMax(0.0f, contentAvail.y - sectionInset.y * 2.0f));
+        ImGui::SetCursorPos(sectionPos);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, sectionAnimEase);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * uiScale, 14.0f * uiScale));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, shellBg);
+        ImGui::BeginChild("LauncherActiveSection", sectionSize, false,
+                          ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
+
+        if (launcherSection == 0) {
+            const ImVec2 projectsRoot = ImGui::GetCursorPos();
+            const ImVec2 projectsAvail = ImGui::GetContentRegionAvail();
+            ImDrawList* projectsDrawList = ImGui::GetWindowDrawList();
+            const ImVec2 projectsClipMin = ImGui::GetCursorScreenPos();
+            const ImVec2 projectsClipMax(projectsClipMin.x + projectsAvail.x, projectsClipMin.y + projectsAvail.y);
+            projectsDrawList->PushClipRect(projectsClipMin, projectsClipMax, true);
+
+            auto beginProjectsSubpanel = [&](const char* id, float offsetUnits) {
+                const float eased = EaseOutCubic(projectsPanelVisual);
+                const float offsetX = (offsetUnits - eased) * projectsAvail.x;
+                ImGui::SetCursorPos(ImVec2(projectsRoot.x + offsetX, projectsRoot.y));
+                ImGui::BeginChild(id, projectsAvail, false,
+                                  ImGuiWindowFlags_NoScrollbar |
+                                  ImGuiWindowFlags_NoScrollWithMouse);
+            };
+
+            beginProjectsSubpanel("ProjectsListPanel", 0.0f);
+            renderProjectsView();
+            ImGui::EndChild();
+
+            beginProjectsSubpanel("ProjectsNewPanel", 1.0f);
+            renderNewProjectView();
+            ImGui::EndChild();
+
+            projectsDrawList->PopClipRect();
+        } else if (launcherSection == 1) {
+            renderPackagesView();
+        } else {
+            renderSettingsView();
+        }
+
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+
+        ImGui::EndChild();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
 
         if (!launcherIntroFinished) {
             ImGui::PopItemFlag();
@@ -767,8 +1464,6 @@ void Engine::renderLauncher() {
         showLauncher = false;
     }
 
-    if (projectManager.showNewProjectDialog)
-        renderNewProjectDialog();
     if (projectManager.showOpenProjectDialog)
         renderOpenProjectDialog();
 
@@ -844,7 +1539,7 @@ void Engine::renderNewProjectDialog() {
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(560, 390), ImGuiCond_Appearing);
 
     if (ImGui::Begin("New Project", &projectManager.showNewProjectDialog,
                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
@@ -882,6 +1577,23 @@ void Engine::renderNewProjectDialog() {
                        sizeof(projectManager.newProjectLocation));
         ImGui::SameLine();
         if (ImGui::Button("Browse")) {
+        }
+
+        ImGui::Spacing();
+
+        const LauncherPackageSnapshot& packageSnapshot = GetLauncherPackageSnapshot(projectManager);
+        if (packageSnapshot.hasSource) {
+            ImGui::Checkbox("Import installed packages from latest project", &projectManager.newProjectImportLastPackages);
+            if (projectManager.newProjectImportLastPackages) {
+                ImGui::TextDisabled("Importing %zu package entries from \"%s\"",
+                                    packageSnapshot.packageLabels.size(),
+                                    packageSnapshot.sourceProjectName.c_str());
+            } else {
+                ImGui::TextDisabled("Packages will not be imported.");
+            }
+        } else {
+            projectManager.newProjectImportLastPackages = false;
+            ImGui::TextDisabled("No recent package snapshot available to import.");
         }
 
         ImGui::Spacing();

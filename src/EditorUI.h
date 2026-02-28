@@ -75,4 +75,7 @@ void applySuperRoundStyle(ImGuiStyle& style);
 
 // Setup ImGui dockspace for the editor and return its stable dockspace ID.
 ImGuiID setupDockspace(const std::function<void()>& menuBarContent = nullptr);
+
+// Apply touch-style swipe scrolling with inertial motion and elastic edge return.
+void updateTouchSwipeScrolling();
 #pragma endregion

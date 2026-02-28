@@ -8,6 +8,65 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../include/ThirdParty/tiny_obj_loader.h"
 
+namespace {
+glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
+    if (!obj.ui.spriteSheetEnabled) {
+        return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+    }
+
+    const int columns = std::max(1, obj.ui.spriteSheetColumns);
+    const int rows = std::max(1, obj.ui.spriteSheetRows);
+    const int total = std::max(1, columns * rows);
+    const int frame = std::clamp(obj.ui.spriteSheetFrame, 0, total - 1);
+    const int col = frame % columns;
+    const int row = frame / columns;
+
+    const float u0 = static_cast<float>(col) / static_cast<float>(columns);
+    const float v0 = static_cast<float>(row) / static_cast<float>(rows);
+    const float uSize = 1.0f / static_cast<float>(columns);
+    const float vSize = 1.0f / static_cast<float>(rows);
+    return glm::vec4(u0, v0, uSize, vSize);
+}
+
+glm::mat4 BuildSceneObjectModelMatrix(const SceneObject& obj, const glm::vec3* cameraPosition = nullptr, const glm::vec3* cameraUp = nullptr) {
+    glm::mat4 model = glm::mat4(1.0f);
+    model = glm::translate(model, obj.position);
+
+    if (obj.renderType == RenderType::Sprite && obj.faceCamera && cameraPosition != nullptr) {
+        glm::vec3 forward = *cameraPosition - obj.position;
+        if (glm::dot(forward, forward) < 1e-6f) {
+            forward = glm::vec3(0.0f, 0.0f, 1.0f);
+        } else {
+            forward = glm::normalize(forward);
+        }
+
+        glm::vec3 up = (cameraUp != nullptr && glm::dot(*cameraUp, *cameraUp) > 1e-6f)
+            ? glm::normalize(*cameraUp)
+            : glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::cross(up, forward);
+        if (glm::dot(right, right) < 1e-6f) {
+            up = glm::vec3(0.0f, 0.0f, 1.0f);
+            right = glm::cross(up, forward);
+        }
+        right = glm::normalize(right);
+        up = glm::normalize(glm::cross(forward, right));
+
+        const glm::vec3 signedScale = obj.scale;
+        const glm::vec3 absScale = glm::max(glm::abs(signedScale), glm::vec3(0.0001f));
+        model[0] = glm::vec4(right * absScale.x * (signedScale.x < 0.0f ? -1.0f : 1.0f), 0.0f);
+        model[1] = glm::vec4(up * absScale.y * (signedScale.y < 0.0f ? -1.0f : 1.0f), 0.0f);
+        model[2] = glm::vec4(forward * absScale.z * (signedScale.z < 0.0f ? -1.0f : 1.0f), 0.0f);
+        return model;
+    }
+
+    model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::scale(model, obj.scale);
+    return model;
+}
+} // namespace
+
 // Global OBJ loader instance
 OBJLoader g_objLoader;
 
@@ -1189,12 +1248,7 @@ void Renderer::renderSkybox(const glm::mat4& view, const glm::mat4& proj) {
 }
 
 void Renderer::renderObject(const SceneObject& obj) {
-    glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, obj.position);
-    model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1, 0, 0));
-    model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0, 1, 0));
-    model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0, 0, 1));
-    model = glm::scale(model, obj.scale);
+    glm::mat4 model = BuildSceneObjectModelMatrix(obj);
 
     bool hasMaterialAsset = !obj.materialPath.empty();
     bool hasCustomShader = !obj.vertexShaderPath.empty() || !obj.fragmentShaderPath.empty();
@@ -1207,6 +1261,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
+    shader->setVec4("uvRect", BuildSpriteUvRect(obj));
     shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || missingMaterialAndShader);
 
     Texture* baseTex = texture1;
@@ -1327,14 +1382,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
         return f;
     };
-    auto buildModelMatrix = [](const SceneObject& obj) {
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, obj.position);
-        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, obj.scale);
-        return model;
+    auto buildModelMatrix = [&](const SceneObject& obj) {
+        return BuildSceneObjectModelMatrix(obj, &camera.position, &camera.up);
     };
     auto selectMeshForObject = [&](const SceneObject& obj) -> Mesh* {
         if (obj.renderType == RenderType::Cube) return cubeMesh;
@@ -1683,6 +1732,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setFloat("specularStrength", obj.material.specularStrength);
         shader->setFloat("shininess", obj.material.shininess);
         shader->setFloat("mixAmount", obj.material.textureMix);
+        shader->setVec4("uvRect", BuildSpriteUvRect(obj));
 
         if (obj.hasSkeletalAnimation && obj.skeletal.enabled) {
             int safeLimit = std::max(0, boneLimit);
@@ -2112,12 +2162,7 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
 
         if (!meshToDraw) continue;
 
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, position);
-        model = glm::rotate(model, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, scale);
+        glm::mat4 model = BuildSceneObjectModelMatrix(obj, &camera.position, &camera.up);
         active->setMat4("model", model);
 
         meshToDraw->draw();
@@ -2355,12 +2400,7 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
                 glCullFace(GL_BACK);
             }
 
-            glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, drawItem.obj->position);
-            model = glm::rotate(model, glm::radians(drawItem.obj->rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-            model = glm::rotate(model, glm::radians(drawItem.obj->rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-            model = glm::rotate(model, glm::radians(drawItem.obj->rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-            model = glm::scale(model, drawItem.obj->scale);
+            glm::mat4 model = BuildSceneObjectModelMatrix(*drawItem.obj, &camera.position, &camera.up);
 
             maskShader->use();
             maskShader->setMat4("view", view);

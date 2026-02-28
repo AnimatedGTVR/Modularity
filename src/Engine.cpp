@@ -256,6 +256,13 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             obj.scale = glm::vec3(1.0f, 1.0f, 0.05f);
             obj.material.ambientStrength = 1.0f;
             break;
+        case ObjectType::Sprite25D:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Sprite2D;
+            obj.ui.label = "2.5D Object";
+            obj.ui.size = glm::vec2(128.0f, 128.0f);
+            obj.scale = glm::vec3(1.0f);
+            break;
         case ObjectType::DirectionalLight:
             obj.hasLight = true;
             obj.light.type = LightType::Directional;
@@ -367,7 +374,7 @@ void Engine::applyProjectPipelineDefaults(bool force) {
 }
 
 int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
-    if (!obj.hasUI || !obj.ui.spriteSheetEnabled) {
+    if (!obj.ui.spriteSheetEnabled) {
         return 0;
     }
     int columns = std::max(1, obj.ui.spriteSheetColumns);
@@ -384,7 +391,7 @@ std::array<ImVec2, 4> Engine::buildSpriteSheetUvs(const SceneObject& obj) const 
         ImVec2(1.0f, 0.0f),
         ImVec2(0.0f, 0.0f)
     };
-    if (!obj.hasUI || !obj.ui.spriteSheetEnabled) {
+    if (!obj.ui.spriteSheetEnabled) {
         return uvs;
     }
 
@@ -680,6 +687,107 @@ bool copyDirectoryRecursive(const fs::path& from, const fs::path& to, std::strin
     return true;
 }
 
+fs::path resolveRecentProjectRoot(const std::string& recentPath) {
+    fs::path path(recentPath);
+    if (path.empty()) return {};
+    if (path.extension() == ".modu") {
+        return path.parent_path();
+    }
+    if (fs::is_directory(path)) {
+        return path;
+    }
+    return path.has_parent_path() ? path.parent_path() : path;
+}
+
+bool importInstalledPackagesFromRecent(const ProjectManager& projectManager,
+                                       const fs::path& targetProjectRoot,
+                                       std::string& outSourceProjectName,
+                                       std::string& outError) {
+    std::error_code ec;
+    fs::path targetCanonical = fs::weakly_canonical(targetProjectRoot, ec);
+    if (ec || targetCanonical.empty()) {
+        ec.clear();
+        targetCanonical = fs::absolute(targetProjectRoot, ec);
+        ec.clear();
+    }
+
+    for (const auto& rp : projectManager.recentProjects) {
+        fs::path sourceRoot = resolveRecentProjectRoot(rp.path);
+        if (sourceRoot.empty()) continue;
+
+        fs::path sourceCanonical = fs::weakly_canonical(sourceRoot, ec);
+        if (ec || sourceCanonical.empty()) {
+            ec.clear();
+            sourceCanonical = fs::absolute(sourceRoot, ec);
+            ec.clear();
+        }
+        if (!sourceCanonical.empty() && !targetCanonical.empty() && sourceCanonical == targetCanonical) {
+            continue;
+        }
+
+        fs::path sourceManifest = sourceRoot / "packages.modu";
+        if (!fs::exists(sourceManifest)) continue;
+
+        fs::path targetManifest = targetProjectRoot / "packages.modu";
+        fs::copy_file(sourceManifest, targetManifest, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            outError = "Failed to copy package manifest from " + sourceRoot.string() + ": " + ec.message();
+            return false;
+        }
+
+        std::string copyError;
+        if (!copyDirectoryRecursive(sourceRoot / "Library" / "InstalledPackages",
+                                    targetProjectRoot / "Library" / "InstalledPackages",
+                                    copyError)) {
+            outError = copyError;
+            return false;
+        }
+
+        outSourceProjectName = rp.name.empty() ? sourceRoot.filename().string() : rp.name;
+        return true;
+    }
+
+    outError = "No recent project with a package manifest was found.";
+    return false;
+}
+
+bool applyTemplateProject(const fs::path& templateProjectRoot,
+                          Project& project,
+                          const std::string& projectName,
+                          ProjectPipeline pipeline,
+                          Modularity::GraphicsBackend rendererBackend,
+                          std::string& outError) {
+    if (templateProjectRoot.empty()) {
+        return true;
+    }
+
+    fs::path templateProjectFile = templateProjectRoot / "project.modu";
+    if (!fs::exists(templateProjectFile)) {
+        outError = "Template is missing project.modu: " + templateProjectRoot.string();
+        return false;
+    }
+
+    std::string copyError;
+    if (!copyDirectoryRecursive(templateProjectRoot, project.projectPath, copyError)) {
+        outError = "Failed to copy template project: " + copyError;
+        return false;
+    }
+
+    if (!project.load(project.projectPath / "project.modu")) {
+        outError = "Failed to load copied template project.";
+        return false;
+    }
+
+    project.name = projectName;
+    project.pipeline = pipeline;
+    project.rendererBackend = rendererBackend;
+    if (project.currentSceneName.empty()) {
+        project.currentSceneName = "Main";
+    }
+    project.saveProjectFile();
+    return true;
+}
+
 bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, std::string& error) {
     std::error_code ec;
     if (!fs::exists(buildRoot)) return true;
@@ -926,6 +1034,15 @@ void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std:
         fs::remove_all(packagesDir, ec);
         if (ec) {
             error = "Failed to remove existing packages.";
+            return;
+        }
+    }
+
+    fs::path templatesDir = exportRoot / "Template-Projects";
+    if (fs::exists(templatesDir)) {
+        fs::remove_all(templatesDir, ec);
+        if (ec) {
+            error = "Failed to remove existing template projects.";
             return;
         }
     }
@@ -1709,6 +1826,7 @@ void Engine::run() {
             std::cerr << "[DEBUG] First frame: UI rendering complete, finalizing frame..." << std::endl;
         }
 
+        updateTouchSwipeScrolling();
         autosaveWorkspaceLayout();
         renderUiCanvas3DTargets();
         ImGui::Render();
@@ -4561,6 +4679,10 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             result.message = copyError;
             return result;
         }
+        if (!copyDirectoryRecursive(sourceRoot / "Template-Projects", exportRoot / "Template-Projects", copyError)) {
+            result.message = copyError;
+            return result;
+        }
 
         setStatus(0.78f, "Collecting precompiled packages...");
         if (!copyPrecompiledPackages(buildRoot, exportRoot / "Packages" / "ThirdParty", copyError)) {
@@ -4985,6 +5107,34 @@ void Engine::createNewProject(const char* name, const char* location) {
     }
 #endif
     if (newProject.create()) {
+        if (!projectManager.newProjectTemplatePath.empty()) {
+            std::string templateError;
+            if (!applyTemplateProject(fs::path(projectManager.newProjectTemplatePath),
+                                      newProject,
+                                      name,
+                                      newProject.pipeline,
+                                      newProject.rendererBackend,
+                                      templateError)) {
+                projectManager.errorMessage = templateError;
+                return;
+            }
+        }
+
+        bool importedPackages = false;
+        std::string importedFromProject;
+        if (projectManager.newProjectImportLastPackages) {
+            std::string importError;
+            if (importInstalledPackagesFromRecent(projectManager,
+                                                  newProject.projectPath,
+                                                  importedFromProject,
+                                                  importError)) {
+                importedPackages = true;
+            } else if (!importError.empty()) {
+                addConsoleMessage("Installed package import skipped: " + importError,
+                                  ConsoleMessageType::Warning);
+            }
+        }
+
         projectManager.currentProject = newProject;
         projectManager.addToRecentProjects(name,
                                           (newProject.projectPath / "project.modu").string());
@@ -5033,6 +5183,9 @@ void Engine::createNewProject(const char* name, const char* location) {
         addConsoleMessage("Created new project: " + std::string(name), ConsoleMessageType::Success);
         addConsoleMessage("Project location: " + newProject.projectPath.string(), ConsoleMessageType::Info);
         addConsoleMessage("Pipeline: " + std::string(isProject2DPipeline() ? "2D" : "3D"), ConsoleMessageType::Info);
+        if (importedPackages) {
+            addConsoleMessage("Imported installed packages from: " + importedFromProject, ConsoleMessageType::Info);
+        }
 
         saveCurrentScene();
         loadBuildSettings();
@@ -6175,6 +6328,9 @@ void Engine::setupImGui() {
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+#if defined(__ANDROID__)
+    io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
+#endif
     if (usingVulkan()) {
         io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
     } else {

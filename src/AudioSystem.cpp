@@ -1,9 +1,23 @@
+#define STB_VORBIS_HEADER_ONLY
+#include "../include/ThirdParty/stb_vorbis.c"
 #define MINIAUDIO_IMPLEMENTATION
 #include "../include/ThirdParty/miniaudio.h"
 #include "AudioSystem.h"
 #include <cmath>
 #include <atomic>
 #include <array>
+#if MODULARITY_HAS_SNDFILE
+#include <sndfile.h>
+#endif
+
+#undef STB_VORBIS_HEADER_ONLY
+#include "../include/ThirdParty/stb_vorbis.c"
+#undef L
+#undef C
+#undef R
+#undef PLAYBACK_MONO
+#undef PLAYBACK_LEFT
+#undef PLAYBACK_RIGHT
 
 namespace {
 constexpr size_t kPreviewBuckets = 800;
@@ -13,6 +27,58 @@ constexpr size_t kReverbCombCount = 4;
 constexpr size_t kReverbAllpassCount = 2;
 constexpr float kReverbPreDelayMaxSeconds = 0.2f;
 constexpr float kReverbReflectionsMaxSeconds = 0.1f;
+
+void BuildWaveformPreview(AudioClipPreview& preview, const float* samples, ma_uint64 totalFrames) {
+    if (!samples || totalFrames == 0 || preview.channels == 0) {
+        return;
+    }
+
+    const ma_uint64 framesPerBucket = std::max<ma_uint64>(1, totalFrames / kPreviewBuckets);
+    preview.waveform.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+    if (preview.channels >= 2) {
+        preview.waveformLeft.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+        preview.waveformRight.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
+    }
+
+    size_t bucketIndex = 0;
+    ma_uint64 bucketCursor = 0;
+    float bucketMax = 0.0f;
+    float bucketMaxLeft = 0.0f;
+    float bucketMaxRight = 0.0f;
+
+    for (ma_uint64 frame = 0; frame < totalFrames && bucketIndex < preview.waveform.size(); ++frame) {
+        const size_t frameOffset = static_cast<size_t>(frame * preview.channels);
+        for (ma_uint32 channel = 0; channel < preview.channels; ++channel) {
+            bucketMax = std::max(bucketMax, std::fabs(samples[frameOffset + channel]));
+        }
+        if (preview.channels >= 2) {
+            bucketMaxLeft = std::max(bucketMaxLeft, std::fabs(samples[frameOffset]));
+            bucketMaxRight = std::max(bucketMaxRight, std::fabs(samples[frameOffset + 1]));
+        }
+
+        bucketCursor++;
+        if (bucketCursor >= framesPerBucket) {
+            preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
+            if (preview.channels >= 2) {
+                preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
+                preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
+            }
+            bucketIndex++;
+            bucketCursor = 0;
+            bucketMax = 0.0f;
+            bucketMaxLeft = 0.0f;
+            bucketMaxRight = 0.0f;
+        }
+    }
+
+    if (bucketIndex < preview.waveform.size() && bucketMax > 0.0f) {
+        preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
+        if (preview.channels >= 2) {
+            preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
+            preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
+        }
+    }
+}
 
 float DbToLinear(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -225,6 +291,7 @@ void AudioSystem::destroyActiveSounds() {
     for (auto& kv : activeSounds) {
         if (kv.second) {
             ma_sound_uninit(&kv.second->sound);
+            releaseDecodedAudio(kv.second->decodedData);
         }
     }
     activeSounds.clear();
@@ -255,6 +322,7 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
         }
         if (it->second) {
             ma_sound_uninit(&it->second->sound);
+            releaseDecodedAudio(it->second->decodedData);
         }
         activeSounds.erase(it);
     }
@@ -270,16 +338,7 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
     if (!initialized && !init()) return false;
 
     auto snd = std::make_unique<ActiveSound>();
-    ma_result res = ma_sound_init_from_file(
-        &engine,
-        obj.audioSource.clipPath.c_str(),
-        MA_SOUND_FLAG_STREAM,
-        reverbReady ? &reverbGroup : nullptr,
-        nullptr,
-        &snd->sound
-    );
-    if (res != MA_SUCCESS) {
-        std::cerr << "AudioSystem: failed to load " << obj.audioSource.clipPath << " (" << res << ")\n";
+    if (!initSoundFromPath(obj.audioSource.clipPath, MA_SOUND_FLAG_STREAM, reverbReady ? &reverbGroup : nullptr, snd->sound, snd->decodedData)) {
         return false;
     }
 
@@ -350,6 +409,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
             if (eraseIt != activeSounds.end()) {
                 if (eraseIt->second) {
                     ma_sound_uninit(&eraseIt->second->sound);
+                    releaseDecodedAudio(eraseIt->second->decodedData);
                 }
                 activeSounds.erase(eraseIt);
             }
@@ -369,6 +429,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
         if (stillPresent.find(it->first) == stillPresent.end()) {
             if (it->second) {
                 ma_sound_uninit(&it->second->sound);
+                releaseDecodedAudio(it->second->decodedData);
             }
             it = activeSounds.erase(it);
         } else {
@@ -382,9 +443,8 @@ bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) 
     if (!initialized && !init()) return false;
 
     stopPreview();
-    ma_result res = ma_sound_init_from_file(&engine, path.c_str(), MA_SOUND_FLAG_STREAM, nullptr, nullptr, &previewSound);
-    if (res != MA_SUCCESS) {
-        std::cerr << "AudioSystem: preview load failed for " << path << " (" << res << ")\n";
+    if (!initSoundFromPath(path, MA_SOUND_FLAG_STREAM, nullptr, previewSound, previewDecodedData)) {
+        std::cerr << "AudioSystem: preview load failed for " << path << "\n";
         return false;
     }
     ma_sound_set_looping(&previewSound, loop ? MA_TRUE : MA_FALSE);
@@ -394,6 +454,7 @@ bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) 
     previewActive = ma_sound_start(&previewSound) == MA_SUCCESS;
     if (!previewActive) {
         ma_sound_uninit(&previewSound);
+        releaseDecodedAudio(previewDecodedData);
     }
     return previewActive;
 }
@@ -403,6 +464,7 @@ void AudioSystem::stopPreview() {
         ma_sound_stop(&previewSound);
         ma_sound_uninit(&previewSound);
     }
+    releaseDecodedAudio(previewDecodedData);
     previewActive = false;
     previewPath.clear();
 }
@@ -413,25 +475,67 @@ bool AudioSystem::isPreviewing(const std::string& path) const {
 
 bool AudioSystem::getPreviewTime(const std::string& path, double& cursorSeconds, double& durationSeconds) const {
     if (!previewActive || previewPath != path) return false;
-    float cur = 0.0f;
-    float len = 0.0f;
-    if (ma_sound_get_cursor_in_seconds(&previewSound, &cur) != MA_SUCCESS) return false;
-    if (ma_sound_get_length_in_seconds(&previewSound, &len) != MA_SUCCESS) return false;
-    cursorSeconds = static_cast<double>(cur);
-    durationSeconds = static_cast<double>(len);
+
+    ma_uint32 sampleRate = 0;
+    if (ma_sound_get_data_format(&previewSound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS || sampleRate == 0) {
+        return false;
+    }
+
+    ma_uint64 cursorFrames = 0;
+    if (ma_sound_get_cursor_in_pcm_frames(&previewSound, &cursorFrames) != MA_SUCCESS) return false;
+    cursorSeconds = static_cast<double>(cursorFrames) / static_cast<double>(sampleRate);
+
+    durationSeconds = 0.0;
+    auto it = previewCache.find(path);
+    if (it != previewCache.end() && it->second.loaded && std::isfinite(it->second.durationSeconds) && it->second.durationSeconds > 0.0) {
+        durationSeconds = it->second.durationSeconds;
+    } else if (previewDecodedData && previewDecodedData->sampleRate > 0 && previewDecodedData->frameCount > 0) {
+        durationSeconds = static_cast<double>(previewDecodedData->frameCount) / static_cast<double>(previewDecodedData->sampleRate);
+    } else {
+        ma_uint64 lengthFrames = 0;
+        if (ma_sound_get_length_in_pcm_frames(&previewSound, &lengthFrames) == MA_SUCCESS && lengthFrames > 0) {
+            durationSeconds = static_cast<double>(lengthFrames) / static_cast<double>(sampleRate);
+        }
+    }
+
+    if (!std::isfinite(cursorSeconds) || !std::isfinite(durationSeconds) || durationSeconds <= 0.0) {
+        return false;
+    }
+
+    cursorSeconds = std::clamp(cursorSeconds, 0.0, durationSeconds);
     return true;
 }
 
 bool AudioSystem::seekPreview(const std::string& path, double seconds) {
     if (!previewActive || previewPath != path) return false;
-    ma_uint32 sampleRate = 0;
-    if (ma_sound_get_data_format(&previewSound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS) {
+
+    ma_uint32 sourceSampleRate = 0;
+    auto it = previewCache.find(path);
+    if (it != previewCache.end() && it->second.loaded && it->second.sampleRate > 0) {
+        sourceSampleRate = it->second.sampleRate;
+    } else if (previewDecodedData && previewDecodedData->sampleRate > 0) {
+        sourceSampleRate = previewDecodedData->sampleRate;
+    } else if (ma_sound_get_data_format(&previewSound, nullptr, nullptr, &sourceSampleRate, nullptr, 0) != MA_SUCCESS || sourceSampleRate == 0) {
         return false;
     }
-    float lenSec = 0.0f;
-    ma_sound_get_length_in_seconds(&previewSound, &lenSec);
-    seconds = std::clamp(seconds, 0.0, static_cast<double>(lenSec));
-    ma_uint64 targetFrame = static_cast<ma_uint64>(seconds * static_cast<double>(sampleRate));
+
+    double maxSeconds = 0.0;
+    if (it != previewCache.end() && it->second.loaded && std::isfinite(it->second.durationSeconds) && it->second.durationSeconds > 0.0) {
+        maxSeconds = it->second.durationSeconds;
+    } else if (previewDecodedData && previewDecodedData->sampleRate > 0 && previewDecodedData->frameCount > 0) {
+        maxSeconds = static_cast<double>(previewDecodedData->frameCount) / static_cast<double>(previewDecodedData->sampleRate);
+    } else {
+        ma_uint64 lengthFrames = 0;
+        if (ma_sound_get_length_in_pcm_frames(&previewSound, &lengthFrames) == MA_SUCCESS && lengthFrames > 0) {
+            maxSeconds = static_cast<double>(lengthFrames) / static_cast<double>(sourceSampleRate);
+        }
+    }
+    if (maxSeconds > 0.0 && std::isfinite(maxSeconds)) {
+        seconds = std::clamp(seconds, 0.0, maxSeconds);
+    } else {
+        seconds = std::max(0.0, seconds);
+    }
+    ma_uint64 targetFrame = static_cast<ma_uint64>(seconds * static_cast<double>(sourceSampleRate));
     ma_result res = ma_sound_seek_to_pcm_frame(&previewSound, targetFrame);
     return res == MA_SUCCESS;
 }
@@ -617,12 +721,94 @@ void AudioSystem::shutdownReverbGraph() {
     currentReverb = ReverbSettings{};
 }
 
+std::shared_ptr<AudioSystem::DecodedAudioData> AudioSystem::decodeClipToMemory(const std::string& path) {
+#if MODULARITY_HAS_SNDFILE
+    SF_INFO info{};
+    SNDFILE* file = sf_open(path.c_str(), SFM_READ, &info);
+    if (!file) {
+        return nullptr;
+    }
+
+    if (info.frames <= 0 || info.channels <= 0 || info.samplerate <= 0) {
+        sf_close(file);
+        return nullptr;
+    }
+
+    auto decoded = std::make_shared<DecodedAudioData>();
+    decoded->channels = static_cast<ma_uint32>(info.channels);
+    decoded->sampleRate = static_cast<ma_uint32>(info.samplerate);
+    decoded->frameCount = static_cast<ma_uint64>(info.frames);
+    decoded->pcmFrames.resize(static_cast<size_t>(decoded->frameCount * decoded->channels));
+
+    const sf_count_t framesRead = sf_readf_float(file, decoded->pcmFrames.data(), info.frames);
+    sf_close(file);
+    if (framesRead <= 0) {
+        return nullptr;
+    }
+
+    decoded->frameCount = static_cast<ma_uint64>(framesRead);
+    decoded->pcmFrames.resize(static_cast<size_t>(decoded->frameCount * decoded->channels));
+    if (ma_audio_buffer_ref_init(ma_format_f32, decoded->channels, decoded->pcmFrames.data(), decoded->frameCount, &decoded->buffer) != MA_SUCCESS) {
+        return nullptr;
+    }
+
+    decoded->initialized = true;
+    return decoded;
+#else
+    (void)path;
+    return nullptr;
+#endif
+}
+
+bool AudioSystem::initSoundFromPath(const std::string& path, ma_uint32 flags, ma_sound_group* group, ma_sound& sound,
+                                    std::shared_ptr<DecodedAudioData>& decodedData) {
+    ma_result res = ma_sound_init_from_file(&engine, path.c_str(), flags, group, nullptr, &sound);
+    if (res == MA_SUCCESS) {
+        return true;
+    }
+
+    decodedData = decodeClipToMemory(path);
+    if (!decodedData) {
+        std::cerr << "AudioSystem: miniaudio load failed for " << path << " (" << res << ")\n";
+        return false;
+    }
+
+    res = ma_sound_init_from_data_source(&engine, &decodedData->buffer.ds, flags & ~MA_SOUND_FLAG_STREAM, group, &sound);
+    if (res != MA_SUCCESS) {
+        std::cerr << "AudioSystem: decoded fallback load failed for " << path << " (" << res << ")\n";
+        releaseDecodedAudio(decodedData);
+        return false;
+    }
+
+    return true;
+}
+
+void AudioSystem::releaseDecodedAudio(std::shared_ptr<DecodedAudioData>& decodedData) {
+    if (decodedData && decodedData->initialized) {
+        ma_audio_buffer_ref_uninit(&decodedData->buffer);
+        decodedData->initialized = false;
+    }
+    decodedData.reset();
+}
+
 AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
     AudioClipPreview preview;
     preview.path = path;
 
     ma_decoder decoder;
     if (ma_decoder_init_file(path.c_str(), nullptr, &decoder) != MA_SUCCESS) {
+        auto decoded = decodeClipToMemory(path);
+        if (!decoded) {
+            return preview;
+        }
+        preview.channels = decoded->channels;
+        preview.sampleRate = decoded->sampleRate;
+        preview.durationSeconds = (preview.sampleRate > 0)
+            ? static_cast<double>(decoded->frameCount) / static_cast<double>(preview.sampleRate)
+            : 0.0;
+        BuildWaveformPreview(preview, decoded->pcmFrames.data(), decoded->frameCount);
+        preview.loaded = true;
+        releaseDecodedAudio(decoded);
         return preview;
     }
 
@@ -637,22 +823,12 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
         return preview;
     }
 
-    const ma_uint64 framesPerBucket = std::max<ma_uint64>(1, totalFrames / kPreviewBuckets);
-    preview.waveform.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
-    if (preview.channels >= 2) {
-        preview.waveformLeft.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
-        preview.waveformRight.assign(static_cast<size_t>(kPreviewBuckets), 0.0f);
-    }
-
     std::vector<float> temp(kPreviewChunkFrames * preview.channels);
+    std::vector<float> pcmFrames;
+    pcmFrames.reserve(static_cast<size_t>(totalFrames * preview.channels));
     ma_uint64 frameCursor = 0;
-    size_t bucketIndex = 0;
-    ma_uint64 bucketCursor = 0;
-    float bucketMax = 0.0f;
-    float bucketMaxLeft = 0.0f;
-    float bucketMaxRight = 0.0f;
 
-    while (frameCursor < totalFrames && bucketIndex < preview.waveform.size()) {
+    while (frameCursor < totalFrames) {
         ma_uint64 framesToRead = std::min<ma_uint64>(kPreviewChunkFrames, totalFrames - frameCursor);
         ma_uint64 framesRead = 0;
         ma_result readResult = ma_decoder_read_pcm_frames(&decoder, temp.data(), framesToRead, &framesRead);
@@ -660,48 +836,15 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
             break;
         }
         if (framesRead == 0) break;
-
-        for (ma_uint64 f = 0; f < framesRead; ++f) {
-            size_t frameOffset = static_cast<size_t>(f * preview.channels);
-            for (ma_uint32 c = 0; c < preview.channels; ++c) {
-                float sample = temp[frameOffset + c];
-                bucketMax = std::max(bucketMax, std::fabs(sample));
-            }
-            if (preview.channels >= 2) {
-                float leftSample = temp[frameOffset];
-                float rightSample = temp[frameOffset + 1];
-                bucketMaxLeft = std::max(bucketMaxLeft, std::fabs(leftSample));
-                bucketMaxRight = std::max(bucketMaxRight, std::fabs(rightSample));
-            }
-            bucketCursor++;
-            frameCursor++;
-
-            if (bucketCursor >= framesPerBucket) {
-                if (bucketIndex < preview.waveform.size()) {
-                    preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
-                    if (preview.channels >= 2) {
-                        preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
-                        preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
-                    }
-                    bucketIndex++;
-                }
-                bucketCursor = 0;
-                bucketMax = 0.0f;
-                bucketMaxLeft = 0.0f;
-                bucketMaxRight = 0.0f;
-            }
-        }
-    }
-
-    if (bucketIndex < preview.waveform.size() && bucketMax > 0.0f) {
-        preview.waveform[bucketIndex] = std::clamp(bucketMax, 0.0f, 1.0f);
-        if (preview.channels >= 2) {
-            preview.waveformLeft[bucketIndex] = std::clamp(bucketMaxLeft, 0.0f, 1.0f);
-            preview.waveformRight[bucketIndex] = std::clamp(bucketMaxRight, 0.0f, 1.0f);
-        }
+        pcmFrames.insert(pcmFrames.end(), temp.begin(), temp.begin() + static_cast<std::ptrdiff_t>(framesRead * preview.channels));
+        frameCursor += framesRead;
     }
 
     ma_decoder_uninit(&decoder);
+    if (frameCursor == 0) {
+        return preview;
+    }
+    BuildWaveformPreview(preview, pcmFrames.data(), frameCursor);
     preview.loaded = true;
     return preview;
 }

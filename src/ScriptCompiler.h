@@ -19,6 +19,7 @@ struct ScriptBuildCommands {
     fs::path secondaryObjectPath;
     fs::path binaryPath;
     fs::path wrapperPath;
+    fs::path sourcePath;
     bool usedWrapper = false;
 };
 

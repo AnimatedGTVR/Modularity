@@ -1,9 +1,12 @@
 #include "ScriptCompiler.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <regex>
 #if defined(_WIN32)
@@ -32,6 +35,58 @@ namespace {
         }
         return value.substr(start, end - start);
     }
+
+    bool writeTextFileIfChanged(const fs::path& path, const std::string& text,
+                                std::string& error) {
+        std::error_code ec;
+        if (fs::exists(path, ec) && !ec) {
+            std::ifstream existing(path, std::ios::binary);
+            if (existing.is_open()) {
+                std::ostringstream ss;
+                ss << existing.rdbuf();
+                if (ss.str() == text) {
+                    return true;
+                }
+            }
+        }
+
+        fs::create_directories(path.parent_path(), ec);
+        ec.clear();
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            error = "Unable to write wrapper file: " + path.string();
+            return false;
+        }
+        out << text;
+        out.close();
+        if (!out.good()) {
+            error = "Failed to flush wrapper file: " + path.string();
+            return false;
+        }
+        return true;
+    }
+
+    std::optional<fs::file_time_type> getFileWriteTime(const fs::path& path) {
+        if (path.empty()) return std::nullopt;
+        std::error_code ec;
+        if (!fs::exists(path, ec) || ec) return std::nullopt;
+        auto t = fs::last_write_time(path, ec);
+        if (ec) return std::nullopt;
+        return t;
+    }
+
+#if !defined(_WIN32)
+    std::string posixCompileDriver(bool cxx) {
+        static int ccacheAvailable = -1;
+        if (ccacheAvailable < 0) {
+            ccacheAvailable = (std::system("command -v ccache >/dev/null 2>&1") == 0) ? 1 : 0;
+        }
+        if (ccacheAvailable == 1) {
+            return cxx ? "ccache g++" : "ccache gcc";
+        }
+        return cxx ? "g++" : "gcc";
+    }
+#endif
     // why does windows need all of this :sob:
 #if defined(_WIN32)
     std::string getEnvValue(const char* name) {
@@ -457,14 +512,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #else
         secondaryObjectPath = config.outDir / relativeParent / (baseName + ".wrap.o");
 #endif
-        std::error_code createErr;
-        fs::create_directories(wrapperPath.parent_path(), createErr);
-
-        std::ofstream wrapper(wrapperPath);
-        if (!wrapper.is_open()) {
-            error = "Unable to write C API wrapper file: " + wrapperPath.string();
-            return false;
-        }
+        std::ostringstream wrapper;
 
         auto emitCImplDecl = [&](const char* name, const FunctionSpec& spec) {
             if (!spec.present) return;
@@ -846,6 +894,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         emitEditorBridge("RenderEditorWindow", "Modu_RenderEditorWindow", editorRenderSpec);
         emitEditorBridge("ExitRenderEditorWindow", "Modu_ExitRenderEditorWindow", editorExitSpec);
         wrapper << "}\n";
+        if (!writeTextFileIfChanged(wrapperPath, wrapper.str(), error)) {
+            return false;
+        }
 
 #ifdef _WIN32
         compileCmd << "cl /nologo /TC /MD /Zi /Od";
@@ -861,11 +912,11 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             linkCmd << " " << lib;
         }
 #else
-        compileCmd << "gcc -std=c11 -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(false) << " -std=c11 -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -c \"" << scriptAbs.string() << "\" -o \"" << objectPath.string() << "\"";
         compileCmd << " && ";
-        compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
         linkCmd << "g++ -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
@@ -895,14 +946,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         fs::path sourceToCompile = scriptAbs;
         if (useWrapper) {
             wrapperPath = config.outDir / relativeParent / (baseName + ".wrap.cpp");
-            std::error_code createErr;
-            fs::create_directories(wrapperPath.parent_path(), createErr);
-
-            std::ofstream wrapper(wrapperPath);
-            if (!wrapper.is_open()) {
-                error = "Unable to write wrapper file: " + wrapperPath.string();
-                return false;
-            }
+            std::ostringstream wrapper;
 
             std::string includePath = scriptAbs.lexically_normal().generic_string();
             if (needsInspectorWrap) {
@@ -980,6 +1024,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             }
 
             wrapper << "}\n";
+            if (!writeTextFileIfChanged(wrapperPath, wrapper.str(), error)) {
+                return false;
+            }
             sourceToCompile = wrapperPath;
         }
 
@@ -993,7 +1040,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             linkCmd << " " << lib;
         }
 #else
-        compileCmd << "g++ -std=" << config.cppStandard << " -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
         linkCmd << "g++ -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
@@ -1029,6 +1076,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.secondaryObjectPath = secondaryObjectPath;
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath;
+    outCommands.sourcePath = scriptAbs;
     outCommands.usedWrapper = useWrapper;
     return true;
 }
@@ -1075,13 +1123,72 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
         fs::create_directories(commands.binaryPath.parent_path(), ec);
     }
 
-    if (!runCommand(commands.compile + " 2>&1", output.compileLog)) {
-        error = "Compile failed";
-        return false;
+    bool needsCompile = true;
+    bool needsLink = true;
+
+    const auto sourceTime = getFileWriteTime(commands.sourcePath);
+    const auto wrapperTime = getFileWriteTime(commands.wrapperPath);
+    const auto objectTime = getFileWriteTime(commands.objectPath);
+    const bool hasSecondaryObject = !commands.secondaryObjectPath.empty();
+    const auto secondaryObjectTime = hasSecondaryObject
+                                         ? getFileWriteTime(commands.secondaryObjectPath)
+                                         : std::optional<fs::file_time_type>{};
+    const auto binaryTime = getFileWriteTime(commands.binaryPath);
+
+    std::optional<fs::file_time_type> newestInput = sourceTime;
+    if (wrapperTime) {
+        newestInput = newestInput ? std::max(*newestInput, *wrapperTime) : wrapperTime;
     }
-    if (!runCommand(commands.link + " 2>&1", output.linkLog)) {
-        error = "Link failed";
-        return false;
+
+    if (objectTime && newestInput) {
+        needsCompile = (*objectTime < *newestInput);
+        if (hasSecondaryObject) {
+            if (!secondaryObjectTime) {
+                needsCompile = true;
+            } else {
+                needsCompile = needsCompile || (*secondaryObjectTime < *newestInput);
+            }
+        }
+    } else {
+        needsCompile = true;
     }
+
+    if (!needsCompile) {
+        output.compileLog += "Skipped compile (up-to-date)\n";
+    }
+
+    if (binaryTime && objectTime) {
+        fs::file_time_type newestObject = *objectTime;
+        if (hasSecondaryObject) {
+            if (!secondaryObjectTime) {
+                needsLink = true;
+            } else {
+                newestObject = std::max(newestObject, *secondaryObjectTime);
+                needsLink = (*binaryTime < newestObject);
+            }
+        } else {
+            needsLink = (*binaryTime < newestObject);
+        }
+    } else {
+        needsLink = true;
+    }
+
+    if (needsCompile) {
+        if (!runCommand(commands.compile + " 2>&1", output.compileLog)) {
+            error = "Compile failed";
+            return false;
+        }
+        needsLink = true;
+    }
+
+    if (needsLink) {
+        if (!runCommand(commands.link + " 2>&1", output.linkLog)) {
+            error = "Link failed";
+            return false;
+        }
+    } else {
+        output.linkLog += "Skipped link (up-to-date)\n";
+    }
+
     return true;
 }

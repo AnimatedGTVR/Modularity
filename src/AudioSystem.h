@@ -6,6 +6,7 @@
 #include "../include/ThirdParty/miniaudio.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 
 struct AudioClipPreview {
     bool loaded = false;
@@ -20,6 +21,15 @@ struct AudioClipPreview {
 
 class AudioSystem {
 public:
+    struct DecodedAudioData {
+        std::vector<float> pcmFrames;
+        ma_audio_buffer_ref buffer{};
+        ma_uint32 channels = 0;
+        ma_uint32 sampleRate = 0;
+        ma_uint64 frameCount = 0;
+        bool initialized = false;
+    };
+
     bool init();
     void shutdown();
     bool isReady() const { return initialized; }
@@ -92,6 +102,7 @@ private:
         std::string clipPath;
         bool spatial = true;
         bool started = false; // prevents auto-restart after manual stop
+        std::shared_ptr<DecodedAudioData> decodedData;
     };
 
     ma_engine engine{};
@@ -109,12 +120,17 @@ private:
     ma_sound previewSound{};
     bool previewActive = false;
     std::string previewPath;
+    std::shared_ptr<DecodedAudioData> previewDecodedData;
 
     void destroyActiveSounds();
     bool ensureSoundFor(const SceneObject& obj);
     void refreshSoundParams(const SceneObject& obj, ActiveSound& snd);
     float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos) const;
     AudioClipPreview loadPreview(const std::string& path);
+    std::shared_ptr<DecodedAudioData> decodeClipToMemory(const std::string& path);
+    bool initSoundFromPath(const std::string& path, ma_uint32 flags, ma_sound_group* group, ma_sound& sound,
+                           std::shared_ptr<DecodedAudioData>& decodedData);
+    void releaseDecodedAudio(std::shared_ptr<DecodedAudioData>& decodedData);
     void updateReverb(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos);
     ReverbSettings getReverbTarget(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos, float& outBlend) const;
     void applyReverbSettings(const ReverbSettings& target, float blend);

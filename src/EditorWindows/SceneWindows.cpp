@@ -732,6 +732,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Plane"))   addObject(ObjectType::Plane, "Plane");
                 if (ImGui::MenuItem("Torus"))   addObject(ObjectType::Torus, "Torus");
                 if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
+                if (ImGui::MenuItem("2.5D Object")) addObject(ObjectType::Sprite25D, "2.5D Object");
                 if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
                 ImGui::EndMenu();
             }
@@ -1795,7 +1796,9 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("Type:");
         ImGui::SameLine();
         const char* typeLabel = "Empty";
-        if (obj.hasRenderer) {
+        if (obj.type == ObjectType::Sprite25D) {
+            typeLabel = "2.5D Object";
+        } else if (obj.hasRenderer) {
             switch (obj.renderType) {
                 case RenderType::Cube: typeLabel = "Cube"; break;
                 case RenderType::Sphere: typeLabel = "Sphere"; break;
@@ -1865,7 +1868,9 @@ void Engine::renderInspectorPanel() {
         if (obj.hasPostFX) {
             ImGui::TextDisabled("Transform is ignored for post-processing nodes.");
         }
-        if (isUIObject(obj)) {
+        if (obj.type == ObjectType::Sprite25D) {
+            ImGui::TextDisabled("2.5D objects use the transform for 3D placement and the UI section for sprite content.");
+        } else if (isUIObject(obj)) {
             ImGui::TextDisabled("UI objects use the UI section for positioning.");
         }
 
@@ -1919,15 +1924,19 @@ void Engine::renderInspectorPanel() {
             ImGui::PushID("UI");
             ImGui::Indent(10.0f);
 
-            const char* anchors[] = { "Center", "Top Left", "Top Right", "Bottom Left", "Bottom Right" };
-            int anchor = static_cast<int>(obj.ui.anchor);
-            if (ImGui::Combo("Anchor", &anchor, anchors, IM_ARRAYSIZE(anchors))) {
-                obj.ui.anchor = static_cast<UIAnchor>(anchor);
-                changed = true;
-            }
+            if (obj.type != ObjectType::Sprite25D) {
+                const char* anchors[] = { "Center", "Top Left", "Top Right", "Bottom Left", "Bottom Right" };
+                int anchor = static_cast<int>(obj.ui.anchor);
+                if (ImGui::Combo("Anchor", &anchor, anchors, IM_ARRAYSIZE(anchors))) {
+                    obj.ui.anchor = static_cast<UIAnchor>(anchor);
+                    changed = true;
+                }
 
-            if (ImGui::DragFloat2("Position (px)", &obj.ui.position.x, 1.0f)) {
-                changed = true;
+                if (ImGui::DragFloat2("Position (px)", &obj.ui.position.x, 1.0f)) {
+                    changed = true;
+                }
+            } else {
+                ImGui::TextDisabled("Anchor and UI position are ignored for projected 2.5D sprites.");
             }
 
             if (ImGui::DragFloat("Rotation (deg)", &obj.ui.rotation, 0.5f, -360.0f, 360.0f)) {
@@ -1949,6 +1958,9 @@ void Engine::renderInspectorPanel() {
                     changed = true;
                 }
                 if (obj.ui.renderIn3D) {
+                    if (ImGui::Checkbox("Face Camera", &obj.faceCamera)) {
+                        changed = true;
+                    }
                     int size[2] = { obj.ui.renderTargetSize.x, obj.ui.renderTargetSize.y };
                     if (ImGui::DragInt2("Render Target (px)", size, 1.0f, 16, 4096)) {
                         obj.ui.renderTargetSize.x = std::max(16, size[0]);
@@ -3564,6 +3576,45 @@ void Engine::renderInspectorPanel() {
             materialChanged |= textureField("Detail Map", "ObjOverlay", obj.overlayTexturePath);
             materialChanged |= textureField("Normal Map", "ObjNormal", obj.normalMapPath);
 
+            if (obj.renderType == RenderType::Sprite) {
+                if (!obj.albedoTexturePath.empty()) {
+                    if (ImGui::SmallButton("Import Sheet##WorldSpriteSheet")) {
+                        pendingSpriteSheetPath = obj.albedoTexturePath;
+                        std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
+                        importSpriteSheetAsSprite2D = false;
+                        showImportSpriteSheetDialog = true;
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (ImGui::Checkbox("Enable Sprite Sheet", &obj.ui.spriteSheetEnabled)) {
+                        materialChanged = true;
+                    }
+                    ImGui::BeginDisabled(!obj.ui.spriteSheetEnabled);
+                    if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
+                        obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
+                        materialChanged = true;
+                    }
+                    if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
+                        obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
+                        materialChanged = true;
+                    }
+                    int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+                    if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
+                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
+                        materialChanged = true;
+                    }
+                    if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
+                        obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
+                        materialChanged = true;
+                    }
+                    if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
+                        materialChanged = true;
+                    }
+                    ImGui::EndDisabled();
+                }
+            }
+
             ImGui::Spacing();
             ImGui::TextDisabled("Shader");
             const char* shaderPresetOptions[] = { "Custom", "Engine Lit (Default)", "Scrolling UV" };
@@ -4501,6 +4552,7 @@ void Engine::renderInspectorPanel() {
         addEntry("Renderer/Sprite (Quad)", true, [&]() {
             obj.hasRenderer = true;
             obj.renderType = RenderType::Sprite;
+            obj.faceCamera = false;
             obj.scale = glm::vec3(1.0f, 1.0f, 0.05f);
             obj.material.ambientStrength = 1.0f;
             syncLocalTransform(obj);

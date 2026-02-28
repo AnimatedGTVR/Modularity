@@ -1,91 +1,782 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-start_time=$(date +%s)
+start_time="$(date +%s)"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+build_dir="${script_dir}/build"
+player_cache_dir="${build_dir}/player-cache"
+last_step="bootstrap"
+current_step=0
+total_steps=0
+build_started=0
+status_line_active=0
+status_current_label=""
+status_current_spinner="-"
+status_current_elapsed=0
 
-finish() {
-    local exit_code=$?
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
+declare -a build_warning_messages=()
+declare -a build_error_messages=()
 
-    if [ $exit_code -eq 0 ]; then
-        echo -e "================================\n   Modularity - Native Linux Build Complete\n================================"
-        echo -e "[Complete]: Your Modularity Build Completed in ${duration}s!\nThe build should be located under Modularity within another folder called 'Build'"
-    else
-        echo -e "================================\n   Modularity - Native Linux Build Failed\n================================"
-        echo "[Failed]: Your Modularity Build Failed after ${duration}s (exit code ${exit_code})."
-    fi
+if [[ -t 1 ]]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_RED=$'\033[31m'
+    C_CYAN=$'\033[36m'
+    ICON_INFO="ℹ"
+    ICON_WARN="⚠"
+    ICON_ERROR="✖"
+    ICON_OK="✔"
+else
+    C_RESET=''
+    C_BOLD=''
+    C_DIM=''
+    C_GREEN=''
+    C_YELLOW=''
+    C_RED=''
+    C_CYAN=''
+    ICON_INFO="[i]"
+    ICON_WARN="[!]"
+    ICON_ERROR="[x]"
+    ICON_OK="[ok]"
+fi
 
-    exit $exit_code
+log_info() { printf "%s%s%s %s\n" "${C_CYAN}" "${ICON_INFO}" "${C_RESET}" "$*"; }
+log_warn() { printf "%s%s%s %s\n" "${C_YELLOW}" "${ICON_WARN}" "${C_RESET}" "$*"; record_warning "$*"; }
+log_error() { printf "%s%s%s %s\n" "${C_RED}" "${ICON_ERROR}" "${C_RESET}" "$*"; record_error "$*"; }
+log_ok() { printf "%s%s%s %s\n" "${C_GREEN}" "${ICON_OK}" "${C_RESET}" "$*"; }
+
+record_warning() {
+    build_warning_messages+=("$1")
 }
 
-trap finish EXIT
+record_error() {
+    build_error_messages+=("$1")
+}
 
-echo -e "================================\n   Modularity - Native Linux Builder\n================================"
+repeat_char() {
+    local char="$1"
+    local count="$2"
+    if (( count <= 0 )); then
+        return
+    fi
+    printf "%${count}s" "" | tr ' ' "$char"
+}
+
+progress_prefix() {
+    local width=24
+    local filled=$((current_step * width / total_steps))
+    local empty=$((width - filled))
+
+    printf "%s[%02d/%02d]%s [%s%s%s%s%s]" \
+        "${C_DIM}" "${current_step}" "${total_steps}" "${C_RESET}" \
+        "${C_GREEN}" "$(repeat_char "#" "${filled}")" "${C_DIM}" "$(repeat_char "-" "${empty}")" "${C_RESET}"
+}
+
+clear_status_line() {
+    if [[ -t 1 && "${status_line_active}" -eq 1 ]]; then
+        printf "\r\033[2K"
+        status_line_active=0
+    fi
+}
+
+render_status_line() {
+    local label="$1"
+    local spinner="$2"
+    local elapsed="$3"
+
+    if [[ ! -t 1 ]]; then
+        return
+    fi
+
+    status_current_label="${label}"
+    status_current_spinner="${spinner}"
+    status_current_elapsed="${elapsed}"
+
+    printf "\r\033[2K%s %s%s%s %s %s(%ss)%s" \
+        "$(progress_prefix)" \
+        "${C_CYAN}" "${spinner}" "${C_RESET}" \
+        "${label}" \
+        "${C_DIM}" "${elapsed}" "${C_RESET}"
+
+    status_line_active=1
+}
+
+emit_scrolling_event() {
+    local level="$1"
+    local message="$2"
+    local had_status="${status_line_active}"
+
+    clear_status_line
+    case "${level}" in
+        info)
+            printf "%s%s%s %s\n" "${C_CYAN}" "${ICON_INFO}" "${C_RESET}" "${message}"
+            ;;
+        warn)
+            printf "%s%s%s %s\n" "${C_YELLOW}" "${ICON_WARN}" "${C_RESET}" "${message}"
+            ;;
+        error)
+            printf "%s%s%s %s\n" "${C_RED}" "${ICON_ERROR}" "${C_RESET}" "${message}"
+            ;;
+        ok)
+            printf "%s%s%s %s\n" "${C_GREEN}" "${ICON_OK}" "${C_RESET}" "${message}"
+            ;;
+        *)
+            printf "%s\n" "${message}"
+            ;;
+    esac
+
+    if [[ -t 1 && "${had_status}" -eq 1 ]]; then
+        render_status_line "${status_current_label}" "${status_current_spinner}" "${status_current_elapsed}"
+    fi
+}
+
+is_interesting_info_line() {
+    local lower="$1"
+    [[ "${lower}" == *"built target"* ]] ||
+    [[ "${lower}" == *"configuring done"* ]] ||
+    [[ "${lower}" == *"generating done"* ]] ||
+    [[ "${lower}" == *"build files have been written"* ]] ||
+    [[ "${lower}" == *"installing:"* ]] ||
+    [[ "${lower}" == *"up-to-date:"* ]] ||
+    [[ "${lower}" == *"linking cxx executable"* ]] ||
+    [[ "${lower}" == *"linking cxx static library"* ]] ||
+    [[ "${lower}" == *"copying"* ]]
+}
+
+process_build_output_line() {
+    local step="$1"
+    local line="$2"
+
+    line="${line%$'\r'}"
+    if [[ -z "${line//[[:space:]]/}" ]]; then
+        return
+    fi
+
+    local lower="${line,,}"
+    local issue_text="[${step}] ${line}"
+
+    if [[ "${lower}" == *"0 errors generated"* ]]; then
+        return
+    fi
+
+    if [[ "${lower}" == *"warning:"* ]] || [[ "${lower}" == *" cmake warning"* ]] || [[ "${lower}" == *"warning "* ]]; then
+        record_warning "${issue_text}"
+        emit_scrolling_event "warn" "${issue_text}"
+        return
+    fi
+
+    if [[ "${lower}" == *"error:"* ]] || [[ "${lower}" == *"fatal"* ]] || [[ "${lower}" == *"undefined reference"* ]] || [[ "${lower}" == *"collect2: error"* ]] || [[ "${lower}" == *"ld: cannot"* ]]; then
+        record_error "${issue_text}"
+        emit_scrolling_event "error" "${issue_text}"
+        return
+    fi
+
+    if is_interesting_info_line "${lower}"; then
+        emit_scrolling_event "info" "[${step}] ${line}"
+    fi
+}
+
+print_issue_summary() {
+    local max_items=8
+    local i
+
+    if [[ "${#build_warning_messages[@]}" -gt 0 ]]; then
+        printf "\n%sWarnings (%d):%s\n" "${C_YELLOW}" "${#build_warning_messages[@]}" "${C_RESET}"
+        for ((i = 0; i < ${#build_warning_messages[@]} && i < max_items; i++)); do
+            printf "  %s %s\n" "${ICON_WARN}" "${build_warning_messages[$i]}"
+        done
+        if [[ "${#build_warning_messages[@]}" -gt "${max_items}" ]]; then
+            printf "  %s ... and %d more warning(s)\n" "${ICON_WARN}" "$(( ${#build_warning_messages[@]} - max_items ))"
+        fi
+    fi
+
+    if [[ "${#build_error_messages[@]}" -gt 0 ]]; then
+        printf "\n%sErrors (%d):%s\n" "${C_RED}" "${#build_error_messages[@]}" "${C_RESET}"
+        for ((i = 0; i < ${#build_error_messages[@]} && i < max_items; i++)); do
+            printf "  %s %s\n" "${ICON_ERROR}" "${build_error_messages[$i]}"
+        done
+        if [[ "${#build_error_messages[@]}" -gt "${max_items}" ]]; then
+            printf "  %s ... and %d more error(s)\n" "${ICON_ERROR}" "$(( ${#build_error_messages[@]} - max_items ))"
+        fi
+    fi
+}
+
+advance_step() {
+    local label="$1"
+    current_step=$((current_step + 1))
+    last_step="${label}"
+}
+
+run_step() {
+    local label="$1"
+    shift
+
+    advance_step "${label}"
+    clear_status_line
+    printf "\n%s %s\n" "$(progress_prefix)" "${label}"
+
+    "$@"
+}
+
+run_long_step() {
+    local label="$1"
+    shift
+
+    advance_step "${label}"
+
+    if [[ ! -t 1 ]]; then
+        printf "\n%s %s\n" "$(progress_prefix)" "${label}"
+        "$@"
+        return
+    fi
+
+    local log_file
+    log_file="$(mktemp "/tmp/modularity-build-step-${current_step}.XXXX.log")"
+    local start_step
+    start_step="$(date +%s)"
+    local spinner_frames='-\|/'
+    local spinner_index=0
+    local processed_lines=0
+
+    set +e
+    "$@" >"${log_file}" 2>&1 &
+    local cmd_pid=$!
+    render_status_line "${label}" "-" 0
+
+    while kill -0 "${cmd_pid}" >/dev/null 2>&1; do
+        local total_lines
+        total_lines="$(wc -l < "${log_file}" 2>/dev/null || echo 0)"
+        if (( total_lines > processed_lines )); then
+            while IFS= read -r line; do
+                process_build_output_line "${label}" "${line}"
+            done < <(sed -n "$((processed_lines + 1)),${total_lines}p" "${log_file}")
+            processed_lines="${total_lines}"
+        fi
+
+        local now elapsed frame
+        now="$(date +%s)"
+        elapsed=$((now - start_step))
+        frame="${spinner_frames:spinner_index:1}"
+        render_status_line "${label}" "${frame}" "${elapsed}"
+        spinner_index=$(((spinner_index + 1) % 4))
+        sleep 0.2
+    done
+
+    wait "${cmd_pid}"
+    local exit_code=$?
+    set -e
+
+    local total_lines
+    total_lines="$(wc -l < "${log_file}" 2>/dev/null || echo 0)"
+    if (( total_lines > processed_lines )); then
+        while IFS= read -r line; do
+            process_build_output_line "${label}" "${line}"
+        done < <(sed -n "$((processed_lines + 1)),${total_lines}p" "${log_file}")
+        processed_lines="${total_lines}"
+    fi
+
+    local now elapsed
+    now="$(date +%s)"
+    elapsed=$((now - start_step))
+
+    if [[ "${exit_code}" -ne 0 ]]; then
+        clear_status_line
+        record_error "[${label}] Step failed with exit code ${exit_code}. Log: ${log_file}"
+        emit_scrolling_event "error" "$(progress_prefix) ${label} (failed)"
+        log_error "Detailed log kept at: ${log_file}"
+        return "${exit_code}"
+    fi
+
+    clear_status_line
+    emit_scrolling_event "ok" "$(progress_prefix) ${label} (done in ${elapsed}s)"
+    rm -f "${log_file}"
+}
+
+finish() {
+    local exit_code="$1"
+    set +e
+
+    if [[ "${build_started}" -eq 0 ]]; then
+        return
+    fi
+    clear_status_line
+
+    local end_time
+    end_time="$(date +%s)"
+    local duration=$((end_time - start_time))
+    echo
+
+    if [[ "${exit_code}" -eq 0 ]]; then
+        printf "%s%s================================%s\n" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+        printf "%s   Modularity - Native Linux Build Complete%s\n" "${C_BOLD}" "${C_RESET}"
+        printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
+        log_ok "Build completed in ${duration}s."
+        log_info "Artifacts: ${build_dir}"
+        print_issue_summary
+    else
+        printf "%s%s================================%s\n" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+        printf "%s   Modularity - Native Linux Build Failed%s\n" "${C_BOLD}" "${C_RESET}"
+        printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
+        log_error "Build failed after ${duration}s at step: ${last_step} (exit code ${exit_code})."
+        print_issue_summary
+    fi
+}
+trap 'finish $?' EXIT
+
+usage() {
+    cat <<'EOF'
+Usage: ./build.sh [options]
+Options:
+  --clean                 Remove existing build directories first
+  --build-type=<type>     CMake build type (default: Release)
+  --generator=<name>      Force CMake generator (e.g. Ninja, "Unix Makefiles")
+  --skip-deps             Skip automatic dependency checks/install
+  --help                  Show this help message
+EOF
+}
 
 clean_build=0
 build_type="Release"
+skip_deps=0
+jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
+preferred_generator=""
+cmake_generator=""
+
 for arg in "$@"; do
-    if [ "$arg" = "--clean" ]; then
-        clean_build=1
-    elif [[ "$arg" == --build-type=* ]]; then
-        build_type="${arg#*=}"
-    fi
+    case "$arg" in
+        --clean)
+            clean_build=1
+            ;;
+        --build-type=*)
+            build_type="${arg#*=}"
+            ;;
+        --generator=*)
+            preferred_generator="${arg#*=}"
+            ;;
+        --skip-deps)
+            skip_deps=1
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        *)
+            log_warn "Unknown argument: ${arg}"
+            usage
+            exit 1
+            ;;
+    esac
 done
 
-git submodule update --init --recursive
+pkg_manager=""
+pkg_prefix=()
+pkg_index_updated=0
 
-if command -v ccache >/dev/null 2>&1; then
-    export CCACHE_BASEDIR="$script_dir"
-    export CCACHE_NOHASHDIR=1
-    echo -e "[i]: ccache detected. Normalizing paths for cross-build cache hits."
+detect_package_manager() {
+    if command -v apt-get >/dev/null 2>&1; then
+        pkg_manager="apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        pkg_manager="dnf"
+    elif command -v pacman >/dev/null 2>&1; then
+        pkg_manager="pacman"
+    elif command -v zypper >/dev/null 2>&1; then
+        pkg_manager="zypper"
+    else
+        pkg_manager=""
+    fi
+
+    if [[ "$(id -u)" -eq 0 ]]; then
+        pkg_prefix=()
+    elif command -v sudo >/dev/null 2>&1; then
+        pkg_prefix=(sudo)
+    else
+        pkg_prefix=()
+    fi
+}
+
+detect_cmake_generator() {
+    if [[ -n "${preferred_generator}" ]]; then
+        cmake_generator="${preferred_generator}"
+        return
+    fi
+
+    if [[ -n "${CMAKE_GENERATOR:-}" ]]; then
+        cmake_generator="${CMAKE_GENERATOR}"
+        return
+    fi
+
+    if [[ "${clean_build}" -eq 0 && -f "${build_dir}/CMakeCache.txt" ]]; then
+        cmake_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${build_dir}/CMakeCache.txt" | head -n1)"
+        if [[ -n "${cmake_generator}" ]]; then
+            return
+        fi
+    fi
+
+    if command -v ninja >/dev/null 2>&1; then
+        cmake_generator="Ninja"
+        return
+    fi
+
+    cmake_generator=""
+}
+
+admin_cmd() {
+    if [[ "${#pkg_prefix[@]}" -gt 0 ]]; then
+        "${pkg_prefix[@]}" "$@"
+    else
+        "$@"
+    fi
+}
+
+update_pkg_index_once() {
+    if [[ "${pkg_index_updated}" -eq 1 ]]; then
+        return
+    fi
+    case "${pkg_manager}" in
+        apt)
+            admin_cmd apt-get update
+            ;;
+        pacman)
+            admin_cmd pacman -Sy --noconfirm
+            ;;
+        dnf|zypper)
+            ;;
+    esac
+    pkg_index_updated=1
+}
+
+install_packages() {
+    local -a packages=("$@")
+    if [[ "${#packages[@]}" -eq 0 ]]; then
+        return
+    fi
+
+    update_pkg_index_once
+    case "${pkg_manager}" in
+        apt)
+            admin_cmd apt-get install -y "${packages[@]}"
+            ;;
+        dnf)
+            admin_cmd dnf install -y "${packages[@]}"
+            ;;
+        pacman)
+            admin_cmd pacman -S --noconfirm --needed "${packages[@]}"
+            ;;
+        zypper)
+            admin_cmd zypper --non-interactive install --no-recommends "${packages[@]}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+install_optional_first_hit() {
+    local -a candidates=("$@")
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if install_packages "${candidate}" >/dev/null 2>&1; then
+            log_ok "Installed optional package: ${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_linux_dependencies() {
+    detect_package_manager
+
+    if [[ -z "${pkg_manager}" ]]; then
+        log_warn "No supported package manager detected (apt/dnf/pacman/zypper). Skipping auto-install."
+        return
+    fi
+
+    if [[ "$(id -u)" -ne 0 && "${#pkg_prefix[@]}" -eq 0 ]]; then
+        log_warn "Auto-install requires root or sudo. Skipping dependency installation."
+        return
+    fi
+
+    local need_install=0
+    local -a missing=()
+    local cmd
+    for cmd in git cmake pkg-config c++; do
+        if ! command -v "${cmd}" >/dev/null 2>&1; then
+            need_install=1
+            missing+=("${cmd}")
+        fi
+    done
+
+    if command -v pkg-config >/dev/null 2>&1; then
+        local module
+        for module in x11 xrandr xi xinerama xcursor gl; do
+            if ! pkg-config --exists "${module}"; then
+                need_install=1
+                missing+=("${module}-dev")
+            fi
+        done
+        if ! pkg-config --exists vulkan; then
+            need_install=1
+            missing+=("vulkan-dev")
+        fi
+    fi
+
+    if ! command -v glslc >/dev/null 2>&1; then
+        need_install=1
+        missing+=("glslc")
+    fi
+    if ! command -v vulkaninfo >/dev/null 2>&1; then
+        need_install=1
+        missing+=("vulkan-tools")
+    fi
+
+    local -a required_pkgs=()
+    local -a core_pkgs=()
+    local -a x11_pkgs=()
+    local -a graphics_pkgs=()
+    local -a vulkan_pkgs=()
+    local -a optional_pkgs=()
+    local -a glslc_candidates=()
+    case "${pkg_manager}" in
+        apt)
+            core_pkgs=(build-essential cmake pkg-config git zlib1g-dev)
+            x11_pkgs=(libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev)
+            graphics_pkgs=(libgl1-mesa-dev libegl1-mesa-dev libwayland-dev)
+            vulkan_pkgs=(libvulkan-dev vulkan-tools glslang-tools)
+            optional_pkgs=(ccache)
+            glslc_candidates=(glslc shaderc)
+            ;;
+        dnf)
+            core_pkgs=(gcc gcc-c++ make cmake pkgconf-pkg-config git zlib-devel)
+            x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
+            graphics_pkgs=(mesa-libGL-devel mesa-libEGL-devel wayland-devel)
+            vulkan_pkgs=(vulkan-loader-devel vulkan-tools glslang)
+            optional_pkgs=(ccache)
+            glslc_candidates=(shaderc shaderc-devel)
+            ;;
+        pacman)
+            core_pkgs=(base-devel cmake pkgconf git zlib)
+            x11_pkgs=(libx11 libxrandr libxinerama libxcursor libxi)
+            graphics_pkgs=(mesa wayland)
+            vulkan_pkgs=(vulkan-headers vulkan-tools glslang)
+            optional_pkgs=(ccache)
+            glslc_candidates=(shaderc)
+            ;;
+        zypper)
+            core_pkgs=(gcc gcc-c++ make cmake pkg-config git zlib-devel)
+            x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
+            graphics_pkgs=(Mesa-libGL-devel Mesa-libEGL-devel wayland-devel)
+            vulkan_pkgs=(vulkan-devel vulkan-tools glslang)
+            optional_pkgs=(ccache)
+            glslc_candidates=(shaderc shaderc-devel)
+            ;;
+    esac
+    required_pkgs=(
+        "${core_pkgs[@]}"
+        "${x11_pkgs[@]}"
+        "${graphics_pkgs[@]}"
+        "${vulkan_pkgs[@]}"
+        "${optional_pkgs[@]}"
+    )
+
+    log_info "Dependency hierarchy (${pkg_manager}):"
+    echo "  +-- Core toolchain"
+    for pkg in "${core_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
+    echo "  +-- X11/Windowing"
+    for pkg in "${x11_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
+    echo "  +-- OpenGL/EGL/Wayland"
+    for pkg in "${graphics_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
+    echo "  +-- Vulkan stack"
+    for pkg in "${vulkan_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
+    echo "  +-- Optional acceleration"
+    for pkg in "${optional_pkgs[@]}"; do echo "      +-- ${pkg}"; done
+
+    if [[ "${need_install}" -eq 0 ]]; then
+        log_ok "Build dependencies already present."
+        return
+    fi
+
+    log_info "Missing prerequisites detected: ${missing[*]}"
+    log_info "Installing packages using ${pkg_manager}..."
+
+    install_packages "${required_pkgs[@]}"
+
+    if ! command -v glslc >/dev/null 2>&1; then
+        install_optional_first_hit "${glslc_candidates[@]}" || log_warn "glslc package candidate not found; Vulkan runtime shader compile may fail."
+    fi
+
+    if ! command -v glslc >/dev/null 2>&1; then
+        log_warn "glslc is still missing."
+    fi
+    if ! command -v vulkaninfo >/dev/null 2>&1; then
+        log_warn "vulkaninfo is still missing."
+    fi
+}
+
+sync_submodules() {
+    git -C "${script_dir}" submodule update --init --recursive
+}
+
+configure_ccache() {
+    if command -v ccache >/dev/null 2>&1; then
+        export CCACHE_BASEDIR="${script_dir}"
+        export CCACHE_NOHASHDIR=1
+        log_info "ccache detected. Normalizing paths for cross-build cache hits."
+    fi
+}
+
+clean_editor_build() {
+    if [[ -d "${build_dir}" ]]; then
+        rm -rf "${build_dir}"
+        log_ok "Removed ${build_dir}"
+    fi
+}
+
+clean_player_cache() {
+    if [[ -d "${player_cache_dir}" ]]; then
+        rm -rf "${player_cache_dir}"
+        log_ok "Removed ${player_cache_dir}"
+    fi
+}
+
+configure_editor_build() {
+    local -a generator_args=()
+    if [[ ! -f "${build_dir}/CMakeCache.txt" && -n "${cmake_generator}" ]]; then
+        generator_args=(-G "${cmake_generator}")
+    fi
+    cmake "${generator_args[@]}" -S "${script_dir}" -B "${build_dir}" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="${build_type}"
+}
+
+build_editor_targets() {
+    cmake --build "${build_dir}" --parallel "${jobs}"
+}
+
+install_editor_targets() {
+    cmake --install "${build_dir}" --prefix "${build_dir}/install"
+}
+
+copy_third_party_libraries() {
+    local target_dir="$1"
+
+    mkdir -p "${target_dir}/Packages/ThirdParty"
+    find "${target_dir}" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
+        -not -path "${target_dir}/Packages/*" -exec cp -f {} "${target_dir}/Packages/ThirdParty/" \;
+}
+
+copy_engine_libraries() {
+    local target_dir="$1"
+
+    mkdir -p "${target_dir}/Packages/Engine"
+    find "${target_dir}" -type f \( -name "libcore*" -o -name "core*.lib" -o -name "core*.dll" \) \
+        -not -path "${target_dir}/Packages/*" -exec cp -f {} "${target_dir}/Packages/Engine/" \;
+}
+
+configure_player_build() {
+    local -a generator_args=()
+    if [[ ! -f "${player_cache_dir}/CMakeCache.txt" && -n "${cmake_generator}" ]]; then
+        generator_args=(-G "${cmake_generator}")
+    fi
+    cmake "${generator_args[@]}" -S "${script_dir}" -B "${player_cache_dir}" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="${build_type}" -DMODULARITY_BUILD_EDITOR=OFF
+}
+
+build_player_target() {
+    cmake --build "${player_cache_dir}" --target ModularityPlayer --parallel "${jobs}"
+}
+
+finalize_packaging() {
+    rm -rf "${build_dir}/Template-Projects"
+    cp -r "${script_dir}/Resources" "${build_dir}/"
+    if [[ -d "${script_dir}/Template-Projects" ]]; then
+        cp -r "${script_dir}/Template-Projects" "${build_dir}/"
+    else
+        mkdir -p "${build_dir}/Template-Projects"
+    fi
+    if [[ -f "${build_dir}/Resources/imgui.ini" ]]; then
+        cp "${build_dir}/Resources/imgui.ini" "${build_dir}/"
+    fi
+    ln -sfn "${build_dir}/compile_commands.json" "${script_dir}/compile_commands.json"
+    (cd "${build_dir}" && cpack)
+}
+
+show_stage_hierarchy() {
+    local -a stages=()
+
+    if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+        stages+=("Check/install system dependencies")
+    fi
+    if [[ "${clean_build}" -eq 1 ]]; then
+        stages+=("Clean editor build directory")
+        stages+=("Clean player cache directory")
+    fi
+    stages+=(
+        "Sync git submodules"
+        "Configure editor build"
+        "Build editor + engine targets"
+        "Install editor artifacts"
+        "Collect editor third-party libraries"
+        "Collect editor engine libraries"
+        "Configure player-only cache build"
+        "Build ModularityPlayer target"
+        "Collect player third-party libraries"
+        "Collect player engine libraries"
+        "Package artifacts and resources"
+    )
+
+    log_info "Build stage hierarchy:"
+    local i
+    local stage_count="${#stages[@]}"
+    for ((i = 0; i < stage_count; i++)); do
+        local branch="|--"
+        if [[ $((i + 1)) -eq "${stage_count}" ]]; then
+            branch='`--'
+        fi
+        printf "  %s [%02d/%02d] %s\n" "${branch}" "$((i + 1))" "${stage_count}" "${stages[$i]}"
+    done
+}
+
+base_steps=11
+total_steps="${base_steps}"
+if [[ "${clean_build}" -eq 1 ]]; then
+    total_steps=$((total_steps + 2))
+fi
+if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+    total_steps=$((total_steps + 1))
 fi
 
-if [ -d "build" ] && [ $clean_build -eq 1 ]; then
-    echo -e "[i]: Cleaning existing build directory..."
-    rm -rf build/
-    echo -e "[i]: Build Has been Removed\nContinuing build"
+build_started=1
+detect_cmake_generator
+printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
+printf "%s   Modularity - Native Linux Builder%s\n" "${C_BOLD}" "${C_RESET}"
+printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
+log_info "Build type: ${build_type} | Jobs: ${jobs}"
+if [[ -n "${cmake_generator}" ]]; then
+    log_info "CMake generator: ${cmake_generator}"
+fi
+show_stage_hierarchy
+
+if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+    run_step "Checking and installing system dependencies (Vulkan/OpenGL/X11/toolchain)" ensure_linux_dependencies
+elif [[ "${skip_deps}" -eq 0 ]]; then
+    log_warn "Auto dependency install is only implemented for Linux."
 fi
 
-mkdir -p build
-cd build
-cmake .. -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type"
-cmake --build . -- -j"$(nproc)"
-cmake --install . --prefix install
+configure_ccache
 
-mkdir -p Packages/ThirdParty
-find . -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
-    -not -path "./Packages/*" -exec cp -f {} Packages/ThirdParty/ \;
-
-mkdir -p Packages/Engine
-find . -type f \( -name "libcore*" -o -name "core*.lib" -o -name "core*.dll" \) \
-    -not -path "./Packages/*" -exec cp -f {} Packages/Engine/ \;
-
-cd ..
-
-player_cache_dir="build/player-cache"
-if [ $clean_build -eq 1 ] && [ -d "$player_cache_dir" ]; then
-    echo -e "[i]: Cleaning player cache build directory..."
-    rm -rf "$player_cache_dir"
+if [[ "${clean_build}" -eq 1 ]]; then
+    run_long_step "Cleaning editor build directory" clean_editor_build
+    run_long_step "Cleaning player cache directory" clean_player_cache
 fi
 
-mkdir -p "$player_cache_dir"
-cmake -S . -B "$player_cache_dir" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="$build_type" -DMODULARITY_BUILD_EDITOR=OFF
-cmake --build "$player_cache_dir" --target ModularityPlayer -- -j"$(nproc)"
-
-
-mkdir -p "$player_cache_dir/Packages/ThirdParty"
-find "$player_cache_dir" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
-    -not -path "$player_cache_dir/Packages/*" -exec cp -f {} "$player_cache_dir/Packages/ThirdParty/" \;
-
-mkdir -p "$player_cache_dir/Packages/Engine"
-find "$player_cache_dir" -type f \( -name "libcore*" -o -name "core*.lib" -o -name "core*.dll" \) \
-    -not -path "$player_cache_dir/Packages/*" -exec cp -f {} "$player_cache_dir/Packages/Engine/" \;
-
-cd build
-
-cp -r ../Resources .
-cp Resources/imgui.ini .
-ln -sf compile_commands.json ../compile_commands.json
-cpack
+run_long_step "Syncing git submodules" sync_submodules
+run_long_step "Configuring editor build (CMake)" configure_editor_build
+run_long_step "Building editor + engine targets" build_editor_targets
+run_long_step "Installing editor artifacts" install_editor_targets
+run_long_step "Collecting editor third-party libraries" copy_third_party_libraries "${build_dir}"
+run_long_step "Collecting editor engine libraries" copy_engine_libraries "${build_dir}"
+run_long_step "Configuring player-only cache build" configure_player_build
+run_long_step "Building ModularityPlayer target" build_player_target
+run_long_step "Collecting player third-party libraries" copy_third_party_libraries "${player_cache_dir}"
+run_long_step "Collecting player engine libraries" copy_engine_libraries "${player_cache_dir}"
+run_long_step "Packaging artifacts and resources" finalize_packaging

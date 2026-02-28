@@ -24,7 +24,8 @@ enum class ObjectType {
     UISlider = 18,
     UIButton = 19,
     UIText = 20,
-    Empty = 21
+    Empty = 21,
+    Sprite25D = 22
 };
 
 enum class RenderType {
@@ -460,6 +461,7 @@ public:
     std::string tag = "Untagged";
     bool hasRenderer = false;
     RenderType renderType = RenderType::None;
+    bool faceCamera = false;
     bool hasLight = false;
     bool hasCamera = false;
     bool hasPostFX = false;

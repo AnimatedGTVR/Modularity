@@ -45,11 +45,15 @@ public:
     fs::path appDataPath;
     char newProjectName[128] = "";
     char newProjectLocation[512] = "";
+    char defaultProjectLocation[512] = "";
     char openProjectPath[512] = "";
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     int newProjectPipelineMode = 0;
     int newProjectRendererMode = 0;
+    bool newProjectImportLastPackages = true;
+    std::string newProjectTemplatePath;
+    std::string newProjectTemplateName;
     std::string errorMessage;
     Project currentProject;
 
@@ -57,6 +61,8 @@ public:
 
     void loadRecentProjects();
     void saveRecentProjects();
+    void loadLauncherSettings();
+    void saveLauncherSettings() const;
     void addToRecentProjects(const std::string& name, const std::string& path);
     bool loadProject(const std::string& path);
 };

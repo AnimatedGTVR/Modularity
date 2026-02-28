@@ -3,9 +3,35 @@
 #include "ModelLoader.h"
 #include <cmath>
 #include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <unordered_map>
 
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
+
+namespace {
+std::string TrimCopy(const std::string& value) {
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::string GetPlatformDefaultProjectsPath() {
+#ifdef _WIN32
+    const char* userProfile = std::getenv("USERPROFILE");
+    if (userProfile && *userProfile) {
+        return (fs::path(userProfile) / "Documents" / "ModularityProjects").string();
+    }
+#else
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        return (fs::path(home) / "ModularityProjects").string();
+    }
+#endif
+    return (fs::current_path() / "Projects").string();
+}
+} // namespace
 
 // Project implementation
 Project::Project(const std::string& projectName, const fs::path& basePath)
@@ -192,9 +218,9 @@ ProjectManager::ProjectManager() {
 
     fs::create_directories(appDataPath);
     loadRecentProjects();
+    loadLauncherSettings();
 
-    std::string defaultPath = (fs::current_path() / "Projects").string();
-    strncpy(newProjectLocation, defaultPath.c_str(), sizeof(newProjectLocation) - 1);
+    std::snprintf(newProjectLocation, sizeof(newProjectLocation), "%s", defaultProjectLocation);
 }
 
 void ProjectManager::loadRecentProjects() {
@@ -269,6 +295,45 @@ void ProjectManager::saveRecentProjects() {
     file.close();
 }
 
+void ProjectManager::loadLauncherSettings() {
+    defaultProjectLocation[0] = '\0';
+    fs::path settingsFile = appDataPath / "launcher_settings.modu";
+
+    if (fs::exists(settingsFile)) {
+        std::ifstream file(settingsFile);
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::string cleaned = TrimCopy(line);
+            if (cleaned.empty() || cleaned[0] == '#') continue;
+
+            const size_t eq = cleaned.find('=');
+            if (eq == std::string::npos) continue;
+
+            const std::string key = TrimCopy(cleaned.substr(0, eq));
+            const std::string value = TrimCopy(cleaned.substr(eq + 1));
+            if (key == "defaultProjectLocation" && !value.empty()) {
+                std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", value.c_str());
+            }
+        }
+    }
+
+    if (defaultProjectLocation[0] == '\0') {
+        const std::string fallback = GetPlatformDefaultProjectsPath();
+        std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", fallback.c_str());
+    }
+}
+
+void ProjectManager::saveLauncherSettings() const {
+    fs::path settingsFile = appDataPath / "launcher_settings.modu";
+    std::ofstream file(settingsFile);
+    if (!file.is_open()) {
+        return;
+    }
+
+    file << "# Modularity launcher settings\n";
+    file << "defaultProjectLocation=" << defaultProjectLocation << "\n";
+}
+
 void ProjectManager::addToRecentProjects(const std::string& name, const std::string& path) {
     std::string absolutePath = path;
     try {
@@ -339,6 +404,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "tag=" << obj.tag << "\n";
             file << "hasRenderer=" << (obj.hasRenderer ? 1 : 0) << "\n";
             file << "renderType=" << static_cast<int>(obj.renderType) << "\n";
+            file << "faceCamera=" << (obj.faceCamera ? 1 : 0) << "\n";
             file << "hasLight=" << (obj.hasLight ? 1 : 0) << "\n";
             file << "hasCamera=" << (obj.hasCamera ? 1 : 0) << "\n";
             file << "hasPostFX=" << (obj.hasPostFX ? 1 : 0) << "\n";
@@ -784,6 +850,10 @@ void ApplyLegacyTypePreset(SceneObject& obj, ObjectType legacyType) {
             obj.hasRenderer = true;
             obj.renderType = RenderType::Sprite;
             break;
+        case ObjectType::Sprite25D:
+            obj.hasUI = true;
+            obj.ui.type = UIElementType::Sprite2D;
+            break;
         case ObjectType::DirectionalLight:
             obj.hasLight = true;
             obj.light.type = LightType::Directional;
@@ -856,6 +926,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
                  obj.hasRenderer = true;
              }
          }},
+        {"faceCamera", +[](SceneObject& obj, const std::string& value) { obj.faceCamera = std::stoi(value) != 0; }},
         {"hasLight", +[](SceneObject& obj, const std::string& value) { obj.hasLight = std::stoi(value) != 0; }},
         {"hasCamera", +[](SceneObject& obj, const std::string& value) { obj.hasCamera = std::stoi(value) != 0; }},
         {"hasPostFX", +[](SceneObject& obj, const std::string& value) { obj.hasPostFX = std::stoi(value) != 0; }},
@@ -1188,6 +1259,9 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
 } // namespace
 
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
+    if (obj.type == ObjectType::Sprite25D) {
+        return ObjectType::Sprite25D;
+    }
     if (obj.hasRenderer) {
         switch (obj.renderType) {
             case RenderType::Cube: return ObjectType::Cube;
@@ -1209,7 +1283,7 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
             case UIElementType::Slider: return ObjectType::UISlider;
             case UIElementType::Button: return ObjectType::UIButton;
             case UIElementType::Text: return ObjectType::UIText;
-            case UIElementType::Sprite2D: return ObjectType::Sprite2D;
+            case UIElementType::Sprite2D: return obj.type == ObjectType::Sprite25D ? ObjectType::Sprite25D : ObjectType::Sprite2D;
             case UIElementType::None: break;
         }
     }
