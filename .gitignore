@@ -2,3 +2,4 @@ build/
 .cache/
 Images-thingy/
 svgimagesamples/
+compile_commands.json
