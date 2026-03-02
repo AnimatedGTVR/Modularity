@@ -189,6 +189,7 @@ public:
 
     void initialize();
     Texture* getTexture(const std::string& path, MaterialProperties::TextureFilter filter = MaterialProperties::TextureFilter::Bilinear);
+    void invalidateTexture(const std::string& path);
     Shader* getShader(const std::string& vert, const std::string& frag);
     bool forceReloadShader(const std::string& vert, const std::string& frag);
     void setAmbientColor(const glm::vec3& color) { ambientColor = color; }

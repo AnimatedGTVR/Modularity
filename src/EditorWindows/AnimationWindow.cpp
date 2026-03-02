@@ -351,6 +351,11 @@ void Engine::renderAnimationWindow() {
 
         if (path == "AIAgent.Speed" && obj.hasAIAgent) { outValue = obj.aiAgent.speed; return true; }
         if (path == "AIAgent.StoppingDistance" && obj.hasAIAgent) { outValue = obj.aiAgent.stoppingDistance; return true; }
+        if (path == "Sprite.Frame" && obj.hasUI &&
+            (obj.ui.type == UIElementType::Sprite2D || obj.ui.type == UIElementType::Image)) {
+            outValue = static_cast<float>(obj.ui.spriteSheetFrame);
+            return true;
+        }
 
         int scriptIndex = -1;
         int settingIndex = -1;
@@ -407,6 +412,14 @@ void Engine::renderAnimationWindow() {
 
         if (path == "AIAgent.Speed" && obj.hasAIAgent) { obj.aiAgent.speed = std::max(0.05f, value); return true; }
         if (path == "AIAgent.StoppingDistance" && obj.hasAIAgent) { obj.aiAgent.stoppingDistance = std::max(0.0f, value); return true; }
+        if (path == "Sprite.Frame" && obj.hasUI &&
+            (obj.ui.type == UIElementType::Sprite2D || obj.ui.type == UIElementType::Image)) {
+            const int frameCount = obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()
+                ? static_cast<int>(obj.ui.spriteCustomFrames.size())
+                : std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+            obj.ui.spriteSheetFrame = std::clamp(static_cast<int>(std::round(value)), 0, std::max(0, frameCount - 1));
+            return true;
+        }
 
         int scriptIndex = -1;
         int settingIndex = -1;
@@ -531,6 +544,9 @@ void Engine::renderAnimationWindow() {
         if (obj.hasAIAgent) {
             push("AIAgent.Speed", "AI Agent/Speed");
             push("AIAgent.StoppingDistance", "AI Agent/Stopping Distance");
+        }
+        if (obj.hasUI && (obj.ui.type == UIElementType::Sprite2D || obj.ui.type == UIElementType::Image)) {
+            push("Sprite.Frame", "Sprite/Frame");
         }
         for (size_t si = 0; si < obj.scripts.size(); ++si) {
             const auto& script = obj.scripts[si];

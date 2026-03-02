@@ -452,6 +452,26 @@ ImTextureID VulkanRenderer::getOrCreateUIImage(const std::string& path, int* out
 #endif
 }
 
+void VulkanRenderer::invalidateImagePath(const std::string& path) {
+#if !MODULARITY_HAS_VULKAN
+    (void)path;
+#else
+    if (path.empty()) {
+        return;
+    }
+    auto uiIt = uiImageCache.find(path);
+    if (uiIt != uiImageCache.end()) {
+        destroyUiImageTexture(uiIt->second);
+        uiImageCache.erase(uiIt);
+    }
+    auto sceneIt = sceneTextureCache.find(path);
+    if (sceneIt != sceneTextureCache.end()) {
+        destroySceneTexture(sceneIt->second);
+        sceneTextureCache.erase(sceneIt);
+    }
+#endif
+}
+
 ImTextureID VulkanRenderer::getGameSceneTextureID() const {
 #if MODULARITY_HAS_VULKAN
     return (gameSceneTarget.descriptorSet == VK_NULL_HANDLE)

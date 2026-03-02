@@ -442,6 +442,9 @@ bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) 
     if (path.empty()) return false;
     if (!initialized && !init()) return false;
 
+    // Prime cached waveform metadata up front so streamed formats still expose duration/seek info.
+    (void)getPreview(path);
+
     stopPreview();
     if (!initSoundFromPath(path, MA_SOUND_FLAG_STREAM, nullptr, previewSound, previewDecodedData)) {
         std::cerr << "AudioSystem: preview load failed for " << path << "\n";
@@ -477,7 +480,13 @@ bool AudioSystem::getPreviewTime(const std::string& path, double& cursorSeconds,
     if (!previewActive || previewPath != path) return false;
 
     ma_uint32 sampleRate = 0;
-    if (ma_sound_get_data_format(&previewSound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS || sampleRate == 0) {
+    durationSeconds = 0.0;
+    auto it = previewCache.find(path);
+    if (it != previewCache.end() && it->second.loaded && it->second.sampleRate > 0) {
+        sampleRate = it->second.sampleRate;
+    } else if (previewDecodedData && previewDecodedData->sampleRate > 0) {
+        sampleRate = previewDecodedData->sampleRate;
+    } else if (ma_sound_get_data_format(&previewSound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS || sampleRate == 0) {
         return false;
     }
 
@@ -485,8 +494,6 @@ bool AudioSystem::getPreviewTime(const std::string& path, double& cursorSeconds,
     if (ma_sound_get_cursor_in_pcm_frames(&previewSound, &cursorFrames) != MA_SUCCESS) return false;
     cursorSeconds = static_cast<double>(cursorFrames) / static_cast<double>(sampleRate);
 
-    durationSeconds = 0.0;
-    auto it = previewCache.find(path);
     if (it != previewCache.end() && it->second.loaded && std::isfinite(it->second.durationSeconds) && it->second.durationSeconds > 0.0) {
         durationSeconds = it->second.durationSeconds;
     } else if (previewDecodedData && previewDecodedData->sampleRate > 0 && previewDecodedData->frameCount > 0) {

@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "CrashReporter.h"
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -41,7 +42,11 @@ static std::filesystem::path getExecutableDir() {
 #endif
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
+    return 0;
+  }
+
   if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
     std::error_code ec;
     std::filesystem::current_path(exeDir, ec);
@@ -50,21 +55,25 @@ int main() {
                 << ec.message() << std::endl;
     }
   }
-  std::cerr << "[DEBUG] Starting engine initialization..." << std::endl;
-  Engine engine;
+  const std::string executablePath = (argc > 0 && argv && argv[0]) ? argv[0] : "";
+  Modularity::CrashReporter::Initialize("Modularity", executablePath);
 
-  std::cerr << "[DEBUG] Calling engine.init()..." << std::endl;
-  if (!engine.init()) {
-    std::cerr << "[DEBUG] Engine init failed!" << std::endl;
-    return -1;
-  }
+  return Modularity::CrashReporter::RunProtected([]() -> int {
+    std::cerr << "[DEBUG] Starting engine initialization..." << std::endl;
+    Engine engine;
 
-  std::cerr << "[DEBUG] Engine init succeeded, starting run loop..."
-            << std::endl;
-  engine.run();
+    std::cerr << "[DEBUG] Calling engine.init()..." << std::endl;
+    if (!engine.init()) {
+      std::cerr << "[DEBUG] Engine init failed!" << std::endl;
+      return -1;
+    }
 
-  std::cerr << "[DEBUG] Run loop ended, shutting down..." << std::endl;
-  engine.shutdown();
+    std::cerr << "[DEBUG] Engine init succeeded, starting run loop..."
+              << std::endl;
+    engine.run();
 
-  return 0;
+    std::cerr << "[DEBUG] Run loop ended, shutting down..." << std::endl;
+    engine.shutdown();
+    return 0;
+  });
 }

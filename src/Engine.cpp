@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "CrashReporter.h"
 #include "ModelLoader.h"
 #include <iostream>
 #include <fstream>
@@ -374,6 +375,11 @@ void Engine::applyProjectPipelineDefaults(bool force) {
 }
 
 int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
+    if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+        int total = static_cast<int>(obj.ui.spriteCustomFrames.size());
+        int frame = std::max(0, obj.ui.spriteSheetFrame);
+        return frame % total;
+    }
     if (!obj.ui.spriteSheetEnabled) {
         return 0;
     }
@@ -384,6 +390,16 @@ int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
     return frame % total;
 }
 
+glm::vec2 Engine::getSpriteDisplaySize(const SceneObject& obj) const {
+    glm::vec2 size(std::max(1.0f, obj.ui.size.x), std::max(1.0f, obj.ui.size.y));
+    if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+        const glm::ivec4 rect = obj.ui.spriteCustomFrames[resolveSpriteSheetFrame(obj)];
+        size.x = std::max(size.x, static_cast<float>(std::max(1, rect.z)));
+        size.y = std::max(size.y, static_cast<float>(std::max(1, rect.w)));
+    }
+    return size;
+}
+
 std::array<ImVec2, 4> Engine::buildSpriteSheetUvs(const SceneObject& obj) const {
     std::array<ImVec2, 4> uvs = {
         ImVec2(0.0f, 1.0f),
@@ -392,6 +408,24 @@ std::array<ImVec2, 4> Engine::buildSpriteSheetUvs(const SceneObject& obj) const 
         ImVec2(0.0f, 0.0f)
     };
     if (!obj.ui.spriteSheetEnabled) {
+        return uvs;
+    }
+
+    if (obj.ui.spriteCustomFramesEnabled &&
+        !obj.ui.spriteCustomFrames.empty() &&
+        obj.ui.spriteSourceWidth > 0 &&
+        obj.ui.spriteSourceHeight > 0) {
+        const glm::ivec4 rect = obj.ui.spriteCustomFrames[resolveSpriteSheetFrame(obj)];
+        const float invW = 1.0f / static_cast<float>(obj.ui.spriteSourceWidth);
+        const float invH = 1.0f / static_cast<float>(obj.ui.spriteSourceHeight);
+        const float u0 = rect.x * invW;
+        const float u1 = (rect.x + rect.z) * invW;
+        const float vTop = 1.0f - rect.y * invH;
+        const float vBottom = 1.0f - (rect.y + rect.w) * invH;
+        uvs[0] = ImVec2(u0, vTop);
+        uvs[1] = ImVec2(u1, vTop);
+        uvs[2] = ImVec2(u1, vBottom);
+        uvs[3] = ImVec2(u0, vBottom);
         return uvs;
     }
 
@@ -1807,6 +1841,7 @@ void Engine::run() {
                 if (showCameraWindow) renderCameraWindow();
                 if (showAnimationWindow) renderAnimationWindow();
                 if (showAIPathfindingWindow) renderAIPathfindingWindow();
+                if (showPixelSpriteEditorWindow) renderPixelSpriteEditorWindow();
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
@@ -4180,6 +4215,7 @@ void Engine::applyAutoStartMode() {
     showCameraWindow = false;
     showAnimationWindow = false;
     showAIPathfindingWindow = false;
+    showPixelSpriteEditorWindow = false;
     showViewOutput = false;
     showSceneGizmos = false;
     showGameViewport = false;
@@ -5557,6 +5593,7 @@ void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType ty
     entry.message = message;
     entry.type = type;
     consoleLog.push_back(std::move(entry));
+    Modularity::CrashReporter::AppendLogLine(std::string("[") + timeStr + "] " + message);
 
     if (type == ConsoleMessageType::Error) {
         latestErrorMessage = message;
@@ -6560,6 +6597,7 @@ void Engine::autosaveWorkspaceLayout() {
         countDockState("Camera", showCameraWindow);
         countDockState("Animation", showAnimationWindow);
         countDockState("AI Pathfinding", showAIPathfindingWindow);
+        countDockState("Pixel Sprite Editor", showPixelSpriteEditorWindow);
         countDockState("Scripting", showScriptingWindow);
         countDockState("Project Settings", showProjectBrowser);
 
@@ -6719,6 +6757,8 @@ void Engine::loadEditorUserSettings() {
             showAnimationWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showAIPathfindingWindow") {
             showAIPathfindingWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showPixelSpriteEditorWindow") {
+            showPixelSpriteEditorWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGizmos") {
             showSceneGizmos = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowCameraOverlays") {
@@ -6885,6 +6925,7 @@ void Engine::saveEditorUserSettings() const {
     file << "consoleWrapText=" << (consoleWrapText ? "1" : "0") << "\n";
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
     file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
+    file << "showPixelSpriteEditorWindow=" << (showPixelSpriteEditorWindow ? "1" : "0") << "\n";
     file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
     file << "gizmoShowCameraOverlays=" << (gizmoShowCameraOverlays ? "1" : "0") << "\n";
     file << "gizmoShowCameraFrustumLabels=" << (gizmoShowCameraFrustumLabels ? "1" : "0") << "\n";

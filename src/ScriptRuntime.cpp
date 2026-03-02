@@ -607,6 +607,68 @@ void ScriptContext::SetUIColor(const glm::vec4& color) {
     }
 }
 
+int ScriptContext::GetSpriteClipCount() const {
+    if (!object || !object->hasUI) return 0;
+    if (object->ui.spriteCustomFramesEnabled && !object->ui.spriteCustomFrames.empty()) {
+        return static_cast<int>(object->ui.spriteCustomFrames.size());
+    }
+    if (!object->ui.spriteSheetEnabled) return 0;
+    return std::max(1, object->ui.spriteSheetColumns * object->ui.spriteSheetRows);
+}
+
+int ScriptContext::GetSpriteClipIndex() const {
+    int clipCount = GetSpriteClipCount();
+    if (clipCount <= 0 || !object) return -1;
+    return std::clamp(object->ui.spriteSheetFrame, 0, clipCount - 1);
+}
+
+std::string ScriptContext::GetSpriteClipName() const {
+    return GetSpriteClipNameAt(GetSpriteClipIndex());
+}
+
+std::string ScriptContext::GetSpriteClipNameAt(int index) const {
+    if (!object || !object->hasUI || index < 0) return {};
+    if (object->ui.spriteCustomFramesEnabled && !object->ui.spriteCustomFrames.empty()) {
+        if (index >= static_cast<int>(object->ui.spriteCustomFrames.size())) return {};
+        if (index < static_cast<int>(object->ui.spriteCustomFrameNames.size()) &&
+            !object->ui.spriteCustomFrameNames[static_cast<size_t>(index)].empty()) {
+            return object->ui.spriteCustomFrameNames[static_cast<size_t>(index)];
+        }
+        return "Clip " + std::to_string(index);
+    }
+    int clipCount = GetSpriteClipCount();
+    if (index >= clipCount) return {};
+    return "Frame " + std::to_string(index);
+}
+
+bool ScriptContext::SetSpriteClipIndex(int index) {
+    if (!object || !object->hasUI) return false;
+    int clipCount = GetSpriteClipCount();
+    if (clipCount <= 0 || index < 0 || index >= clipCount) return false;
+    if (object->ui.spriteSheetFrame != index) {
+        object->ui.spriteSheetFrame = index;
+        MarkDirty();
+    }
+    return true;
+}
+
+bool ScriptContext::SetSpriteClipName(const std::string& name) {
+    if (!object || !object->hasUI) return false;
+    if (!(object->ui.spriteCustomFramesEnabled && !object->ui.spriteCustomFrames.empty())) return false;
+    std::string target = trimString(name);
+    if (target.empty()) return false;
+    for (size_t i = 0; i < object->ui.spriteCustomFrames.size(); ++i) {
+        std::string clipName = (i < object->ui.spriteCustomFrameNames.size() &&
+                                !object->ui.spriteCustomFrameNames[i].empty())
+            ? object->ui.spriteCustomFrameNames[i]
+            : ("Clip " + std::to_string(i));
+        if (clipName == target) {
+            return SetSpriteClipIndex(static_cast<int>(i));
+        }
+    }
+    return false;
+}
+
 float ScriptContext::GetUITextScale() const {
     if (!object || !object->hasUI || object->ui.type != UIElementType::Text) return 1.0f;
     return object->ui.textScale;

@@ -39,6 +39,7 @@ public:
     ImTextureID getViewportSceneTextureID() const;
     ImTextureID getGameSceneTextureID() const;
     ImTextureID getOrCreateUIImage(const std::string& path, int* outWidth = nullptr, int* outHeight = nullptr);
+    void invalidateImagePath(const std::string& path);
 
     bool isReady() const { return initialized; }
     bool isImGuiReady() const { return imguiInitialized; }

@@ -54,6 +54,12 @@ bool ResolveProjectedSprite25DRect(const SceneObject& obj,
     glm::vec3 cameraRight = glm::normalize(glm::vec3(invView[0]));
     glm::vec3 cameraUp = glm::normalize(glm::vec3(invView[1]));
     glm::vec2 baseSize = glm::max(obj.ui.size, glm::vec2(1.0f));
+    if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+        const int frame = std::clamp(obj.ui.spriteSheetFrame, 0, static_cast<int>(obj.ui.spriteCustomFrames.size()) - 1);
+        const glm::ivec4 rect = obj.ui.spriteCustomFrames[frame];
+        baseSize.x = std::max(baseSize.x, static_cast<float>(std::max(1, rect.z)));
+        baseSize.y = std::max(baseSize.y, static_cast<float>(std::max(1, rect.w)));
+    }
     glm::vec3 objectScale = glm::max(glm::abs(obj.scale), glm::vec3(0.01f));
     glm::vec2 worldHalfExtents = glm::vec2(baseSize.x * objectScale.x, baseSize.y * objectScale.y) * 0.005f;
 
@@ -1243,7 +1249,8 @@ void Engine::renderGameViewportWindow() {
                     *parentMin = regionMin;
                     *parentMax = regionMax;
                 }
-                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x * uiScaleX), std::max(1.0f, node->ui.size.y * uiScaleY));
+                glm::vec2 nodeSizeWorld = getSpriteDisplaySize(*node);
+                ImVec2 size = ImVec2(std::max(1.0f, nodeSizeWorld.x * uiScaleX), std::max(1.0f, nodeSizeWorld.y * uiScaleY));
                 ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
                 ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX, anchorPoint.y + node->ui.position.y * uiScaleY);
                 ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
@@ -1317,7 +1324,7 @@ void Engine::renderGameViewportWindow() {
             }
             glm::vec2 parentOffset = getWorldParentOffset(obj);
             glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
-            glm::vec2 sizeWorld(obj.ui.size.x, obj.ui.size.y);
+            glm::vec2 sizeWorld = getSpriteDisplaySize(obj);
             ImVec2 pivotOffset = anchorToPivot(obj.ui.anchor, ImVec2(sizeWorld.x, sizeWorld.y));
             glm::vec2 worldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
             glm::vec2 worldMax = worldMin + sizeWorld;
@@ -1516,7 +1523,7 @@ void Engine::renderGameViewportWindow() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
                 if (rendererInitialized && !obj.albedoTexturePath.empty()) {
-                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                         texId = tex->GetID();
                     }
                 }
@@ -1525,11 +1532,12 @@ void Engine::renderGameViewportWindow() {
                 bool repeatX = useWorldUi && obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 bool repeatY = useWorldUi && obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
                 glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
-                float stepX = obj.ui.size.x + spacing.x;
-                float stepY = obj.ui.size.y + spacing.y;
+                glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
+                float stepX = spriteSizeWorld.x + spacing.x;
+                float stepY = spriteSizeWorld.y + spacing.y;
                 glm::vec2 baseWorldMin = worldViewMin;
                 if (repeatX || repeatY) {
-                    glm::vec2 sizeWorld(obj.ui.size.x, obj.ui.size.y);
+                    glm::vec2 sizeWorld = spriteSizeWorld;
                     ImVec2 pivotOffset = anchorToPivot(obj.ui.anchor, ImVec2(sizeWorld.x, sizeWorld.y));
                     glm::vec2 parentOffset = getWorldParentOffset(obj);
                     glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
@@ -1595,7 +1603,7 @@ void Engine::renderGameViewportWindow() {
                             float dy = repeatY ? (float)iy * stepY : 0.0f;
                             glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
                             ImVec2 s0 = worldToScreen(tileMin);
-                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(obj.ui.size.x, obj.ui.size.y));
+                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
                             ImVec2 tMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
                             ImVec2 tMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
                             drawImageRect(tMin, tMax);
@@ -2676,6 +2684,11 @@ void Engine::renderMainMenuBar() {
             if (prevAIPathWindow != showAIPathfindingWindow) {
                 saveEditorUserSettings();
             }
+            bool prevPixelSpriteEditor = showPixelSpriteEditorWindow;
+            ImGui::MenuItem("Pixel Sprite Editor", nullptr, &showPixelSpriteEditorWindow);
+            if (prevPixelSpriteEditor != showPixelSpriteEditorWindow) {
+                saveEditorUserSettings();
+            }
             bool prevSpritePreview = showSpritePreviewPanel;
             ImGui::MenuItem("Sprite Preview", nullptr, &showSpritePreviewPanel);
             if (prevSpritePreview != showSpritePreviewPanel) {
@@ -3511,7 +3524,7 @@ void Engine::renderViewport() {
 
             unsigned int texId = 0;
             if (rendererInitialized && !obj.albedoTexturePath.empty()) {
-                if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                if (auto* tex = renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                     texId = tex->GetID();
                 }
             }
@@ -3642,7 +3655,7 @@ void Engine::renderViewport() {
             }
             glm::vec2 parentOffset = getWorldParentOffset(obj);
             glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
-            glm::vec2 sizeWorld(obj.ui.size.x, obj.ui.size.y);
+            glm::vec2 sizeWorld = getSpriteDisplaySize(obj);
             ImVec2 pivotOffset = ImVec2(sizeWorld.x * 0.5f, sizeWorld.y * 0.5f);
             switch (obj.ui.anchor) {
                 case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
@@ -3842,7 +3855,7 @@ void Engine::renderViewport() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
                 if (rendererInitialized && !obj.albedoTexturePath.empty()) {
-                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                         texId = tex->GetID();
                     }
                 }
@@ -3850,12 +3863,13 @@ void Engine::renderViewport() {
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+                glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
                 glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
                 float stepX = drawSize.x + spacing.x;
                 float stepY = drawSize.y + spacing.y;
                 glm::vec2 baseWorldMin = worldViewMin;
                 if (repeatX || repeatY) {
-                    glm::vec2 sizeWorld(obj.ui.size.x, obj.ui.size.y);
+                    glm::vec2 sizeWorld = spriteSizeWorld;
                     ImVec2 pivotOffset = ImVec2(sizeWorld.x * 0.5f, sizeWorld.y * 0.5f);
                     switch (obj.ui.anchor) {
                         case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
@@ -3930,7 +3944,7 @@ void Engine::renderViewport() {
                             float dy = repeatY ? (float)iy * stepY : 0.0f;
                             glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
                             ImVec2 s0 = worldToScreen(tileMin);
-                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(obj.ui.size.x, obj.ui.size.y));
+                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
                             ImVec2 tMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
                             ImVec2 tMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
                             drawImageRect(tMin, tMax);
@@ -6634,37 +6648,52 @@ void Engine::renderViewport() {
                 if (!validSprite) {
                     ImGui::TextDisabled("Select an Image or Sprite2D to preview.");
                 } else {
+                    static float spritePreviewZoom = 1.0f;
                     Texture* previewTex = nullptr;
                     if (!selected->albedoTexturePath.empty()) {
-                        previewTex = renderer.getTexture(selected->albedoTexturePath);
+                        previewTex = renderer.getTexture(selected->albedoTexturePath, MaterialProperties::TextureFilter::Point);
                     }
                     if (!previewTex || !previewTex->GetID()) {
                         ImGui::TextDisabled("Assign a texture to preview this sprite.");
                     } else {
                         std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(*selected);
                         float availW = std::max(80.0f, ImGui::GetContentRegionAvail().x);
-                        float maxPreviewW = std::min(availW, 340.0f);
+                        ImGui::SliderFloat("Zoom", &spritePreviewZoom, 0.25f, 16.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+                        float maxPreviewW = std::min(availW, 340.0f * spritePreviewZoom);
                         float texW = static_cast<float>(std::max(1, previewTex->GetWidth()));
                         float texH = static_cast<float>(std::max(1, previewTex->GetHeight()));
-                        float frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
-                        float frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
-                        if (!selected->ui.spriteSheetEnabled) {
-                            frameW = texW;
-                            frameH = texH;
+                        float frameW = texW;
+                        float frameH = texH;
+                        if (selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty()) {
+                            const glm::ivec4 frame = selected->ui.spriteCustomFrames[
+                                std::clamp(selected->ui.spriteSheetFrame, 0, static_cast<int>(selected->ui.spriteCustomFrames.size()) - 1)];
+                            frameW = static_cast<float>(std::max(1, frame.z));
+                            frameH = static_cast<float>(std::max(1, frame.w));
+                        } else if (selected->ui.spriteSheetEnabled) {
+                            frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
+                            frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
                         }
                         float aspect = frameH > 0.0f ? (frameW / frameH) : 1.0f;
                         ImVec2 previewSize(maxPreviewW, std::max(40.0f, maxPreviewW / std::max(0.1f, aspect)));
                         ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvQuad[0], uvQuad[2]);
-                        int frameCount = std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
+                        const bool usingCustomClips = selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty();
+                        int frameCount = usingCustomClips
+                            ? static_cast<int>(selected->ui.spriteCustomFrames.size())
+                            : std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
                         ImGui::Separator();
                         ImGui::Text("Object: %s", selected->name.c_str());
                         ImGui::Text("Texture: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
                         if (selected->ui.spriteSheetEnabled) {
-                            ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
-                            ImGui::Text("Grid: %d x %d  |  %.1f FPS",
-                                        std::max(1, selected->ui.spriteSheetColumns),
-                                        std::max(1, selected->ui.spriteSheetRows),
-                                        std::max(1.0f, selected->ui.spriteSheetFps));
+                            if (usingCustomClips) {
+                                ImGui::Text("Clip: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
+                                ImGui::Text("Clips: %d cropped sprites", frameCount);
+                            } else {
+                                ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
+                                ImGui::Text("Grid: %d x %d  |  %.1f FPS",
+                                            std::max(1, selected->ui.spriteSheetColumns),
+                                            std::max(1, selected->ui.spriteSheetRows),
+                                            std::max(1.0f, selected->ui.spriteSheetFps));
+                            }
                         } else {
                             ImGui::TextDisabled("Sprite sheet disabled (showing full texture).");
                         }
@@ -6681,11 +6710,12 @@ void Engine::renderViewport() {
             SceneObject* selected = getSelectedObject();
             bool validSprite = selected && selected->hasUI &&
                 (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D) &&
-                selected->ui.spriteSheetEnabled;
+                selected->ui.spriteSheetEnabled &&
+                !(selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty());
             if (!validSprite) {
                 spriteTimelinePreviewPlaying = false;
                 spriteTimelineTargetId = -1;
-                ImGui::TextDisabled("Select a sprite sheet to animate.");
+                ImGui::TextDisabled("Select a grid-based sprite sheet to animate.");
             } else {
                 int columns = std::max(1, selected->ui.spriteSheetColumns);
                 int rows = std::max(1, selected->ui.spriteSheetRows);
@@ -6933,8 +6963,9 @@ void Engine::renderUiCanvas3DTargets() {
             ImVec2 regionMin = ImGui::GetWindowPos();
             ImVec2 regionMax = ImVec2(regionMin.x + layoutWidth, regionMin.y + layoutHeight);
             for (const SceneObject* node : chain) {
-                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x),
-                                     std::max(1.0f, node->ui.size.y));
+                glm::vec2 nodeSize = getSpriteDisplaySize(*node);
+                ImVec2 size = ImVec2(std::max(1.0f, nodeSize.x),
+                                     std::max(1.0f, nodeSize.y));
                 ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
                 ImVec2 pivot(anchorPoint.x + node->ui.position.x,
                              anchorPoint.y + node->ui.position.y);
@@ -7003,7 +7034,7 @@ void Engine::renderUiCanvas3DTargets() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
                 if (rendererInitialized && !obj.albedoTexturePath.empty()) {
-                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                         texId = tex->GetID();
                     }
                 }
@@ -7428,8 +7459,9 @@ void Engine::renderPlayerViewport() {
             ImVec2 regionMin = ImGui::GetWindowPos();
             ImVec2 regionMax = ImVec2(regionMin.x + ImGui::GetWindowWidth(), regionMin.y + ImGui::GetWindowHeight());
             for (const SceneObject* node : chain) {
-                ImVec2 size = ImVec2(std::max(1.0f, node->ui.size.x * uiScaleX),
-                                     std::max(1.0f, node->ui.size.y * uiScaleY));
+                glm::vec2 nodeSizeWorld = getSpriteDisplaySize(*node);
+                ImVec2 size = ImVec2(std::max(1.0f, nodeSizeWorld.x * uiScaleX),
+                                     std::max(1.0f, nodeSizeWorld.y * uiScaleY));
                 ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
                 ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX,
                              anchorPoint.y + node->ui.position.y * uiScaleY);
@@ -7484,7 +7516,7 @@ void Engine::renderPlayerViewport() {
             }
             glm::vec2 parentOffset = getWorldParentOffset(obj);
             glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y);
-            glm::vec2 sizeWorld(obj.ui.size.x, obj.ui.size.y);
+            glm::vec2 sizeWorld = getSpriteDisplaySize(obj);
             ImVec2 pivotOffset = anchorToPivot(obj.ui.anchor, ImVec2(sizeWorld.x, sizeWorld.y));
             glm::vec2 worldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
             glm::vec2 worldMax = worldMin + sizeWorld;
@@ -7658,7 +7690,7 @@ void Engine::renderPlayerViewport() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 unsigned int texId = 0;
                 if (rendererInitialized && !obj.albedoTexturePath.empty()) {
-                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath)) {
+                    if (auto* tex = renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                         texId = tex->GetID();
                     }
                 }

@@ -95,6 +95,12 @@ struct ScriptContext {
     void SetUISliderRange(float minValue, float maxValue);
     void SetUILabel(const std::string& label);
     void SetUIColor(const glm::vec4& color);
+    int GetSpriteClipCount() const;
+    int GetSpriteClipIndex() const;
+    std::string GetSpriteClipName() const;
+    std::string GetSpriteClipNameAt(int index) const;
+    bool SetSpriteClipIndex(int index);
+    bool SetSpriteClipName(const std::string& name);
     float GetUITextScale() const;
     void SetUITextScale(float scale);
     void SetUISliderStyle(UISliderStyle style);

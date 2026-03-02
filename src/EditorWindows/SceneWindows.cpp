@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "ModelLoader.h"
+#include "../SpritesheetFormat.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -24,6 +25,29 @@
 
 #pragma region Hierarchy Helpers
 namespace {
+    bool IsSpriteSheetSidecarPath(const fs::path& path) {
+        return path.extension() == ".spritesheet";
+    }
+
+    fs::path ResolveSpriteSheetImagePath(const fs::path& path) {
+        if (!IsSpriteSheetSidecarPath(path)) {
+            return path;
+        }
+        fs::path imagePath = path;
+        imagePath.replace_extension();
+        return imagePath;
+    }
+
+std::vector<glm::ivec4> LoadSpriteSheetRects(const fs::path& sidecarPath) {
+        std::ifstream sidecar(sidecarPath);
+        if (!sidecar.is_open()) {
+            return {};
+        }
+        std::ostringstream buffer;
+        buffer << sidecar.rdbuf();
+        return ParseSpritesheet(buffer.str()).document.rects;
+    }
+
     std::optional<std::string> InferManagedTypeFromSource(const std::string& source,
                                                           const std::string& fallbackClass) {
         std::string nameSpace;
@@ -588,6 +612,26 @@ namespace {
             default:
                 break;
         }
+    }
+}
+
+std::vector<std::string> LoadSpriteSheetNames(const fs::path& sidecarPath) {
+    std::ifstream sidecar(sidecarPath);
+    if (!sidecar.is_open()) {
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << sidecar.rdbuf();
+    return ParseSpritesheet(buffer.str()).document.names;
+}
+
+void EnsureSpriteClipNames(std::vector<std::string>& names, size_t count) {
+    if (names.size() < count) {
+        for (size_t i = names.size(); i < count; ++i) {
+            names.push_back("Rect_" + std::to_string(i));
+        }
+    } else if (names.size() > count) {
+        names.resize(count);
     }
 }
 #pragma endregion
@@ -1400,6 +1444,55 @@ void Engine::renderInspectorPanel() {
         return changed;
     };
 
+    auto isTextureOrSpriteSheetSelection = [&](const fs::path& path) {
+        if (path.empty() || !fs::exists(path)) return false;
+        std::error_code ec;
+        fs::directory_entry entry(path, ec);
+        if (ec) return false;
+        return fileBrowser.isTextureFile(entry) || IsSpriteSheetSidecarPath(path);
+    };
+    auto assignSpriteTextureOrClips = [&](SceneObject& target, const fs::path& sourcePath) -> bool {
+        if (sourcePath.empty() || !fs::exists(sourcePath)) {
+            return false;
+        }
+
+        const fs::path imagePath = ResolveSpriteSheetImagePath(sourcePath);
+        if (!fs::exists(imagePath)) {
+            return false;
+        }
+
+        target.albedoTexturePath = imagePath.string();
+        const fs::path sidecarPath = IsSpriteSheetSidecarPath(sourcePath) ? sourcePath : fs::path(imagePath.string() + ".spritesheet");
+        std::vector<glm::ivec4> clips;
+        if (fs::exists(sidecarPath)) {
+            clips = LoadSpriteSheetRects(sidecarPath);
+        }
+        std::vector<std::string> clipNames;
+        if (fs::exists(sidecarPath)) {
+            clipNames = LoadSpriteSheetNames(sidecarPath);
+        }
+
+        target.ui.spriteCustomFrames = std::move(clips);
+        target.ui.spriteCustomFrameNames = std::move(clipNames);
+        EnsureSpriteClipNames(target.ui.spriteCustomFrameNames, target.ui.spriteCustomFrames.size());
+        target.ui.spriteCustomFramesEnabled = !target.ui.spriteCustomFrames.empty();
+        target.ui.spriteSheetEnabled = target.ui.spriteCustomFramesEnabled || target.ui.spriteSheetEnabled;
+        target.ui.spriteSheetFrame = 0;
+        target.ui.spriteSourceWidth = 0;
+        target.ui.spriteSourceHeight = 0;
+
+        if (Texture* tex = renderer.getTexture(target.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
+            target.ui.spriteSourceWidth = tex->GetWidth();
+            target.ui.spriteSourceHeight = tex->GetHeight();
+        }
+
+        if (target.ui.spriteCustomFramesEnabled) {
+            target.ui.size.x = static_cast<float>(std::max(1, target.ui.spriteCustomFrames[0].z));
+            target.ui.size.y = static_cast<float>(std::max(1, target.ui.spriteCustomFrames[0].w));
+        }
+        return true;
+    };
+
     auto renderMaterialAssetPanel = [&](const char* headerTitle, bool allowApply) {
         if (!browserHasMaterial) return;
 
@@ -1425,8 +1518,9 @@ void Engine::renderInspectorPanel() {
                             const char* dropped = static_cast<const char*>(payload->Data);
                             std::error_code ec;
                             fs::directory_entry droppedEntry(fs::path(dropped), ec);
-                            if (!ec && fileBrowser.isTextureFile(droppedEntry)) {
-                                path = dropped;
+                            const fs::path droppedPath(dropped);
+                            if ((!ec && fileBrowser.isTextureFile(droppedEntry)) || IsSpriteSheetSidecarPath(droppedPath)) {
+                                path = ResolveSpriteSheetImagePath(droppedPath).string();
                                 changed = true;
                             }
                         }
@@ -1438,12 +1532,11 @@ void Engine::renderInspectorPanel() {
                         changed = true;
                     }
                     ImGui::SameLine();
-                    bool canUseTex = !fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) &&
-                                     fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile));
+                    bool canUseTex = isTextureOrSpriteSheetSelection(fileBrowser.selectedFile);
                     ImGui::BeginDisabled(!canUseTex);
                     std::string btnLabel = std::string("Use Selection##") + idSuffix;
                     if (ImGui::SmallButton(btnLabel.c_str())) {
-                        path = fileBrowser.selectedFile.string();
+                        path = ResolveSpriteSheetImagePath(fileBrowser.selectedFile).string();
                         changed = true;
                     }
                     ImGui::EndDisabled();
@@ -1720,12 +1813,14 @@ void Engine::renderInspectorPanel() {
             ImGui::TextDisabled("%s", selectedTexturePath.filename().string().c_str());
             ImGui::TextColored(ImVec4(0.8f, 0.65f, 0.95f, 1.0f), "%s", selectedTexturePath.string().c_str());
 
-            Texture* previewTex = renderer.getTexture(selectedTexturePath.string());
+            static float textureAssetPreviewZoom = 1.0f;
+            Texture* previewTex = renderer.getTexture(selectedTexturePath.string(), MaterialProperties::TextureFilter::Point);
 
             ImGui::Spacing();
             if (previewTex && previewTex->GetID()) {
+                ImGui::SliderFloat("Preview Zoom", &textureAssetPreviewZoom, 0.25f, 16.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
                 float maxWidth = ImGui::GetContentRegionAvail().x;
-                float size = std::min(maxWidth, 160.0f);
+                float size = std::min(maxWidth, 160.0f * textureAssetPreviewZoom);
                 float aspect = previewTex->GetHeight() > 0 ? (previewTex->GetWidth() / static_cast<float>(previewTex->GetHeight())) : 1.0f;
                 ImVec2 imageSize(size, size);
                 if (aspect > 1.0f) {
@@ -2019,22 +2114,50 @@ void Engine::renderInspectorPanel() {
                 std::snprintf(texBuf, sizeof(texBuf), "%s", obj.albedoTexturePath.c_str());
                 if (ImGui::InputText("##UITexture", texBuf, sizeof(texBuf))) {
                     obj.albedoTexturePath = texBuf;
+                    obj.ui.spriteCustomFrames.clear();
+                    obj.ui.spriteCustomFrameNames.clear();
+                    obj.ui.spriteCustomFramesEnabled = false;
+                    obj.ui.spriteSourceWidth = 0;
+                    obj.ui.spriteSourceHeight = 0;
                     changed = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Clear##UITexture")) {
                     obj.albedoTexturePath.clear();
+                    obj.ui.spriteCustomFrames.clear();
+                    obj.ui.spriteCustomFrameNames.clear();
+                    obj.ui.spriteCustomFramesEnabled = false;
+                    obj.ui.spriteSourceWidth = 0;
+                    obj.ui.spriteSourceHeight = 0;
+                    obj.ui.spriteSheetFrame = 0;
                     changed = true;
                 }
                 ImGui::SameLine();
-                bool canUseTex = !fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile) &&
-                                 fileBrowser.isTextureFile(fs::directory_entry(fileBrowser.selectedFile));
+                bool canUseTex = isTextureOrSpriteSheetSelection(fileBrowser.selectedFile);
                 ImGui::BeginDisabled(!canUseTex);
                 if (ImGui::SmallButton("Use Selection##UITexture")) {
-                    obj.albedoTexturePath = fileBrowser.selectedFile.string();
-                    changed = true;
+                    if (assignSpriteTextureOrClips(obj, fileBrowser.selectedFile)) {
+                        changed = true;
+                    }
                 }
                 ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(obj.albedoTexturePath.empty());
+                if (ImGui::SmallButton("Reload Clips##UITexture")) {
+                    if (assignSpriteTextureOrClips(obj, fs::path(obj.albedoTexturePath))) {
+                        changed = true;
+                    }
+                }
+                ImGui::EndDisabled();
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                        const char* dropped = static_cast<const char*>(payload->Data);
+                        if (assignSpriteTextureOrClips(obj, fs::path(dropped))) {
+                            changed = true;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
 
                 if (!obj.albedoTexturePath.empty()) {
                     ImGui::SameLine();
@@ -2046,17 +2169,27 @@ void Engine::renderInspectorPanel() {
                     }
                 }
 
-                if (Texture* previewTex = (!obj.albedoTexturePath.empty() ? renderer.getTexture(obj.albedoTexturePath) : nullptr)) {
+                if (Texture* previewTex = (!obj.albedoTexturePath.empty()
+                        ? renderer.getTexture(obj.albedoTexturePath, MaterialProperties::TextureFilter::Point)
+                        : nullptr)) {
                     if (previewTex->GetID()) {
                         ImGui::Spacing();
                         ImGui::TextDisabled("Sprite Preview");
                         std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
                         ImVec2 uvMin(uvQuad[0].x, uvQuad[0].y);
                         ImVec2 uvMax(uvQuad[2].x, uvQuad[2].y);
+                        float frameWidth = static_cast<float>(previewTex->GetWidth());
+                        float frameHeight = static_cast<float>(previewTex->GetHeight());
+                        if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+                            const glm::ivec4 frame = obj.ui.spriteCustomFrames[std::clamp(obj.ui.spriteSheetFrame, 0, static_cast<int>(obj.ui.spriteCustomFrames.size()) - 1)];
+                            frameWidth = static_cast<float>(frame.z);
+                            frameHeight = static_cast<float>(frame.w);
+                        } else if (obj.ui.spriteSheetEnabled) {
+                            frameWidth = std::max(1.0f, frameWidth / static_cast<float>(std::max(1, obj.ui.spriteSheetColumns)));
+                            frameHeight = std::max(1.0f, frameHeight / static_cast<float>(std::max(1, obj.ui.spriteSheetRows)));
+                        }
                         float previewWidth = std::min(ImGui::GetContentRegionAvail().x, 196.0f);
-                        float aspect = (previewTex->GetWidth() > 0)
-                            ? (static_cast<float>(previewTex->GetHeight()) / static_cast<float>(previewTex->GetWidth()))
-                            : 1.0f;
+                        float aspect = frameWidth > 0.0f ? (frameHeight / frameWidth) : 1.0f;
                         ImVec2 previewSize(previewWidth, std::max(64.0f, previewWidth * aspect));
                         ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvMin, uvMax);
                     }
@@ -2067,25 +2200,50 @@ void Engine::renderInspectorPanel() {
                         changed = true;
                     }
                     ImGui::BeginDisabled(!obj.ui.spriteSheetEnabled);
-                    if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
-                        obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
-                        changed = true;
-                    }
-                    if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
-                        obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
-                        changed = true;
-                    }
-                    int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
-                    if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
-                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
-                        changed = true;
-                    }
-                    if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
-                        obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
-                        changed = true;
-                    }
-                    if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
-                        changed = true;
+                    const bool usingCustomClips = obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty();
+                    if (usingCustomClips) {
+                        const int clipCount = static_cast<int>(obj.ui.spriteCustomFrames.size());
+                        EnsureSpriteClipNames(obj.ui.spriteCustomFrameNames, obj.ui.spriteCustomFrames.size());
+                        ImGui::TextDisabled("Using %d cropped sprite clips.", clipCount);
+                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, clipCount - 1);
+                        const char* previewName = obj.ui.spriteCustomFrameNames[obj.ui.spriteSheetFrame].c_str();
+                        if (ImGui::BeginCombo("Clip", previewName)) {
+                            for (int clipIndex = 0; clipIndex < clipCount; ++clipIndex) {
+                                bool selected = (clipIndex == obj.ui.spriteSheetFrame);
+                                if (ImGui::Selectable(obj.ui.spriteCustomFrameNames[clipIndex].c_str(), selected)) {
+                                    obj.ui.spriteSheetFrame = clipIndex;
+                                    changed = true;
+                                }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        int clipIndex = obj.ui.spriteSheetFrame;
+                        if (ImGui::SliderInt("Clip Index", &clipIndex, 0, clipCount - 1)) {
+                            obj.ui.spriteSheetFrame = std::clamp(clipIndex, 0, clipCount - 1);
+                            changed = true;
+                        }
+                    } else {
+                        if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
+                            obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
+                            changed = true;
+                        }
+                        if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
+                            obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
+                            changed = true;
+                        }
+                        int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+                        if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
+                            obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
+                            changed = true;
+                        }
+                        if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
+                            obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
+                            changed = true;
+                        }
+                        if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
+                            changed = true;
+                        }
                     }
                     ImGui::EndDisabled();
                 }
@@ -3577,7 +3735,25 @@ void Engine::renderInspectorPanel() {
             materialChanged |= textureField("Normal Map", "ObjNormal", obj.normalMapPath);
 
             if (obj.renderType == RenderType::Sprite) {
+                bool canUseSpriteAsset = isTextureOrSpriteSheetSelection(fileBrowser.selectedFile);
+                ImGui::BeginDisabled(!canUseSpriteAsset);
+                if (ImGui::SmallButton("Use Selection As Sprite Asset##WorldSpriteAsset")) {
+                    if (assignSpriteTextureOrClips(obj, fileBrowser.selectedFile)) {
+                        materialChanged = true;
+                    }
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(obj.albedoTexturePath.empty());
+                if (ImGui::SmallButton("Reload Clips##WorldSpriteAsset")) {
+                    if (assignSpriteTextureOrClips(obj, fs::path(obj.albedoTexturePath))) {
+                        materialChanged = true;
+                    }
+                }
+                ImGui::EndDisabled();
+
                 if (!obj.albedoTexturePath.empty()) {
+                    ImGui::SameLine();
                     if (ImGui::SmallButton("Import Sheet##WorldSpriteSheet")) {
                         pendingSpriteSheetPath = obj.albedoTexturePath;
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
@@ -3591,25 +3767,50 @@ void Engine::renderInspectorPanel() {
                         materialChanged = true;
                     }
                     ImGui::BeginDisabled(!obj.ui.spriteSheetEnabled);
-                    if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
-                        obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
-                        materialChanged = true;
-                    }
-                    if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
-                        obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
-                        materialChanged = true;
-                    }
-                    int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
-                    if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
-                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
-                        materialChanged = true;
-                    }
-                    if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
-                        obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
-                        materialChanged = true;
-                    }
-                    if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
-                        materialChanged = true;
+                    const bool usingCustomClips = obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty();
+                    if (usingCustomClips) {
+                        const int clipCount = static_cast<int>(obj.ui.spriteCustomFrames.size());
+                        EnsureSpriteClipNames(obj.ui.spriteCustomFrameNames, obj.ui.spriteCustomFrames.size());
+                        ImGui::TextDisabled("Using %d cropped sprite clips.", clipCount);
+                        obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, clipCount - 1);
+                        const char* previewName = obj.ui.spriteCustomFrameNames[obj.ui.spriteSheetFrame].c_str();
+                        if (ImGui::BeginCombo("Clip", previewName)) {
+                            for (int clipIndex = 0; clipIndex < clipCount; ++clipIndex) {
+                                bool selected = (clipIndex == obj.ui.spriteSheetFrame);
+                                if (ImGui::Selectable(obj.ui.spriteCustomFrameNames[clipIndex].c_str(), selected)) {
+                                    obj.ui.spriteSheetFrame = clipIndex;
+                                    materialChanged = true;
+                                }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        int clipIndex = obj.ui.spriteSheetFrame;
+                        if (ImGui::SliderInt("Clip Index", &clipIndex, 0, clipCount - 1)) {
+                            obj.ui.spriteSheetFrame = std::clamp(clipIndex, 0, clipCount - 1);
+                            materialChanged = true;
+                        }
+                    } else {
+                        if (ImGui::DragInt("Columns", &obj.ui.spriteSheetColumns, 1.0f, 1, 1024)) {
+                            obj.ui.spriteSheetColumns = std::max(1, obj.ui.spriteSheetColumns);
+                            materialChanged = true;
+                        }
+                        if (ImGui::DragInt("Rows", &obj.ui.spriteSheetRows, 1.0f, 1, 1024)) {
+                            obj.ui.spriteSheetRows = std::max(1, obj.ui.spriteSheetRows);
+                            materialChanged = true;
+                        }
+                        int frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+                        if (ImGui::SliderInt("Frame", &obj.ui.spriteSheetFrame, 0, frameCount - 1)) {
+                            obj.ui.spriteSheetFrame = std::clamp(obj.ui.spriteSheetFrame, 0, frameCount - 1);
+                            materialChanged = true;
+                        }
+                        if (ImGui::DragFloat("FPS", &obj.ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
+                            obj.ui.spriteSheetFps = std::clamp(obj.ui.spriteSheetFps, 1.0f, 120.0f);
+                            materialChanged = true;
+                        }
+                        if (ImGui::Checkbox("Loop", &obj.ui.spriteSheetLoop)) {
+                            materialChanged = true;
+                        }
                     }
                     ImGui::EndDisabled();
                 }
@@ -5607,12 +5808,17 @@ void Engine::renderDialogs() {
                 if (!sceneObjects.empty()) {
                     SceneObject& created = sceneObjects.back();
                     created.albedoTexturePath = pendingSpriteSheetPath;
+                    created.material.textureFilter = MaterialProperties::TextureFilter::Point;
                     created.ui.spriteSheetEnabled = true;
                     created.ui.spriteSheetColumns = std::max(1, importSpriteSheetColumns);
                     created.ui.spriteSheetRows = std::max(1, importSpriteSheetRows);
                     created.ui.spriteSheetFrame = 0;
                     created.ui.spriteSheetFps = importSpriteSheetFps;
                     created.ui.spriteSheetLoop = true;
+                    created.ui.spriteCustomFramesEnabled = false;
+                    created.ui.spriteSourceWidth = texW;
+                    created.ui.spriteSourceHeight = texH;
+                    created.ui.spriteCustomFrames.clear();
                     if (texW > 0 && texH > 0) {
                         created.ui.size.x = std::max(1.0f, static_cast<float>(texW) / static_cast<float>(created.ui.spriteSheetColumns));
                         created.ui.size.y = std::max(1.0f, static_cast<float>(texH) / static_cast<float>(created.ui.spriteSheetRows));

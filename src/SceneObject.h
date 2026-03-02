@@ -345,6 +345,11 @@ struct UIElementComponent {
     int spriteSheetFrame = 0;
     float spriteSheetFps = 12.0f;
     bool spriteSheetLoop = true;
+    bool spriteCustomFramesEnabled = false;
+    int spriteSourceWidth = 0;
+    int spriteSourceHeight = 0;
+    std::vector<glm::ivec4> spriteCustomFrames;
+    std::vector<std::string> spriteCustomFrameNames;
 };
 
 struct Rigidbody2DComponent {

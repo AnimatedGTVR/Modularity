@@ -10,6 +10,17 @@
 
 namespace {
 glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
+    if (obj.ui.spriteCustomFramesEnabled &&
+        !obj.ui.spriteCustomFrames.empty() &&
+        obj.ui.spriteSourceWidth > 0 &&
+        obj.ui.spriteSourceHeight > 0) {
+        const int frame = std::clamp(obj.ui.spriteSheetFrame, 0, static_cast<int>(obj.ui.spriteCustomFrames.size()) - 1);
+        const glm::ivec4 rect = obj.ui.spriteCustomFrames[frame];
+        const float invW = 1.0f / static_cast<float>(obj.ui.spriteSourceWidth);
+        const float invH = 1.0f / static_cast<float>(obj.ui.spriteSourceHeight);
+        return glm::vec4(rect.x * invW, rect.y * invH, rect.z * invW, rect.w * invH);
+    }
+
     if (!obj.ui.spriteSheetEnabled) {
         return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
     }
@@ -736,6 +747,12 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
     Texture* raw = tex.get();
     cache[path] = std::move(tex);
     return raw;
+}
+
+void Renderer::invalidateTexture(const std::string& path) {
+    if (path.empty()) return;
+    textureCacheBilinear.erase(path);
+    textureCachePoint.erase(path);
 }
 
 void Renderer::initialize() {

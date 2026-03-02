@@ -265,18 +265,7 @@ namespace FileIcons {
     
     // Draw a scene/document icon
     void DrawSceneIcon(ImDrawList* drawList, ImVec2 pos, float size, ImU32 color) {
-        PaperFrame frame = DrawSheetFileBase(drawList, pos, size, color);
-        ImU32 ink = IM_COL32(90, 90, 90, 230);
-        float w = frame.max.x - frame.min.x;
-        float h = frame.max.y - frame.min.y;
-        ImVec2 center(frame.min.x + w * 0.55f, frame.min.y + h * 0.55f);
-        float tri = std::min(w, h) * 0.35f;
-        drawList->AddTriangleFilled(
-            ImVec2(center.x - tri * 0.4f, center.y - tri * 0.55f),
-            ImVec2(center.x - tri * 0.4f, center.y + tri * 0.55f),
-            ImVec2(center.x + tri * 0.6f, center.y),
-            ink
-        );
+        DrawSheetFileBase(drawList, pos, size, color);
     }
     
     // Draw a 3D model icon (cube wireframe)
@@ -480,6 +469,188 @@ namespace FileIcons {
 
 #pragma region File Actions
 namespace {
+    struct CachedModelPreview {
+        bool loaded = false;
+        bool attempted = false;
+        bool isObj = false;
+        int meshId = -1;
+        glm::vec3 boundsMin = glm::vec3(FLT_MAX);
+        glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
+    };
+
+    Texture* GetTexturePreview(Renderer& renderer, const fs::path& path) {
+        std::error_code ec;
+        if (!fs::exists(path, ec) || ec) {
+            return nullptr;
+        }
+        return renderer.getTexture(path.string());
+    }
+
+    Texture* GetModularityLogoTexture(Renderer& renderer) {
+        static const fs::path kLogoPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/Modu-Logo.png");
+        return GetTexturePreview(renderer, kLogoPath);
+    }
+
+    CachedModelPreview& GetModelPreviewData(const fs::path& path) {
+        static std::unordered_map<std::string, CachedModelPreview> cache;
+        CachedModelPreview& preview = cache[path.string()];
+        if (preview.attempted) {
+            return preview;
+        }
+
+        preview.attempted = true;
+        std::string ext = path.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        preview.isObj = (ext == ".obj");
+
+        if (preview.isObj) {
+            std::string err;
+            preview.meshId = g_objLoader.loadOBJ(path.string(), err);
+            const auto* info = g_objLoader.getMeshInfo(preview.meshId);
+            if (preview.meshId >= 0 && info) {
+                preview.loaded = true;
+                preview.boundsMin = info->boundsMin;
+                preview.boundsMax = info->boundsMax;
+            }
+            return preview;
+        }
+
+        ModelLoadResult result = getModelLoader().loadModel(path.string());
+        const auto* info = getModelLoader().getMeshInfo(result.meshIndex);
+        if (result.success && result.meshIndex >= 0 && info) {
+            preview.loaded = true;
+            preview.meshId = result.meshIndex;
+            preview.boundsMin = info->boundsMin;
+            preview.boundsMax = info->boundsMax;
+        }
+        return preview;
+    }
+
+    void DrawTexturePreview(Renderer& renderer, ImDrawList* drawList, const fs::path& path,
+                            ImVec2 min, ImVec2 max, float rounding) {
+        Texture* tex = GetTexturePreview(renderer, path);
+        if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
+            return;
+        }
+
+        const float availW = max.x - min.x;
+        const float availH = max.y - min.y;
+        const float scale = std::min(availW / static_cast<float>(tex->GetWidth()),
+                                     availH / static_cast<float>(tex->GetHeight()));
+        const float drawW = static_cast<float>(tex->GetWidth()) * scale;
+        const float drawH = static_cast<float>(tex->GetHeight()) * scale;
+        const ImVec2 imgMin(min.x + (availW - drawW) * 0.5f, min.y + (availH - drawH) * 0.5f);
+        const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
+
+        drawList->AddRectFilled(min, max, IM_COL32(24, 27, 34, 255), rounding);
+        drawList->PushClipRect(min, max, true);
+        drawList->AddImage((ImTextureID)(intptr_t)tex->GetID(), imgMin, imgMax, ImVec2(0, 1), ImVec2(1, 0));
+        drawList->PopClipRect();
+        drawList->AddRect(min, max, IM_COL32(96, 108, 126, 210), rounding, 0, 1.0f);
+    }
+
+    bool DrawSceneLogoPreview(Renderer& renderer, ImDrawList* drawList, ImVec2 min, ImVec2 max, float rounding) {
+        Texture* tex = GetModularityLogoTexture(renderer);
+        if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
+            return false;
+        }
+
+        const float availW = max.x - min.x;
+        const float availH = max.y - min.y;
+        const float innerPad = std::min(availW, availH) * 0.08f;
+        const ImVec2 paddedMin(min.x + innerPad, min.y + innerPad);
+        const ImVec2 paddedMax(max.x - innerPad, max.y - innerPad);
+        const float innerW = paddedMax.x - paddedMin.x;
+        const float innerH = paddedMax.y - paddedMin.y;
+        const float scale = std::min(innerW / static_cast<float>(tex->GetWidth()),
+                                     innerH / static_cast<float>(tex->GetHeight()));
+        const float drawW = static_cast<float>(tex->GetWidth()) * scale;
+        const float drawH = static_cast<float>(tex->GetHeight()) * scale;
+        const ImVec2 imgMin(paddedMin.x + (innerW - drawW) * 0.5f, paddedMin.y + (innerH - drawH) * 0.5f);
+        const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
+
+        drawList->AddRectFilled(min, max, IM_COL32(24, 27, 34, 255), rounding);
+        drawList->PushClipRect(min, max, true);
+        drawList->AddImage((ImTextureID)(intptr_t)tex->GetID(), imgMin, imgMax, ImVec2(0, 1), ImVec2(1, 0));
+        drawList->PopClipRect();
+        drawList->AddRect(min, max, IM_COL32(96, 108, 126, 210), rounding, 0, 1.0f);
+        return true;
+    }
+
+    bool DrawModelPreview(Renderer& renderer, ImDrawList* drawList, const fs::path& path,
+                          ImVec2 min, ImVec2 max, int previewSlot, float rounding) {
+        CachedModelPreview& preview = GetModelPreviewData(path);
+        if (!preview.loaded || preview.meshId < 0) {
+            return false;
+        }
+
+        glm::vec3 boundsMin = preview.boundsMin;
+        glm::vec3 boundsMax = preview.boundsMax;
+        if (boundsMin.x >= boundsMax.x || boundsMin.y >= boundsMax.y || boundsMin.z >= boundsMax.z) {
+            boundsMin = glm::vec3(-0.5f);
+            boundsMax = glm::vec3(0.5f);
+        }
+        const glm::vec3 center = (boundsMin + boundsMax) * 0.5f;
+        const glm::vec3 size = glm::max(boundsMax - boundsMin, glm::vec3(0.001f));
+        const float radius = std::max({ size.x, size.y, size.z }) * 0.5f;
+        const float uniformScale = (radius > 0.0f) ? (1.5f / radius) : 1.0f;
+        const float scaledHalfHeight = size.y * 0.5f * uniformScale;
+
+        SceneObject obj("FilePreviewModel", ObjectType::Model, -1);
+        obj.hasRenderer = true;
+        obj.renderType = preview.isObj ? RenderType::OBJMesh : RenderType::Model;
+        obj.meshId = preview.meshId;
+        obj.position = -center;
+        obj.rotation = glm::vec3(-18.0f, 32.0f, 0.0f);
+        obj.scale = glm::vec3(uniformScale);
+        obj.material.color = glm::vec3(0.90f, 0.92f, 0.96f);
+        obj.material.ambientStrength = 0.34f;
+        obj.material.specularStrength = 0.22f;
+        obj.material.shininess = 24.0f;
+        obj.albedoTexturePath.clear();
+        obj.overlayTexturePath.clear();
+        obj.normalMapPath.clear();
+
+        SceneObject ground("FilePreviewGround", ObjectType::Plane, -2);
+        ground.hasRenderer = true;
+        ground.renderType = RenderType::Plane;
+        ground.position = glm::vec3(0.0f, -scaledHalfHeight - 0.28f, 0.0f);
+        ground.rotation = glm::vec3(-90.0f, 0.0f, 0.0f);
+        ground.scale = glm::vec3(3.0f, 3.0f, 1.0f);
+        ground.material.color = glm::vec3(0.22f, 0.24f, 0.28f);
+        ground.material.ambientStrength = 0.22f;
+        ground.material.specularStrength = 0.02f;
+        ground.material.shininess = 4.0f;
+
+        Camera cam;
+        const glm::vec3 target(0.0f, 0.0f, 0.0f);
+        cam.position = glm::vec3(radius * 1.9f, radius * 1.05f, radius * 2.3f + 0.4f);
+        cam.front = glm::normalize(target - cam.position);
+        glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+        glm::vec3 right = glm::cross(cam.front, worldUp);
+        if (glm::dot(right, right) < 1e-6f) {
+            worldUp = glm::vec3(0.0f, 0.0f, 1.0f);
+            right = glm::cross(cam.front, worldUp);
+        }
+        right = glm::normalize(right);
+        cam.up = glm::normalize(glm::cross(right, cam.front));
+
+        const int width = std::max(48, static_cast<int>(max.x - min.x));
+        const int height = std::max(48, static_cast<int>(max.y - min.y));
+        std::vector<SceneObject> scene = { ground, obj };
+        unsigned int texId = renderer.renderScenePreview(cam, scene, width, height, 32.0f, 0.1f, 100.0f, false, previewSlot);
+        if (texId == 0) {
+            return false;
+        }
+
+        drawList->AddRectFilled(min, max, IM_COL32(20, 23, 29, 255), rounding);
+        drawList->PushClipRect(min, max, true);
+        drawList->AddImage((ImTextureID)(intptr_t)texId, min, max, ImVec2(0, 1), ImVec2(1, 0));
+        drawList->PopClipRect();
+        drawList->AddRect(min, max, IM_COL32(96, 108, 126, 210), rounding, 0, 1.0f);
+        return true;
+    }
+
     enum class CreateKind {
         Folder,
         CppScript,
@@ -755,6 +926,10 @@ void Engine::renderFileBrowserPanel() {
     auto openEntry = [&](const fs::directory_entry& entry) {
         if (entry.is_directory()) {
             fileBrowser.navigateTo(entry.path());
+            return;
+        }
+        if (fileBrowser.isTextureFile(entry)) {
+            loadPixelSpriteDocument(entry.path());
             return;
         }
         if (fileBrowser.isModelFile(entry)) {
@@ -1298,12 +1473,24 @@ void Engine::renderFileBrowserPanel() {
                     drawList->AddRect(cellStart, cellEnd, IM_COL32(84, 98, 116, 210), 7.0f, 0, 1.0f);
                 }
 
-                // Draw icon centered in cell
                 ImVec2 iconPos(
                     cellStart.x + (cellWidth - iconSize) * 0.5f,
                     cellStart.y + padding
                 );
-                FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
+                const ImVec2 previewMin = iconPos;
+                const ImVec2 previewMax(iconPos.x + iconSize, iconPos.y + iconSize);
+                bool drewPreview = false;
+                if (category == FileCategory::Scene) {
+                    drewPreview = DrawSceneLogoPreview(renderer, drawList, previewMin, previewMax, 9.0f);
+                } else if (category == FileCategory::Texture) {
+                    DrawTexturePreview(renderer, drawList, entry.path(), previewMin, previewMax, 9.0f);
+                    drewPreview = true;
+                } else if (category == FileCategory::Model) {
+                    drewPreview = DrawModelPreview(renderer, drawList, entry.path(), previewMin, previewMax, 1000 + i, 9.0f);
+                }
+                if (!drewPreview) {
+                    FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
+                }
 
                 // Draw filename below icon (centered, with wrapping)
                 std::string displayName = filename;
@@ -1434,12 +1621,16 @@ void Engine::renderFileBrowserPanel() {
                         }
                     }
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                        if (ImGui::MenuItem("Open in Pixel Sprite Editor")) {
+                            loadPixelSpriteDocument(entry.path());
+                        }
                         if (ImGui::MenuItem("Create Sprite2D")) {
                             addObject(ObjectType::Sprite2D, entry.path().stem().string());
                             if (!sceneObjects.empty()) {
                                 SceneObject& created = sceneObjects.back();
                                 created.albedoTexturePath = entry.path().string();
-                                if (Texture* tex = renderer.getTexture(created.albedoTexturePath)) {
+                                created.material.textureFilter = MaterialProperties::TextureFilter::Point;
+                                if (Texture* tex = renderer.getTexture(created.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                                     if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
                                         created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
                                                                     static_cast<float>(tex->GetHeight()));
@@ -1509,7 +1700,11 @@ void Engine::renderFileBrowserPanel() {
             ImGui::PushID(i);
 
             // Selectable row
-            if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 21))) {
+            const bool showRichPreview = (category == FileCategory::Scene ||
+                                          category == FileCategory::Texture ||
+                                          category == FileCategory::Model);
+            const float rowHeight = showRichPreview ? 34.0f : 21.0f;
+            if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, rowHeight))) {
                 fileBrowser.selectedFile = entry.path();
 
                 if (ImGui::IsMouseDoubleClicked(0)) {
@@ -1531,8 +1726,25 @@ void Engine::renderFileBrowserPanel() {
             }
 
             const float listIconSize = 15.0f;
-            ImVec2 iconPos(rowMin.x + 7.0f, rowMin.y + (rowMax.y - rowMin.y - listIconSize) * 0.5f);
-            FileIcons::DrawIcon(drawList, category, iconPos, listIconSize, getCategoryColor(category), folderHasItems);
+            const float listPreviewSize = 30.0f;
+            ImVec2 iconPos(rowMin.x + 7.0f,
+                           rowMin.y + (rowMax.y - rowMin.y - (showRichPreview ? listPreviewSize : listIconSize)) * 0.5f);
+            bool drewPreview = false;
+            if (showRichPreview) {
+                ImVec2 previewMin = iconPos;
+                ImVec2 previewMax(iconPos.x + listPreviewSize, iconPos.y + listPreviewSize);
+                if (category == FileCategory::Scene) {
+                    drewPreview = DrawSceneLogoPreview(renderer, drawList, previewMin, previewMax, 4.0f);
+                } else if (category == FileCategory::Texture) {
+                    DrawTexturePreview(renderer, drawList, entry.path(), previewMin, previewMax, 4.0f);
+                    drewPreview = true;
+                } else {
+                    drewPreview = DrawModelPreview(renderer, drawList, entry.path(), previewMin, previewMax, 3000 + i, 4.0f);
+                }
+            }
+            if (!drewPreview) {
+                FileIcons::DrawIcon(drawList, category, iconPos, listIconSize, getCategoryColor(category), folderHasItems);
+            }
 
             ImU32 nameColor = IM_COL32(220, 224, 230, 255);
             switch (category) {
@@ -1555,7 +1767,8 @@ void Engine::renderFileBrowserPanel() {
             }
 
             float textY = rowMin.y + 3.0f;
-            float nameX = iconPos.x + listIconSize + 8.0f;
+            float visualWidth = drewPreview ? listPreviewSize : listIconSize;
+            float nameX = iconPos.x + visualWidth + 8.0f;
             float rightPad = 10.0f;
             float metaWidth = ImGui::CalcTextSize(metadata.c_str()).x;
             float metaX = rowMax.x - rightPad - metaWidth;
@@ -1679,12 +1892,16 @@ void Engine::renderFileBrowserPanel() {
                     }
                 }
                 if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                    if (ImGui::MenuItem("Open in Pixel Sprite Editor")) {
+                        loadPixelSpriteDocument(entry.path());
+                    }
                     if (ImGui::MenuItem("Create Sprite2D")) {
                         addObject(ObjectType::Sprite2D, entry.path().stem().string());
                         if (!sceneObjects.empty()) {
                             SceneObject& created = sceneObjects.back();
                             created.albedoTexturePath = entry.path().string();
-                            if (Texture* tex = renderer.getTexture(created.albedoTexturePath)) {
+                            created.material.textureFilter = MaterialProperties::TextureFilter::Point;
+                            if (Texture* tex = renderer.getTexture(created.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
                                 if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
                                     created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
                                                                 static_cast<float>(tex->GetHeight()));

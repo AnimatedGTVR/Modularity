@@ -56,6 +56,12 @@ void Modu_SetSettingBool(ModuScriptContext* ctx, const char* key, int value);
 void Modu_SetSettingString(ModuScriptContext* ctx, const char* key, const char* value);
 int Modu_GetSettingString(ModuScriptContext* ctx, const char* key, const char* fallback,
                           char* outBuffer, int outBufferSize);
+int Modu_GetSpriteClipCount(ModuScriptContext* ctx);
+int Modu_GetSpriteClipIndex(ModuScriptContext* ctx);
+int Modu_SetSpriteClipIndex(ModuScriptContext* ctx, int index);
+int Modu_SetSpriteClipName(ModuScriptContext* ctx, const char* name);
+int Modu_GetSpriteClipName(ModuScriptContext* ctx, char* outBuffer, int outBufferSize);
+int Modu_GetSpriteClipNameAt(ModuScriptContext* ctx, int index, char* outBuffer, int outBufferSize);
 
 void Modu_InspectorText(ModuScriptContext* ctx, const char* text);
 void Modu_InspectorSeparator(ModuScriptContext* ctx);

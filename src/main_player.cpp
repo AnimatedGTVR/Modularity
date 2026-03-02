@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "CrashReporter.h"
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -33,7 +34,11 @@ static std::filesystem::path getExecutableDir() {
 #endif
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
+    return 0;
+  }
+
   if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
     std::error_code ec;
     std::filesystem::current_path(exeDir, ec);
@@ -42,11 +47,15 @@ int main() {
                 << ec.message() << std::endl;
     }
   }
+  const std::string executablePath = (argc > 0 && argv && argv[0]) ? argv[0] : "";
+  Modularity::CrashReporter::Initialize("Modularity Player", executablePath);
 
-  Engine engine;
-  if (!engine.init()) {return -1;}
+  return Modularity::CrashReporter::RunProtected([]() -> int {
+    Engine engine;
+    if (!engine.init()) {return -1;}
 
-  engine.run();
-  engine.shutdown();
-  return 0;
+    engine.run();
+    engine.shutdown();
+    return 0;
+  });
 }

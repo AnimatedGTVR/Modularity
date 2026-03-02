@@ -684,6 +684,25 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiSpriteSheetFrame=" << obj.ui.spriteSheetFrame << "\n";
             file << "uiSpriteSheetFps=" << obj.ui.spriteSheetFps << "\n";
             file << "uiSpriteSheetLoop=" << (obj.ui.spriteSheetLoop ? 1 : 0) << "\n";
+            file << "uiSpriteCustomFramesEnabled=" << (obj.ui.spriteCustomFramesEnabled ? 1 : 0) << "\n";
+            file << "uiSpriteSourceSize=" << obj.ui.spriteSourceWidth << "," << obj.ui.spriteSourceHeight << "\n";
+            if (!obj.ui.spriteCustomFrames.empty()) {
+                file << "uiSpriteCustomFrames=";
+                for (size_t i = 0; i < obj.ui.spriteCustomFrames.size(); ++i) {
+                    const glm::ivec4& frame = obj.ui.spriteCustomFrames[i];
+                    if (i > 0) file << ";";
+                    file << frame.x << "," << frame.y << "," << frame.z << "," << frame.w;
+                }
+                file << "\n";
+            }
+            if (!obj.ui.spriteCustomFrameNames.empty()) {
+                file << "uiSpriteCustomFrameNames=";
+                for (size_t i = 0; i < obj.ui.spriteCustomFrameNames.size(); ++i) {
+                    if (i > 0) file << ";";
+                    file << obj.ui.spriteCustomFrameNames[i];
+                }
+                file << "\n";
+            }
             if (obj.hasPostFX) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
@@ -1172,6 +1191,35 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiSpriteSheetFrame", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetFrame = std::max(0, std::stoi(value)); }},
         {"uiSpriteSheetFps", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetFps = std::max(1.0f, std::stof(value)); }},
         {"uiSpriteSheetLoop", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetLoop = (std::stoi(value) != 0); }},
+        {"uiSpriteCustomFramesEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteCustomFramesEnabled = (std::stoi(value) != 0); }},
+        {"uiSpriteSourceSize", +[](SceneObject& obj, const std::string& value) {
+             glm::ivec2 size(0, 0);
+             ParseIVec2(value, size);
+             obj.ui.spriteSourceWidth = std::max(0, size.x);
+             obj.ui.spriteSourceHeight = std::max(0, size.y);
+         }},
+        {"uiSpriteCustomFrames", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.spriteCustomFrames.clear();
+             std::stringstream ss(value);
+             std::string item;
+             while (std::getline(ss, item, ';')) {
+                 if (item.empty()) continue;
+                 glm::ivec4 rect(0);
+                 if (std::sscanf(item.c_str(), "%d,%d,%d,%d", &rect.x, &rect.y, &rect.z, &rect.w) == 4) {
+                     rect.z = std::max(1, rect.z);
+                     rect.w = std::max(1, rect.w);
+                     obj.ui.spriteCustomFrames.push_back(rect);
+                 }
+             }
+         }},
+        {"uiSpriteCustomFrameNames", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.spriteCustomFrameNames.clear();
+             std::stringstream ss(value);
+             std::string item;
+             while (std::getline(ss, item, ';')) {
+                 obj.ui.spriteCustomFrameNames.push_back(item);
+             }
+         }},
         {"postEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.enabled = (std::stoi(value) != 0); }},
         {"postBloomEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomEnabled = (std::stoi(value) != 0); }},
         {"postBloomThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomThreshold = std::stof(value); }},

@@ -13,6 +13,7 @@
 #include "AudioSystem.h"
 #include "PackageManager.h"
 #include "ManagedScriptRuntime.h"
+#include "SpritesheetFormat.h"
 #include "ThirdParty/ImGuiColorTextEdit/TextEditor.h"
 #include "Vulkan/VulkanRenderer.h"
 #include "../include/Window/Window.h"
@@ -172,6 +173,7 @@ private:
     bool showCameraWindow = true;
     bool showAnimationWindow = false;
     bool showAIPathfindingWindow = false;
+    bool showPixelSpriteEditorWindow = false;
     int animationTargetId = -1;
     std::vector<int> animationEditTargetIds;
     bool animationApplyToSelection = true;
@@ -242,6 +244,71 @@ private:
     bool spriteTimelinePreviewPlaying = false;
     double spriteTimelineLastTick = 0.0;
     int spriteTimelineTargetId = -1;
+    enum class PixelSpriteEditorMode {
+        Edit = 0,
+        SpriteSheet = 1
+    };
+    enum class PixelSpriteTool {
+        Pencil = 0,
+        Eraser = 1,
+        Fill = 2,
+        Select = 3
+    };
+    enum class PixelSpriteCheckerTheme {
+        Light = 0,
+        Dark = 1
+    };
+    struct PixelSpriteDocument {
+        fs::path imagePath;
+        fs::path sidecarPath;
+        std::string name = "Untitled";
+        int width = 16;
+        int height = 16;
+        std::vector<unsigned char> pixels;
+        bool dirty = false;
+        bool loaded = false;
+        bool selectionActive = false;
+        glm::ivec2 selectionStart = glm::ivec2(0);
+        glm::ivec2 selectionEnd = glm::ivec2(0);
+        std::string expectedMinimumModuEngineVersionOrHigher;
+        bool strictValidation = false;
+        std::vector<glm::ivec4> spriteFrames;
+        std::vector<std::string> spriteFrameNames;
+        std::vector<SpritesheetLayer> layers;
+        int activeLayer = 0;
+        int activeFrame = 0;
+    };
+    struct PixelSpriteHistoryState {
+        int width = 16;
+        int height = 16;
+        std::vector<unsigned char> pixels;
+        bool selectionActive = false;
+        glm::ivec2 selectionStart = glm::ivec2(0);
+        glm::ivec2 selectionEnd = glm::ivec2(0);
+        std::string expectedMinimumModuEngineVersionOrHigher;
+        bool strictValidation = false;
+        std::vector<glm::ivec4> spriteFrames;
+        std::vector<std::string> spriteFrameNames;
+        std::vector<SpritesheetLayer> layers;
+        int activeLayer = 0;
+        int activeFrame = 0;
+    };
+    PixelSpriteDocument pixelSpriteDocument;
+    std::vector<PixelSpriteHistoryState> pixelSpriteUndoStack;
+    std::vector<PixelSpriteHistoryState> pixelSpriteRedoStack;
+    PixelSpriteEditorMode pixelSpriteEditorMode = PixelSpriteEditorMode::Edit;
+    PixelSpriteTool pixelSpriteTool = PixelSpriteTool::Pencil;
+    float pixelSpriteZoom = 18.0f;
+    float pixelSpriteTargetZoom = 18.0f;
+    ImVec2 pixelSpriteCanvasPan = ImVec2(0.0f, 0.0f);
+    ImVec2 pixelSpriteCanvasTargetPan = ImVec2(0.0f, 0.0f);
+    bool pixelSpriteCanvasStateInitialized = false;
+    bool pixelSpriteCanvasCenterPending = false;
+    glm::vec4 pixelSpritePrimaryColor = glm::vec4(0.12f, 0.12f, 0.12f, 1.0f);
+    glm::vec4 pixelSpriteSecondaryColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    bool pixelSpriteShowGrid = true;
+    bool pixelSpritePixelPerfect = true;
+    PixelSpriteCheckerTheme pixelSpriteCheckerTheme = PixelSpriteCheckerTheme::Light;
     int gameViewportResolutionIndex = 0;
     int gameViewportCustomWidth = 1920;
     int gameViewportCustomHeight = 1080;
@@ -497,6 +564,7 @@ private:
     void renderCameraWindow();
     void renderAnimationWindow();
     void renderAIPathfindingWindow();
+    void renderPixelSpriteEditorWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter,
                           std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep);
@@ -558,6 +626,7 @@ private:
     bool is2DWorldEditingEnabled() const;
     void applyProjectPipelineDefaults(bool force = false);
     int resolveSpriteSheetFrame(const SceneObject& obj) const;
+    glm::vec2 getSpriteDisplaySize(const SceneObject& obj) const;
     std::array<ImVec2, 4> buildSpriteSheetUvs(const SceneObject& obj) const;
     void resetBuildSettings();
     void loadBuildSettings();
@@ -634,6 +703,8 @@ public:
     void shutdown();
     SceneObject* findObjectByName(const std::string& name);
     SceneObject* findObjectById(int id);
+    bool loadPixelSpriteDocument(const fs::path& imagePath);
+    bool savePixelSpriteDocument();
     fs::path resolveScriptBinary(const fs::path& sourcePath);
     fs::path resolveManagedAssembly(const fs::path& sourcePath);
     fs::path getManagedProjectPath() const;
