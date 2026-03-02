@@ -153,8 +153,21 @@ void FileBrowser::setProjectRoot(const fs::path& root) {
 FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) const {
     if (entry.is_directory()) return FileCategory::Folder;
     
+    std::string filename = entry.path().filename().string();
+    std::transform(filename.begin(), filename.end(), filename.begin(), ::tolower);
+
     std::string ext = entry.path().extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    // Project manifests use .modu too, but they are plain text config files.
+    if (filename == "project.modu" ||
+        filename == "build.modu" ||
+        filename == "scripts.modu" ||
+        filename == "packages.modu" ||
+        filename == "autostart.modu" ||
+        filename == "launcher_settings.modu") {
+        return FileCategory::Text;
+    }
     
     // Scene files
     if (ext == ".modu" || ext == ".scene") return FileCategory::Scene;

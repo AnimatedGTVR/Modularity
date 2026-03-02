@@ -24,6 +24,62 @@
 #pragma region File Icons
 namespace FileIcons {
     namespace {
+        Texture* GetCategoryIconTexture(Renderer& renderer, FileCategory category, bool folderHasItems) {
+            const char* iconPath = nullptr;
+            switch (category) {
+                case FileCategory::Folder:
+                    iconPath = folderHasItems
+                        ? "Resources/Engine-Root/File Explorer/Folder Full.png"
+                        : "Resources/Engine-Root/File Explorer/Folder Empty.png";
+                    break;
+                case FileCategory::Script:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Script.png";
+                    break;
+                case FileCategory::Scene:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Scenes.png";
+                    break;
+                case FileCategory::Material:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Material.png";
+                    break;
+                case FileCategory::Audio:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Audio File.png";
+                    break;
+                case FileCategory::Text:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
+                    break;
+                case FileCategory::Unknown:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png";
+                    break;
+                default:
+                    break;
+            }
+
+            if (!iconPath) {
+                return nullptr;
+            }
+            return renderer.getTexture(iconPath);
+        }
+
+        bool DrawTexturedIcon(Renderer& renderer, ImDrawList* drawList, FileCategory category,
+                              ImVec2 pos, float size, bool folderHasItems) {
+            Texture* tex = GetCategoryIconTexture(renderer, category, folderHasItems);
+            if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
+                return false;
+            }
+
+            const float availW = size;
+            const float availH = size;
+            const float scale = std::min(availW / static_cast<float>(tex->GetWidth()),
+                                         availH / static_cast<float>(tex->GetHeight()));
+            const float drawW = static_cast<float>(tex->GetWidth()) * scale;
+            const float drawH = static_cast<float>(tex->GetHeight()) * scale;
+            const ImVec2 imgMin(pos.x + (availW - drawW) * 0.5f, pos.y + (availH - drawH) * 0.5f);
+            const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
+
+            drawList->AddImage((ImTextureID)(intptr_t)tex->GetID(), imgMin, imgMax, ImVec2(0, 1), ImVec2(1, 0));
+            return true;
+        }
+
         ImU32 BlendColor(ImU32 a, ImU32 b, float t) {
             int ar = a & 0xFF;
             int ag = (a >> 8) & 0xFF;
@@ -444,7 +500,11 @@ namespace FileIcons {
         }
     }
     
-    void DrawIcon(ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, ImU32 color, bool folderHasItems) {
+    void DrawIcon(Renderer& renderer, ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, ImU32 color, bool folderHasItems) {
+        if (DrawTexturedIcon(renderer, drawList, category, pos, size, folderHasItems)) {
+            return;
+        }
+
         switch (category) {
             case FileCategory::Folder:
                 if (folderHasItems) {
@@ -489,6 +549,11 @@ namespace {
     Texture* GetModularityLogoTexture(Renderer& renderer) {
         static const fs::path kLogoPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/Modu-Logo.png");
         return GetTexturePreview(renderer, kLogoPath);
+    }
+
+    Texture* GetSceneIconTexture(Renderer& renderer) {
+        static const fs::path kSceneIconPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/File Explorer/File Icon Scenes.png");
+        return GetTexturePreview(renderer, kSceneIconPath);
     }
 
     CachedModelPreview& GetModelPreviewData(const fs::path& path) {
@@ -550,7 +615,10 @@ namespace {
     }
 
     bool DrawSceneLogoPreview(Renderer& renderer, ImDrawList* drawList, ImVec2 min, ImVec2 max, float rounding) {
-        Texture* tex = GetModularityLogoTexture(renderer);
+        Texture* tex = GetSceneIconTexture(renderer);
+        if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
+            tex = GetModularityLogoTexture(renderer);
+        }
         if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
             return false;
         }
@@ -1489,7 +1557,7 @@ void Engine::renderFileBrowserPanel() {
                     drewPreview = DrawModelPreview(renderer, drawList, entry.path(), previewMin, previewMax, 1000 + i, 9.0f);
                 }
                 if (!drewPreview) {
-                    FileIcons::DrawIcon(drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
+                    FileIcons::DrawIcon(renderer, drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
                 }
 
                 // Draw filename below icon (centered, with wrapping)
@@ -1743,7 +1811,7 @@ void Engine::renderFileBrowserPanel() {
                 }
             }
             if (!drewPreview) {
-                FileIcons::DrawIcon(drawList, category, iconPos, listIconSize, getCategoryColor(category), folderHasItems);
+                FileIcons::DrawIcon(renderer, drawList, category, iconPos, listIconSize, getCategoryColor(category), folderHasItems);
             }
 
             ImU32 nameColor = IM_COL32(220, 224, 230, 255);
