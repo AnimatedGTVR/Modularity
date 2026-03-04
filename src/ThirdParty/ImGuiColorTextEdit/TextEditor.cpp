@@ -131,8 +131,8 @@ std::string TextEditor::GetWordAtPublic(const Coordinates& aCoords) const
 
 TextEditor::Coordinates TextEditor::SanitizeCoordinates(const Coordinates & aValue) const
 {
-	auto line = aValue.mLine;
-	auto column = aValue.mColumn;
+	auto line = std::max(0, aValue.mLine);
+	auto column = std::max(0, aValue.mColumn);
 	if (line >= (int)mLines.size())
 	{
 		if (mLines.empty())
@@ -505,7 +505,7 @@ TextEditor::Coordinates TextEditor::FindNextWord(const Coordinates & aFrom) cons
 
 int TextEditor::GetCharacterIndex(const Coordinates& aCoordinates) const
 {
-	if (aCoordinates.mLine >= mLines.size())
+	if (aCoordinates.mLine < 0 || aCoordinates.mLine >= mLines.size())
 		return -1;
 	auto& line = mLines[aCoordinates.mLine];
 	int c = 0;
@@ -523,7 +523,7 @@ int TextEditor::GetCharacterIndex(const Coordinates& aCoordinates) const
 
 int TextEditor::GetCharacterColumn(int aLine, int aIndex) const
 {
-	if (aLine >= mLines.size())
+	if (aLine < 0 || aLine >= mLines.size())
 		return 0;
 	auto& line = mLines[aLine];
 	int col = 0;
@@ -542,7 +542,7 @@ int TextEditor::GetCharacterColumn(int aLine, int aIndex) const
 
 int TextEditor::GetLineCharacterCount(int aLine) const
 {
-	if (aLine >= mLines.size())
+	if (aLine < 0 || aLine >= mLines.size())
 		return 0;
 	auto& line = mLines[aLine];
 	int c = 0;
@@ -553,7 +553,7 @@ int TextEditor::GetLineCharacterCount(int aLine) const
 
 int TextEditor::GetLineMaxColumn(int aLine) const
 {
-	if (aLine >= mLines.size())
+	if (aLine < 0 || aLine >= mLines.size())
 		return 0;
 	auto& line = mLines[aLine];
 	int col = 0;
@@ -934,10 +934,10 @@ void TextEditor::Render()
 
 	ImVec2 cursorScreenPos = ImGui::GetCursorScreenPos();
 	auto scrollX = ImGui::GetScrollX();
-	auto scrollY = ImGui::GetScrollY();
+	auto scrollY = std::max(0.0f, ImGui::GetScrollY());
 	mCursorScreenPosValid = false;
 
-	auto lineNo = (int)floor(scrollY / mCharAdvance.y);
+	auto lineNo = std::max(0, (int)floor(scrollY / mCharAdvance.y));
 	auto globalLineMax = (int)mLines.size();
 	auto lineMax = std::max(0, std::min((int)mLines.size() - 1, lineNo + (int)floor((scrollY + contentSize.y) / mCharAdvance.y)));
 
@@ -1191,7 +1191,11 @@ void TextEditor::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 	if (!mIgnoreImGuiChild)
-		ImGui::BeginChild(aTitle, aSize, aBorder, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_NoMove);
+		ImGui::BeginChild(aTitle, aSize, aBorder,
+			ImGuiWindowFlags_HorizontalScrollbar |
+			ImGuiWindowFlags_AlwaysHorizontalScrollbar |
+			ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoNavInputs);
 
 	if (mHandleKeyboardInputs)
 	{

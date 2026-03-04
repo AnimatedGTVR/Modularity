@@ -2,6 +2,7 @@
 #define TEXTURE_H
 
 #include <string>
+#include <cstddef>
 #include <glad/glad.h>
 
 class Texture
@@ -21,6 +22,7 @@ public:
     GLuint GetID() const { return m_ID; }
     int GetWidth() const { return m_Width; }
     int GetHeight() const { return m_Height; }
+    size_t GetApproxMemoryBytes() const { return m_ApproxMemoryBytes; }
 
 private:
     GLuint m_ID = 0;
@@ -29,6 +31,7 @@ private:
     int m_Channels = 0;
     GLenum m_InternalFormat = GL_RGBA;
     GLenum m_DataFormat = GL_RGBA;
+    size_t m_ApproxMemoryBytes = 0;
 };
 
 #endif

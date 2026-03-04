@@ -58,6 +58,7 @@ struct MaterialProperties {
     };
 
     glm::vec3 color = glm::vec3(1.0f);
+    float alpha = 1.0f;
     float ambientStrength = 0.2f;
     float specularStrength = 0.5f;
     float shininess = 32.0f;
@@ -211,6 +212,12 @@ enum class SceneCameraType {
     Player = 1
 };
 
+enum class PostFXToneMapper {
+    None = 0,
+    Reinhard = 1,
+    ACES = 2
+};
+
 struct CameraComponent {
     SceneCameraType type = SceneCameraType::Scene;
     float fov = FOV;
@@ -223,8 +230,17 @@ struct CameraComponent {
 
 struct PostFXSettings {
     bool enabled = true;
+    bool isGlobal = true;
+    float priority = 0.0f;
+    float blendWeight = 1.0f;
+    float blendRadius = 4.0f;
+    bool hdrEnabled = true;
+    PostFXToneMapper toneMapper = PostFXToneMapper::ACES;
+    float whitePoint = 4.0f;
+    float gamma = 2.2f;
     bool bloomEnabled = true;
     float bloomThreshold = 1.1f;
+    float bloomSoftKnee = 0.25f;
     float bloomIntensity = 0.8f;
     float bloomRadius = 1.5f;
     bool colorAdjustEnabled = false;
@@ -234,11 +250,15 @@ struct PostFXSettings {
     glm::vec3 colorFilter = glm::vec3(1.0f);
     bool motionBlurEnabled = false;
     float motionBlurStrength = 0.15f; // 0..1 blend with previous frame
+    float motionBlurThreshold = 0.04f;
+    float motionBlurClamp = 0.35f;
     bool vignetteEnabled = false;
     float vignetteIntensity = 0.35f;
     float vignetteSmoothness = 0.25f;
     bool chromaticAberrationEnabled = false;
     float chromaticAmount = 0.0025f;
+    bool sharpenEnabled = false;
+    float sharpenStrength = 0.15f;
     bool ambientOcclusionEnabled = false;
     float aoRadius = 0.0035f;
     float aoStrength = 0.6f;
@@ -269,6 +289,7 @@ struct ScriptComponent {
     std::string managedType;
     std::vector<ScriptSetting> settings;
     std::string lastBinaryPath;
+    bool lastBinaryVerified = false;
     std::vector<void*> activeIEnums; // function pointers registered via IEnum_Start
 };
 
@@ -295,6 +316,7 @@ struct ColliderComponent {
     bool enabled = true;
     ColliderType type = ColliderType::Box;
     glm::vec3 boxSize = glm::vec3(1.0f);
+    glm::vec3 offset = glm::vec3(0.0f);
     bool convex = true; // For mesh colliders: true = convex hull, false = triangle mesh (static only)
     float staticFriction = 0.9f;
     float dynamicFriction = 0.8f;
@@ -350,6 +372,7 @@ struct UIElementComponent {
     int spriteSourceHeight = 0;
     std::vector<glm::ivec4> spriteCustomFrames;
     std::vector<std::string> spriteCustomFrameNames;
+    std::vector<glm::vec2> spriteCustomFrameScales;
 };
 
 struct Rigidbody2DComponent {
@@ -370,6 +393,7 @@ struct Collider2DComponent {
     bool enabled = true;
     Collider2DType type = Collider2DType::Box;
     glm::vec2 boxSize = glm::vec2(1.0f);
+    glm::vec2 offset = glm::vec2(0.0f);
     std::vector<glm::vec2> points;
     bool closed = false;
     float edgeThickness = 0.05f;

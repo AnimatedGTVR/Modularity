@@ -300,6 +300,7 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
     bool ownsMaterial = false;
     PxMaterial* shapeMaterial = CreateShapeMaterial(mPhysics, mDefaultMaterial, obj, ownsMaterial);
     PxShape* shape = nullptr;
+    const PxVec3 localOffset = ToPxVec3(obj.collider.offset);
     auto tuneShape = [](PxShape* s, float minDim, bool /*swept*/) {
         if (!s) return;
         float contact = std::clamp(minDim * 0.12f, 0.015f, 0.12f);
@@ -311,6 +312,9 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
     if (obj.collider.type == ColliderType::Box) {
         glm::vec3 half = glm::max(obj.collider.boxSize * 0.5f, glm::vec3(0.01f));
         shape = mPhysics->createShape(PxBoxGeometry(ToPxVec3(half)), *shapeMaterial, true);
+        if (shape) {
+            shape->setLocalPose(PxTransform(localOffset, PxQuat(PxIdentity)));
+        }
         minDim = std::min({half.x, half.y, half.z}) * 2.0f;
     } else if (obj.collider.type == ColliderType::Capsule) {
         float radius = std::max({obj.collider.boxSize.x, obj.collider.boxSize.z}) * 0.5f;
@@ -320,7 +324,7 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
         shape = mPhysics->createShape(PxCapsuleGeometry(radius, halfHeight), *shapeMaterial, true);
         if (shape) {
             // Rotate capsule so its axis matches the engine's Y-up expectation
-            shape->setLocalPose(PxTransform(PxQuat(PxHalfPi, PxVec3(0, 0, 1))));
+            shape->setLocalPose(PxTransform(localOffset, PxQuat(PxHalfPi, PxVec3(0, 0, 1))));
         }
         minDim = std::min(radius * 2.0f, halfHeight * 2.0f);
     } else {
@@ -344,7 +348,7 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
             glm::vec3 center = (boundsMax + boundsMin) * 0.5f;
             PxShape* box = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *shapeMaterial, true);
             if (box) {
-                box->setLocalPose(PxTransform(ToPxVec3(center), PxQuat(PxIdentity)));
+                box->setLocalPose(PxTransform(ToPxVec3(center) + localOffset, PxQuat(PxIdentity)));
             }
             return box;
         };
@@ -401,6 +405,9 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
                     if (convex) {
                         PxConvexMeshGeometry geom(convex, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
                         shape = mPhysics->createShape(geom, *shapeMaterial, true);
+                        if (shape) {
+                            shape->setLocalPose(PxTransform(localOffset, PxQuat(PxIdentity)));
+                        }
                         convex->release();
                     }
                 } else {
@@ -408,6 +415,9 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
                     if (tri) {
                         PxTriangleMeshGeometry geom(tri, PxMeshScale(ToPxVec3(obj.scale), PxQuat(PxIdentity)));
                         shape = mPhysics->createShape(geom, *shapeMaterial, true);
+                        if (shape) {
+                            shape->setLocalPose(PxTransform(localOffset, PxQuat(PxIdentity)));
+                        }
                         tri->release();
                     }
                 }

@@ -992,6 +992,7 @@ static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
         loaded.isSkinned = isSkinned;
         loaded.boneNames = std::move(boneNames);
         loaded.inverseBindMatrices = std::move(inverseBindMatrices);
+        loaded.baseVertices = vertices;
         if (isSkinned) {
             loaded.boneIds.reserve(boneVertices.size());
             loaded.boneWeights.reserve(boneVertices.size());
@@ -999,7 +1000,6 @@ static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
                 loaded.boneIds.emplace_back(bv.ids[0], bv.ids[1], bv.ids[2], bv.ids[3]);
                 loaded.boneWeights.emplace_back(bv.weights[0], bv.weights[1], bv.weights[2], bv.weights[3]);
             }
-            loaded.baseVertices = vertices;
         }
 
         out.meshMaterialIndices[i] = mesh->mMaterialIndex < (int)out.materials.size()

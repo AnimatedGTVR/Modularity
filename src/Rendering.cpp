@@ -2,11 +2,18 @@
 #include "Camera.h"
 #include "ModelLoader.h"
 #include <array>
+#include <cstring>
+#include <future>
+#include <limits>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "../include/ThirdParty/tiny_obj_loader.h"
+
+extern float vertices[288];
+extern float mirrorPlaneVertices[48];
 
 namespace {
 glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
@@ -75,6 +82,384 @@ glm::mat4 BuildSceneObjectModelMatrix(const SceneObject& obj, const glm::vec3* c
     model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
     model = glm::scale(model, obj.scale);
     return model;
+}
+
+PostFXSettings MakeNeutralPostFXSettings() {
+    PostFXSettings settings;
+    settings.enabled = false;
+    settings.isGlobal = true;
+    settings.priority = 0.0f;
+    settings.blendWeight = 1.0f;
+    settings.blendRadius = 4.0f;
+    settings.hdrEnabled = true;
+    settings.toneMapper = PostFXToneMapper::ACES;
+    settings.whitePoint = 4.0f;
+    settings.gamma = 2.2f;
+    settings.bloomEnabled = false;
+    settings.bloomThreshold = 1.0f;
+    settings.bloomSoftKnee = 0.25f;
+    settings.bloomIntensity = 0.0f;
+    settings.bloomRadius = 1.0f;
+    settings.colorAdjustEnabled = false;
+    settings.exposure = 0.0f;
+    settings.contrast = 1.0f;
+    settings.saturation = 1.0f;
+    settings.colorFilter = glm::vec3(1.0f);
+    settings.motionBlurEnabled = false;
+    settings.motionBlurStrength = 0.0f;
+    settings.motionBlurThreshold = 0.04f;
+    settings.motionBlurClamp = 0.35f;
+    settings.vignetteEnabled = false;
+    settings.vignetteIntensity = 0.0f;
+    settings.vignetteSmoothness = 0.25f;
+    settings.chromaticAberrationEnabled = false;
+    settings.chromaticAmount = 0.0f;
+    settings.sharpenEnabled = false;
+    settings.sharpenStrength = 0.0f;
+    settings.ambientOcclusionEnabled = false;
+    settings.aoRadius = 0.0035f;
+    settings.aoStrength = 0.0f;
+    return settings;
+}
+
+float ComputePostFXVolumeWeight(const SceneObject& obj, const glm::vec3& cameraPosition) {
+    if (!obj.hasPostFX || !obj.postFx.enabled) return 0.0f;
+
+    float weight = glm::clamp(obj.postFx.blendWeight, 0.0f, 1.0f);
+    if (weight <= 0.0f) return 0.0f;
+    if (obj.postFx.isGlobal) return weight;
+
+    SceneObject safeObj = obj;
+    safeObj.scale.x = (std::abs(safeObj.scale.x) < 0.001f) ? (safeObj.scale.x < 0.0f ? -0.001f : 0.001f) : safeObj.scale.x;
+    safeObj.scale.y = (std::abs(safeObj.scale.y) < 0.001f) ? (safeObj.scale.y < 0.0f ? -0.001f : 0.001f) : safeObj.scale.y;
+    safeObj.scale.z = (std::abs(safeObj.scale.z) < 0.001f) ? (safeObj.scale.z < 0.0f ? -0.001f : 0.001f) : safeObj.scale.z;
+    glm::mat4 world = BuildSceneObjectModelMatrix(safeObj);
+    glm::mat4 invWorld = glm::inverse(world);
+    glm::vec3 local = glm::vec3(invWorld * glm::vec4(cameraPosition, 1.0f));
+    glm::vec3 halfExtents(0.5f);
+    glm::vec3 delta = glm::max(glm::abs(local) - halfExtents, glm::vec3(0.0f));
+    float distance = glm::length(delta);
+    if (!std::isfinite(distance)) return 0.0f;
+    if (distance <= 0.0f) return weight;
+
+    float blendRadius = std::max(obj.postFx.blendRadius, 0.001f);
+    float falloff = 1.0f - glm::clamp(distance / blendRadius, 0.0f, 1.0f);
+    return weight * falloff;
+}
+
+int CountEnabledPostEffects(const PostFXSettings& settings) {
+    int count = 0;
+    count += settings.hdrEnabled ? 1 : 0;
+    count += settings.bloomEnabled ? 1 : 0;
+    count += settings.colorAdjustEnabled ? 1 : 0;
+    count += settings.motionBlurEnabled ? 1 : 0;
+    count += settings.vignetteEnabled ? 1 : 0;
+    count += settings.chromaticAberrationEnabled ? 1 : 0;
+    count += settings.sharpenEnabled ? 1 : 0;
+    count += settings.ambientOcclusionEnabled ? 1 : 0;
+    return count;
+}
+
+glm::mat4 BuildCameraProjection(const Camera& camera, int width, int height,
+                                float fovDeg, float nearPlane, float farPlane) {
+    const float safeWidth = static_cast<float>(std::max(1, width));
+    const float safeHeight = static_cast<float>(std::max(1, height));
+    const float aspect = safeWidth / safeHeight;
+    if (camera.orthographic) {
+        const float pixelsPerUnit = std::max(1.0f, camera.pixelsPerUnit);
+        const float halfHeight = safeHeight / (2.0f * pixelsPerUnit);
+        const float halfWidth = halfHeight * aspect;
+        return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlane, farPlane);
+    }
+    return glm::perspective(glm::radians(fovDeg), aspect, nearPlane, farPlane);
+}
+
+struct FrustumPlanes {
+    std::array<glm::vec4, 6> planes;
+};
+
+FrustumPlanes BuildFrustumPlanes(const glm::mat4& viewProjection) {
+    FrustumPlanes frustum{};
+    glm::mat4 rows = glm::transpose(viewProjection);
+    frustum.planes[0] = rows[3] + rows[0];
+    frustum.planes[1] = rows[3] - rows[0];
+    frustum.planes[2] = rows[3] + rows[1];
+    frustum.planes[3] = rows[3] - rows[1];
+    frustum.planes[4] = rows[3] + rows[2];
+    frustum.planes[5] = rows[3] - rows[2];
+
+    for (glm::vec4& plane : frustum.planes) {
+        float len = glm::length(glm::vec3(plane));
+        if (len > 1e-5f) {
+            plane /= len;
+        }
+    }
+
+    return frustum;
+}
+
+bool SphereInsideFrustum(const FrustumPlanes& frustum, const glm::vec3& center, float radius) {
+    for (const glm::vec4& plane : frustum.planes) {
+        if (glm::dot(glm::vec3(plane), center) + plane.w < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsFiniteVec3(const glm::vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool TryGetObjectLocalBounds(const SceneObject& obj, glm::vec3& outCenter, glm::vec3& outExtents) {
+    outCenter = glm::vec3(0.0f);
+    switch (obj.renderType) {
+        case RenderType::Cube:
+            outExtents = glm::vec3(0.5f);
+            return true;
+        case RenderType::Sphere:
+            outExtents = glm::vec3(0.5f);
+            return true;
+        case RenderType::Capsule:
+            outExtents = glm::vec3(0.25f, 0.75f, 0.25f);
+            return true;
+        case RenderType::Plane:
+        case RenderType::Mirror:
+        case RenderType::Sprite:
+            outExtents = glm::vec3(0.5f, 0.5f, 0.05f);
+            return true;
+        case RenderType::Torus:
+            outExtents = glm::vec3(0.5f, 0.15f, 0.5f);
+            return true;
+        case RenderType::OBJMesh:
+            if (obj.meshId >= 0) {
+                if (const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId)) {
+                    if (IsFiniteVec3(meshInfo->boundsMin) && IsFiniteVec3(meshInfo->boundsMax)) {
+                        outCenter = (meshInfo->boundsMin + meshInfo->boundsMax) * 0.5f;
+                        outExtents = glm::max((meshInfo->boundsMax - meshInfo->boundsMin) * 0.5f,
+                                              glm::vec3(0.001f));
+                        return true;
+                    }
+                }
+            }
+            break;
+        case RenderType::Model:
+            if (obj.meshId >= 0) {
+                if (const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId)) {
+                    if (IsFiniteVec3(meshInfo->boundsMin) && IsFiniteVec3(meshInfo->boundsMax)) {
+                        outCenter = (meshInfo->boundsMin + meshInfo->boundsMax) * 0.5f;
+                        outExtents = glm::max((meshInfo->boundsMax - meshInfo->boundsMin) * 0.5f,
+                                              glm::vec3(0.001f));
+                        return true;
+                    }
+                }
+            }
+            break;
+        case RenderType::None:
+            break;
+    }
+
+    return false;
+}
+
+bool TryComputeObjectCullSphere(const SceneObject& obj, const glm::mat4& model,
+                                glm::vec3& outCenter, float& outRadius) {
+    glm::vec3 localCenter(0.0f);
+    glm::vec3 localExtents(0.0f);
+    if (!TryGetObjectLocalBounds(obj, localCenter, localExtents)) {
+        return false;
+    }
+
+    outCenter = glm::vec3(model * glm::vec4(localCenter, 1.0f));
+    glm::vec3 scaledExtents(
+        localExtents.x * glm::length(glm::vec3(model[0])),
+        localExtents.y * glm::length(glm::vec3(model[1])),
+        localExtents.z * glm::length(glm::vec3(model[2])));
+    outRadius = glm::length(scaledExtents);
+    return std::isfinite(outRadius) && outRadius > 0.0f;
+}
+
+bool ProjectPlaneScreenRect(const SceneObject& obj, const glm::mat4& viewProjection,
+                            int viewportWidth, int viewportHeight,
+                            float& outMinX, float& outMinY, float& outMaxX, float& outMaxY) {
+    const std::array<glm::vec3, 4> localCorners = {
+        glm::vec3(-0.5f, -0.5f, 0.0f),
+        glm::vec3( 0.5f, -0.5f, 0.0f),
+        glm::vec3( 0.5f,  0.5f, 0.0f),
+        glm::vec3(-0.5f,  0.5f, 0.0f)
+    };
+
+    glm::mat4 model = BuildSceneObjectModelMatrix(obj);
+    bool anyProjected = false;
+    outMinX = static_cast<float>(viewportWidth);
+    outMinY = static_cast<float>(viewportHeight);
+    outMaxX = 0.0f;
+    outMaxY = 0.0f;
+
+    for (const glm::vec3& corner : localCorners) {
+        glm::vec4 clip = viewProjection * model * glm::vec4(corner, 1.0f);
+        if (clip.w <= 0.0001f) {
+            continue;
+        }
+
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        float screenX = (ndc.x * 0.5f + 0.5f) * static_cast<float>(viewportWidth);
+        float screenY = (1.0f - (ndc.y * 0.5f + 0.5f)) * static_cast<float>(viewportHeight);
+        outMinX = std::min(outMinX, screenX);
+        outMinY = std::min(outMinY, screenY);
+        outMaxX = std::max(outMaxX, screenX);
+        outMaxY = std::max(outMaxY, screenY);
+        anyProjected = true;
+    }
+
+    if (!anyProjected) {
+        return false;
+    }
+
+    outMinX = std::clamp(outMinX, 0.0f, static_cast<float>(viewportWidth));
+    outMinY = std::clamp(outMinY, 0.0f, static_cast<float>(viewportHeight));
+    outMaxX = std::clamp(outMaxX, 0.0f, static_cast<float>(viewportWidth));
+    outMaxY = std::clamp(outMaxY, 0.0f, static_cast<float>(viewportHeight));
+    return (outMaxX - outMinX) >= 1.0f && (outMaxY - outMinY) >= 1.0f;
+}
+
+int QuantizeMirrorTargetDimension(int requested, int maxDimension) {
+    constexpr int kMirrorTileSize = 64;
+    int clamped = std::clamp(requested, 256, maxDimension);
+    int quantized = ((clamped + kMirrorTileSize - 1) / kMirrorTileSize) * kMirrorTileSize;
+    return std::clamp(quantized, 256, maxDimension);
+}
+
+uint64_t HashCombine64(uint64_t seed, uint64_t value) {
+    seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+    return seed;
+}
+
+uint64_t HashString64(const std::string& value) {
+    return std::hash<std::string>{}(value);
+}
+
+uint64_t HashFloat64(float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    return static_cast<uint64_t>(bits);
+}
+
+const std::vector<float>& GetPrimitiveTriangleVertices(RenderType type) {
+    static const std::vector<float> cubeVerts(std::begin(vertices), std::end(vertices));
+    static const std::vector<float> planeVerts(std::begin(mirrorPlaneVertices), std::end(mirrorPlaneVertices));
+    static const std::vector<float> sphereVerts = generateSphere();
+    static const std::vector<float> capsuleVerts = generateCapsule();
+    static const std::vector<float> torusVerts = generateTorus();
+
+    switch (type) {
+        case RenderType::Cube: return cubeVerts;
+        case RenderType::Sphere: return sphereVerts;
+        case RenderType::Capsule: return capsuleVerts;
+        case RenderType::Plane: return planeVerts;
+        case RenderType::Torus: return torusVerts;
+        default: return planeVerts;
+    }
+}
+
+bool IsStaticMergeCandidate(const SceneObject& obj) {
+    if (!obj.enabled || !HasRendererComponent(obj)) return false;
+    if (obj.hasUI || obj.hasLight || obj.hasCamera || obj.hasPostFX) return false;
+    if (obj.hasRigidbody || obj.hasRigidbody2D || obj.hasPlayerController) return false;
+    if (obj.hasAnimation || obj.hasSkeletalAnimation) return false;
+    if (!obj.scripts.empty()) return false;
+    if (obj.faceCamera) return false;
+
+    switch (obj.renderType) {
+        case RenderType::Cube:
+        case RenderType::Sphere:
+        case RenderType::Capsule:
+        case RenderType::OBJMesh:
+        case RenderType::Model:
+        case RenderType::Plane:
+        case RenderType::Torus:
+            return true;
+        case RenderType::None:
+        case RenderType::Mirror:
+        case RenderType::Sprite:
+            return false;
+    }
+
+    return false;
+}
+
+bool TryGetObjectTriangleVertexStream(const SceneObject& obj, const std::vector<float>*& outVertices) {
+    outVertices = nullptr;
+    switch (obj.renderType) {
+        case RenderType::Cube:
+        case RenderType::Sphere:
+        case RenderType::Capsule:
+        case RenderType::Plane:
+        case RenderType::Torus: {
+            outVertices = &GetPrimitiveTriangleVertices(obj.renderType);
+            return true;
+        }
+        case RenderType::OBJMesh:
+            if (obj.meshId >= 0) {
+                if (const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId)) {
+                    if (!meshInfo->baseVertices.empty()) {
+                        outVertices = &meshInfo->baseVertices;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        case RenderType::Model:
+            if (obj.meshId >= 0) {
+                if (const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId)) {
+                    if (!meshInfo->baseVertices.empty()) {
+                        outVertices = &meshInfo->baseVertices;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        case RenderType::None:
+        case RenderType::Mirror:
+        case RenderType::Sprite:
+            return false;
+    }
+
+    return false;
+}
+
+void AppendTransformedTriangleVertices(const std::vector<float>& src, const glm::mat4& model, std::vector<float>& dst,
+                                       glm::vec3& boundsMin, glm::vec3& boundsMax) {
+    if (src.empty()) return;
+    const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(model)));
+    const size_t baseSize = dst.size();
+    dst.resize(baseSize + src.size());
+
+    for (size_t i = 0; i + 7 < src.size(); i += 8) {
+        glm::vec3 pos(src[i + 0], src[i + 1], src[i + 2]);
+        glm::vec3 normal(src[i + 3], src[i + 4], src[i + 5]);
+        glm::vec2 uv(src[i + 6], src[i + 7]);
+
+        glm::vec3 worldPos = glm::vec3(model * glm::vec4(pos, 1.0f));
+        glm::vec3 worldNormal = glm::normalize(normalMatrix * normal);
+        if (!std::isfinite(worldNormal.x) || glm::length(worldNormal) < 1e-6f) {
+            worldNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+
+        boundsMin = glm::min(boundsMin, worldPos);
+        boundsMax = glm::max(boundsMax, worldPos);
+
+        size_t out = baseSize + i;
+        dst[out + 0] = worldPos.x;
+        dst[out + 1] = worldPos.y;
+        dst[out + 2] = worldPos.z;
+        dst[out + 3] = worldNormal.x;
+        dst[out + 4] = worldNormal.y;
+        dst[out + 5] = worldNormal.z;
+        dst[out + 6] = uv.x;
+        dst[out + 7] = uv.y;
+    }
 }
 } // namespace
 
@@ -643,6 +1028,7 @@ int OBJLoader::loadOBJ(const std::string& filepath, std::string& errorMsg) {
     loaded.triangleVertices = std::move(triPositions);
     loaded.positions = std::move(positions);
     loaded.triangleIndices = std::move(triangleIndices);
+    loaded.baseVertices = vertices;
 
     loadedMeshes.push_back(std::move(loaded));
     return static_cast<int>(loadedMeshes.size() - 1);
@@ -710,6 +1096,7 @@ Renderer::~Renderer() {
         releaseRenderTarget(entry.second);
     }
     mirrorTargets.clear();
+    mirrorUpdateStates.clear();
     for (auto& entry : uiTargets) {
         releaseRenderTarget(entry.second);
     }
@@ -735,8 +1122,12 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
     }
     bool point = (filter == MaterialProperties::TextureFilter::Point);
     auto& cache = point ? textureCachePoint : textureCacheBilinear;
+    const double nowSec = glfwGetTime();
     auto it = cache.find(path);
-    if (it != cache.end()) return it->second.get();
+    if (it != cache.end()) {
+        it->second.lastUsedTime = nowSec;
+        return it->second.texture.get();
+    }
 
     GLenum minFilter = point ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
     GLenum magFilter = point ? GL_NEAREST : GL_LINEAR;
@@ -744,15 +1135,186 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
     if (!tex->GetID()) {
         return nullptr;
     }
-    Texture* raw = tex.get();
-    cache[path] = std::move(tex);
+    CachedTextureEntry entry;
+    entry.approxBytes = tex->GetApproxMemoryBytes();
+    entry.lastUsedTime = nowSec;
+    entry.texture = std::move(tex);
+    Texture* raw = entry.texture.get();
+    textureCacheUsageBytes += entry.approxBytes;
+    cache[path] = std::move(entry);
+    purgeTextureCacheIfNeeded();
     return raw;
 }
 
 void Renderer::invalidateTexture(const std::string& path) {
     if (path.empty()) return;
-    textureCacheBilinear.erase(path);
-    textureCachePoint.erase(path);
+    auto eraseFromCache = [this, &path](auto& cache) {
+        auto it = cache.find(path);
+        if (it == cache.end()) return;
+        textureCacheUsageBytes = (textureCacheUsageBytes > it->second.approxBytes)
+            ? (textureCacheUsageBytes - it->second.approxBytes)
+            : 0;
+        cache.erase(it);
+    };
+    eraseFromCache(textureCacheBilinear);
+    eraseFromCache(textureCachePoint);
+}
+
+void Renderer::purgeTextureCacheIfNeeded() {
+    if (textureCacheUsageBytes <= textureCacheBudgetBytes) {
+        return;
+    }
+
+    struct EvictionCandidate {
+        bool point = false;
+        double lastUsedTime = 0.0;
+        size_t approxBytes = 0;
+        std::string path;
+    };
+
+    std::vector<EvictionCandidate> candidates;
+    candidates.reserve(textureCacheBilinear.size() + textureCachePoint.size());
+
+    auto collect = [&candidates](const auto& cache, bool point) {
+        for (const auto& [path, entry] : cache) {
+            candidates.push_back({point, entry.lastUsedTime, entry.approxBytes, path});
+        }
+    };
+    collect(textureCacheBilinear, false);
+    collect(textureCachePoint, true);
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const EvictionCandidate& a, const EvictionCandidate& b) {
+                  if (a.lastUsedTime != b.lastUsedTime) return a.lastUsedTime < b.lastUsedTime;
+                  return a.path < b.path;
+              });
+
+    const double nowSec = glfwGetTime();
+    for (const auto& candidate : candidates) {
+        if (textureCacheUsageBytes <= textureCacheBudgetBytes) {
+            break;
+        }
+
+        if ((nowSec - candidate.lastUsedTime) < 2.0) {
+            continue;
+        }
+
+        auto& cache = candidate.point ? textureCachePoint : textureCacheBilinear;
+        auto it = cache.find(candidate.path);
+        if (it == cache.end()) continue;
+
+        textureCacheUsageBytes = (textureCacheUsageBytes > it->second.approxBytes)
+            ? (textureCacheUsageBytes - it->second.approxBytes)
+            : 0;
+        cache.erase(it);
+    }
+}
+
+void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneObjects) {
+    uint64_t signature = 1469598103934665603ull;
+    size_t candidateCount = 0;
+    for (const auto& obj : sceneObjects) {
+        if (!IsStaticMergeCandidate(obj)) continue;
+        ++candidateCount;
+        signature = HashCombine64(signature, static_cast<uint64_t>(obj.id));
+        signature = HashCombine64(signature, static_cast<uint64_t>(obj.renderType));
+        signature = HashCombine64(signature, static_cast<uint64_t>(obj.meshId + 1));
+        signature = HashCombine64(signature, HashString64(obj.vertexShaderPath));
+        signature = HashCombine64(signature, HashString64(obj.fragmentShaderPath));
+        signature = HashCombine64(signature, HashString64(obj.materialPath));
+        signature = HashCombine64(signature, HashString64(obj.albedoTexturePath));
+        signature = HashCombine64(signature, HashString64(obj.overlayTexturePath));
+        signature = HashCombine64(signature, HashString64(obj.normalMapPath));
+        signature = HashCombine64(signature, HashFloat64(obj.position.x));
+        signature = HashCombine64(signature, HashFloat64(obj.position.y));
+        signature = HashCombine64(signature, HashFloat64(obj.position.z));
+        signature = HashCombine64(signature, HashFloat64(obj.rotation.x));
+        signature = HashCombine64(signature, HashFloat64(obj.rotation.y));
+        signature = HashCombine64(signature, HashFloat64(obj.rotation.z));
+        signature = HashCombine64(signature, HashFloat64(obj.scale.x));
+        signature = HashCombine64(signature, HashFloat64(obj.scale.y));
+        signature = HashCombine64(signature, HashFloat64(obj.scale.z));
+        signature = HashCombine64(signature, HashFloat64(obj.material.color.r));
+        signature = HashCombine64(signature, HashFloat64(obj.material.color.g));
+        signature = HashCombine64(signature, HashFloat64(obj.material.color.b));
+        signature = HashCombine64(signature, HashFloat64(obj.material.alpha));
+        signature = HashCombine64(signature, HashFloat64(obj.material.ambientStrength));
+        signature = HashCombine64(signature, HashFloat64(obj.material.specularStrength));
+        signature = HashCombine64(signature, HashFloat64(obj.material.shininess));
+        signature = HashCombine64(signature, HashFloat64(obj.material.textureMix));
+        signature = HashCombine64(signature, static_cast<uint64_t>(obj.material.textureFilter));
+        signature = HashCombine64(signature, static_cast<uint64_t>(obj.useOverlay ? 1 : 0));
+    }
+    signature = HashCombine64(signature, static_cast<uint64_t>(candidateCount));
+
+    if (signature == staticMergeSceneSignature) {
+        return;
+    }
+
+    staticMergeSceneSignature = signature;
+    staticMergeBatches.clear();
+    staticMergeSourceIds.clear();
+
+    struct BatchAccumulator {
+        Renderer::StaticMergeBatch batch;
+        std::vector<float> vertices;
+        glm::vec3 boundsMin = glm::vec3(FLT_MAX);
+        glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
+    };
+
+    std::unordered_map<std::string, BatchAccumulator> accumulators;
+    accumulators.reserve(candidateCount);
+
+    for (const auto& obj : sceneObjects) {
+        if (!IsStaticMergeCandidate(obj)) continue;
+
+        const std::vector<float>* sourceVertices = nullptr;
+        if (!TryGetObjectTriangleVertexStream(obj, sourceVertices) || !sourceVertices || sourceVertices->empty()) {
+            continue;
+        }
+
+        std::string batchKey =
+            obj.vertexShaderPath + "|" + obj.fragmentShaderPath + "|" + obj.materialPath + "|" +
+            obj.albedoTexturePath + "|" + obj.overlayTexturePath + "|" + obj.normalMapPath + "|" +
+            std::to_string(static_cast<int>(obj.material.textureFilter)) + "|" +
+            std::to_string(obj.useOverlay ? 1 : 0) + "|" +
+            std::to_string(obj.material.color.r) + "|" +
+            std::to_string(obj.material.color.g) + "|" +
+            std::to_string(obj.material.color.b) + "|" +
+            std::to_string(obj.material.alpha) + "|" +
+            std::to_string(obj.material.ambientStrength) + "|" +
+            std::to_string(obj.material.specularStrength) + "|" +
+            std::to_string(obj.material.shininess) + "|" +
+            std::to_string(obj.material.textureMix);
+
+        BatchAccumulator& acc = accumulators[batchKey];
+        if (acc.batch.albedoTexturePath.empty() && acc.batch.normalMapPath.empty() &&
+            acc.batch.overlayTexturePath.empty() && acc.batch.materialPath.empty() &&
+            acc.batch.vertPath.empty() && acc.batch.fragPath.empty() && acc.vertices.empty()) {
+            acc.batch.vertPath = obj.vertexShaderPath;
+            acc.batch.fragPath = obj.fragmentShaderPath;
+            acc.batch.material = obj.material;
+            acc.batch.materialPath = obj.materialPath;
+            acc.batch.albedoTexturePath = obj.albedoTexturePath;
+            acc.batch.overlayTexturePath = obj.overlayTexturePath;
+            acc.batch.normalMapPath = obj.normalMapPath;
+            acc.batch.useOverlay = obj.useOverlay;
+        }
+
+        AppendTransformedTriangleVertices(*sourceVertices, BuildSceneObjectModelMatrix(obj),
+                                         acc.vertices, acc.boundsMin, acc.boundsMax);
+        staticMergeSourceIds.insert(obj.id);
+    }
+
+    for (auto& [key, acc] : accumulators) {
+        (void)key;
+        if (acc.vertices.empty()) continue;
+        StaticMergeBatch batch = std::move(acc.batch);
+        batch.mesh = std::make_unique<Mesh>(acc.vertices.data(), acc.vertices.size() * sizeof(float));
+        batch.boundsCenter = (acc.boundsMin + acc.boundsMax) * 0.5f;
+        batch.boundsRadius = glm::length(glm::max(acc.boundsMax - batch.boundsCenter, glm::vec3(0.001f)));
+        staticMergeBatches.push_back(std::move(batch));
+    }
 }
 
 void Renderer::initialize() {
@@ -867,10 +1429,10 @@ void Renderer::initialize() {
     skybox = new Skybox();
 
     setupFBO();
-    ensureRenderTarget(postTarget, currentWidth, currentHeight);
-    ensureRenderTarget(historyTarget, currentWidth, currentHeight);
-    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight);
-    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight);
+    ensureRenderTarget(postTarget, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(historyTarget, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight, false, true);
     ensureRenderTarget(selectionMaskTarget, currentWidth, currentHeight);
     ensureQuad();
     clearHistory();
@@ -963,7 +1525,7 @@ void Renderer::setupFBO() {
 
     glGenTextures(1, &viewportTexture);
     glBindTexture(GL_TEXTURE_2D, viewportTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, currentWidth, currentHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, currentWidth, currentHeight, 0, GL_RGBA, GL_FLOAT, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, viewportTexture, 0);
@@ -981,10 +1543,14 @@ void Renderer::setupFBO() {
 }
 
 void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h) {
-    ensureRenderTarget(target, w, h, false);
+    ensureRenderTarget(target, w, h, false, false);
 }
 
 void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha) {
+    ensureRenderTarget(target, w, h, alpha, false);
+}
+
+void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr) {
     if (w <= 0 || h <= 0) return;
 
     if (target.fbo == 0) {
@@ -993,18 +1559,28 @@ void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha
         glGenRenderbuffers(1, &target.rbo);
     }
 
-    if (target.width == w && target.height == h && target.hasAlpha == alpha) return;
+    if (target.width == w && target.height == h && target.hasAlpha == alpha && target.hdr == hdr) return;
 
     target.width = w;
     target.height = h;
     target.hasAlpha = alpha;
+    target.hdr = hdr;
 
     glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
 
     glBindTexture(GL_TEXTURE_2D, target.texture);
-    GLenum internalFormat = alpha ? GL_RGBA : GL_RGB;
-    GLenum dataFormat = alpha ? GL_RGBA : GL_RGB;
-    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, target.width, target.height, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
+    GLenum internalFormat = GL_RGB8;
+    GLenum dataFormat = GL_RGB;
+    GLenum dataType = GL_UNSIGNED_BYTE;
+    if (hdr) {
+        internalFormat = alpha ? GL_RGBA16F : GL_RGBA16F;
+        dataFormat = alpha ? GL_RGBA : GL_RGBA;
+        dataType = GL_FLOAT;
+    } else if (alpha) {
+        internalFormat = GL_RGBA8;
+        dataFormat = GL_RGBA;
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, target.width, target.height, 0, dataFormat, dataType, NULL);
     bool isSelectionMask = (&target == &selectionMaskTarget);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, isSelectionMask ? GL_NEAREST : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, isSelectionMask ? GL_NEAREST : GL_LINEAR);
@@ -1037,11 +1613,16 @@ void Renderer::releaseRenderTarget(RenderTarget& target) {
 }
 
 void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
-    if (sceneObjects.empty() || width <= 0 || height <= 0) return;
+    if (camera.orthographic || sceneObjects.empty() || width <= 0 || height <= 0) return;
 
     std::unordered_set<int> active;
+    const double nowSec = glfwGetTime();
     GLint prevFBO = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+    const glm::mat4 viewProjection =
+        BuildCameraProjection(camera, width, height, fovDeg, nearPlane, farPlane) *
+        camera.getViewMatrix();
+    const FrustumPlanes frustum = BuildFrustumPlanes(viewProjection);
 
     auto planeNormal = [](const SceneObject& obj) {
         glm::quat q = glm::quat(glm::radians(obj.rotation));
@@ -1056,17 +1637,69 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
         if (!obj.enabled || !obj.hasRenderer || obj.renderType != RenderType::Mirror) continue;
         active.insert(obj.id);
 
+        glm::vec3 n = planeNormal(obj);
+        glm::vec3 planePoint = obj.position;
+        const glm::vec3 toCamera = camera.position - planePoint;
+        if (glm::dot(n, toCamera) <= 0.001f) {
+            continue;
+        }
+
+        glm::mat4 mirrorModel = BuildSceneObjectModelMatrix(obj);
+        glm::vec3 boundsCenter(0.0f);
+        float boundsRadius = 0.0f;
+        if (TryComputeObjectCullSphere(obj, mirrorModel, boundsCenter, boundsRadius) &&
+            !SphereInsideFrustum(frustum, boundsCenter, boundsRadius)) {
+            continue;
+        }
+
+        float minX = 0.0f;
+        float minY = 0.0f;
+        float maxX = 0.0f;
+        float maxY = 0.0f;
+        if (!ProjectPlaneScreenRect(obj, viewProjection, width, height, minX, minY, maxX, maxY)) {
+            continue;
+        }
+
+        const int targetWidth = QuantizeMirrorTargetDimension(static_cast<int>(std::ceil(maxX - minX)), width);
+        const int targetHeight = QuantizeMirrorTargetDimension(static_cast<int>(std::ceil(maxY - minY)), height);
+
         RenderTarget& target = mirrorTargets[obj.id];
-        ensureRenderTarget(target, width, height);
+        MirrorUpdateState& state = mirrorUpdateStates[obj.id];
+        const glm::vec3 cameraDelta = camera.position - state.lastCameraPos;
+        const glm::vec3 mirrorPosDelta = obj.position - state.lastMirrorPos;
+        const glm::vec3 mirrorRotDelta = obj.rotation - state.lastMirrorRot;
+        const glm::vec3 mirrorScaleDelta = obj.scale - state.lastMirrorScale;
+        const bool sizeChanged = target.width != targetWidth || target.height != targetHeight;
+        const bool targetMissing = target.fbo == 0 || target.texture == 0;
+        const bool cameraMoved = !std::isfinite(state.lastCameraPos.x) ||
+            glm::dot(cameraDelta, cameraDelta) > (0.02f * 0.02f);
+        const bool cameraRotated = !std::isfinite(state.lastCameraFront.x) ||
+            glm::dot(camera.front, state.lastCameraFront) < 0.9995f ||
+            glm::dot(camera.up, state.lastCameraUp) < 0.9995f;
+        const bool mirrorMoved =
+            glm::dot(mirrorPosDelta, mirrorPosDelta) > (0.001f * 0.001f) ||
+            glm::dot(mirrorRotDelta, mirrorRotDelta) > (0.05f * 0.05f) ||
+            glm::dot(mirrorScaleDelta, mirrorScaleDelta) > (0.001f * 0.001f);
+        const bool transformChanged = cameraMoved || cameraRotated || mirrorMoved;
+        const double secondsSinceUpdate = (state.lastUpdateTime >= 0.0) ? (nowSec - state.lastUpdateTime) : DBL_MAX;
+        const bool shouldRefresh =
+            targetMissing ||
+            sizeChanged ||
+            state.lastUpdateTime < 0.0 ||
+            (transformChanged && secondsSinceUpdate >= (1.0 / 45.0)) ||
+            secondsSinceUpdate >= 0.25;
+
+        if (!shouldRefresh) {
+            continue;
+        }
+
+        ensureRenderTarget(target, targetWidth, targetHeight, false, true);
         if (target.fbo == 0 || target.texture == 0) continue;
 
         glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
         glViewport(0, 0, target.width, target.height);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        glm::vec3 n = planeNormal(obj);
-        glm::vec3 planePoint = obj.position;
 
         auto reflectPoint = [&](const glm::vec3& p) {
             float dist = glm::dot(p - planePoint, n);
@@ -1089,6 +1722,14 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
         }
 
         renderSceneInternal(mirrorCam, sceneObjects, target.width, target.height, false, fovDeg, nearPlane, farPlane, false);
+
+        state.lastCameraPos = camera.position;
+        state.lastCameraFront = camera.front;
+        state.lastCameraUp = camera.up;
+        state.lastMirrorPos = obj.position;
+        state.lastMirrorRot = obj.rotation;
+        state.lastMirrorScale = obj.scale;
+        state.lastUpdateTime = nowSec;
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
@@ -1096,6 +1737,7 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
     for (auto it = mirrorTargets.begin(); it != mirrorTargets.end(); ) {
         if (active.find(it->first) == active.end()) {
             releaseRenderTarget(it->second);
+            mirrorUpdateStates.erase(it->first);
             it = mirrorTargets.erase(it);
         } else {
             ++it;
@@ -1216,7 +1858,7 @@ void Renderer::resize(int w, int h) {
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     
     glBindTexture(GL_TEXTURE_2D, viewportTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, currentWidth, currentHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, currentWidth, currentHeight, 0, GL_RGBA, GL_FLOAT, NULL);
     glBindRenderbuffer(GL_RENDERBUFFER, rbo);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, currentWidth, currentHeight);
 
@@ -1224,10 +1866,10 @@ void Renderer::resize(int w, int h) {
         std::cerr << "Framebuffer incomplete after resize!\n";
     }
 
-    ensureRenderTarget(postTarget, currentWidth, currentHeight);
-    ensureRenderTarget(historyTarget, currentWidth, currentHeight);
-    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight);
-    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight);
+    ensureRenderTarget(postTarget, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(historyTarget, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(bloomTargetA, currentWidth, currentHeight, false, true);
+    ensureRenderTarget(bloomTargetB, currentWidth, currentHeight, false, true);
     ensureRenderTarget(selectionMaskTarget, currentWidth, currentHeight);
     clearHistory();
     displayTexture = viewportTexture;
@@ -1274,6 +1916,7 @@ void Renderer::renderObject(const SceneObject& obj) {
 
     shader->setMat4("model", model);
     shader->setVec3("materialColor", missingMaterialAndShader ? glm::vec3(1.0f) : obj.material.color);
+    shader->setFloat("materialAlpha", missingMaterialAndShader ? 1.0f : obj.material.alpha);
     shader->setFloat("ambientStrength", obj.material.ambientStrength);
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
@@ -1367,6 +2010,15 @@ void Renderer::renderObject(const SceneObject& obj) {
 
 void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects) {
     if (!defaultShader || width <= 0 || height <= 0) return;
+    if (camera.orthographic) {
+        glViewport(0, 0, width, height);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (unbindFramebuffer) {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+        return;
+    }
 
     struct LightUniform {
         int type = 0; // 0 dir,1 point,2 spot,3 area
@@ -1522,7 +2174,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 
     glm::mat4 view = camera.getViewMatrix();
-    glm::mat4 proj = glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane);
+    glm::mat4 proj = BuildCameraProjection(camera, width, height, fovDeg, nearPlane, farPlane);
+    FrustumPlanes frustum = BuildFrustumPlanes(proj * view);
     const float timeSeconds = static_cast<float>(glfwGetTime());
 
     std::array<unsigned int, kMaxShadowMaps> shadowTextures = {0, 0, 0, 0};
@@ -1638,8 +2291,18 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
                     Mesh* shadowMesh = selectMeshForObject(obj);
                     if (!shadowMesh) continue;
+                    glm::mat4 model = buildModelMatrix(obj);
+                    glm::vec3 boundsCenter(0.0f);
+                    float boundsRadius = 0.0f;
+                    if (TryComputeObjectCullSphere(obj, model, boundsCenter, boundsRadius)) {
+                        glm::vec3 lightDelta = boundsCenter - light.pos;
+                        float maxDistance = light.shadowFar + boundsRadius;
+                        if (glm::dot(lightDelta, lightDelta) > maxDistance * maxDistance) {
+                            continue;
+                        }
+                    }
 
-                    shadowDepthShader->setMat4("model", buildModelMatrix(obj));
+                    shadowDepthShader->setMat4("model", model);
                     shadowMesh->draw();
                 }
             }
@@ -1669,94 +2332,278 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     GLboolean cullFace = glIsEnabled(GL_CULL_FACE);
     GLint prevCullMode = GL_BACK;
     glGetIntegerv(GL_CULL_FACE_MODE, &prevCullMode);
+    GLboolean blendEnabled = glIsEnabled(GL_BLEND);
+    GLboolean depthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    bool currentBlendEnabled = (blendEnabled == GL_TRUE);
+    bool currentDepthMask = (depthMask == GL_TRUE);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
+    for (int slot = 0; slot < kMaxShadowMaps; ++slot) {
+        glActiveTexture(GL_TEXTURE3 + slot);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, shadowTextures[slot]);
+    }
+    glActiveTexture(GL_TEXTURE0);
+
     renderSkybox(view, proj);
+    rebuildStaticMergeBatches(sceneObjects);
 
-    for (const auto& obj : sceneObjects) {
-        if (!obj.enabled) continue;
-        if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
-        if (!HasRendererComponent(obj)) continue;
+    struct RenderItem {
+        const SceneObject* obj = nullptr;
+        const StaticMergeBatch* staticBatch = nullptr;
+        Mesh* mesh = nullptr;
+        glm::mat4 model = glm::mat4(1.0f);
+        glm::vec3 sortCenter = glm::vec3(0.0f);
+        std::string vertPath;
+        std::string fragPath;
+        MaterialProperties material;
+        std::string materialPath;
+        std::string albedoTexturePath;
+        std::string overlayTexturePath;
+        std::string normalMapPath;
+        bool useOverlay = false;
+        int boneLimit = 0;
+        int availableBones = 0;
+        bool wantsGpuSkinning = false;
+        bool isUiCanvas3D = false;
+        bool sortOpaque = false;
+        bool unlit = false;
+        float cameraDistanceSq = 0.0f;
+    };
 
-        glm::mat4 model = buildModelMatrix(obj);
+    std::vector<RenderItem> drawItems;
+    drawItems.reserve(sceneObjects.size());
 
-        std::string vertPath = obj.vertexShaderPath;
-        std::string fragPath = obj.fragmentShaderPath;
-        int boneLimit = obj.skeletal.maxBones;
-        int availableBones = static_cast<int>(obj.skeletal.finalMatrices.size());
-        bool needsFallback = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
-                             obj.skeletal.allowCpuFallback &&
-                             boneLimit > 0 && availableBones > boneLimit;
-        bool wantsGpuSkinning = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
-                                obj.skeletal.useGpuSkinning && !needsFallback;
-        if (vertPath.empty() && wantsGpuSkinning) {
-            vertPath = skinnedVertPath;
+    auto gatherRenderItemsRange = [&](size_t beginIndex, size_t endIndex) {
+        std::vector<RenderItem> localItems;
+        localItems.reserve(endIndex > beginIndex ? (endIndex - beginIndex) : 0);
+
+        for (size_t objIndex = beginIndex; objIndex < endIndex; ++objIndex) {
+            const auto& obj = sceneObjects[objIndex];
+            if (!obj.enabled) continue;
+            if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
+            if (!HasRendererComponent(obj)) continue;
+            if (staticMergeSourceIds.find(obj.id) != staticMergeSourceIds.end()) continue;
+
+            glm::mat4 model = buildModelMatrix(obj);
+            glm::vec3 boundsCenter(0.0f);
+            float boundsRadius = 0.0f;
+            if (TryComputeObjectCullSphere(obj, model, boundsCenter, boundsRadius) &&
+                !SphereInsideFrustum(frustum, boundsCenter, boundsRadius)) {
+                continue;
+            }
+
+            Mesh* mesh = selectMeshForObject(obj);
+            if (!mesh) continue;
+
+            RenderItem item;
+            item.obj = &obj;
+            item.mesh = mesh;
+            item.model = model;
+            item.sortCenter = obj.position;
+            item.vertPath = obj.vertexShaderPath;
+            item.fragPath = obj.fragmentShaderPath;
+            item.material = obj.material;
+            item.materialPath = obj.materialPath;
+            item.albedoTexturePath = obj.albedoTexturePath;
+            item.overlayTexturePath = obj.overlayTexturePath;
+            item.normalMapPath = obj.normalMapPath;
+            item.useOverlay = obj.useOverlay;
+            item.boneLimit = obj.skeletal.maxBones;
+            item.availableBones = static_cast<int>(obj.skeletal.finalMatrices.size());
+            bool needsFallback = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+                                 obj.skeletal.allowCpuFallback &&
+                                 item.boneLimit > 0 && item.availableBones > item.boneLimit;
+            item.wantsGpuSkinning = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+                                    obj.skeletal.useGpuSkinning && !needsFallback;
+            if (item.vertPath.empty() && item.wantsGpuSkinning) {
+                item.vertPath = skinnedVertPath;
+            }
+            item.isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
+            item.sortOpaque = item.material.alpha >= 0.999f &&
+                              !item.isUiCanvas3D &&
+                              obj.renderType != RenderType::Sprite &&
+                              obj.renderType != RenderType::Mirror;
+            item.unlit = obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || item.isUiCanvas3D;
+            glm::vec3 toCamera = item.sortCenter - camera.position;
+            item.cameraDistanceSq = glm::dot(toCamera, toCamera);
+            localItems.push_back(std::move(item));
         }
-        Shader* active = getShader(vertPath, fragPath);
+
+        return localItems;
+    };
+
+    const unsigned int hardwareThreads = std::thread::hardware_concurrency();
+    const size_t minItemsPerTask = 128;
+    const size_t maxTaskCountByWork = std::max<size_t>(1, sceneObjects.size() / minItemsPerTask);
+    const size_t taskCount = (hardwareThreads > 1 && sceneObjects.size() >= minItemsPerTask * 2)
+        ? std::min<size_t>(hardwareThreads, maxTaskCountByWork)
+        : 1;
+
+    if (taskCount <= 1) {
+        drawItems = gatherRenderItemsRange(0, sceneObjects.size());
+    } else {
+        std::vector<std::future<std::vector<RenderItem>>> gatherFutures;
+        gatherFutures.reserve(taskCount);
+        const size_t chunkSize = (sceneObjects.size() + taskCount - 1) / taskCount;
+
+        for (size_t taskIndex = 0; taskIndex < taskCount; ++taskIndex) {
+            const size_t beginIndex = taskIndex * chunkSize;
+            if (beginIndex >= sceneObjects.size()) {
+                break;
+            }
+            const size_t endIndex = std::min(sceneObjects.size(), beginIndex + chunkSize);
+            gatherFutures.push_back(std::async(std::launch::async,
+                [&, beginIndex, endIndex]() {
+                    return gatherRenderItemsRange(beginIndex, endIndex);
+                }));
+        }
+
+        for (auto& future : gatherFutures) {
+            std::vector<RenderItem> chunkItems = future.get();
+            drawItems.insert(drawItems.end(),
+                             std::make_move_iterator(chunkItems.begin()),
+                             std::make_move_iterator(chunkItems.end()));
+        }
+    }
+
+    for (const auto& batch : staticMergeBatches) {
+        if (!batch.mesh) continue;
+        if (batch.boundsRadius > 0.0f &&
+            !SphereInsideFrustum(frustum, batch.boundsCenter, batch.boundsRadius)) {
+            continue;
+        }
+
+        RenderItem item;
+        item.staticBatch = &batch;
+        item.mesh = batch.mesh.get();
+        item.model = glm::mat4(1.0f);
+        item.sortCenter = batch.boundsCenter;
+        item.vertPath = batch.vertPath;
+        item.fragPath = batch.fragPath;
+        item.material = batch.material;
+        item.materialPath = batch.materialPath;
+        item.albedoTexturePath = batch.albedoTexturePath;
+        item.overlayTexturePath = batch.overlayTexturePath;
+        item.normalMapPath = batch.normalMapPath;
+        item.useOverlay = batch.useOverlay;
+        item.sortOpaque = item.material.alpha >= 0.999f;
+        glm::vec3 toCamera = item.sortCenter - camera.position;
+        item.cameraDistanceSq = glm::dot(toCamera, toCamera);
+        drawItems.push_back(std::move(item));
+    }
+
+    std::stable_sort(drawItems.begin(), drawItems.end(),
+                     [](const RenderItem& a, const RenderItem& b) {
+                         if (a.sortOpaque != b.sortOpaque) return a.sortOpaque > b.sortOpaque;
+                         if (!a.sortOpaque) {
+                             if (a.cameraDistanceSq != b.cameraDistanceSq) {
+                                 return a.cameraDistanceSq > b.cameraDistanceSq;
+                             }
+                             int aId = a.obj ? a.obj->id : -1;
+                             int bId = b.obj ? b.obj->id : -1;
+                             return aId < bId;
+                         }
+                         if (a.vertPath != b.vertPath) return a.vertPath < b.vertPath;
+                         if (a.fragPath != b.fragPath) return a.fragPath < b.fragPath;
+                         if (a.materialPath != b.materialPath) return a.materialPath < b.materialPath;
+                         if (a.albedoTexturePath != b.albedoTexturePath) return a.albedoTexturePath < b.albedoTexturePath;
+                         if (a.overlayTexturePath != b.overlayTexturePath) return a.overlayTexturePath < b.overlayTexturePath;
+                         if (a.normalMapPath != b.normalMapPath) return a.normalMapPath < b.normalMapPath;
+                         int aId = a.obj ? a.obj->id : -1;
+                         int bId = b.obj ? b.obj->id : -1;
+                         return aId < bId;
+                     });
+
+    GLint currentActiveTexture = GL_TEXTURE0;
+    std::array<GLuint, 8> boundTexture2D = {
+        std::numeric_limits<GLuint>::max(), std::numeric_limits<GLuint>::max(),
+        std::numeric_limits<GLuint>::max(), std::numeric_limits<GLuint>::max(),
+        std::numeric_limits<GLuint>::max(), std::numeric_limits<GLuint>::max(),
+        std::numeric_limits<GLuint>::max(), std::numeric_limits<GLuint>::max()
+    };
+    auto bindTexture2D = [&](GLenum unit, GLuint textureId) {
+        if (currentActiveTexture != static_cast<GLint>(unit)) {
+            glActiveTexture(unit);
+            currentActiveTexture = static_cast<GLint>(unit);
+        }
+        int slot = static_cast<int>(unit - GL_TEXTURE0);
+        if (slot >= 0 && slot < static_cast<int>(boundTexture2D.size()) &&
+            boundTexture2D[slot] == textureId) {
+            return;
+        }
+        glBindTexture(GL_TEXTURE_2D, textureId);
+        if (slot >= 0 && slot < static_cast<int>(boundTexture2D.size())) {
+            boundTexture2D[slot] = textureId;
+        }
+    };
+
+    Shader* currentShader = nullptr;
+    for (const RenderItem& item : drawItems) {
+        const SceneObject* objPtr = item.obj;
+        Shader* active = getShader(item.vertPath, item.fragPath);
         if (!active) continue;
         shader = active;
-        shader->use();
+        if (currentShader != shader) {
+            currentShader = shader;
+            shader->use();
+            shader->setMat4("view", view);
+            shader->setMat4("projection", proj);
+            shader->setVec3("viewPos", camera.position);
+            shader->setFloat("uTime", timeSeconds);
+            shader->setVec3("ambientColor", ambientColor);
+            shader->setInt("texture1", 0);
+            shader->setInt("overlayTex", 1);
+            shader->setInt("normalMap", 2);
+            shader->setInt("shadowCube0", 3);
+            shader->setInt("shadowCube1", 4);
+            shader->setInt("shadowCube2", 5);
+            shader->setInt("shadowCube3", 6);
+            shader->setInt("lightCount", static_cast<int>(lights.size()));
+            for (size_t i = 0; i < lights.size() && i < kMaxLights; ++i) {
+                const auto& l = lights[i];
+                std::string idx = "[" + std::to_string(i) + "]";
+                shader->setInt("lightTypeArr" + idx, l.type);
+                shader->setVec3("lightDirArr" + idx, l.dir);
+                shader->setVec3("lightPosArr" + idx, l.pos);
+                shader->setVec3("lightColorArr" + idx, l.color);
+                shader->setFloat("lightIntensityArr" + idx, l.intensity);
+                shader->setFloat("lightRangeArr" + idx, l.range);
+                shader->setFloat("lightInnerCosArr" + idx, l.inner);
+                shader->setFloat("lightOuterCosArr" + idx, l.outer);
+                shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
+                shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
+                shader->setInt("lightShadowMapArr" + idx, l.shadowMapIndex);
+                shader->setInt("lightShadowModeArr" + idx, (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
+                shader->setFloat("lightShadowBiasArr" + idx, l.shadowBias);
+                shader->setFloat("lightShadowSoftnessArr" + idx, l.shadowSoftness);
+                shader->setFloat("lightShadowFarArr" + idx, l.shadowFar);
+            }
+        }
 
-        bool hasMaterialAsset = !obj.materialPath.empty();
-        bool hasCustomShader = !obj.vertexShaderPath.empty() || !obj.fragmentShaderPath.empty();
-        bool hasAnySurfaceInput = !obj.albedoTexturePath.empty() || !obj.overlayTexturePath.empty() || !obj.normalMapPath.empty();
+        bool hasMaterialAsset = !item.materialPath.empty();
+        bool hasCustomShader = !item.vertPath.empty() || !item.fragPath.empty();
+        bool hasAnySurfaceInput = !item.albedoTexturePath.empty() || !item.overlayTexturePath.empty() || !item.normalMapPath.empty();
         bool missingMaterialAndShader = !hasMaterialAsset && !hasCustomShader && !hasAnySurfaceInput;
 
-        shader->setMat4("view", view);
-        shader->setMat4("projection", proj);
-        shader->setVec3("viewPos", camera.position);
-        shader->setFloat("uTime", timeSeconds);
-        bool isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
-        shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || isUiCanvas3D || missingMaterialAndShader);
-        shader->setVec3("ambientColor", ambientColor);
-        shader->setInt("texture1", 0);
-        shader->setInt("overlayTex", 1);
-        shader->setInt("normalMap", 2);
-        shader->setInt("shadowCube0", 3);
-        shader->setInt("shadowCube1", 4);
-        shader->setInt("shadowCube2", 5);
-        shader->setInt("shadowCube3", 6);
-        for (int slot = 0; slot < kMaxShadowMaps; ++slot) {
-            glActiveTexture(GL_TEXTURE3 + slot);
-            glBindTexture(GL_TEXTURE_CUBE_MAP, shadowTextures[slot]);
-        }
+        shader->setBool("unlit", item.unlit || missingMaterialAndShader);
 
-        shader->setInt("lightCount", static_cast<int>(lights.size()));
-        for (size_t i = 0; i < lights.size() && i < kMaxLights; ++i) {
-            const auto& l = lights[i];
-            std::string idx = "[" + std::to_string(i) + "]";
-            shader->setInt("lightTypeArr" + idx, l.type);
-            shader->setVec3("lightDirArr" + idx, l.dir);
-            shader->setVec3("lightPosArr" + idx, l.pos);
-            shader->setVec3("lightColorArr" + idx, l.color);
-            shader->setFloat("lightIntensityArr" + idx, l.intensity);
-            shader->setFloat("lightRangeArr" + idx, l.range);
-            shader->setFloat("lightInnerCosArr" + idx, l.inner);
-            shader->setFloat("lightOuterCosArr" + idx, l.outer);
-            shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
-            shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
-            shader->setInt("lightShadowMapArr" + idx, l.shadowMapIndex);
-            shader->setInt("lightShadowModeArr" + idx, (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
-            shader->setFloat("lightShadowBiasArr" + idx, l.shadowBias);
-            shader->setFloat("lightShadowSoftnessArr" + idx, l.shadowSoftness);
-            shader->setFloat("lightShadowFarArr" + idx, l.shadowFar);
-        }
+        shader->setMat4("model", item.model);
+        shader->setVec3("materialColor", missingMaterialAndShader ? glm::vec3(1.0f) : item.material.color);
+        shader->setFloat("materialAlpha", missingMaterialAndShader ? 1.0f : item.material.alpha);
+        shader->setFloat("ambientStrength", item.material.ambientStrength);
+        shader->setFloat("specularStrength", item.material.specularStrength);
+        shader->setFloat("shininess", item.material.shininess);
+        shader->setFloat("mixAmount", item.material.textureMix);
+        shader->setVec4("uvRect", objPtr ? BuildSpriteUvRect(*objPtr) : glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
 
-        shader->setMat4("model", model);
-        shader->setVec3("materialColor", missingMaterialAndShader ? glm::vec3(1.0f) : obj.material.color);
-        shader->setFloat("ambientStrength", obj.material.ambientStrength);
-        shader->setFloat("specularStrength", obj.material.specularStrength);
-        shader->setFloat("shininess", obj.material.shininess);
-        shader->setFloat("mixAmount", obj.material.textureMix);
-        shader->setVec4("uvRect", BuildSpriteUvRect(obj));
-
-        if (obj.hasSkeletalAnimation && obj.skeletal.enabled) {
-            int safeLimit = std::max(0, boneLimit);
-            int boneCount = std::min<int>(availableBones, safeLimit);
-            if (wantsGpuSkinning && boneCount > 0) {
+        if (objPtr && objPtr->hasSkeletalAnimation && objPtr->skeletal.enabled) {
+            int safeLimit = std::max(0, item.boneLimit);
+            int boneCount = std::min<int>(item.availableBones, safeLimit);
+            if (item.wantsGpuSkinning && boneCount > 0) {
                 shader->setInt("boneCount", boneCount);
-                shader->setMat4Array("bones", obj.skeletal.finalMatrices.data(), boneCount);
+                shader->setMat4Array("bones", objPtr->skeletal.finalMatrices.data(), boneCount);
                 shader->setBool("useSkinning", true);
             } else {
                 shader->setBool("useSkinning", false);
@@ -1766,69 +2613,66 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
 
         bool usingUiTargetTex = false;
-        if (isUiCanvas3D) {
-            auto it = uiTargets.find(obj.id);
+        if (item.isUiCanvas3D) {
+            auto it = uiTargets.find(objPtr->id);
             if (it != uiTargets.end() && it->second.texture != 0) {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, it->second.texture);
+                bindTexture2D(GL_TEXTURE0, it->second.texture);
                 usingUiTargetTex = true;
             }
         }
         Texture* baseTex = texture1;
         if (!usingUiTargetTex) {
             if (missingMaterialAndShader && missingMaterialFallbackTexture != 0) {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, missingMaterialFallbackTexture);
+                bindTexture2D(GL_TEXTURE0, missingMaterialFallbackTexture);
             } else {
-                if (!obj.albedoTexturePath.empty()) {
-                    if (auto* t = getTexture(obj.albedoTexturePath, obj.material.textureFilter)) baseTex = t;
+                if (!item.albedoTexturePath.empty()) {
+                    if (auto* t = getTexture(item.albedoTexturePath, item.material.textureFilter)) baseTex = t;
                 }
-                if (baseTex) baseTex->Bind(GL_TEXTURE0);
+                if (baseTex) bindTexture2D(GL_TEXTURE0, baseTex->GetID());
             }
         }
 
         bool overlayUsed = false;
-        if (obj.renderType == RenderType::Mirror) {
-            auto it = mirrorTargets.find(obj.id);
+        if (objPtr && objPtr->renderType == RenderType::Mirror) {
+            auto it = mirrorTargets.find(objPtr->id);
             if (it != mirrorTargets.end() && it->second.texture != 0) {
-                glActiveTexture(GL_TEXTURE1);
-                glBindTexture(GL_TEXTURE_2D, it->second.texture);
+                bindTexture2D(GL_TEXTURE1, it->second.texture);
                 overlayUsed = true;
             }
         }
-        if (!overlayUsed && obj.useOverlay && !obj.overlayTexturePath.empty()) {
-            if (auto* t = getTexture(obj.overlayTexturePath, obj.material.textureFilter)) {
-                t->Bind(GL_TEXTURE1);
+        if (!overlayUsed && item.useOverlay && !item.overlayTexturePath.empty()) {
+            if (auto* t = getTexture(item.overlayTexturePath, item.material.textureFilter)) {
+                bindTexture2D(GL_TEXTURE1, t->GetID());
                 overlayUsed = true;
             }
         }
         if (!overlayUsed && texture2) {
-            texture2->Bind(GL_TEXTURE1);
+            bindTexture2D(GL_TEXTURE1, texture2->GetID());
         }
         shader->setBool("hasOverlay", overlayUsed);
 
         bool normalUsed = false;
-        if (!obj.normalMapPath.empty()) {
-            if (auto* t = getTexture(obj.normalMapPath, obj.material.textureFilter)) {
-                t->Bind(GL_TEXTURE2);
+        if (!item.normalMapPath.empty()) {
+            if (auto* t = getTexture(item.normalMapPath, item.material.textureFilter)) {
+                bindTexture2D(GL_TEXTURE2, t->GetID());
                 normalUsed = true;
             }
+        } else {
+            bindTexture2D(GL_TEXTURE2, 0);
         }
         shader->setBool("hasNormalMap", normalUsed);
 
-        Mesh* meshToDraw = selectMeshForObject(obj);
-
-        if (obj.renderType == RenderType::Model && obj.meshId != -1 &&
-            obj.hasSkeletalAnimation && obj.skeletal.enabled && !wantsGpuSkinning) {
-            const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+        if (objPtr && objPtr->renderType == RenderType::Model && objPtr->meshId != -1 &&
+            objPtr->hasSkeletalAnimation && objPtr->skeletal.enabled && !item.wantsGpuSkinning) {
+            const auto* meshInfo = getModelLoader().getMeshInfo(objPtr->meshId);
             if (meshInfo) {
                 applyCpuSkinning(*const_cast<OBJLoader::LoadedMesh*>(meshInfo),
-                                 obj.skeletal.finalMatrices,
-                                 obj.skeletal.maxBones);
+                                 objPtr->skeletal.finalMatrices,
+                                 objPtr->skeletal.maxBones);
             }
         }
 
-        bool doubleSided = (obj.renderType == RenderType::Sprite || obj.renderType == RenderType::Mirror);
+        bool doubleSided = objPtr && (objPtr->renderType == RenderType::Sprite || objPtr->renderType == RenderType::Mirror);
         if (doubleSided) {
             glDisable(GL_CULL_FACE);
         } else {
@@ -1836,30 +2680,36 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             glCullFace(GL_BACK);
         }
 
-        if (meshToDraw) {
-            bool wantsBlend = (obj.renderType == RenderType::Sprite) || isUiCanvas3D;
-            GLboolean blendWasEnabled = GL_FALSE;
-            GLboolean depthMaskWasEnabled = GL_TRUE;
-            if (wantsBlend) {
-                blendWasEnabled = glIsEnabled(GL_BLEND);
-                if (!blendWasEnabled) glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        bool wantsTransparency = !item.sortOpaque;
+        bool wantsBlend = wantsTransparency || item.isUiCanvas3D;
+        if (wantsBlend) {
+            if (!currentBlendEnabled) {
+                glEnable(GL_BLEND);
+                currentBlendEnabled = true;
             }
-            if (isUiCanvas3D) {
-                glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMaskWasEnabled);
-                glDepthMask(GL_FALSE);
-            }
-            recordMeshDraw();
-            meshToDraw->draw();
-            if (isUiCanvas3D) {
-                glDepthMask(depthMaskWasEnabled);
-            }
-            if (wantsBlend && !blendWasEnabled) {
-                glDisable(GL_BLEND);
-            }
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else if (currentBlendEnabled) {
+            glDisable(GL_BLEND);
+            currentBlendEnabled = false;
         }
+        if ((wantsTransparency || item.isUiCanvas3D) && currentDepthMask) {
+            glDepthMask(GL_FALSE);
+            currentDepthMask = false;
+        } else if (!(wantsTransparency || item.isUiCanvas3D) && !currentDepthMask) {
+            glDepthMask(GL_TRUE);
+            currentDepthMask = true;
+        }
+        recordMeshDraw();
+        item.mesh->draw();
     }
 
+    if (currentBlendEnabled != (blendEnabled == GL_TRUE)) {
+        if (blendEnabled) glEnable(GL_BLEND);
+        else glDisable(GL_BLEND);
+    }
+    if (currentDepthMask != (depthMask == GL_TRUE)) {
+        glDepthMask(depthMask);
+    }
     if (!cullFace) {
         glDisable(GL_CULL_FACE);
     } else {
@@ -1872,20 +2722,114 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 }
 
-PostFXSettings Renderer::gatherPostFX(const std::vector<SceneObject>& sceneObjects) const {
-    PostFXSettings combined;
-    combined.enabled = false;
-    for (const auto& obj : sceneObjects) {
-        if (!obj.hasPostFX) continue;
-        if (!obj.postFx.enabled) continue;
-        combined = obj.postFx; // Last enabled node wins for now
-        combined.enabled = true;
+Renderer::ResolvedPostFX Renderer::gatherPostFX(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const {
+    ResolvedPostFX result;
+    result.settings = MakeNeutralPostFXSettings();
+    result.settings.hdrEnabled = false;
+
+    const SceneObject* resolvedVolume = nullptr;
+    float resolvedPriority = -FLT_MAX;
+    float resolvedWeight = 0.0f;
+    int resolvedIndex = -1;
+
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+        const SceneObject& obj = sceneObjects[i];
+        if (!obj.hasPostFX || !obj.postFx.enabled) continue;
+
+        const float weight = ComputePostFXVolumeWeight(obj, camera.position);
+        if (weight <= 0.0001f) continue;
+
+        result.activeVolumeCount += 1;
+        if (!resolvedVolume ||
+            obj.postFx.priority > resolvedPriority ||
+            (obj.postFx.priority == resolvedPriority && static_cast<int>(i) >= resolvedIndex)) {
+            resolvedVolume = &obj;
+            resolvedPriority = obj.postFx.priority;
+            resolvedWeight = weight;
+            resolvedIndex = static_cast<int>(i);
+        }
     }
-    return combined;
+
+    if (!resolvedVolume) {
+        return result;
+    }
+
+    PostFXSettings settings = MakeNeutralPostFXSettings();
+    const float weight = glm::clamp(resolvedWeight, 0.0f, 1.0f);
+    settings.enabled = true;
+    settings.isGlobal = resolvedVolume->postFx.isGlobal;
+    settings.priority = resolvedVolume->postFx.priority;
+    settings.blendWeight = weight;
+    settings.blendRadius = resolvedVolume->postFx.blendRadius;
+    settings.hdrEnabled = resolvedVolume->postFx.hdrEnabled;
+    settings.toneMapper = resolvedVolume->postFx.toneMapper;
+    settings.whitePoint = glm::mix(settings.whitePoint, resolvedVolume->postFx.whitePoint, weight);
+    settings.gamma = glm::mix(settings.gamma, resolvedVolume->postFx.gamma, weight);
+
+    if (resolvedVolume->postFx.bloomEnabled) {
+        settings.bloomEnabled = true;
+        settings.bloomThreshold = glm::mix(settings.bloomThreshold, resolvedVolume->postFx.bloomThreshold, weight);
+        settings.bloomSoftKnee = glm::mix(settings.bloomSoftKnee, resolvedVolume->postFx.bloomSoftKnee, weight);
+        settings.bloomIntensity = glm::mix(0.0f, resolvedVolume->postFx.bloomIntensity, weight);
+        settings.bloomRadius = glm::mix(settings.bloomRadius, resolvedVolume->postFx.bloomRadius, weight);
+    }
+    if (resolvedVolume->postFx.colorAdjustEnabled) {
+        settings.colorAdjustEnabled = true;
+        settings.exposure = glm::mix(settings.exposure, resolvedVolume->postFx.exposure, weight);
+        settings.contrast = glm::mix(settings.contrast, resolvedVolume->postFx.contrast, weight);
+        settings.saturation = glm::mix(settings.saturation, resolvedVolume->postFx.saturation, weight);
+        settings.colorFilter = glm::mix(settings.colorFilter, resolvedVolume->postFx.colorFilter, weight);
+    }
+    if (resolvedVolume->postFx.motionBlurEnabled) {
+        settings.motionBlurEnabled = true;
+        settings.motionBlurStrength = glm::mix(0.0f, resolvedVolume->postFx.motionBlurStrength, weight);
+        settings.motionBlurThreshold = glm::mix(settings.motionBlurThreshold, resolvedVolume->postFx.motionBlurThreshold, weight);
+        settings.motionBlurClamp = glm::mix(settings.motionBlurClamp, resolvedVolume->postFx.motionBlurClamp, weight);
+    }
+    if (resolvedVolume->postFx.vignetteEnabled) {
+        settings.vignetteEnabled = true;
+        settings.vignetteIntensity = glm::mix(0.0f, resolvedVolume->postFx.vignetteIntensity, weight);
+        settings.vignetteSmoothness = glm::mix(settings.vignetteSmoothness, resolvedVolume->postFx.vignetteSmoothness, weight);
+    }
+    if (resolvedVolume->postFx.chromaticAberrationEnabled) {
+        settings.chromaticAberrationEnabled = true;
+        settings.chromaticAmount = glm::mix(0.0f, resolvedVolume->postFx.chromaticAmount, weight);
+    }
+    if (resolvedVolume->postFx.sharpenEnabled) {
+        settings.sharpenEnabled = true;
+        settings.sharpenStrength = glm::mix(0.0f, resolvedVolume->postFx.sharpenStrength, weight);
+    }
+    if (resolvedVolume->postFx.ambientOcclusionEnabled) {
+        settings.ambientOcclusionEnabled = true;
+        settings.aoRadius = glm::mix(settings.aoRadius, resolvedVolume->postFx.aoRadius, weight);
+        settings.aoStrength = glm::mix(0.0f, resolvedVolume->postFx.aoStrength, weight);
+    }
+
+    result.settings = settings;
+    result.resolvedVolumeId = resolvedVolume->id;
+    result.resolvedVolumeName = resolvedVolume->name;
+    result.resolvedBlend = weight;
+    return result;
 }
 
-unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory) {
-    PostFXSettings settings = gatherPostFX(sceneObjects);
+unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory) {
+    using Clock = std::chrono::steady_clock;
+
+    PostProcessStats& postStats = allowHistory ? viewportPostStats : previewPostStats;
+    postStats = {};
+
+    const auto totalStart = Clock::now();
+    const auto resolveStart = Clock::now();
+    ResolvedPostFX resolved = gatherPostFX(camera, sceneObjects);
+    PostFXSettings settings = resolved.settings;
+    postStats.resolveMs = std::chrono::duration<float, std::milli>(Clock::now() - resolveStart).count();
+    postStats.activeVolumeCount = resolved.activeVolumeCount;
+    postStats.resolvedVolumeId = resolved.resolvedVolumeId;
+    postStats.resolvedVolumeName = resolved.resolvedVolumeName;
+    postStats.resolvedBlend = resolved.resolvedBlend;
+    postStats.activeEffectCount = CountEnabledPostEffects(settings);
+    postStats.hdrEnabled = settings.hdrEnabled;
+
     GLint polygonMode[2] = { GL_FILL, GL_FILL };
 #ifdef GL_POLYGON_MODE
     glGetIntegerv(GL_POLYGON_MODE, polygonMode);
@@ -1893,14 +2837,19 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     bool wireframe = (polygonMode[0] == GL_LINE || polygonMode[1] == GL_LINE);
 
     bool wantsEffects = settings.enabled &&
-        (settings.bloomEnabled || settings.colorAdjustEnabled || settings.motionBlurEnabled ||
-         settings.vignetteEnabled || settings.chromaticAberrationEnabled || settings.ambientOcclusionEnabled);
+        (settings.hdrEnabled || settings.bloomEnabled || settings.colorAdjustEnabled ||
+         settings.motionBlurEnabled || settings.vignetteEnabled ||
+         settings.chromaticAberrationEnabled || settings.sharpenEnabled ||
+         settings.ambientOcclusionEnabled);
 
     if (wireframe) {
         wantsEffects = false;
+        postStats.activeEffectCount = 0;
+        postStats.hdrEnabled = false;
     }
 
     if (!wantsEffects || !postShader || width <= 0 || height <= 0 || sourceTexture == 0) {
+        postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
         if (allowHistory) {
             displayTexture = sourceTexture;
             clearHistory();
@@ -1909,13 +2858,14 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     }
 
     RenderTarget& target = allowHistory ? postTarget : previewPostTarget;
-    ensureRenderTarget(target, width, height);
+    ensureRenderTarget(target, width, height, false, true);
     if (allowHistory) {
-        ensureRenderTarget(historyTarget, width, height);
+        ensureRenderTarget(historyTarget, width, height, false, true);
     }
-    ensureRenderTarget(bloomTargetA, width, height);
-    ensureRenderTarget(bloomTargetB, width, height);
+    ensureRenderTarget(bloomTargetA, width, height, false, true);
+    ensureRenderTarget(bloomTargetB, width, height, false, true);
     if (target.fbo == 0 || target.texture == 0) {
+        postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
         if (allowHistory) {
             displayTexture = sourceTexture;
             clearHistory();
@@ -1923,21 +2873,22 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
         return sourceTexture;
     }
 
-    // --- Bloom using bright pass + separable blur (inspired by ProcessingPostFX) ---
     unsigned int bloomTex = 0;
     if (settings.bloomEnabled && brightShader && blurShader) {
-        // Bright pass
+        const auto bloomExtractStart = Clock::now();
         glDisable(GL_DEPTH_TEST);
         brightShader->use();
         brightShader->setFloat("threshold", settings.bloomThreshold);
+        brightShader->setFloat("softKnee", settings.bloomSoftKnee);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, sourceTexture);
         glBindFramebuffer(GL_FRAMEBUFFER, bloomTargetA.fbo);
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT);
         drawFullscreenQuad();
+        postStats.bloomExtractMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomExtractStart).count();
 
-        // Blur ping-pong
+        const auto bloomBlurStart = Clock::now();
         blurShader->use();
         float sigma = glm::max(settings.bloomRadius * 2.5f, 0.1f);
         int radius = static_cast<int>(glm::clamp(settings.bloomRadius * 4.0f, 2.0f, 12.0f));
@@ -1965,14 +2916,24 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glEnable(GL_DEPTH_TEST);
         bloomTex = pingTex;
+        postStats.bloomBlurMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomBlurStart).count();
+        postStats.bloomUsed = true;
     } else {
         bloomTex = 0;
         clearTarget(bloomTargetA);
         clearTarget(bloomTargetB);
     }
 
+    const bool hasHistory = allowHistory && historyValid;
+    postStats.motionBlurUsed = settings.motionBlurEnabled && hasHistory;
+
+    const auto compositeStart = Clock::now();
     glDisable(GL_DEPTH_TEST);
     postShader->use();
+    postShader->setBool("enableHDR", settings.hdrEnabled);
+    postShader->setInt("toneMapper", static_cast<int>(settings.toneMapper));
+    postShader->setFloat("whitePoint", settings.whitePoint);
+    postShader->setFloat("gamma", settings.gamma);
     postShader->setBool("enableBloom", settings.bloomEnabled && bloomTex != 0);
     postShader->setFloat("bloomIntensity", settings.bloomIntensity);
     postShader->setBool("enableColorAdjust", settings.colorAdjustEnabled);
@@ -1982,15 +2943,20 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     postShader->setVec3("colorFilter", settings.colorFilter);
     postShader->setBool("enableMotionBlur", settings.motionBlurEnabled);
     postShader->setFloat("motionBlurStrength", settings.motionBlurStrength);
-    postShader->setBool("hasHistory", allowHistory && historyValid);
+    postShader->setFloat("motionBlurThreshold", settings.motionBlurThreshold);
+    postShader->setFloat("motionBlurClamp", settings.motionBlurClamp);
+    postShader->setBool("hasHistory", hasHistory);
     postShader->setBool("enableVignette", settings.vignetteEnabled);
     postShader->setFloat("vignetteIntensity", settings.vignetteIntensity);
     postShader->setFloat("vignetteSmoothness", settings.vignetteSmoothness);
     postShader->setBool("enableChromatic", settings.chromaticAberrationEnabled);
     postShader->setFloat("chromaticAmount", settings.chromaticAmount);
+    postShader->setBool("enableSharpen", settings.sharpenEnabled);
+    postShader->setFloat("sharpenStrength", settings.sharpenStrength);
     postShader->setBool("enableAO", settings.ambientOcclusionEnabled);
     postShader->setFloat("aoRadius", settings.aoRadius);
     postShader->setFloat("aoStrength", settings.aoStrength);
+    postShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, sourceTexture);
@@ -2006,6 +2972,7 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
     drawFullscreenQuad();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glEnable(GL_DEPTH_TEST);
+    postStats.compositeMs = std::chrono::duration<float, std::milli>(Clock::now() - compositeStart).count();
 
     if (allowHistory) {
         displayTexture = target.texture;
@@ -2021,29 +2988,46 @@ unsigned int Renderer::applyPostProcessing(const std::vector<SceneObject>& scene
         clearHistory();
     }
 
+    postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
     return target.texture;
 }
 
 void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane, bool drawColliders, const std::vector<int>* selectedIds) {
     resetStats(viewportStats);
     activeStats = &viewportStats;
-    updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
-    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
-    if (drawColliders) {
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        glViewport(0, 0, currentWidth, currentHeight);
-        renderCollisionOverlay(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!camera.orthographic) {
+        updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     }
+    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
     std::vector<int> effectiveSelection;
     if (selectedIds && !selectedIds->empty()) {
         effectiveSelection = *selectedIds;
     } else if (selectedId >= 0) {
         effectiveSelection.push_back(selectedId);
     }
-    renderSelectionOutline(camera, sceneObjects, effectiveSelection, fovDeg, nearPlane, farPlane);
-    unsigned int result = applyPostProcessing(sceneObjects, viewportTexture, currentWidth, currentHeight, true);
-    displayTexture = result ? result : viewportTexture;
+    if (!camera.orthographic && drawColliders) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glViewport(0, 0, currentWidth, currentHeight);
+        renderCollisionOverlay(
+            camera,
+            sceneObjects,
+            currentWidth,
+            currentHeight,
+            fovDeg,
+            nearPlane,
+            farPlane,
+            effectiveSelection.empty() ? nullptr : &effectiveSelection);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+    if (!camera.orthographic) {
+        renderSelectionOutline(camera, sceneObjects, effectiveSelection, fovDeg, nearPlane, farPlane);
+        unsigned int result = applyPostProcessing(camera, sceneObjects, viewportTexture, currentWidth, currentHeight, true);
+        displayTexture = result ? result : viewportTexture;
+    } else {
+        displayTexture = viewportTexture;
+        viewportPostStats = {};
+        clearHistory();
+    }
     activeStats = nullptr;
 }
 
@@ -2054,8 +3038,9 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     resetStats(previewStats);
     activeStats = &previewStats;
     RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];
-    ensureRenderTarget(target, width, height);
+    ensureRenderTarget(target, width, height, false, true);
     if (target.fbo == 0) {
+        previewPostStats = {};
         activeStats = nullptr;
         return 0;
     }
@@ -2065,19 +3050,26 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    updateMirrorTargets(camera, sceneObjects, width, height, fovDeg, nearPlane, farPlane);
+    if (!camera.orthographic) {
+        updateMirrorTargets(camera, sceneObjects, width, height, fovDeg, nearPlane, farPlane);
+    }
     renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
-    if (!applyPostFX) {
+    if (camera.orthographic || !applyPostFX) {
+        previewPostStats = {};
         activeStats = nullptr;
         return target.texture;
     }
-    unsigned int processed = applyPostProcessing(sceneObjects, target.texture, width, height, false);
+    unsigned int processed = applyPostProcessing(camera, sceneObjects, target.texture, width, height, false);
     activeStats = nullptr;
     return processed ? processed : target.texture;
 }
 
-void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
-    if (!defaultShader || width <= 0 || height <= 0) return;
+void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, const std::vector<int>* previewIds) {
+    if (camera.orthographic || !defaultShader || width <= 0 || height <= 0) return;
+    std::unordered_set<int> previewSet;
+    if (previewIds && !previewIds->empty()) {
+        previewSet.insert(previewIds->begin(), previewIds->end());
+    }
 
     GLint prevPoly[2] = { GL_FILL, GL_FILL };
     glGetIntegerv(GL_POLYGON_MODE, prevPoly);
@@ -2097,7 +3089,7 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
     Shader* active = defaultShader;
     active->use();
     active->setMat4("view", camera.getViewMatrix());
-    active->setMat4("projection", glm::perspective(glm::radians(fovDeg), (float)width / (float)height, nearPlane, farPlane));
+    active->setMat4("projection", BuildCameraProjection(camera, width, height, fovDeg, nearPlane, farPlane));
     active->setVec3("viewPos", camera.position);
     active->setBool("unlit", true);
     active->setBool("hasOverlay", false);
@@ -2116,15 +3108,16 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
     glBindTexture(GL_TEXTURE_2D, debugWhiteTexture ? debugWhiteTexture : (texture1 ? texture1->GetID() : 0));
 
     for (const auto& obj : sceneObjects) {
+        if (!previewSet.empty() && previewSet.find(obj.id) == previewSet.end()) continue;
         if (!obj.enabled) continue;
         if (!(obj.hasCollider && obj.collider.enabled) && !(obj.hasRigidbody && obj.rigidbody.enabled)) continue;
 
         Mesh* meshToDraw = nullptr;
         glm::vec3 scale = obj.scale;
-        glm::vec3 position = obj.position;
-        glm::vec3 rotation = obj.rotation;
+        glm::vec3 colliderOffset(0.0f);
 
         if (obj.hasCollider && obj.collider.enabled) {
+            colliderOffset = obj.collider.offset;
             switch (obj.collider.type) {
                 case ColliderType::Box:
                     meshToDraw = cubeMesh;
@@ -2179,7 +3172,13 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
 
         if (!meshToDraw) continue;
 
-        glm::mat4 model = BuildSceneObjectModelMatrix(obj, &camera.position, &camera.up);
+        glm::mat4 model(1.0f);
+        model = glm::translate(model, obj.position);
+        model = glm::rotate(model, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::translate(model, colliderOffset);
+        model = glm::scale(model, scale);
         active->setMat4("model", model);
 
         meshToDraw->draw();
@@ -2192,6 +3191,9 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
 }
 
 void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, const std::vector<int>& selectedIds, float fovDeg, float nearPlane, float farPlane) {
+    if (camera.orthographic) {
+        return;
+    }
     const double nowSec = glfwGetTime();
     if (selectionOutlineLastUpdateSec <= 0.0 || nowSec < selectionOutlineLastUpdateSec) {
         selectionOutlineLastUpdateSec = nowSec;
@@ -2382,7 +3384,7 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     glGetBooleanv(GL_COLOR_WRITEMASK, prevColorMask);
 
     const glm::mat4 view = camera.getViewMatrix();
-    const glm::mat4 projection = glm::perspective(glm::radians(fovDeg), (float)currentWidth / (float)currentHeight, nearPlane, farPlane);
+    const glm::mat4 projection = BuildCameraProjection(camera, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     auto drawOutlinePass = [&](const std::vector<MaskDrawItem>& drawItems, float passWeight) {
         if (drawItems.empty() || passWeight <= 0.001f) return;
 

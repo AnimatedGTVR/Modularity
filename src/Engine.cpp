@@ -148,6 +148,8 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
         std::string val = line.substr(pos + 1);
         if (key == "color") {
             sscanf(val.c_str(), "%f,%f,%f", &outData.props.color.r, &outData.props.color.g, &outData.props.color.b);
+        } else if (key == "opacity" || key == "alpha") {
+            outData.props.alpha = std::clamp(std::stof(val), 0.0f, 1.0f);
         } else if (key == "ambient") {
             outData.props.ambientStrength = std::stof(val);
         } else if (key == "specular") {
@@ -189,6 +191,7 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     }
     f << "# Material\n";
     f << "color=" << data.props.color.r << "," << data.props.color.g << "," << data.props.color.b << "\n";
+    f << "opacity=" << data.props.alpha << "\n";
     f << "ambient=" << data.props.ambientStrength << "\n";
     f << "specular=" << data.props.specularStrength << "\n";
     f << "shininess=" << data.props.shininess << "\n";
@@ -294,6 +297,7 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             break;
         case ObjectType::PostFXNode:
             obj.hasPostFX = true;
+            obj.scale = glm::vec3(6.0f);
             obj.postFx.enabled = true;
             obj.postFx.bloomEnabled = true;
             obj.postFx.colorAdjustEnabled = true;
@@ -374,6 +378,42 @@ void Engine::applyProjectPipelineDefaults(bool force) {
     }
 }
 
+namespace {
+bool HasMeaningfulSpriteFrameScales(const UIElementComponent& ui) {
+    if (ui.spriteCustomFrameScales.size() != ui.spriteCustomFrames.size() ||
+        ui.spriteCustomFrameScales.empty()) {
+        return false;
+    }
+    for (const glm::vec2& scale : ui.spriteCustomFrameScales) {
+        if (std::abs(scale.x - 1.0f) > 0.0001f || std::abs(scale.y - 1.0f) > 0.0001f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+glm::vec2 ResolveSpriteFrameScale(const UIElementComponent& ui, int frameIndex) {
+    if (!ui.spriteCustomFramesEnabled || ui.spriteCustomFrames.empty()) {
+        return glm::vec2(1.0f);
+    }
+
+    const int frameCount = static_cast<int>(ui.spriteCustomFrames.size());
+    const int frame = std::clamp(frameIndex, 0, frameCount - 1);
+    if (HasMeaningfulSpriteFrameScales(ui)) {
+        const glm::vec2 authored = ui.spriteCustomFrameScales[static_cast<size_t>(frame)];
+        return glm::vec2(std::max(0.01f, authored.x), std::max(0.01f, authored.y));
+    }
+
+    const glm::ivec4& referenceRect = ui.spriteCustomFrames.front();
+    const glm::ivec4& frameRect = ui.spriteCustomFrames[static_cast<size_t>(frame)];
+    const float referenceWidth = static_cast<float>(std::max(1, referenceRect.z));
+    const float referenceHeight = static_cast<float>(std::max(1, referenceRect.w));
+    return glm::vec2(
+        static_cast<float>(std::max(1, frameRect.z)) / referenceWidth,
+        static_cast<float>(std::max(1, frameRect.w)) / referenceHeight);
+}
+}
+
 int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
     if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
         int total = static_cast<int>(obj.ui.spriteCustomFrames.size());
@@ -392,12 +432,7 @@ int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
 
 glm::vec2 Engine::getSpriteDisplaySize(const SceneObject& obj) const {
     glm::vec2 size(std::max(1.0f, obj.ui.size.x), std::max(1.0f, obj.ui.size.y));
-    if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
-        const glm::ivec4 rect = obj.ui.spriteCustomFrames[resolveSpriteSheetFrame(obj)];
-        size.x = std::max(size.x, static_cast<float>(std::max(1, rect.z)));
-        size.y = std::max(size.y, static_cast<float>(std::max(1, rect.w)));
-    }
-    return size;
+    return size * ResolveSpriteFrameScale(obj.ui, resolveSpriteSheetFrame(obj));
 }
 
 std::array<ImVec2, 4> Engine::buildSpriteSheetUvs(const SceneObject& obj) const {
@@ -1161,6 +1196,8 @@ void Engine::clearSelection() {
 Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     Camera cam;
     cam.position = obj.position;
+    cam.orthographic = isProject2DPipeline() || obj.camera.use2D;
+    cam.pixelsPerUnit = std::max(1.0f, obj.camera.pixelsPerUnit);
     glm::quat q = glm::quat(glm::radians(obj.rotation));
     glm::mat3 rot = glm::mat3_cast(q);
     cam.front = glm::normalize(rot * glm::vec3(0.0f, 0.0f, -1.0f));
@@ -1357,6 +1394,36 @@ void Engine::recordState(const char* /*reason*/) {
         undoStack.erase(undoStack.begin());
     }
     redoStack.clear();
+}
+
+void Engine::capturePlayModeSnapshot() {
+    playModeSnapshot.scene.objects = sceneObjects;
+    playModeSnapshot.scene.selectedIds = selectedObjectIds;
+    playModeSnapshot.scene.nextId = nextObjectId;
+    playModeSnapshot.hadUnsavedChanges = projectManager.currentProject.hasUnsavedChanges;
+    playModeSnapshot.valid = true;
+}
+
+void Engine::restorePlayModeSnapshot() {
+    if (!playModeSnapshot.valid) {
+        return;
+    }
+
+    sceneObjects = playModeSnapshot.scene.objects;
+    selectedObjectIds = playModeSnapshot.scene.selectedIds;
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+    nextObjectId = playModeSnapshot.scene.nextId;
+    projectManager.currentProject.hasUnsavedChanges = playModeSnapshot.hadUnsavedChanges;
+
+    sceneObjectIndexById.clear();
+    sceneObjectIndexData = nullptr;
+    sceneObjectIndexCount = 0;
+    markRuntimeScriptBindingsDirty();
+    aiAgentRuntimeStates.clear();
+    activePlayerId = -1;
+    updateHierarchyWorldTransforms();
+
+    playModeSnapshot = {};
 }
 
 void Engine::undo() {
@@ -1600,8 +1667,16 @@ void Engine::run() {
         pollProjectLoad();
         pollSceneLoad();
 
-        if (!showLauncher) {
+        const bool termsPending = requiresTermsOfServiceAcceptance();
+
+        if (!showLauncher && !termsPending) {
             handleKeyboardShortcuts();
+        }
+
+        if (termsPending) {
+            cursorLocked = false;
+            gameViewCursorLocked = false;
+            viewportController.setFocused(false);
         }
 
         if (gameViewCursorLocked) {
@@ -1645,7 +1720,9 @@ void Engine::run() {
             updateRigidbody2D(deltaTime);
         }
 
-        updateCameraFollow2D(deltaTime);
+        if (isPlaying) {
+            updateCameraFollow2D(deltaTime);
+        }
 
         updateSkeletalAnimations(deltaTime);
         updateHierarchyWorldTransforms();
@@ -1756,7 +1833,7 @@ void Engine::run() {
             }
         }
 
-        if (!showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
+        if (playerMode && !showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
             glm::mat4 view = camera.getViewMatrix();
             float renderFov = buildSettings.editorCameraFov;
             float renderNear = buildSettings.editorCameraNear;
@@ -1845,17 +1922,21 @@ void Engine::run() {
                 if (showProjectBrowser) renderProjectBrowserPanel();
             }
 
-        if (showBuildSettings) renderBuildSettingsWindow();
-        renderScriptEditorWindows();
-        renderViewport();
-        if (showGameViewport) renderGameViewportWindow();
-        if (showConsole) renderConsolePanel();
-        renderDialogs();
-        renderLatestErrorBar();
-    } else {
-        mainDockspaceId = 0;
-        renderPlayerViewport();
-    }
+            if (showBuildSettings) renderBuildSettingsWindow();
+            renderScriptEditorWindows();
+            renderViewport();
+            if (showGameViewport) renderGameViewportWindow();
+            if (showConsole) renderConsolePanel();
+            renderLatestErrorBar();
+        } else {
+            mainDockspaceId = 0;
+            renderPlayerViewport();
+        }
+
+        if (!playerMode) {
+            renderTermsOfServiceModal();
+            renderDialogs();
+        }
 
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame: UI rendering complete, finalizing frame..." << std::endl;
@@ -2630,52 +2711,102 @@ void Engine::handleKeyboardShortcuts() {
 #pragma region Runtime Updates
 void Engine::updateScripts(float delta) {
     if (sceneObjects.empty()) return;
+    if (runtimeScriptBindingsCachedVersion != runtimeScriptBindingsVersion) {
+        rebuildRuntimeScriptBindings();
+    }
+    if (runtimeScriptBindings.empty()) return;
+    refreshSceneObjectIndexCache();
 
-    for (auto& obj : sceneObjects) {
+    for (const RuntimeScriptBinding& binding : runtimeScriptBindings) {
+        auto objIt = sceneObjectIndexById.find(binding.objectId);
+        if (objIt == sceneObjectIndexById.end()) continue;
+        SceneObject& obj = sceneObjects[objIt->second];
         if (!obj.enabled) continue;
-        for (auto& sc : obj.scripts) {
-            if (!sc.enabled) continue;
-            if (sc.path.empty()) continue;
-            ScriptContext ctx;
-            ctx.engine = this;
-            ctx.object = &obj;
-            ctx.script = &sc;
-            if (sc.language == ScriptLanguage::CSharp) {
-                fs::path assembly = resolveManagedAssembly(sc.path);
-                if (assembly.empty() || !fs::exists(assembly)) continue;
-                managedRuntime.tickModule(assembly, sc.managedType, ctx, delta, specMode, testMode);
-            } else {
-                fs::path binary = resolveScriptBinary(sc.path);
-                std::error_code ec;
-                bool hasBinary = !binary.empty() && fs::exists(binary, ec) && !ec;
-                if (!hasBinary) {
-                    fs::path scriptPath(sc.path);
-                    std::string missingKey = scriptPath.lexically_normal().string();
-                    if (nativeScriptMissingLogged.insert(missingKey).second) {
-                        std::cerr << "[Script] Native script binary missing for '" << sc.path
-                                  << "'. Compile scripts before running/exporting.\n";
-                        addConsoleMessage(
-                            "Native script binary missing for '" + sc.path +
-                            "'. Compile scripts before running/exporting.",
-                            ConsoleMessageType::Warning);
-                    }
-                    continue;
-                }
+        if (binding.scriptIndex >= obj.scripts.size()) continue;
+        ScriptComponent& sc = obj.scripts[binding.scriptIndex];
+        if (!sc.enabled) continue;
+        if (sc.path.empty()) continue;
 
-                std::string binaryKey = binary.lexically_normal().string();
-                nativeScriptMissingLogged.erase(fs::path(sc.path).lexically_normal().string());
-                scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
-                const std::string& runtimeError = scriptRuntime.getLastError();
-                if (!runtimeError.empty()) {
-                    std::string errorKey = binaryKey + "|" + runtimeError;
-                    if (nativeScriptLoadErrorLogged.insert(errorKey).second) {
-                        std::cerr << "[Script] Failed to load native script '" << binary.filename().string()
-                                  << "': " << runtimeError << "\n";
-                        addConsoleMessage(
-                            "Failed to load native script '" + binary.filename().string() +
-                            "': " + runtimeError,
-                            ConsoleMessageType::Error);
+        ScriptContext ctx;
+        ctx.engine = this;
+        ctx.object = &obj;
+        ctx.script = &sc;
+        if (sc.language == ScriptLanguage::CSharp) {
+            fs::path assembly;
+            if (!sc.lastBinaryPath.empty()) {
+                if (sc.lastBinaryVerified) {
+                    assembly = fs::path(sc.lastBinaryPath);
+                } else {
+                    fs::path cachedAssembly = sc.lastBinaryPath;
+                    if (fs::exists(cachedAssembly)) {
+                        assembly = std::move(cachedAssembly);
+                        sc.lastBinaryVerified = true;
                     }
+                }
+            }
+            if (assembly.empty()) {
+                assembly = resolveManagedAssembly(sc.path);
+                sc.lastBinaryPath = assembly.string();
+                std::error_code ec;
+                sc.lastBinaryVerified = !assembly.empty() && fs::exists(assembly, ec) && !ec;
+            }
+            if (assembly.empty()) continue;
+            if (!sc.lastBinaryVerified) {
+                std::error_code ec;
+                if (!fs::exists(assembly, ec) || ec) continue;
+                sc.lastBinaryVerified = true;
+            }
+            managedRuntime.tickModule(assembly, sc.managedType, ctx, delta, specMode, testMode);
+        } else {
+            fs::path binary;
+            if (!sc.lastBinaryPath.empty()) {
+                if (sc.lastBinaryVerified) {
+                    binary = fs::path(sc.lastBinaryPath);
+                } else {
+                    fs::path cachedBinary = sc.lastBinaryPath;
+                    if (fs::exists(cachedBinary)) {
+                        binary = std::move(cachedBinary);
+                        sc.lastBinaryVerified = true;
+                    }
+                }
+            }
+            if (binary.empty()) {
+                binary = resolveScriptBinary(sc.path);
+                sc.lastBinaryPath = binary.string();
+            }
+            bool hasBinary = !binary.empty();
+            if (!hasBinary || !sc.lastBinaryVerified) {
+                std::error_code ec;
+                hasBinary = !binary.empty() && fs::exists(binary, ec) && !ec;
+                sc.lastBinaryVerified = hasBinary;
+            }
+            if (!hasBinary) {
+                fs::path scriptPath(sc.path);
+                std::string missingKey = scriptPath.lexically_normal().string();
+                if (nativeScriptMissingLogged.insert(missingKey).second) {
+                    std::cerr << "[Script] Native script binary missing for '" << sc.path
+                              << "'. Compile scripts before running/exporting.\n";
+                    addConsoleMessage(
+                        "Native script binary missing for '" + sc.path +
+                        "'. Compile scripts before running/exporting.",
+                        ConsoleMessageType::Warning);
+                }
+                continue;
+            }
+
+            std::string binaryKey = binary.lexically_normal().string();
+            nativeScriptMissingLogged.erase(fs::path(sc.path).lexically_normal().string());
+            scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+            const std::string& runtimeError = scriptRuntime.getLastError();
+            if (!runtimeError.empty()) {
+                std::string errorKey = binaryKey + "|" + runtimeError;
+                if (nativeScriptLoadErrorLogged.insert(errorKey).second) {
+                    std::cerr << "[Script] Failed to load native script '" << binary.filename().string()
+                              << "': " << runtimeError << "\n";
+                    addConsoleMessage(
+                        "Failed to load native script '" + binary.filename().string() +
+                        "': " + runtimeError,
+                        ConsoleMessageType::Error);
                 }
             }
         }
@@ -3122,22 +3253,55 @@ void Engine::updatePlayerController(float delta) {
 
 void Engine::updateRigidbody2D(float delta) {
     if (delta <= 0.0f) return;
+    refreshSceneObjectIndexCache();
     const float gravity = -9.81f;
     const float minEdgeThickness = 0.01f;
-    auto getParentOffset = [&](const SceneObject& obj) {
-        glm::vec2 offset(0.0f);
-        const SceneObject* current = &obj;
-        while (current && current->parentId >= 0) {
-            auto pit = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-                [&](const SceneObject& o) { return o.id == current->parentId; });
-            if (pit == sceneObjects.end()) break;
-            current = &(*pit);
-            if (current->hasUI && current->ui.type != UIElementType::None) {
-                offset += glm::vec2(current->ui.position.x, current->ui.position.y);
-            }
+    struct UiHierarchyCache {
+        const std::vector<SceneObject>& objects;
+        const std::unordered_map<int, size_t>& indexById;
+        std::unordered_map<int, glm::vec2> worldPositionCache;
+
+        UiHierarchyCache(const std::vector<SceneObject>& objects,
+                         const std::unordered_map<int, size_t>& indexById)
+            : objects(objects), indexById(indexById) {
+            worldPositionCache.reserve(objects.size());
         }
-        return offset;
+
+        glm::vec2 getWorldPosition(const SceneObject& obj) {
+            if (!(obj.hasUI && obj.ui.type != UIElementType::None)) {
+                return glm::vec2(obj.position.x, obj.position.y);
+            }
+
+            auto cached = worldPositionCache.find(obj.id);
+            if (cached != worldPositionCache.end()) {
+                return cached->second;
+            }
+
+            glm::vec2 pos(obj.ui.position.x, obj.ui.position.y);
+            if (obj.parentId >= 0) {
+                auto it = indexById.find(obj.parentId);
+                if (it != indexById.end()) {
+                    pos += getWorldPosition(objects[it->second]);
+                }
+            }
+
+            worldPositionCache.emplace(obj.id, pos);
+            return pos;
+        }
+
+        glm::vec2 getParentOffset(const SceneObject& obj) {
+            if (obj.parentId < 0) {
+                return glm::vec2(0.0f);
+            }
+
+            auto it = indexById.find(obj.parentId);
+            if (it == indexById.end()) {
+                return glm::vec2(0.0f);
+            }
+            return getWorldPosition(objects[it->second]);
+        }
     };
+    UiHierarchyCache uiHierarchyCache(sceneObjects, sceneObjectIndexById);
     auto rotatePoint = [](const glm::vec2& p, float c, float s) {
         return glm::vec2(p.x * c - p.y * s, p.x * s + p.y * c);
     };
@@ -3226,7 +3390,6 @@ void Engine::updateRigidbody2D(float delta) {
     struct Body2DRef {
         int index = -1;
         bool dynamic = false;
-        glm::vec2 parentOffset = glm::vec2(0.0f);
         glm::vec2 pivotWorld = glm::vec2(0.0f);
         float rotationRad = 0.0f;
         std::vector<glm::vec2> poly;
@@ -3238,6 +3401,8 @@ void Engine::updateRigidbody2D(float delta) {
     };
     std::vector<Body2DRef> bodies;
     bodies.reserve(sceneObjects.size());
+    float broadPhaseExtentSum = 0.0f;
+    size_t broadPhaseExtentCount = 0;
     for (auto& obj : sceneObjects) {
         if (!obj.enabled || !HasUIComponent(obj)) continue;
         bool hasDynamic = obj.hasRigidbody2D && obj.rigidbody2D.enabled;
@@ -3260,20 +3425,21 @@ void Engine::updateRigidbody2D(float delta) {
         Body2DRef body;
         body.index = static_cast<int>(&obj - &sceneObjects[0]);
         body.dynamic = hasDynamic;
-        body.parentOffset = getParentOffset(obj);
-        body.pivotWorld = body.parentOffset + obj.ui.position;
+        body.pivotWorld = uiHierarchyCache.getParentOffset(obj) + obj.ui.position;
         body.rotationRad = glm::radians(obj.ui.rotation);
         float c = std::cos(body.rotationRad);
         float s = std::sin(body.rotationRad);
         glm::vec2 size = glm::vec2(std::max(1.0f, obj.ui.size.x), std::max(1.0f, obj.ui.size.y));
         Collider2DType type = Collider2DType::Box;
         glm::vec2 boxSize = size;
+        glm::vec2 colliderOffset(0.0f);
         std::vector<glm::vec2> localPoints;
         bool closed = false;
         float edgeThickness = minEdgeThickness;
         if (hasCollider2D) {
             type = obj.collider2D.type;
             boxSize = obj.collider2D.boxSize;
+            colliderOffset = obj.collider2D.offset;
             if (boxSize.x <= 0.0f || boxSize.y <= 0.0f) {
                 boxSize = size;
             }
@@ -3284,10 +3450,10 @@ void Engine::updateRigidbody2D(float delta) {
         if (type == Collider2DType::Box) {
             glm::vec2 half = boxSize * 0.5f;
             localPoints = {
-                glm::vec2(-half.x, -half.y),
-                glm::vec2( half.x, -half.y),
-                glm::vec2( half.x,  half.y),
-                glm::vec2(-half.x,  half.y)
+                glm::vec2(-half.x, -half.y) + colliderOffset,
+                glm::vec2( half.x, -half.y) + colliderOffset,
+                glm::vec2( half.x,  half.y) + colliderOffset,
+                glm::vec2(-half.x,  half.y) + colliderOffset
             };
         } else if (type == Collider2DType::Polygon) {
             if (localPoints.empty()) {
@@ -3297,7 +3463,15 @@ void Engine::updateRigidbody2D(float delta) {
         } else if (type == Collider2DType::Edge) {
             if (localPoints.size() < 2) {
                 float half = boxSize.x * 0.5f;
-                localPoints = { glm::vec2(-half, 0.0f), glm::vec2(half, 0.0f) };
+                localPoints = {
+                    glm::vec2(-half, 0.0f) + colliderOffset,
+                    glm::vec2(half, 0.0f) + colliderOffset
+                };
+            }
+        }
+        if (type != Collider2DType::Box && (colliderOffset.x != 0.0f || colliderOffset.y != 0.0f)) {
+            for (glm::vec2& point : localPoints) {
+                point += colliderOffset;
             }
         }
 
@@ -3314,6 +3488,22 @@ void Engine::updateRigidbody2D(float delta) {
                 glm::vec2 b = rotatePoint(localPoints.front(), c, s) + body.pivotWorld;
                 body.segments.emplace_back(a, b);
             }
+            bool hasBounds = false;
+            for (const auto& seg : body.segments) {
+                const float halfThickness = std::max(minEdgeThickness, body.edgeThickness) * 0.5f;
+                glm::vec2 segMin(std::min(seg.first.x, seg.second.x) - halfThickness,
+                                 std::min(seg.first.y, seg.second.y) - halfThickness);
+                glm::vec2 segMax(std::max(seg.first.x, seg.second.x) + halfThickness,
+                                 std::max(seg.first.y, seg.second.y) + halfThickness);
+                if (!hasBounds) {
+                    body.aabbMin = segMin;
+                    body.aabbMax = segMax;
+                    hasBounds = true;
+                } else {
+                    body.aabbMin = glm::min(body.aabbMin, segMin);
+                    body.aabbMax = glm::max(body.aabbMax, segMax);
+                }
+            }
         } else {
             body.poly.reserve(localPoints.size());
             for (const auto& p : localPoints) {
@@ -3321,6 +3511,9 @@ void Engine::updateRigidbody2D(float delta) {
             }
             computeAabb(body.poly, body.aabbMin, body.aabbMax);
         }
+        glm::vec2 bodySize = body.aabbMax - body.aabbMin;
+        broadPhaseExtentSum += std::max(bodySize.x, bodySize.y);
+        ++broadPhaseExtentCount;
         bodies.push_back(body);
     }
 
@@ -3347,97 +3540,156 @@ void Engine::updateRigidbody2D(float delta) {
         }
     };
 
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        for (size_t j = i + 1; j < bodies.size(); ++j) {
-            Body2DRef& a = bodies[i];
-            Body2DRef& b = bodies[j];
-            if (!a.dynamic && !b.dynamic) continue;
+    const float broadPhaseCellSize = std::clamp(
+        broadPhaseExtentCount > 0 ? (broadPhaseExtentSum / static_cast<float>(broadPhaseExtentCount)) : 64.0f,
+        16.0f,
+        512.0f);
+    auto makeCellKey = [](int x, int y) -> uint64_t {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) |
+               static_cast<uint32_t>(y);
+    };
+    std::unordered_map<uint64_t, std::vector<int>> broadPhaseCells;
+    broadPhaseCells.reserve(bodies.size() * 2);
+    for (size_t bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
+        const Body2DRef& body = bodies[bodyIndex];
+        int minCellX = static_cast<int>(std::floor(body.aabbMin.x / broadPhaseCellSize));
+        int maxCellX = static_cast<int>(std::floor(body.aabbMax.x / broadPhaseCellSize));
+        int minCellY = static_cast<int>(std::floor(body.aabbMin.y / broadPhaseCellSize));
+        int maxCellY = static_cast<int>(std::floor(body.aabbMax.y / broadPhaseCellSize));
+        for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
+            for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
+                broadPhaseCells[makeCellKey(cellX, cellY)].push_back(static_cast<int>(bodyIndex));
+            }
+        }
+    }
 
-            auto polyVsPoly = [&](Body2DRef& pA, Body2DRef& pB) {
-                if (pA.poly.empty() || pB.poly.empty()) return;
-                if (pA.aabbMax.x <= pB.aabbMin.x || pA.aabbMin.x >= pB.aabbMax.x ||
-                    pA.aabbMax.y <= pB.aabbMin.y || pA.aabbMin.y >= pB.aabbMax.y) {
-                    return;
+    std::unordered_set<uint64_t> candidatePairs;
+    candidatePairs.reserve(bodies.size() * 4);
+    for (const auto& [cellKey, indices] : broadPhaseCells) {
+        (void)cellKey;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            for (size_t j = i + 1; j < indices.size(); ++j) {
+                uint32_t aIndex = static_cast<uint32_t>(std::min(indices[i], indices[j]));
+                uint32_t bIndex = static_cast<uint32_t>(std::max(indices[i], indices[j]));
+                candidatePairs.insert((static_cast<uint64_t>(aIndex) << 32) | bIndex);
+            }
+        }
+    }
+
+    for (uint64_t pairKey : candidatePairs) {
+        const size_t i = static_cast<size_t>(pairKey >> 32);
+        const size_t j = static_cast<size_t>(pairKey & 0xffffffffu);
+        if (i >= bodies.size() || j >= bodies.size()) continue;
+
+        Body2DRef& a = bodies[i];
+        Body2DRef& b = bodies[j];
+        if (!a.dynamic && !b.dynamic) continue;
+        if (a.aabbMax.x <= b.aabbMin.x || a.aabbMin.x >= b.aabbMax.x ||
+            a.aabbMax.y <= b.aabbMin.y || a.aabbMin.y >= b.aabbMax.y) {
+            continue;
+        }
+
+        auto polyVsPoly = [&](Body2DRef& pA, Body2DRef& pB) {
+            if (pA.poly.empty() || pB.poly.empty()) return;
+            glm::vec2 axis(0.0f);
+            float depth = 0.0f;
+            if (!satOverlap(pA.poly, pB.poly, axis, depth)) return;
+            glm::vec2 sep = axis * depth;
+            if (pA.dynamic && pB.dynamic) {
+                applySeparation(pA, -sep * 0.5f, -axis);
+                applySeparation(pB, sep * 0.5f, axis);
+            } else if (pA.dynamic) {
+                applySeparation(pA, -sep, -axis);
+            } else if (pB.dynamic) {
+                applySeparation(pB, sep, axis);
+            }
+        };
+
+        auto polyVsEdge = [&](Body2DRef& polyBody, Body2DRef& edgeBody) {
+            if (polyBody.poly.empty() || edgeBody.segments.empty()) return;
+            std::vector<glm::vec2> rect;
+            for (const auto& seg : edgeBody.segments) {
+                segmentRect(seg.first, seg.second, edgeBody.edgeThickness, rect);
+                if (rect.size() < 3) continue;
+                glm::vec2 rectMin(0.0f);
+                glm::vec2 rectMax(0.0f);
+                computeAabb(rect, rectMin, rectMax);
+                if (polyBody.aabbMax.x <= rectMin.x || polyBody.aabbMin.x >= rectMax.x ||
+                    polyBody.aabbMax.y <= rectMin.y || polyBody.aabbMin.y >= rectMax.y) {
+                    continue;
                 }
                 glm::vec2 axis(0.0f);
                 float depth = 0.0f;
-                if (!satOverlap(pA.poly, pB.poly, axis, depth)) return;
+                if (!satOverlap(polyBody.poly, rect, axis, depth)) continue;
                 glm::vec2 sep = axis * depth;
-                if (pA.dynamic && pB.dynamic) {
-                    applySeparation(pA, -sep * 0.5f, -axis);
-                    applySeparation(pB, sep * 0.5f, axis);
-                } else if (pA.dynamic) {
-                    applySeparation(pA, -sep, -axis);
-                } else if (pB.dynamic) {
-                    applySeparation(pB, sep, axis);
+                if (polyBody.dynamic && edgeBody.dynamic) {
+                    applySeparation(polyBody, -sep * 0.5f, -axis);
+                    applySeparation(edgeBody, sep * 0.5f, axis);
+                } else if (polyBody.dynamic) {
+                    applySeparation(polyBody, -sep, -axis);
+                } else if (edgeBody.dynamic) {
+                    applySeparation(edgeBody, sep, axis);
                 }
-            };
-
-            auto polyVsEdge = [&](Body2DRef& polyBody, Body2DRef& edgeBody) {
-                if (polyBody.poly.empty() || edgeBody.segments.empty()) return;
-                std::vector<glm::vec2> rect;
-                for (const auto& seg : edgeBody.segments) {
-                    segmentRect(seg.first, seg.second, edgeBody.edgeThickness, rect);
-                    if (rect.size() < 3) continue;
-                    glm::vec2 axis(0.0f);
-                    float depth = 0.0f;
-                    if (!satOverlap(polyBody.poly, rect, axis, depth)) continue;
-                    glm::vec2 sep = axis * depth;
-                    if (polyBody.dynamic && edgeBody.dynamic) {
-                        applySeparation(polyBody, -sep * 0.5f, -axis);
-                        applySeparation(edgeBody, sep * 0.5f, axis);
-                    } else if (polyBody.dynamic) {
-                        applySeparation(polyBody, -sep, -axis);
-                    } else if (edgeBody.dynamic) {
-                        applySeparation(edgeBody, sep, axis);
-                    }
-                }
-            };
-
-            if (!a.isEdge && !b.isEdge) {
-                polyVsPoly(a, b);
-            } else if (!a.isEdge && b.isEdge) {
-                polyVsEdge(a, b);
-            } else if (a.isEdge && !b.isEdge) {
-                polyVsEdge(b, a);
             }
+        };
+
+        if (!a.isEdge && !b.isEdge) {
+            polyVsPoly(a, b);
+        } else if (!a.isEdge && b.isEdge) {
+            polyVsEdge(a, b);
+        } else if (a.isEdge && !b.isEdge) {
+            polyVsEdge(b, a);
         }
     }
 }
 
 void Engine::updateCameraFollow2D(float delta) {
     if (sceneObjects.empty()) return;
+    refreshSceneObjectIndexCache();
+    struct UiHierarchyCache {
+        const std::vector<SceneObject>& objects;
+        const std::unordered_map<int, size_t>& indexById;
+        std::unordered_map<int, glm::vec2> worldPositionCache;
 
-    std::unordered_map<int, size_t> indexById;
-    indexById.reserve(sceneObjects.size());
-    for (size_t i = 0; i < sceneObjects.size(); ++i) {
-        indexById[sceneObjects[i].id] = i;
-    }
-
-    auto getUiWorldPosition = [&](const SceneObject& target) {
-        glm::vec2 pos(target.ui.position.x, target.ui.position.y);
-        int parentId = target.parentId;
-        while (parentId >= 0) {
-            auto it = indexById.find(parentId);
-            if (it == indexById.end()) break;
-            const SceneObject& parent = sceneObjects[it->second];
-            if (parent.hasUI && parent.ui.type != UIElementType::None) {
-                pos += glm::vec2(parent.ui.position.x, parent.ui.position.y);
-            }
-            parentId = parent.parentId;
+        UiHierarchyCache(const std::vector<SceneObject>& objects,
+                         const std::unordered_map<int, size_t>& indexById)
+            : objects(objects), indexById(indexById) {
+            worldPositionCache.reserve(objects.size());
         }
-        return pos;
+
+        glm::vec2 getWorldPosition(const SceneObject& obj) {
+            if (!(obj.hasUI && obj.ui.type != UIElementType::None)) {
+                return glm::vec2(obj.position.x, obj.position.y);
+            }
+
+            auto cached = worldPositionCache.find(obj.id);
+            if (cached != worldPositionCache.end()) {
+                return cached->second;
+            }
+
+            glm::vec2 pos(obj.ui.position.x, obj.ui.position.y);
+            if (obj.parentId >= 0) {
+                auto it = indexById.find(obj.parentId);
+                if (it != indexById.end()) {
+                    pos += getWorldPosition(objects[it->second]);
+                }
+            }
+
+            worldPositionCache.emplace(obj.id, pos);
+            return pos;
+        }
     };
+    UiHierarchyCache uiHierarchyCache(sceneObjects, sceneObjectIndexById);
 
     for (auto& obj : sceneObjects) {
         if (!obj.enabled || !obj.hasCamera || !obj.hasCameraFollow2D || !obj.cameraFollow2D.enabled) continue;
         if (obj.cameraFollow2D.targetId < 0) continue;
-        auto targetIt = indexById.find(obj.cameraFollow2D.targetId);
-        if (targetIt == indexById.end()) continue;
+        auto targetIt = sceneObjectIndexById.find(obj.cameraFollow2D.targetId);
+        if (targetIt == sceneObjectIndexById.end()) continue;
 
         const SceneObject& target = sceneObjects[targetIt->second];
         glm::vec2 desired2D = (target.hasUI && target.ui.type != UIElementType::None)
-            ? getUiWorldPosition(target)
+            ? uiHierarchyCache.getWorldPosition(target)
             : glm::vec2(target.position.x, target.position.y);
         desired2D += obj.cameraFollow2D.offset;
         glm::vec3 desired(desired2D.x, desired2D.y, obj.position.z);
@@ -3453,8 +3705,8 @@ void Engine::updateCameraFollow2D(float delta) {
             obj.localPosition = obj.position;
             obj.localInitialized = true;
         } else {
-            auto parentIt = indexById.find(obj.parentId);
-            if (parentIt != indexById.end()) {
+            auto parentIt = sceneObjectIndexById.find(obj.parentId);
+            if (parentIt != sceneObjectIndexById.end()) {
                 const SceneObject& parent = sceneObjects[parentIt->second];
                 updateLocalFromWorld(obj,
                                      parent.position,
@@ -3690,13 +3942,70 @@ void Engine::initializeLocalTransformsFromWorld(int sceneVersion) {
     updateHierarchyWorldTransforms();
 }
 
+void Engine::refreshSceneObjectIndexCache() {
+    const SceneObject* currentData = sceneObjects.empty() ? nullptr : sceneObjects.data();
+    if (sceneObjectIndexData == currentData &&
+        sceneObjectIndexCount == sceneObjects.size() &&
+        sceneObjectIndexById.size() == sceneObjects.size()) {
+        return;
+    }
+
+    sceneObjectIndexById.clear();
+    sceneObjectIndexById.reserve(sceneObjects.size());
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+        sceneObjectIndexById[sceneObjects[i].id] = i;
+    }
+    sceneObjectIndexData = currentData;
+    sceneObjectIndexCount = sceneObjects.size();
+}
+
+void Engine::rebuildRuntimeScriptBindings() {
+    runtimeScriptBindings.clear();
+    runtimeScriptBindings.reserve(sceneObjects.size());
+    for (const auto& obj : sceneObjects) {
+        if (obj.scripts.empty()) continue;
+        for (size_t i = 0; i < obj.scripts.size(); ++i) {
+            runtimeScriptBindings.push_back({obj.id, i});
+        }
+    }
+    runtimeScriptBindingsCachedVersion = runtimeScriptBindingsVersion;
+}
+
 void Engine::updateHierarchyWorldTransforms() {
     if (sceneObjects.empty()) return;
+    refreshSceneObjectIndexCache();
 
-    std::unordered_map<int, size_t> indexById;
-    indexById.reserve(sceneObjects.size());
-    for (size_t i = 0; i < sceneObjects.size(); ++i) {
-        indexById[sceneObjects[i].id] = i;
+    bool hasHierarchyLinks = false;
+    for (const auto& obj : sceneObjects) {
+        if (obj.parentId != -1 || !obj.childIds.empty()) {
+            hasHierarchyLinks = true;
+            break;
+        }
+    }
+
+    if (!hasHierarchyLinks) {
+        const glm::vec3 rootPos(0.0f);
+        const glm::quat rootRot(1.0f, 0.0f, 0.0f, 0.0f);
+        const glm::vec3 rootScale(1.0f);
+        for (auto& obj : sceneObjects) {
+            if (!obj.localInitialized) {
+                obj.localPosition = obj.position;
+                obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+                obj.localScale = obj.scale;
+                obj.localInitialized = true;
+            }
+
+            bool useWorldAuthoritative = obj.hasRigidbody && obj.rigidbody.enabled && !obj.rigidbody.isKinematic;
+            if (useWorldAuthoritative) {
+                updateLocalFromWorld(obj, rootPos, rootRot, rootScale);
+                continue;
+            }
+
+            obj.position = obj.localPosition;
+            obj.rotation = NormalizeEulerDegrees(obj.localRotation);
+            obj.scale = obj.localScale;
+        }
+        return;
     }
 
     auto unwrapNear = [](float angle, float reference) {
@@ -3715,8 +4024,8 @@ void Engine::updateHierarchyWorldTransforms() {
         [&](int id, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
         if (visited.count(id)) return;
         if (visiting.count(id)) return;
-        auto itIndex = indexById.find(id);
-        if (itIndex == indexById.end()) return;
+        auto itIndex = sceneObjectIndexById.find(id);
+        if (itIndex == sceneObjectIndexById.end()) return;
 
         visiting.insert(id);
         SceneObject& obj = sceneObjects[itIndex->second];
@@ -3766,7 +4075,7 @@ void Engine::updateHierarchyWorldTransforms() {
     };
 
     for (const auto& obj : sceneObjects) {
-        if (obj.parentId == -1 || indexById.find(obj.parentId) == indexById.end()) {
+        if (obj.parentId == -1 || sceneObjectIndexById.find(obj.parentId) == sceneObjectIndexById.end()) {
             processNode(obj.id, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f));
         }
     }
@@ -5316,6 +5625,7 @@ void Engine::loadScene(const std::string& sceneName) {
     int sceneVersion = 9;
     float loadedTimeOfDay = -1.0f;
     if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion, &loadedTimeOfDay)) {
+        markRuntimeScriptBindingsDirty();
         initializeLocalTransformsFromWorld(sceneVersion);
         rebuildSkeletalBindings();
         undoStack.clear();
@@ -5348,6 +5658,7 @@ void Engine::createNewScene(const std::string& sceneName) {
     }
 
     sceneObjects.clear();
+    markRuntimeScriptBindingsDirty();
     clearSelection();
     nextObjectId = 0;
     undoStack.clear();
@@ -5378,6 +5689,7 @@ void Engine::addObject(ObjectType type, const std::string& baseName) {
     obj.localScale = obj.scale;
     obj.localInitialized = true;
     sceneObjects.push_back(obj);
+    markRuntimeScriptBindingsDirty();
     setPrimarySelection(id);
     if (projectManager.currentProject.isLoaded) {
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -5452,6 +5764,7 @@ void Engine::duplicateSelected() {
         newObj.ui = it->ui;
         
         sceneObjects.push_back(newObj);
+        markRuntimeScriptBindingsDirty();
         setPrimarySelection(id);
         if (projectManager.currentProject.isLoaded) {
             projectManager.currentProject.hasUnsavedChanges = true;
@@ -5510,6 +5823,7 @@ void Engine::deleteSelected() {
 
     if (it != sceneObjects.end()) {
         sceneObjects.erase(it, sceneObjects.end());
+        markRuntimeScriptBindingsDirty();
         for (auto& obj : sceneObjects) {
             if (toDelete.count(obj.parentId) > 0) {
                 obj.parentId = -1;
@@ -5675,11 +5989,11 @@ SceneObject* Engine::findObjectByName(const std::string& name) {
 }
 
 SceneObject* Engine::findObjectById(int id) {
-    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [&](const SceneObject& o) {
-        return o.id == id;
-    });
-    if (it != sceneObjects.end()) return &(*it);
-    return nullptr;
+    refreshSceneObjectIndexCache();
+    auto it = sceneObjectIndexById.find(id);
+    if (it == sceneObjectIndexById.end()) return nullptr;
+    if (it->second >= sceneObjects.size()) return nullptr;
+    return &sceneObjects[it->second];
 }
 #pragma endregion
 
@@ -6197,6 +6511,7 @@ void Engine::updateCompileJob() {
                     for (auto& sc : obj.scripts) {
                         if (sc.language != ScriptLanguage::CSharp) continue;
                         sc.lastBinaryPath = result.binaryPath.string();
+                        sc.lastBinaryVerified = true;
                     }
                 }
             } else {
@@ -6207,6 +6522,7 @@ void Engine::updateCompileJob() {
                         std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
                         if (scPathNorm == result.compiledSource) {
                             sc.lastBinaryPath = result.binaryPath.string();
+                            sc.lastBinaryVerified = true;
                         }
                     }
                 }

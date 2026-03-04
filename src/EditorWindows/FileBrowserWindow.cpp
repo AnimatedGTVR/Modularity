@@ -1122,6 +1122,7 @@ void Engine::renderFileBrowserPanel() {
 
         if (created) {
             fileBrowser.selectedFile = target;
+            fileBrowser.needsRefresh = true;
             fileBrowser.refresh();
             addConsoleMessage("Created: " + target.string(), ConsoleMessageType::Success);
             return true;
@@ -1268,6 +1269,11 @@ void Engine::renderFileBrowserPanel() {
             fileBrowser.needsRefresh = true;
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear search");
+    }
+
+    if (fileBrowser.isRefreshing()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Refreshing...");
     }
 
     ImGui::SameLine();
@@ -1693,6 +1699,19 @@ void Engine::renderFileBrowserPanel() {
                             loadPixelSpriteDocument(entry.path());
                         }
                         if (ImGui::MenuItem("Create Sprite2D")) {
+                            int canvasId = -1;
+                            for (const auto& obj : sceneObjects) {
+                                if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
+                                    canvasId = obj.id;
+                                    break;
+                                }
+                            }
+                            if (canvasId < 0) {
+                                addObject(ObjectType::Canvas, "Canvas");
+                                if (!sceneObjects.empty()) {
+                                    canvasId = sceneObjects.back().id;
+                                }
+                            }
                             addObject(ObjectType::Sprite2D, entry.path().stem().string());
                             if (!sceneObjects.empty()) {
                                 SceneObject& created = sceneObjects.back();
@@ -1703,6 +1722,9 @@ void Engine::renderFileBrowserPanel() {
                                         created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
                                                                     static_cast<float>(tex->GetHeight()));
                                     }
+                                }
+                                if (canvasId >= 0) {
+                                    setParent(created.id, canvasId);
                                 }
                                 projectManager.currentProject.hasUnsavedChanges = true;
                             }
@@ -1964,6 +1986,19 @@ void Engine::renderFileBrowserPanel() {
                         loadPixelSpriteDocument(entry.path());
                     }
                     if (ImGui::MenuItem("Create Sprite2D")) {
+                        int canvasId = -1;
+                        for (const auto& obj : sceneObjects) {
+                            if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
+                                canvasId = obj.id;
+                                break;
+                            }
+                        }
+                        if (canvasId < 0) {
+                            addObject(ObjectType::Canvas, "Canvas");
+                            if (!sceneObjects.empty()) {
+                                canvasId = sceneObjects.back().id;
+                            }
+                        }
                         addObject(ObjectType::Sprite2D, entry.path().stem().string());
                         if (!sceneObjects.empty()) {
                             SceneObject& created = sceneObjects.back();
@@ -1974,6 +2009,9 @@ void Engine::renderFileBrowserPanel() {
                                     created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
                                                                 static_cast<float>(tex->GetHeight()));
                                 }
+                            }
+                            if (canvasId >= 0) {
+                                setParent(created.id, canvasId);
                             }
                             projectManager.currentProject.hasUnsavedChanges = true;
                         }

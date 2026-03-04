@@ -83,11 +83,28 @@ struct Tokenizer {
                     break;
             }
 
-            if (std::isdigit(static_cast<unsigned char>(c)) || (c == '-' && pos + 1 < input.size() && std::isdigit(static_cast<unsigned char>(input[pos + 1])))) {
+            if (std::isdigit(static_cast<unsigned char>(c)) ||
+                ((c == '-' || c == '+') && pos + 1 < input.size() &&
+                 (std::isdigit(static_cast<unsigned char>(input[pos + 1])) || input[pos + 1] == '.')) ||
+                (c == '.' && pos + 1 < input.size() && std::isdigit(static_cast<unsigned char>(input[pos + 1])))) {
                 token.type = TokenType::Number;
                 token.text.push_back(input[pos++]);
-                while (pos < input.size() && std::isdigit(static_cast<unsigned char>(input[pos]))) {
-                    token.text.push_back(input[pos++]);
+                bool seenExponent = false;
+                while (pos < input.size()) {
+                    const char next = input[pos];
+                    if (std::isdigit(static_cast<unsigned char>(next)) || next == '.') {
+                        token.text.push_back(input[pos++]);
+                        continue;
+                    }
+                    if (!seenExponent && (next == 'e' || next == 'E')) {
+                        seenExponent = true;
+                        token.text.push_back(input[pos++]);
+                        if (pos < input.size() && (input[pos] == '+' || input[pos] == '-')) {
+                            token.text.push_back(input[pos++]);
+                        }
+                        continue;
+                    }
+                    break;
                 }
                 return token;
             }
@@ -158,6 +175,12 @@ struct Parser {
     bool parseInt(int& out) {
         if (peek().type != TokenType::Number) return false;
         out = std::stoi(advance().text);
+        return true;
+    }
+
+    bool parseFloat(float& out) {
+        if (peek().type != TokenType::Number) return false;
+        out = std::stof(advance().text);
         return true;
     }
 
@@ -300,6 +323,51 @@ struct Parser {
         result.document.names = parsedNames;
     }
 
+    void parseScalesBlock() {
+        std::vector<glm::vec2> parsedScales;
+        if (!match(TokenType::LBrace)) {
+            error(peek().line, "expected '{' after scales");
+            return;
+        }
+
+        while (peek().type != TokenType::End && peek().type != TokenType::RBrace) {
+            glm::vec2 scale(1.0f);
+            const int entryLine = peek().line;
+            bool ok = true;
+            if (!parseFloat(scale.x)) {
+                error(peek().line, "unexpected token '" + peek().text + "' inside scales block");
+                ok = false;
+            } else if (!match(TokenType::Comma)) {
+                error(peek().line, "expected ',' inside scales block");
+                ok = false;
+            } else if (!parseFloat(scale.y)) {
+                error(peek().line, "unexpected token '" + peek().text + "' inside scales block");
+                ok = false;
+            }
+
+            if (ok) {
+                if (!match(TokenType::Semicolon)) {
+                    error(peek().line, "expected ';' after scale entry");
+                }
+                scale.x = std::max(0.01f, scale.x);
+                scale.y = std::max(0.01f, scale.y);
+                parsedScales.push_back(scale);
+            } else {
+                while (peek().type != TokenType::End && peek().type != TokenType::Semicolon && peek().type != TokenType::RBrace) {
+                    advance();
+                }
+                match(TokenType::Semicolon);
+                parsedScales.clear();
+                while (peek().type != TokenType::End && peek().line == entryLine && peek().type != TokenType::RBrace) {
+                    advance();
+                }
+            }
+        }
+
+        match(TokenType::RBrace);
+        result.document.scales = parsedScales;
+    }
+
     void parseLayersBlock() {
         if (!match(TokenType::LBrace)) {
             error(peek().line, "expected '{' after info Layers");
@@ -350,6 +418,7 @@ struct Parser {
     void parseAtlasInfoBlock() {
         std::vector<glm::ivec4> defaultRects = result.document.rects;
         std::vector<std::string> defaultNames = result.document.names;
+        std::vector<glm::vec2> defaultScales = result.document.scales;
         if (!match(TokenType::LBrace)) {
             error(peek().line, "expected '{' after info AtlasInfo");
             return;
@@ -363,6 +432,7 @@ struct Parser {
             const std::string blockName = advance().text;
             if (blockName == "rects") parseRectsBlock();
             else if (blockName == "names") parseNamesBlock();
+            else if (blockName == "scales") parseScalesBlock();
             else {
                 error(peek().line, "unexpected block '" + blockName + "' inside info AtlasInfo");
                 if (peek().type == TokenType::LBrace) skipUnknownBlock();
@@ -371,6 +441,7 @@ struct Parser {
         match(TokenType::RBrace);
         if (result.document.rects.empty() && !defaultRects.empty()) result.document.rects = defaultRects;
         if (result.document.names.empty() && !defaultNames.empty()) result.document.names = defaultNames;
+        if (result.document.scales.empty() && !defaultScales.empty()) result.document.scales = defaultScales;
     }
 
     void parseInfoBlock() {
@@ -401,10 +472,19 @@ struct Parser {
         } else if (result.document.names.size() > result.document.rects.size()) {
             result.document.names.resize(result.document.rects.size());
         }
+        if (result.document.scales.size() < result.document.rects.size()) {
+            result.document.scales.resize(result.document.rects.size(), glm::vec2(1.0f));
+        } else if (result.document.scales.size() > result.document.rects.size()) {
+            result.document.scales.resize(result.document.rects.size());
+        }
         for (size_t i = 0; i < result.document.names.size(); ++i) {
             if (result.document.names[i].empty()) {
                 result.document.names[i] = "Rect_" + std::to_string(i);
             }
+        }
+        for (glm::vec2& scale : result.document.scales) {
+            scale.x = std::max(0.01f, scale.x);
+            scale.y = std::max(0.01f, scale.y);
         }
         for (size_t i = 0; i < result.document.layers.size(); ++i) {
             if (result.document.layers[i].name.empty()) {
@@ -494,8 +574,15 @@ std::string WriteSpritesheet(const SpritesheetDocument& inputDocument) {
     if (document.expectRects <= 0) document.expectRects = static_cast<int>(document.rects.size());
     if (document.lastSavedUtc.empty()) document.lastSavedUtc = CurrentUtcIso8601();
     if (document.names.size() < document.rects.size()) document.names.resize(document.rects.size());
+    if (document.names.size() > document.rects.size()) document.names.resize(document.rects.size());
+    if (document.scales.size() < document.rects.size()) document.scales.resize(document.rects.size(), glm::vec2(1.0f));
+    if (document.scales.size() > document.rects.size()) document.scales.resize(document.rects.size());
     for (size_t i = 0; i < document.names.size(); ++i) {
         if (document.names[i].empty()) document.names[i] = "Rect_" + std::to_string(i);
+    }
+    for (glm::vec2& scale : document.scales) {
+        scale.x = std::max(0.01f, scale.x);
+        scale.y = std::max(0.01f, scale.y);
     }
     for (size_t i = 0; i < document.layers.size(); ++i) {
         if (document.layers[i].name.empty()) document.layers[i].name = "Layer_" + std::to_string(i);
@@ -527,6 +614,14 @@ std::string WriteSpritesheet(const SpritesheetDocument& inputDocument) {
         out << "        " << name << ";\n";
     }
     out << "    }\n";
+    out << "\n";
+    out << "    scales\n";
+    out << "    {\n";
+    out << "        // Per-clip display multipliers. Leave these at 1,1 to use the clip rect size ratio automatically.\n";
+    for (const glm::vec2& scale : document.scales) {
+        out << "        " << scale.x << "," << scale.y << ";\n";
+    }
+    out << "    }\n";
     out << "}\n\n";
     out << "info Layers\n";
     out << "{\n";
@@ -554,12 +649,14 @@ void RunSpritesheetParserSelfTests() {
         "Expect_Layers = 1;\n"
         "Expect_rects = 2;\n"
         "Confirmation.StrictValidation = false;\n"
-        "info AtlasInfo { rects { 1,2,3,4; 5,6,7,8; } names { A; ; } }\n"
+        "info AtlasInfo { rects { 1,2,3,4; 5,6,7,8; } names { A; ; } scales { 1,1; 1.5,0.5; } }\n"
         "info Layers { }\n";
     const auto validResult = ParseSpritesheet(valid);
     assert(validResult.document.rects.size() == 2);
     assert(validResult.document.names.size() == 2);
     assert(validResult.document.names[1] == "Rect_1");
+    assert(validResult.document.scales.size() == 2);
+    assert(std::abs(validResult.document.scales[1].x - 1.5f) < 0.001f);
 
     const std::string whitespace =
         "LinkedSpriteName= \"A\" ;\n"
@@ -568,16 +665,17 @@ void RunSpritesheetParserSelfTests() {
         "Expect_Layers= 1 ;\n"
         "Expect_rects =2;\n"
         "Confirmation.StrictValidation = false\n"
-        "info AtlasInfo{rects{1,1,1,1;2,2,2,2;}names{X;Y;}}\n"
+        "info AtlasInfo{rects{1,1,1,1;2,2,2,2;}names{X;Y;}scales{1,1;0.75,1.25;}}\n"
         "info Layers{}\n";
     const auto whitespaceResult = ParseSpritesheet(whitespace);
     assert(whitespaceResult.document.linkedSpriteName == "A");
     assert(whitespaceResult.document.rects.size() == 2);
+    assert(std::abs(whitespaceResult.document.scales[1].y - 1.25f) < 0.001f);
 
     const std::string invalid =
         "LinkedSpriteName \"bad\";\n"
         "SpriteVersion == 2;\n"
-        "info AtlasInfo { rects { 1,2,3; ; } names { A; } }\n";
+        "info AtlasInfo { rects { 1,2,3; ; } names { A; } scales { nope; } }\n";
     const auto invalidResult = ParseSpritesheet(invalid);
     assert(invalidResult.document.linkedSpriteName.empty());
     assert(invalidResult.document.spriteVersion == 1);

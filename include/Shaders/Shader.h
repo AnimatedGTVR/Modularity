@@ -2,6 +2,7 @@
 #define SHADER_H
 
 #include <string>
+#include <unordered_map>
 #include "../../ThirdParty/glm/glm.hpp"
 
 class Shader
@@ -23,9 +24,11 @@ public:
     void setMat4Array(const std::string &name, const glm::mat4 *data, int count) const;
 
 private:
+    int getUniformLocation(const std::string& name) const;
     std::string readShaderFile(const char* filePath);
     void compileShaders(const char* vertexSource, const char* fragmentSource);
     void checkCompileErrors(unsigned int shader, std::string type);
+    mutable std::unordered_map<std::string, int> uniformLocationCache;
 };
 
 #endif

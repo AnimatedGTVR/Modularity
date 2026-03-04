@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <future>
 #include "Common.h"
 
 #pragma region File Browser Enums
@@ -28,6 +29,13 @@ enum class FileCategory {
 
 class FileBrowser {
 public:
+    struct RefreshResult {
+        fs::path path;
+        std::string filter;
+        bool showHiddenFiles = false;
+        std::vector<fs::directory_entry> entries;
+    };
+
     fs::path currentPath;
     fs::path selectedFile;
     fs::path projectRoot;  // Root of current project
@@ -42,11 +50,14 @@ public:
     
     std::vector<fs::path> pathHistory;
     int historyIndex = -1;
+    std::future<RefreshResult> refreshFuture;
+    bool refreshInFlight = false;
 
     FileBrowser();
 
     // Call refresh after mutating currentPath/searchFilter/showHiddenFiles.
     void refresh();
+    bool isRefreshing() const { return refreshInFlight; }
     void navigateUp();
     void navigateTo(const fs::path& path);
     void navigateBack();

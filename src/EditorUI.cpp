@@ -1,4 +1,5 @@
 #include "EditorUI.h"
+#include <chrono>
 #include <unordered_map>
 
 namespace {
@@ -29,6 +30,46 @@ bool hasScrollableAxis(const ImGuiWindow* window, int axis) {
         return false;
     }
     return window->ScrollMax[axis] > 0.0f;
+}
+
+FileBrowser::RefreshResult BuildFileBrowserRefreshResult(const fs::path& currentPath,
+                                                        const std::string& searchFilter,
+                                                        bool showHiddenFiles) {
+    FileBrowser::RefreshResult result;
+    result.path = currentPath;
+    result.filter = searchFilter;
+    result.showHiddenFiles = showHiddenFiles;
+
+    std::string filterLower = searchFilter;
+    std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(), ::tolower);
+
+    try {
+        for (const auto& entry : fs::directory_iterator(currentPath)) {
+            std::string filename = entry.path().filename().string();
+            if (!showHiddenFiles && !filename.empty() && filename[0] == '.') {
+                continue;
+            }
+
+            if (!filterLower.empty()) {
+                std::string filenameLower = filename;
+                std::transform(filenameLower.begin(), filenameLower.end(), filenameLower.begin(), ::tolower);
+                if (filenameLower.find(filterLower) == std::string::npos) {
+                    continue;
+                }
+            }
+
+            result.entries.push_back(entry);
+        }
+        std::sort(result.entries.begin(), result.entries.end(), [](const auto& a, const auto& b) {
+            if (a.is_directory() != b.is_directory()) {
+                return a.is_directory() > b.is_directory();
+            }
+            return a.path().filename().string() < b.path().filename().string();
+        });
+    } catch (...) {
+    }
+
+    return result;
 }
 
 bool isTouchScrollableWindow(const ImGuiWindow* window) {
@@ -72,32 +113,32 @@ FileBrowser::FileBrowser() {
 }
 
 void FileBrowser::refresh() {
-    entries.clear();
-    try {
-        for (const auto& entry : fs::directory_iterator(currentPath)) {
-            // Skip hidden files if not showing them
-            std::string filename = entry.path().filename().string();
-            if (!showHiddenFiles && !filename.empty() && filename[0] == '.') {
-                continue;
+    if (refreshInFlight && refreshFuture.valid()) {
+        const auto status = refreshFuture.wait_for(std::chrono::milliseconds(0));
+        if (status == std::future_status::ready) {
+            RefreshResult result = refreshFuture.get();
+            refreshInFlight = false;
+            if (result.path == currentPath &&
+                result.filter == searchFilter &&
+                result.showHiddenFiles == showHiddenFiles) {
+                entries = std::move(result.entries);
+                needsRefresh = false;
             }
-            
-            // Apply search filter if any
-            if (!matchesFilter(entry)) {
-                continue;
-            }
-            
-            entries.push_back(entry);
         }
-        // Sort: folders first, then alphabetically
-        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
-            if (a.is_directory() != b.is_directory()) {
-                return a.is_directory() > b.is_directory();
-            }
-            return a.path().filename().string() < b.path().filename().string();
-        });
-    } catch (...) {
     }
-    needsRefresh = false;
+
+    if (!needsRefresh || refreshInFlight) {
+        return;
+    }
+
+    const fs::path pathSnapshot = currentPath;
+    const std::string filterSnapshot = searchFilter;
+    const bool showHiddenSnapshot = showHiddenFiles;
+    refreshInFlight = true;
+    refreshFuture = std::async(std::launch::async,
+        [pathSnapshot, filterSnapshot, showHiddenSnapshot]() {
+            return BuildFileBrowserRefreshResult(pathSnapshot, filterSnapshot, showHiddenSnapshot);
+        });
 }
 
 void FileBrowser::navigateUp() {

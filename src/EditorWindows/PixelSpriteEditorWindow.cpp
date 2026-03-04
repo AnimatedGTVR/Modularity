@@ -53,6 +53,16 @@ glm::ivec4 NormalizeRect(glm::ivec2 a, glm::ivec2 b) {
     return glm::ivec4(minX, minY, maxX - minX + 1, maxY - minY + 1);
 }
 
+glm::ivec4 ClampSpriteClipRect(glm::ivec4 rect, int width, int height) {
+    rect.z = std::max(1, rect.z);
+    rect.w = std::max(1, rect.w);
+    rect.x = std::clamp(rect.x, 0, std::max(0, width - 1));
+    rect.y = std::clamp(rect.y, 0, std::max(0, height - 1));
+    rect.z = std::min(rect.z, std::max(1, width - rect.x));
+    rect.w = std::min(rect.w, std::max(1, height - rect.y));
+    return rect;
+}
+
 void FloodFill(std::vector<unsigned char>& pixels, int width, int height, int startX, int startY, const PixelRgba& target, const PixelRgba& replacement) {
     if (target.r == replacement.r && target.g == replacement.g &&
         target.b == replacement.b && target.a == replacement.a) {
@@ -85,6 +95,18 @@ void EnsureSpriteClipNames(std::vector<std::string>& names, size_t count) {
         }
     } else if (names.size() > count) {
         names.resize(count);
+    }
+}
+
+void EnsureSpriteClipScales(std::vector<glm::vec2>& scales, size_t count) {
+    if (scales.size() < count) {
+        scales.resize(count, glm::vec2(1.0f));
+    } else if (scales.size() > count) {
+        scales.resize(count);
+    }
+    for (glm::vec2& scale : scales) {
+        scale.x = std::max(0.01f, scale.x);
+        scale.y = std::max(0.01f, scale.y);
     }
 }
 
@@ -141,12 +163,14 @@ bool Engine::loadPixelSpriteDocument(const fs::path& imagePath) {
         pixelSpriteDocument.strictValidation = parsed.document.strictValidation;
         pixelSpriteDocument.spriteFrames = parsed.document.rects;
         pixelSpriteDocument.spriteFrameNames = parsed.document.names;
+        pixelSpriteDocument.spriteFrameScales = parsed.document.scales;
         pixelSpriteDocument.layers = parsed.document.layers;
         for (const SpritesheetParseMessage& message : parsed.messages) {
             addConsoleMessage(message.text, ConsoleMessageType::Warning);
         }
     }
     EnsureSpriteClipNames(pixelSpriteDocument.spriteFrameNames, pixelSpriteDocument.spriteFrames.size());
+    EnsureSpriteClipScales(pixelSpriteDocument.spriteFrameScales, pixelSpriteDocument.spriteFrames.size());
     EnsureSpriteLayers(pixelSpriteDocument.layers);
 
     pixelSpriteUndoStack.clear();
@@ -162,6 +186,7 @@ bool Engine::loadPixelSpriteDocument(const fs::path& imagePath) {
     initialState.strictValidation = pixelSpriteDocument.strictValidation;
     initialState.spriteFrames = pixelSpriteDocument.spriteFrames;
     initialState.spriteFrameNames = pixelSpriteDocument.spriteFrameNames;
+    initialState.spriteFrameScales = pixelSpriteDocument.spriteFrameScales;
     initialState.layers = pixelSpriteDocument.layers;
     initialState.activeLayer = pixelSpriteDocument.activeLayer;
     initialState.activeFrame = pixelSpriteDocument.activeFrame;
@@ -196,6 +221,7 @@ bool Engine::savePixelSpriteDocument() {
     std::ofstream sidecar(pixelSpriteDocument.sidecarPath);
     if (sidecar.is_open()) {
         EnsureSpriteClipNames(pixelSpriteDocument.spriteFrameNames, pixelSpriteDocument.spriteFrames.size());
+        EnsureSpriteClipScales(pixelSpriteDocument.spriteFrameScales, pixelSpriteDocument.spriteFrames.size());
         EnsureSpriteLayers(pixelSpriteDocument.layers);
         SpritesheetDocument sidecarDocument;
         sidecarDocument.linkedSpriteName = pixelSpriteDocument.imagePath.lexically_relative(projectManager.currentProject.projectPath).generic_string();
@@ -210,6 +236,7 @@ bool Engine::savePixelSpriteDocument() {
         sidecarDocument.strictValidation = pixelSpriteDocument.strictValidation;
         sidecarDocument.rects = pixelSpriteDocument.spriteFrames;
         sidecarDocument.names = pixelSpriteDocument.spriteFrameNames;
+        sidecarDocument.scales = pixelSpriteDocument.spriteFrameScales;
         sidecarDocument.layers = pixelSpriteDocument.layers;
         sidecar << WriteSpritesheet(sidecarDocument);
     }
@@ -245,12 +272,14 @@ void Engine::renderPixelSpriteEditorWindow() {
         initialState.strictValidation = pixelSpriteDocument.strictValidation;
         initialState.spriteFrames = pixelSpriteDocument.spriteFrames;
         initialState.spriteFrameNames = pixelSpriteDocument.spriteFrameNames;
+        initialState.spriteFrameScales = pixelSpriteDocument.spriteFrameScales;
         initialState.layers = pixelSpriteDocument.layers;
         initialState.activeLayer = pixelSpriteDocument.activeLayer;
         initialState.activeFrame = pixelSpriteDocument.activeFrame;
         pixelSpriteUndoStack.push_back(std::move(initialState));
     }
     EnsureSpriteLayers(pixelSpriteDocument.layers);
+    EnsureSpriteClipScales(pixelSpriteDocument.spriteFrameScales, pixelSpriteDocument.spriteFrames.size());
     pixelSpriteDocument.activeLayer = std::clamp(pixelSpriteDocument.activeLayer, 0, std::max(0, static_cast<int>(pixelSpriteDocument.layers.size()) - 1));
 
     if (!ImGui::Begin("Pixel Sprite Editor", &showPixelSpriteEditorWindow, ImGuiWindowFlags_NoCollapse)) {
@@ -281,6 +310,7 @@ void Engine::renderPixelSpriteEditorWindow() {
         state.strictValidation = pixelSpriteDocument.strictValidation;
         state.spriteFrames = pixelSpriteDocument.spriteFrames;
         state.spriteFrameNames = pixelSpriteDocument.spriteFrameNames;
+        state.spriteFrameScales = pixelSpriteDocument.spriteFrameScales;
         state.layers = pixelSpriteDocument.layers;
         state.activeLayer = pixelSpriteDocument.activeLayer;
         state.activeFrame = pixelSpriteDocument.activeFrame;
@@ -303,6 +333,7 @@ void Engine::renderPixelSpriteEditorWindow() {
             pixelSpriteUndoStack.back().strictValidation = pixelSpriteDocument.strictValidation;
             pixelSpriteUndoStack.back().spriteFrames = pixelSpriteDocument.spriteFrames;
             pixelSpriteUndoStack.back().spriteFrameNames = pixelSpriteDocument.spriteFrameNames;
+            pixelSpriteUndoStack.back().spriteFrameScales = pixelSpriteDocument.spriteFrameScales;
             pixelSpriteUndoStack.back().layers = pixelSpriteDocument.layers;
             pixelSpriteUndoStack.back().activeLayer = pixelSpriteDocument.activeLayer;
             pixelSpriteUndoStack.back().activeFrame = pixelSpriteDocument.activeFrame;
@@ -324,6 +355,7 @@ void Engine::renderPixelSpriteEditorWindow() {
         pixelSpriteDocument.strictValidation = state.strictValidation;
         pixelSpriteDocument.spriteFrames = state.spriteFrames;
         pixelSpriteDocument.spriteFrameNames = state.spriteFrameNames;
+        pixelSpriteDocument.spriteFrameScales = state.spriteFrameScales;
         pixelSpriteDocument.layers = state.layers;
         pixelSpriteDocument.activeLayer = std::clamp(state.activeLayer, 0, std::max(0, static_cast<int>(state.layers.size()) - 1));
         pixelSpriteDocument.activeFrame = std::clamp(state.activeFrame, 0, std::max(0, static_cast<int>(state.spriteFrames.size()) - 1));
@@ -345,6 +377,7 @@ void Engine::renderPixelSpriteEditorWindow() {
         pixelSpriteDocument.strictValidation = state.strictValidation;
         pixelSpriteDocument.spriteFrames = state.spriteFrames;
         pixelSpriteDocument.spriteFrameNames = state.spriteFrameNames;
+        pixelSpriteDocument.spriteFrameScales = state.spriteFrameScales;
         pixelSpriteDocument.layers = state.layers;
         pixelSpriteDocument.activeLayer = std::clamp(state.activeLayer, 0, std::max(0, static_cast<int>(state.layers.size()) - 1));
         pixelSpriteDocument.activeFrame = std::clamp(state.activeFrame, 0, std::max(0, static_cast<int>(state.spriteFrames.size()) - 1));
@@ -372,6 +405,7 @@ void Engine::renderPixelSpriteEditorWindow() {
         selected->ui.spriteSourceHeight = pixelSpriteDocument.height;
         selected->ui.spriteCustomFrames = pixelSpriteDocument.spriteFrames;
         selected->ui.spriteCustomFrameNames = pixelSpriteDocument.spriteFrameNames;
+        selected->ui.spriteCustomFrameScales = pixelSpriteDocument.spriteFrameScales;
         if (!pixelSpriteDocument.spriteFrames.empty()) {
             selected->ui.size.x = static_cast<float>(pixelSpriteDocument.spriteFrames[0].z);
             selected->ui.size.y = static_cast<float>(pixelSpriteDocument.spriteFrames[0].w);
@@ -501,6 +535,7 @@ void Engine::renderPixelSpriteEditorWindow() {
                 pushHistory();
                 pixelSpriteDocument.spriteFrames.push_back(NormalizeRect(pixelSpriteDocument.selectionStart, pixelSpriteDocument.selectionEnd));
                 pixelSpriteDocument.spriteFrameNames.push_back("Rect_" + std::to_string(pixelSpriteDocument.spriteFrames.size() - 1));
+                pixelSpriteDocument.spriteFrameScales.push_back(glm::vec2(1.0f));
                 pixelSpriteDocument.activeFrame = static_cast<int>(pixelSpriteDocument.spriteFrames.size()) - 1;
                 pixelSpriteDocument.dirty = true;
                 commitHistoryTop();
@@ -510,12 +545,14 @@ void Engine::renderPixelSpriteEditorWindow() {
                 pushHistory();
                 pixelSpriteDocument.spriteFrames.clear();
                 pixelSpriteDocument.spriteFrameNames.clear();
+                pixelSpriteDocument.spriteFrameScales.clear();
                 pixelSpriteDocument.activeFrame = 0;
                 pixelSpriteDocument.dirty = true;
                 commitHistoryTop();
             }
             if (!pixelSpriteDocument.spriteFrames.empty()) {
                 EnsureSpriteClipNames(pixelSpriteDocument.spriteFrameNames, pixelSpriteDocument.spriteFrames.size());
+                EnsureSpriteClipScales(pixelSpriteDocument.spriteFrameScales, pixelSpriteDocument.spriteFrames.size());
                 ImGui::TextDisabled("%d clipped sprites", static_cast<int>(pixelSpriteDocument.spriteFrames.size()));
                 ImGui::SliderInt("Selected Clip", &pixelSpriteDocument.activeFrame, 0, static_cast<int>(pixelSpriteDocument.spriteFrames.size()) - 1);
                 char clipNameBuf[128];
@@ -523,6 +560,26 @@ void Engine::renderPixelSpriteEditorWindow() {
                               pixelSpriteDocument.spriteFrameNames[pixelSpriteDocument.activeFrame].c_str());
                 if (ImGui::InputText("Clip Name", clipNameBuf, sizeof(clipNameBuf))) {
                     pixelSpriteDocument.spriteFrameNames[pixelSpriteDocument.activeFrame] = clipNameBuf;
+                    pixelSpriteDocument.dirty = true;
+                    commitHistoryTop();
+                }
+                glm::ivec4 clipRect = pixelSpriteDocument.spriteFrames[pixelSpriteDocument.activeFrame];
+                int clipPosition[2] = { clipRect.x, clipRect.y };
+                int clipSize[2] = { clipRect.z, clipRect.w };
+                bool clipRectChanged = false;
+                if (ImGui::DragInt2("Clip Position", clipPosition, 1.0f, 0, std::max(pixelSpriteDocument.width, pixelSpriteDocument.height))) {
+                    clipRect.x = clipPosition[0];
+                    clipRect.y = clipPosition[1];
+                    clipRectChanged = true;
+                }
+                if (ImGui::DragInt2("Clip Size", clipSize, 1.0f, 1, std::max(pixelSpriteDocument.width, pixelSpriteDocument.height))) {
+                    clipRect.z = clipSize[0];
+                    clipRect.w = clipSize[1];
+                    clipRectChanged = true;
+                }
+                if (clipRectChanged) {
+                    pixelSpriteDocument.spriteFrames[pixelSpriteDocument.activeFrame] =
+                        ClampSpriteClipRect(clipRect, pixelSpriteDocument.width, pixelSpriteDocument.height);
                     pixelSpriteDocument.dirty = true;
                     commitHistoryTop();
                 }

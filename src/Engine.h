@@ -60,10 +60,26 @@ private:
         std::vector<int> selectedIds;
         int nextId = 0;
     };
+    struct PlayModeSnapshot {
+        SceneSnapshot scene;
+        bool hadUnsavedChanges = false;
+        bool valid = false;
+    };
     std::vector<SceneSnapshot> undoStack;
     std::vector<SceneSnapshot> redoStack;
+    PlayModeSnapshot playModeSnapshot;
 
     std::vector<SceneObject> sceneObjects;
+    std::unordered_map<int, size_t> sceneObjectIndexById;
+    const SceneObject* sceneObjectIndexData = nullptr;
+    size_t sceneObjectIndexCount = 0;
+    struct RuntimeScriptBinding {
+        int objectId = -1;
+        size_t scriptIndex = 0;
+    };
+    std::vector<RuntimeScriptBinding> runtimeScriptBindings;
+    uint64_t runtimeScriptBindingsVersion = 1;
+    uint64_t runtimeScriptBindingsCachedVersion = 0;
     int selectedObjectId = -1; // primary selection (last)
     std::vector<int> selectedObjectIds; // multi-select
     int nextObjectId = 0;
@@ -114,6 +130,7 @@ private:
     double launcherTransitionStartTime = 0.0;
     ImVec2 launcherTransitionFocus = ImVec2(0.0f, 0.0f);
     std::string launcherLoadingPreviewPath;
+    bool termsPopupOpened = false;
     bool showNewSceneDialog = false;
     bool showSaveSceneAsDialog = false;
     char newSceneName[128] = "";
@@ -274,6 +291,7 @@ private:
         bool strictValidation = false;
         std::vector<glm::ivec4> spriteFrames;
         std::vector<std::string> spriteFrameNames;
+        std::vector<glm::vec2> spriteFrameScales;
         std::vector<SpritesheetLayer> layers;
         int activeLayer = 0;
         int activeFrame = 0;
@@ -289,6 +307,7 @@ private:
         bool strictValidation = false;
         std::vector<glm::ivec4> spriteFrames;
         std::vector<std::string> spriteFrameNames;
+        std::vector<glm::vec2> spriteFrameScales;
         std::vector<SpritesheetLayer> layers;
         int activeLayer = 0;
         int activeFrame = 0;
@@ -540,6 +559,9 @@ private:
     static void DecomposeMatrix(const glm::mat4& matrix, glm::vec3& pos, glm::vec3& rot, glm::vec3& scale);
     static glm::mat4 ComposeTransform(const glm::vec3& position, const glm::quat& rotation, const glm::vec3& scale);
     static glm::mat4 ComposeTransform(const glm::vec3& position, const glm::vec3& rotationDeg, const glm::vec3& scale);
+    void refreshSceneObjectIndexCache();
+    void markRuntimeScriptBindingsDirty() { runtimeScriptBindingsVersion++; }
+    void rebuildRuntimeScriptBindings();
     void updateHierarchyWorldTransforms();
     void updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale);
     void initializeLocalTransformsFromWorld(int sceneVersion);
@@ -556,6 +578,8 @@ private:
     
     // UI rendering methods
     void renderLauncher();
+    bool requiresTermsOfServiceAcceptance() const;
+    void renderTermsOfServiceModal();
     void renderNewProjectDialog();
     void renderOpenProjectDialog();
     void renderMainMenuBar();
@@ -668,6 +692,8 @@ private:
     void loadMaterialFromFile(SceneObject& obj);
     void saveMaterialToFile(const SceneObject& obj);
     void recordState(const char* reason = "");
+    void capturePlayModeSnapshot();
+    void restorePlayModeSnapshot();
     void undo();
     void redo();
     

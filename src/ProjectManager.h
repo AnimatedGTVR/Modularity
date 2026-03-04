@@ -49,6 +49,7 @@ public:
     char openProjectPath[512] = "";
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
+    std::string acceptedTermsVersion;
     int newProjectPipelineMode = 0;
     int newProjectRendererMode = 0;
     bool newProjectImportLastPackages = true;

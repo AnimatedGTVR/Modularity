@@ -40,6 +40,12 @@ Texture::Texture(const std::string& path,
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, m_InternalFormat, m_Width, m_Height, 0, m_DataFormat, GL_UNSIGNED_BYTE, data);
     glGenerateMipmap(GL_TEXTURE_2D);
+    int bytesPerPixel = (m_Channels == 1) ? 1 : ((m_Channels == 3) ? 3 : 4);
+    m_ApproxMemoryBytes = static_cast<size_t>(m_Width) *
+                          static_cast<size_t>(m_Height) *
+                          static_cast<size_t>(bytesPerPixel);
+    // Mip chains for 2D textures are roughly 33% extra memory.
+    m_ApproxMemoryBytes += m_ApproxMemoryBytes / 3;
 
     // params
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);

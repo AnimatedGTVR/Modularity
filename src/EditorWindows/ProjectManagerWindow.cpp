@@ -476,8 +476,282 @@ static std::vector<LauncherTemplateEntry> GatherTemplateEntries() {
               });
     return templates;
 }
+
+constexpr const char* kModularityTermsVersion = "modularity-tos-v1";
+
+constexpr const char* kModularityTermsText = R"(Modularity Engine Terms of Service
+
+Copyright (c) 2025-2026
+Shock Interactive LLC and Tareno Labs LLC
+
+By using the Modularity Engine, editor, runtime, tools, or official components, you agree to these Terms of Service.
+
+1. Definitions
+- Engine: the Modularity engine source code, core runtime, editor, tools, and official components distributed as part of the Modularity project.
+- Software Built Using the Engine: any video game, application, service, tool, or other software created using the Engine.
+- Marketplace Content: assets, plugins, ModuPaks, extensions, templates, or other packages intended for use with the Engine.
+
+2. Permission to Use
+You may use, copy, modify, merge, publish, and distribute software built using the Engine, free of charge, subject to these terms.
+
+3. Commercial Use
+You may use the Engine to develop commercial or closed-source software.
+
+You may:
+- Sell video games, applications, or services built using the Engine.
+- Distribute commercial software built using the Engine.
+- Keep the source code of software built using the Engine private.
+
+Software built using the Engine is not required to be open source.
+
+4. Marketplace Content
+You may create and distribute Marketplace Content for use with the Engine.
+
+Marketplace Content:
+- May be distributed commercially or free of charge.
+- May be licensed under any license chosen by its creator, including closed-source licenses.
+- Does not automatically become part of the Engine.
+
+Creators retain ownership and licensing control over their Marketplace Content.
+
+5. Modifications to the Engine
+You may modify the Engine for personal, research, or internal use without publishing those modifications.
+
+If you distribute the Engine or a modified version of the Engine:
+- The full corresponding source code of the modified Engine must be released under these same terms.
+- The source code must be made available in a publicly accessible location without unreasonable access restrictions.
+- Distributed versions must include a clear notice describing the modifications made.
+- All original copyright notices must be retained.
+
+These requirements apply only to the Engine itself, not to software built using the Engine.
+
+6. Distribution of the Engine
+You may distribute the Engine in original or modified form only under these terms.
+
+You may not:
+- Sell the Engine itself as a standalone commercial engine product.
+- Sublicense the Engine under a different license.
+- Rebrand the Engine and present it as a different engine.
+
+Forks or modified versions must clearly acknowledge that they are based on the Modularity Engine.
+
+7. Attribution
+Software distributed using the Engine must include visible attribution to Modularity in at least one of the following locations:
+- Software credits
+- Documentation
+- An About section
+- A similar visible acknowledgment
+
+Example attribution:
+Powered by the Modularity Engine
+
+8. Trademarks
+The names "Modularity" and "ModuEngine" are trademarks of Shock Interactive LLC and Tareno Labs LLC.
+These trademarks may not be used to imply endorsement, official status, or affiliation without explicit permission from the trademark holders.
+
+9. Disclaimer
+The Engine is provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose, and noninfringement.
+
+In no event shall the authors or copyright holders be liable for any claim, damages, or other liability arising from the use of the Engine.)";
 } // namespace
 #pragma endregion
+
+bool Engine::requiresTermsOfServiceAcceptance() const {
+#ifdef MODULARITY_PLAYER
+    return false;
+#else
+    return projectManager.acceptedTermsVersion != kModularityTermsVersion;
+#endif
+}
+
+void Engine::renderTermsOfServiceModal() {
+#ifdef MODULARITY_PLAYER
+    return;
+#else
+    if (!requiresTermsOfServiceAcceptance()) {
+        termsPopupOpened = false;
+        return;
+    }
+    if (showLauncher && !launcherIntroFinished) {
+        return;
+    }
+
+    if (!termsPopupOpened) {
+        ImGui::OpenPopup("Modularity Terms of Service");
+        termsPopupOpened = true;
+    }
+
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const ImVec2 popupSize(
+        ImClamp(displaySize.x * 0.72f, 640.0f, 920.0f),
+        ImClamp(displaySize.y * 0.80f, 520.0f, 760.0f));
+    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(popupSize, ImGuiCond_Appearing);
+
+    const ImGuiWindowFlags popupFlags =
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    if (ImGui::BeginPopupModal("Modularity Terms of Service", nullptr, popupFlags)) {
+        auto centeredText = [](const char* text, const ImVec4& color) {
+            const ImVec2 textSize = ImGui::CalcTextSize(text);
+            const float avail = ImGui::GetContentRegionAvail().x;
+            if (avail > textSize.x) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - textSize.x) * 0.5f);
+            }
+            ImGui::TextColored(color, "%s", text);
+        };
+
+        auto beginCenteredColumn = [](float maxWidth) {
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float width = ImMax(120.0f, ImMin(maxWidth, avail));
+            if (avail > width) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - width) * 0.5f);
+            }
+            ImGui::BeginGroup();
+            ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + width);
+            return width;
+        };
+
+        auto endCenteredColumn = []() {
+            ImGui::PopTextWrapPos();
+            ImGui::EndGroup();
+        };
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.12f, 0.16f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.30f, 0.40f, 0.95f));
+
+        centeredText("Modularity Engine Terms of Service", ImVec4(0.92f, 0.96f, 1.00f, 1.0f));
+        ImGui::Spacing();
+        beginCenteredColumn(520.0f);
+        ImGui::TextWrapped("Please review these terms before using Modularity. Accepting records this version for this installation so you only see it again if the terms change.");
+        endCenteredColumn();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float footerHeight = ImGui::GetFrameHeightWithSpacing() * 3.6f;
+        if (ImGui::BeginChild("TermsOfServiceScroll", ImVec2(0.0f, -footerHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+            beginCenteredColumn(720.0f);
+
+            auto renderWrappedParagraph = [](const std::string& text, const ImVec4* color = nullptr) {
+                if (color) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, *color);
+                }
+                ImGui::TextWrapped("%s", text.c_str());
+                if (color) {
+                    ImGui::PopStyleColor();
+                }
+            };
+
+            auto renderWrappedBullet = [](const std::string& text) {
+                const float bulletStartX = ImGui::GetCursorPosX();
+                ImGui::Bullet();
+                const float textStartX = ImGui::GetCursorPosX();
+                ImGui::SameLine(0.0f, 6.0f);
+                ImGui::PushTextWrapPos(textStartX + ImGui::GetContentRegionAvail().x);
+                ImGui::TextUnformatted(text.c_str());
+                ImGui::PopTextWrapPos();
+
+                const float lineHeight = ImGui::GetTextLineHeight();
+                if (ImGui::GetCursorPosX() < bulletStartX) {
+                    ImGui::SetCursorPosX(bulletStartX);
+                }
+                if (ImGui::GetTextLineHeightWithSpacing() > lineHeight) {
+                    ImGui::Spacing();
+                }
+            };
+
+            std::istringstream termsStream(kModularityTermsText);
+            std::string line;
+            while (std::getline(termsStream, line)) {
+                if (line.empty()) {
+                    ImGui::Spacing();
+                    continue;
+                }
+
+                if (line == "Modularity Engine Terms of Service") {
+                    continue;
+                }
+
+                if (line.rfind("Copyright", 0) == 0) {
+                    ImGui::TextDisabled("%s", line.c_str());
+                    continue;
+                }
+
+                if (line.rfind("By using", 0) == 0) {
+                    ImGui::Spacing();
+                    renderWrappedParagraph(line);
+                    continue;
+                }
+
+                if (std::isdigit(static_cast<unsigned char>(line[0])) && line.find('.') != std::string::npos) {
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(0.88f, 0.93f, 1.00f, 1.0f), "%s", line.c_str());
+                    continue;
+                }
+
+                if (line.rfind("- ", 0) == 0) {
+                    renderWrappedBullet(line.substr(2));
+                    continue;
+                }
+
+                if (line.rfind("Example attribution:", 0) == 0) {
+                    ImGui::Spacing();
+                    const ImVec4 accentColor(0.70f, 0.80f, 0.96f, 1.0f);
+                    renderWrappedParagraph(line, &accentColor);
+                    continue;
+                }
+
+                renderWrappedParagraph(line);
+            }
+
+            endCenteredColumn();
+        }
+        ImGui::EndChild();
+
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(2);
+
+        ImGui::Spacing();
+        beginCenteredColumn(520.0f);
+        ImGui::TextDisabled("Version: %s", kModularityTermsVersion);
+        endCenteredColumn();
+        ImGui::Spacing();
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float declineWidth = 170.0f;
+        const float acceptWidth = 190.0f;
+        const float totalButtonWidth = declineWidth + style.ItemSpacing.x + acceptWidth;
+        const float buttonAvail = ImGui::GetContentRegionAvail().x;
+        if (buttonAvail > totalButtonWidth) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (buttonAvail - totalButtonWidth) * 0.5f);
+        }
+
+        if (ImGui::Button("Decline and Exit", ImVec2(170.0f, 0.0f))) {
+            glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.38f, 0.66f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.44f, 0.74f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.33f, 0.58f, 1.0f));
+        if (ImGui::Button("Accept and Continue", ImVec2(190.0f, 0.0f))) {
+            projectManager.acceptedTermsVersion = kModularityTermsVersion;
+            projectManager.saveLauncherSettings();
+            termsPopupOpened = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::EndPopup();
+    }
+#endif
+}
 
 #pragma region Launcher
 void Engine::renderLauncher() {

@@ -297,6 +297,7 @@ void ProjectManager::saveRecentProjects() {
 
 void ProjectManager::loadLauncherSettings() {
     defaultProjectLocation[0] = '\0';
+    acceptedTermsVersion.clear();
     fs::path settingsFile = appDataPath / "launcher_settings.modu";
 
     if (fs::exists(settingsFile)) {
@@ -313,6 +314,8 @@ void ProjectManager::loadLauncherSettings() {
             const std::string value = TrimCopy(cleaned.substr(eq + 1));
             if (key == "defaultProjectLocation" && !value.empty()) {
                 std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", value.c_str());
+            } else if (key == "acceptedTermsVersion") {
+                acceptedTermsVersion = value;
             }
         }
     }
@@ -331,6 +334,9 @@ void ProjectManager::saveLauncherSettings() const {
     }
 
     file << "# Modularity launcher settings\n";
+    if (!acceptedTermsVersion.empty()) {
+        file << "acceptedTermsVersion=" << acceptedTermsVersion << "\n";
+    }
     file << "defaultProjectLocation=" << defaultProjectLocation << "\n";
 }
 
@@ -439,6 +445,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "collider2dEnabled=" << (obj.collider2D.enabled ? 1 : 0) << "\n";
                 file << "collider2dType=" << static_cast<int>(obj.collider2D.type) << "\n";
                 file << "collider2dBox=" << obj.collider2D.boxSize.x << "," << obj.collider2D.boxSize.y << "\n";
+                file << "collider2dOffset=" << obj.collider2D.offset.x << "," << obj.collider2D.offset.y << "\n";
                 file << "collider2dClosed=" << (obj.collider2D.closed ? 1 : 0) << "\n";
                 file << "collider2dEdgeThickness=" << obj.collider2D.edgeThickness << "\n";
                 file << "collider2dPoints=";
@@ -469,6 +476,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "colliderEnabled=" << (obj.collider.enabled ? 1 : 0) << "\n";
                 file << "colliderType=" << static_cast<int>(obj.collider.type) << "\n";
                 file << "colliderBox=" << obj.collider.boxSize.x << "," << obj.collider.boxSize.y << "," << obj.collider.boxSize.z << "\n";
+                file << "colliderOffset=" << obj.collider.offset.x << "," << obj.collider.offset.y << "," << obj.collider.offset.z << "\n";
                 file << "colliderConvex=" << (obj.collider.convex ? 1 : 0) << "\n";
                 file << "colliderStaticFriction=" << obj.collider.staticFriction << "\n";
                 file << "colliderDynamicFriction=" << obj.collider.dynamicFriction << "\n";
@@ -613,6 +621,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "skelMaxBones=" << obj.skeletal.maxBones << "\n";
             }
             file << "materialColor=" << obj.material.color.r << "," << obj.material.color.g << "," << obj.material.color.b << "\n";
+            file << "materialAlpha=" << obj.material.alpha << "\n";
             file << "materialAmbient=" << obj.material.ambientStrength << "\n";
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
             file << "materialShininess=" << obj.material.shininess << "\n";
@@ -703,10 +712,28 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 }
                 file << "\n";
             }
+            if (!obj.ui.spriteCustomFrameScales.empty()) {
+                file << "uiSpriteCustomFrameScales=";
+                for (size_t i = 0; i < obj.ui.spriteCustomFrameScales.size(); ++i) {
+                    if (i > 0) file << ";";
+                    const glm::vec2& scale = obj.ui.spriteCustomFrameScales[i];
+                    file << scale.x << "," << scale.y;
+                }
+                file << "\n";
+            }
             if (obj.hasPostFX) {
                 file << "postEnabled=" << (obj.postFx.enabled ? 1 : 0) << "\n";
+                file << "postVolumeGlobal=" << (obj.postFx.isGlobal ? 1 : 0) << "\n";
+                file << "postVolumePriority=" << obj.postFx.priority << "\n";
+                file << "postVolumeWeight=" << obj.postFx.blendWeight << "\n";
+                file << "postVolumeBlendRadius=" << obj.postFx.blendRadius << "\n";
+                file << "postHDREnabled=" << (obj.postFx.hdrEnabled ? 1 : 0) << "\n";
+                file << "postToneMapper=" << static_cast<int>(obj.postFx.toneMapper) << "\n";
+                file << "postWhitePoint=" << obj.postFx.whitePoint << "\n";
+                file << "postGamma=" << obj.postFx.gamma << "\n";
                 file << "postBloomEnabled=" << (obj.postFx.bloomEnabled ? 1 : 0) << "\n";
                 file << "postBloomThreshold=" << obj.postFx.bloomThreshold << "\n";
+                file << "postBloomSoftKnee=" << obj.postFx.bloomSoftKnee << "\n";
                 file << "postBloomIntensity=" << obj.postFx.bloomIntensity << "\n";
                 file << "postBloomRadius=" << obj.postFx.bloomRadius << "\n";
                 file << "postColorAdjustEnabled=" << (obj.postFx.colorAdjustEnabled ? 1 : 0) << "\n";
@@ -716,11 +743,15 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "postColorFilter=" << obj.postFx.colorFilter.r << "," << obj.postFx.colorFilter.g << "," << obj.postFx.colorFilter.b << "\n";
                 file << "postMotionBlurEnabled=" << (obj.postFx.motionBlurEnabled ? 1 : 0) << "\n";
                 file << "postMotionBlurStrength=" << obj.postFx.motionBlurStrength << "\n";
+                file << "postMotionBlurThreshold=" << obj.postFx.motionBlurThreshold << "\n";
+                file << "postMotionBlurClamp=" << obj.postFx.motionBlurClamp << "\n";
                 file << "postVignetteEnabled=" << (obj.postFx.vignetteEnabled ? 1 : 0) << "\n";
                 file << "postVignetteIntensity=" << obj.postFx.vignetteIntensity << "\n";
                 file << "postVignetteSmoothness=" << obj.postFx.vignetteSmoothness << "\n";
                 file << "postChromaticEnabled=" << (obj.postFx.chromaticAberrationEnabled ? 1 : 0) << "\n";
                 file << "postChromaticAmount=" << obj.postFx.chromaticAmount << "\n";
+                file << "postSharpenEnabled=" << (obj.postFx.sharpenEnabled ? 1 : 0) << "\n";
+                file << "postSharpenStrength=" << obj.postFx.sharpenStrength << "\n";
                 file << "postAOEnabled=" << (obj.postFx.ambientOcclusionEnabled ? 1 : 0) << "\n";
                 file << "postAORadius=" << obj.postFx.aoRadius << "\n";
                 file << "postAOStrength=" << obj.postFx.aoStrength << "\n";
@@ -993,6 +1024,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"collider2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.collider2D.enabled = std::stoi(value) != 0; }},
         {"collider2dType", +[](SceneObject& obj, const std::string& value) { obj.collider2D.type = static_cast<Collider2DType>(std::stoi(value)); }},
         {"collider2dBox", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.collider2D.boxSize); }},
+        {"collider2dOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.collider2D.offset); }},
         {"collider2dClosed", +[](SceneObject& obj, const std::string& value) { obj.collider2D.closed = std::stoi(value) != 0; }},
         {"collider2dEdgeThickness", +[](SceneObject& obj, const std::string& value) { obj.collider2D.edgeThickness = std::stof(value); }},
         {"collider2dPoints", +[](SceneObject& obj, const std::string& value) { ParseVec2List(value, obj.collider2D.points); }},
@@ -1012,6 +1044,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"colliderEnabled", +[](SceneObject& obj, const std::string& value) { obj.collider.enabled = std::stoi(value) != 0; }},
         {"colliderType", +[](SceneObject& obj, const std::string& value) { obj.collider.type = static_cast<ColliderType>(std::stoi(value)); }},
         {"colliderBox", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.collider.boxSize); }},
+        {"colliderOffset", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.collider.offset); }},
         {"colliderConvex", +[](SceneObject& obj, const std::string& value) { obj.collider.convex = std::stoi(value) != 0; }},
         {"colliderStaticFriction", +[](SceneObject& obj, const std::string& value) { obj.collider.staticFriction = std::stof(value); }},
         {"colliderDynamicFriction", +[](SceneObject& obj, const std::string& value) { obj.collider.dynamicFriction = std::stof(value); }},
@@ -1114,6 +1147,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"skelLoop", +[](SceneObject& obj, const std::string& value) { obj.skeletal.loop = std::stoi(value) != 0; }},
         {"skelMaxBones", +[](SceneObject& obj, const std::string& value) { obj.skeletal.maxBones = std::stoi(value); }},
         {"materialColor", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.material.color); }},
+        {"materialAlpha", +[](SceneObject& obj, const std::string& value) { obj.material.alpha = std::clamp(std::stof(value), 0.0f, 1.0f); }},
         {"materialAmbient", +[](SceneObject& obj, const std::string& value) { obj.material.ambientStrength = std::stof(value); }},
         {"materialSpecular", +[](SceneObject& obj, const std::string& value) { obj.material.specularStrength = std::stof(value); }},
         {"materialShininess", +[](SceneObject& obj, const std::string& value) { obj.material.shininess = std::stof(value); }},
@@ -1220,9 +1254,30 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
                  obj.ui.spriteCustomFrameNames.push_back(item);
              }
          }},
+        {"uiSpriteCustomFrameScales", +[](SceneObject& obj, const std::string& value) {
+             ParseVec2List(value, obj.ui.spriteCustomFrameScales);
+             if (obj.ui.spriteCustomFrameScales.size() < obj.ui.spriteCustomFrames.size()) {
+                 obj.ui.spriteCustomFrameScales.resize(obj.ui.spriteCustomFrames.size(), glm::vec2(1.0f));
+             } else if (obj.ui.spriteCustomFrameScales.size() > obj.ui.spriteCustomFrames.size()) {
+                 obj.ui.spriteCustomFrameScales.resize(obj.ui.spriteCustomFrames.size());
+             }
+             for (glm::vec2& scale : obj.ui.spriteCustomFrameScales) {
+                 scale.x = std::max(0.01f, scale.x);
+                 scale.y = std::max(0.01f, scale.y);
+             }
+         }},
         {"postEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.enabled = (std::stoi(value) != 0); }},
+        {"postVolumeGlobal", +[](SceneObject& obj, const std::string& value) { obj.postFx.isGlobal = (std::stoi(value) != 0); }},
+        {"postVolumePriority", +[](SceneObject& obj, const std::string& value) { obj.postFx.priority = std::stof(value); }},
+        {"postVolumeWeight", +[](SceneObject& obj, const std::string& value) { obj.postFx.blendWeight = std::stof(value); }},
+        {"postVolumeBlendRadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.blendRadius = std::stof(value); }},
+        {"postHDREnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.hdrEnabled = (std::stoi(value) != 0); }},
+        {"postToneMapper", +[](SceneObject& obj, const std::string& value) { obj.postFx.toneMapper = static_cast<PostFXToneMapper>(std::stoi(value)); }},
+        {"postWhitePoint", +[](SceneObject& obj, const std::string& value) { obj.postFx.whitePoint = std::stof(value); }},
+        {"postGamma", +[](SceneObject& obj, const std::string& value) { obj.postFx.gamma = std::stof(value); }},
         {"postBloomEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomEnabled = (std::stoi(value) != 0); }},
         {"postBloomThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomThreshold = std::stof(value); }},
+        {"postBloomSoftKnee", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomSoftKnee = std::stof(value); }},
         {"postBloomIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomIntensity = std::stof(value); }},
         {"postBloomRadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.bloomRadius = std::stof(value); }},
         {"postColorAdjustEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.colorAdjustEnabled = (std::stoi(value) != 0); }},
@@ -1232,11 +1287,15 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"postColorFilter", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.postFx.colorFilter); }},
         {"postMotionBlurEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurEnabled = (std::stoi(value) != 0); }},
         {"postMotionBlurStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurStrength = std::stof(value); }},
+        {"postMotionBlurThreshold", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurThreshold = std::stof(value); }},
+        {"postMotionBlurClamp", +[](SceneObject& obj, const std::string& value) { obj.postFx.motionBlurClamp = std::stof(value); }},
         {"postVignetteEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteEnabled = (std::stoi(value) != 0); }},
         {"postVignetteIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteIntensity = std::stof(value); }},
         {"postVignetteSmoothness", +[](SceneObject& obj, const std::string& value) { obj.postFx.vignetteSmoothness = std::stof(value); }},
         {"postChromaticEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.chromaticAberrationEnabled = (std::stoi(value) != 0); }},
         {"postChromaticAmount", +[](SceneObject& obj, const std::string& value) { obj.postFx.chromaticAmount = std::stof(value); }},
+        {"postSharpenEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.sharpenEnabled = (std::stoi(value) != 0); }},
+        {"postSharpenStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.sharpenStrength = std::stof(value); }},
         {"postAOEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.ambientOcclusionEnabled = (std::stoi(value) != 0); }},
         {"postAORadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoRadius = std::stof(value); }},
         {"postAOStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoStrength = std::stof(value); }},

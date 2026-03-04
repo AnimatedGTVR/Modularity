@@ -38,14 +38,14 @@ namespace {
         return imagePath;
     }
 
-std::vector<glm::ivec4> LoadSpriteSheetRects(const fs::path& sidecarPath) {
+    std::optional<SpritesheetDocument> LoadSpriteSheetDocument(const fs::path& sidecarPath) {
         std::ifstream sidecar(sidecarPath);
         if (!sidecar.is_open()) {
-            return {};
+            return std::nullopt;
         }
         std::ostringstream buffer;
         buffer << sidecar.rdbuf();
-        return ParseSpritesheet(buffer.str()).document.rects;
+        return ParseSpritesheet(buffer.str()).document;
     }
 
     std::optional<std::string> InferManagedTypeFromSource(const std::string& source,
@@ -615,16 +615,6 @@ std::vector<glm::ivec4> LoadSpriteSheetRects(const fs::path& sidecarPath) {
     }
 }
 
-std::vector<std::string> LoadSpriteSheetNames(const fs::path& sidecarPath) {
-    std::ifstream sidecar(sidecarPath);
-    if (!sidecar.is_open()) {
-        return {};
-    }
-    std::ostringstream buffer;
-    buffer << sidecar.rdbuf();
-    return ParseSpritesheet(buffer.str()).document.names;
-}
-
 void EnsureSpriteClipNames(std::vector<std::string>& names, size_t count) {
     if (names.size() < count) {
         for (size_t i = names.size(); i < count; ++i) {
@@ -634,6 +624,19 @@ void EnsureSpriteClipNames(std::vector<std::string>& names, size_t count) {
         names.resize(count);
     }
 }
+
+void EnsureSpriteClipScales(std::vector<glm::vec2>& scales, size_t count) {
+    if (scales.size() < count) {
+        scales.resize(count, glm::vec2(1.0f));
+    } else if (scales.size() > count) {
+        scales.resize(count);
+    }
+    for (glm::vec2& scale : scales) {
+        scale.x = std::max(0.01f, scale.x);
+        scale.y = std::max(0.01f, scale.y);
+    }
+}
+
 #pragma endregion
 
 #pragma region Hierarchy Panel
@@ -806,7 +809,7 @@ void Engine::renderHierarchyPanel() {
             // ── Other / Effects ───────────────────────
             if (ImGui::BeginMenu("Effects"))
             {
-                if (ImGui::MenuItem("Post FX Node")) addObject(ObjectType::PostFXNode, "Post FX");
+                if (ImGui::MenuItem("ModuVolume")) addObject(ObjectType::PostFXNode, "ModuVolume");
                 if (ImGui::MenuItem("Audio Reverb Zone")) createReverbZoneObject();
                 ImGui::EndMenu();
             }
@@ -980,6 +983,8 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                     if (!alreadyAssigned) {
                         ScriptComponent sc;
                         sc.path = path;
+                        sc.lastBinaryPath.clear();
+                        sc.lastBinaryVerified = false;
                         std::string ext = fs::path(path).extension().string();
                         std::transform(ext.begin(), ext.end(), ext.begin(),
                                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -992,6 +997,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                             sc.language = ScriptLanguage::Cpp;
                         }
                         obj.scripts.push_back(sc);
+                        markRuntimeScriptBindingsDirty();
                         projectManager.currentProject.hasUnsavedChanges = true;
                         addConsoleMessage("Assigned script to " + obj.name, ConsoleMessageType::Success);
                     }
@@ -1464,17 +1470,21 @@ void Engine::renderInspectorPanel() {
         target.albedoTexturePath = imagePath.string();
         const fs::path sidecarPath = IsSpriteSheetSidecarPath(sourcePath) ? sourcePath : fs::path(imagePath.string() + ".spritesheet");
         std::vector<glm::ivec4> clips;
-        if (fs::exists(sidecarPath)) {
-            clips = LoadSpriteSheetRects(sidecarPath);
-        }
         std::vector<std::string> clipNames;
+        std::vector<glm::vec2> clipScales;
         if (fs::exists(sidecarPath)) {
-            clipNames = LoadSpriteSheetNames(sidecarPath);
+            if (std::optional<SpritesheetDocument> sidecar = LoadSpriteSheetDocument(sidecarPath)) {
+                clips = std::move(sidecar->rects);
+                clipNames = std::move(sidecar->names);
+                clipScales = std::move(sidecar->scales);
+            }
         }
 
         target.ui.spriteCustomFrames = std::move(clips);
         target.ui.spriteCustomFrameNames = std::move(clipNames);
+        target.ui.spriteCustomFrameScales = std::move(clipScales);
         EnsureSpriteClipNames(target.ui.spriteCustomFrameNames, target.ui.spriteCustomFrames.size());
+        EnsureSpriteClipScales(target.ui.spriteCustomFrameScales, target.ui.spriteCustomFrames.size());
         target.ui.spriteCustomFramesEnabled = !target.ui.spriteCustomFrames.empty();
         target.ui.spriteSheetEnabled = target.ui.spriteCustomFramesEnabled || target.ui.spriteSheetEnabled;
         target.ui.spriteSheetFrame = 0;
@@ -1549,7 +1559,10 @@ void Engine::renderInspectorPanel() {
                 ImGui::Spacing();
 
                 bool matChanged = false;
-                if (ImGui::ColorEdit3("Base Color", &inspectedMaterial.color.x)) {
+                glm::vec4 inspectedBaseColor(inspectedMaterial.color, inspectedMaterial.alpha);
+                if (ImGui::ColorEdit4("Base Color", &inspectedBaseColor.x)) {
+                    inspectedMaterial.color = glm::vec3(inspectedBaseColor);
+                    inspectedMaterial.alpha = std::clamp(inspectedBaseColor.w, 0.0f, 1.0f);
                     matChanged = true;
                 }
                 float metallic = inspectedMaterial.specularStrength;
@@ -1926,7 +1939,7 @@ void Engine::renderInspectorPanel() {
         } else if (obj.hasCamera) {
             typeLabel = "Camera";
         } else if (obj.hasPostFX) {
-            typeLabel = "Post FX Node";
+            typeLabel = "ModuVolume";
         }
         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
 
@@ -2041,7 +2054,7 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
 
-            glm::vec2 minSize(8.0f, 8.0f);
+            glm::vec2 minSize(1.0f, 1.0f);
             if (ImGui::DragFloat2("Size (px)", &obj.ui.size.x, 1.0f, minSize.x, 4096.0f)) {
                 obj.ui.size.x = std::max(minSize.x, obj.ui.size.x);
                 obj.ui.size.y = std::max(minSize.y, obj.ui.size.y);
@@ -2353,6 +2366,10 @@ void Engine::renderInspectorPanel() {
                     changed = true;
                 }
                 ImGui::TextDisabled("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
+            }
+
+            if (ImGui::DragFloat3("Offset", &obj.collider.offset.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+                changed = true;
             }
 
             ImGui::SeparatorText("Surface");
@@ -2686,6 +2703,10 @@ void Engine::renderInspectorPanel() {
                     obj.collider2D.points.push_back(glm::vec2(0.0f));
                     changed = true;
                 }
+            }
+
+            if (ImGui::DragFloat2("Offset", &obj.collider2D.offset.x, 0.1f, -10000.0f, 10000.0f, "%.2f")) {
+                changed = true;
             }
 
             ImGui::Unindent(10.0f);
@@ -3502,7 +3523,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
         bool changed = false;
         bool removePostFx = false;
-        auto header = drawComponentHeader("Post Processing", "PostFX", &obj.postFx.enabled, true, [&]() {
+        auto header = drawComponentHeader("ModuVolume", "PostFX", &obj.postFx.enabled, true, [&]() {
             if (ImGui::MenuItem("Remove")) {
                 removePostFx = true;
             }
@@ -3513,96 +3534,168 @@ void Engine::renderInspectorPanel() {
         if (header.open) {
             ImGui::PushID("PostFX");
             ImGui::Indent(10.0f);
+            if (ImGui::CollapsingHeader("Volume", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Global Volume", &obj.postFx.isGlobal)) {
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Priority", &obj.postFx.priority, 0.05f, -100.0f, 100.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Blend Weight", &obj.postFx.blendWeight, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (!obj.postFx.isGlobal) {
+                    if (ImGui::DragFloat("Blend Radius", &obj.postFx.blendRadius, 0.1f, 0.1f, 1000.0f, "%.2f")) {
+                        obj.postFx.blendRadius = std::max(0.1f, obj.postFx.blendRadius);
+                        changed = true;
+                    }
+                    ImGui::TextDisabled("Local volumes use this object's transform and scale as bounds.");
+                }
+            }
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Bloom");
-            if (ImGui::Checkbox("Bloom Enabled", &obj.postFx.bloomEnabled)) {
-                changed = true;
+            if (ImGui::CollapsingHeader("HDR & Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("HDR Enabled", &obj.postFx.hdrEnabled)) {
+                    changed = true;
+                }
+                const char* toneMapperNames[] = { "None", "Reinhard", "ACES" };
+                int toneMapper = static_cast<int>(obj.postFx.toneMapper);
+                if (ImGui::Combo("Tone Mapper", &toneMapper, toneMapperNames, IM_ARRAYSIZE(toneMapperNames))) {
+                    obj.postFx.toneMapper = static_cast<PostFXToneMapper>(toneMapper);
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("White Point", &obj.postFx.whitePoint, 0.25f, 16.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Output Gamma", &obj.postFx.gamma, 1.0f, 3.0f, "%.2f")) {
+                    changed = true;
+                }
             }
-            ImGui::BeginDisabled(!obj.postFx.bloomEnabled);
-            if (ImGui::SliderFloat("Threshold", &obj.postFx.bloomThreshold, 0.0f, 3.0f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Intensity##Bloom", &obj.postFx.bloomIntensity, 0.0f, 3.0f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Spread", &obj.postFx.bloomRadius, 0.5f, 3.5f, "%.2f")) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Color Adjustments");
-            if (ImGui::Checkbox("Enable Color Adjust", &obj.postFx.colorAdjustEnabled)) {
-                changed = true;
+            if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##Bloom", &obj.postFx.bloomEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.bloomEnabled);
+                if (ImGui::SliderFloat("Threshold", &obj.postFx.bloomThreshold, 0.0f, 4.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Soft Knee", &obj.postFx.bloomSoftKnee, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Intensity##Bloom", &obj.postFx.bloomIntensity, 0.0f, 4.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Spread", &obj.postFx.bloomRadius, 0.5f, 4.5f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
             }
-            ImGui::BeginDisabled(!obj.postFx.colorAdjustEnabled);
-            if (ImGui::SliderFloat("Exposure (EV)", &obj.postFx.exposure, -5.0f, 5.0f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Contrast", &obj.postFx.contrast, 0.0f, 2.5f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Saturation", &obj.postFx.saturation, 0.0f, 2.5f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::ColorEdit3("Color Filter", &obj.postFx.colorFilter.x)) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Motion Blur");
-            if (ImGui::Checkbox("Enable Motion Blur", &obj.postFx.motionBlurEnabled)) {
-                changed = true;
+            if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##ColorAdjust", &obj.postFx.colorAdjustEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.colorAdjustEnabled);
+                if (ImGui::SliderFloat("Exposure (EV)", &obj.postFx.exposure, -5.0f, 5.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Contrast", &obj.postFx.contrast, 0.0f, 2.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Saturation", &obj.postFx.saturation, 0.0f, 2.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::ColorEdit3("Color Filter", &obj.postFx.colorFilter.x)) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
             }
-            ImGui::BeginDisabled(!obj.postFx.motionBlurEnabled);
-            if (ImGui::SliderFloat("Strength", &obj.postFx.motionBlurStrength, 0.0f, 0.95f, "%.2f")) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Vignette");
-            if (ImGui::Checkbox("Enable Vignette", &obj.postFx.vignetteEnabled)) {
-                changed = true;
+            if (ImGui::CollapsingHeader("Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##MotionBlur", &obj.postFx.motionBlurEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.motionBlurEnabled);
+                if (ImGui::SliderFloat("Strength", &obj.postFx.motionBlurStrength, 0.0f, 0.95f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Threshold", &obj.postFx.motionBlurThreshold, 0.0f, 0.25f, "%.3f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Clamp", &obj.postFx.motionBlurClamp, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
             }
-            ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
-            if (ImGui::SliderFloat("Intensity##Vignette", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Smoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Ambient Occlusion");
-            if (ImGui::Checkbox("Enable AO", &obj.postFx.ambientOcclusionEnabled)) {
-                changed = true;
-            }
-            ImGui::BeginDisabled(!obj.postFx.ambientOcclusionEnabled);
-            if (ImGui::SliderFloat("AO Radius", &obj.postFx.aoRadius, 0.0005f, 0.01f, "%.4f")) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("AO Strength", &obj.postFx.aoStrength, 0.0f, 2.0f, "%.2f")) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
+            if (ImGui::CollapsingHeader("Lens", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Vignette", &obj.postFx.vignetteEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
+                if (ImGui::SliderFloat("Intensity##Vignette", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Smoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Chromatic Aberration");
-            if (ImGui::Checkbox("Enable Chromatic", &obj.postFx.chromaticAberrationEnabled)) {
-                changed = true;
-            }
-            ImGui::BeginDisabled(!obj.postFx.chromaticAberrationEnabled);
-            if (ImGui::SliderFloat("Fringe Amount", &obj.postFx.chromaticAmount, 0.0f, 0.01f, "%.4f")) {
-                changed = true;
-            }
-            ImGui::EndDisabled();
+                if (ImGui::Checkbox("Chromatic Aberration", &obj.postFx.chromaticAberrationEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.chromaticAberrationEnabled);
+                if (ImGui::SliderFloat("Fringe Amount", &obj.postFx.chromaticAmount, 0.0f, 0.01f, "%.4f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
 
-            ImGui::TextDisabled("Nodes stack in hierarchy order; latest node overrides previous settings.");
-            ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
+                if (ImGui::Checkbox("Sharpen", &obj.postFx.sharpenEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.sharpenEnabled);
+                if (ImGui::SliderFloat("Sharpen Strength", &obj.postFx.sharpenStrength, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Ambient Occlusion", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##AO", &obj.postFx.ambientOcclusionEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.ambientOcclusionEnabled);
+                if (ImGui::SliderFloat("AO Radius", &obj.postFx.aoRadius, 0.0005f, 0.01f, "%.4f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("AO Strength", &obj.postFx.aoStrength, 0.0f, 2.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+                static const Renderer::PostProcessStats zeroPostStats{};
+                const Renderer::PostProcessStats& postStats = rendererInitialized
+                    ? renderer.getLastViewportPostStats()
+                    : zeroPostStats;
+                const bool activeLastFrame = (postStats.resolvedVolumeId == obj.id);
+                ImGui::Text("Resolved Last Frame: %s", activeLastFrame ? "Yes" : "No");
+                if (!postStats.resolvedVolumeName.empty()) {
+                    ImGui::Text("Resolved Volume: %s", postStats.resolvedVolumeName.c_str());
+                }
+                ImGui::Text("Active Volumes: %d", postStats.activeVolumeCount);
+                ImGui::Text("Blend: %.2f", activeLastFrame ? postStats.resolvedBlend : 0.0f);
+                ImGui::Text("Effects: %d", postStats.activeEffectCount);
+                ImGui::Text("Resolve: %.2f ms", postStats.resolveMs);
+                ImGui::Text("Bloom Extract: %.2f ms", postStats.bloomExtractMs);
+                ImGui::Text("Bloom Blur: %.2f ms", postStats.bloomBlurMs);
+                ImGui::Text("Composite: %.2f ms", postStats.compositeMs);
+                ImGui::Text("Total: %.2f ms", postStats.totalMs);
+                ImGui::TextDisabled("Highest-priority active volume wins; local volumes fade by blend radius.");
+                ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
+            }
+
             ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
@@ -3693,7 +3786,10 @@ void Engine::renderInspectorPanel() {
             bool materialChanged = false;
 
             ImGui::TextDisabled("Surface Inputs");
-            if (ImGui::ColorEdit3("Base Color", &obj.material.color.x)) {
+            glm::vec4 baseColor(obj.material.color, obj.material.alpha);
+            if (ImGui::ColorEdit4("Base Color", &baseColor.x)) {
+                obj.material.color = glm::vec3(baseColor);
+                obj.material.alpha = std::clamp(baseColor.w, 0.0f, 1.0f);
                 materialChanged = true;
             }
 
@@ -4316,6 +4412,8 @@ void Engine::renderInspectorPanel() {
             ImGui::SetNextItemWidth(-140);
             if (ImGui::InputText("##ScriptPath", pathBuf, sizeof(pathBuf))) {
                 sc.path = pathBuf;
+                sc.lastBinaryPath.clear();
+                sc.lastBinaryVerified = false;
                 scriptsChanged = true;
                 if (sc.language == ScriptLanguage::CSharp) {
                     std::string stem = fs::path(sc.path).stem().string();
@@ -4344,6 +4442,8 @@ void Engine::renderInspectorPanel() {
                     }
                     if (useSelection) {
                         sc.path = entry.path().string();
+                        sc.lastBinaryPath.clear();
+                        sc.lastBinaryVerified = false;
                         scriptsChanged = true;
                         if (isNativeScriptLanguage(sc.language)) {
                             sc.language = inferNativeLanguageFromPath(entry.path());
@@ -4380,14 +4480,18 @@ void Engine::renderInspectorPanel() {
                 // Scope script inspector to avoid shared ImGui IDs across objects or multiple instances
                 std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
                 if (isNativeScriptLanguage(sc.language)) {
-                    fs::path binary = resolveScriptBinary(sc.path);
-                    if (binary.empty() && !sc.lastBinaryPath.empty()) {
-                        fs::path fallback = sc.lastBinaryPath;
-                        if (fs::exists(fallback)) {
-                            binary = fallback;
+                    fs::path binary;
+                    if (!sc.lastBinaryPath.empty()) {
+                        fs::path cachedBinary = sc.lastBinaryPath;
+                        if (fs::exists(cachedBinary)) {
+                            binary = std::move(cachedBinary);
                         }
                     }
+                    if (binary.empty()) {
+                        binary = resolveScriptBinary(sc.path);
+                    }
                     sc.lastBinaryPath = binary.string();
+                    sc.lastBinaryVerified = !binary.empty();
                     ScriptRuntime::InspectorFn inspector = scriptRuntime.getInspector(binary);
                     if (inspector) {
                         ImGui::Separator();
@@ -4403,14 +4507,18 @@ void Engine::renderInspectorPanel() {
                         ImGui::TextDisabled("No inspector exported (Script_OnInspector)");
                     }
                 } else {
-                    fs::path assembly = resolveManagedAssembly(sc.path);
-                    if (assembly.empty() && !sc.lastBinaryPath.empty()) {
-                        fs::path fallback = sc.lastBinaryPath;
-                        if (fs::exists(fallback)) {
-                            assembly = fallback;
+                    fs::path assembly;
+                    if (!sc.lastBinaryPath.empty()) {
+                        fs::path cachedAssembly = sc.lastBinaryPath;
+                        if (fs::exists(cachedAssembly)) {
+                            assembly = std::move(cachedAssembly);
                         }
                     }
+                    if (assembly.empty()) {
+                        assembly = resolveManagedAssembly(sc.path);
+                    }
                     sc.lastBinaryPath = assembly.string();
+                    sc.lastBinaryVerified = !assembly.empty();
                     bool hasInspector = managedRuntime.hasInspector(assembly, sc.managedType);
                     if (hasInspector) {
                         ImGui::Separator();
@@ -4677,7 +4785,7 @@ void Engine::renderInspectorPanel() {
             obj.cameraFollow2D = CameraFollow2DComponent{};
             componentChanged = true;
         });
-        addEntry("Rendering/Post Processing", !obj.hasPostFX, [&]() {
+        addEntry("Rendering/ModuVolume", !obj.hasPostFX, [&]() {
             obj.hasPostFX = true;
             obj.postFx = PostFXSettings{};
             UpdateLegacyTypeFromComponents(obj);
@@ -4914,6 +5022,8 @@ void Engine::renderInspectorPanel() {
                     sc.language = ScriptLanguage::Cpp;
                 }
                 sc.path = path.string();
+                sc.lastBinaryPath.clear();
+                sc.lastBinaryVerified = false;
                 if (sc.language == ScriptLanguage::CSharp) {
                     sc.managedType = path.stem().string();
                 }
@@ -4934,6 +5044,7 @@ void Engine::renderInspectorPanel() {
                 sc.language = ScriptLanguage::Cpp;
                 sc.path = bin.string();
                 sc.lastBinaryPath = bin.string();
+                sc.lastBinaryVerified = true;
                 obj.scripts.push_back(std::move(sc));
                 scriptsChanged = true;
                 componentChanged = true;
@@ -5026,6 +5137,7 @@ void Engine::renderInspectorPanel() {
     ImGui::PopID();
 
     if (scriptsChanged) {
+        markRuntimeScriptBindingsDirty();
         projectManager.currentProject.hasUnsavedChanges = true;
     }
     if (componentChanged) {

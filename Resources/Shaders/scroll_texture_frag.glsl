@@ -13,6 +13,7 @@ uniform bool unlit = false;
 
 uniform float uTime = 0.0;
 uniform vec3 materialColor = vec3(1.0);
+uniform float materialAlpha = 1.0;
 uniform float ambientStrength = 0.2;
 uniform float specularStrength = 0.5;
 uniform float shininess = 32.0;
@@ -33,9 +34,13 @@ void main()
         color = mix(color, overlayColor, clamp(mixAmount, 0.0, 1.0));
     }
     color *= materialColor;
+    float alpha = baseSample.a * materialAlpha;
+    if (alpha <= 0.001) {
+        discard;
+    }
 
     if (unlit) {
-        FragColor = vec4(color, baseSample.a);
+        FragColor = vec4(color, alpha);
         return;
     }
 
@@ -48,5 +53,5 @@ void main()
     float spec = pow(max(dot(N, H), 0.0), max(shininess, 1.0)) * clamp(specularStrength, 0.0, 2.0);
     vec3 lit = color * (clamp(ambientStrength, 0.0, 1.0) + diffuse) + vec3(spec);
 
-    FragColor = vec4(lit, baseSample.a);
+    FragColor = vec4(lit, alpha);
 }

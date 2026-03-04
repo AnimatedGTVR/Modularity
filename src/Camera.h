@@ -19,6 +19,8 @@ public:
     float speed = CAMERA_SPEED;
     float lastX = 400.0f, lastY = 300.0f;
     bool firstMouse = true;
+    bool orthographic = false;
+    float pixelsPerUnit = 100.0f;
 
     void processMouse(double xpos, double ypos);
     void processKeyboard(float deltaTime, GLFWwindow* window);

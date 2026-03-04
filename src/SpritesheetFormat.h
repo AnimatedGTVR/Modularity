@@ -16,6 +16,7 @@ struct SpritesheetDocument {
     bool strictValidation = false;
     std::vector<glm::ivec4> rects;
     std::vector<std::string> names;
+    std::vector<glm::vec2> scales;
     std::vector<SpritesheetLayer> layers;
 };
 

@@ -15,6 +15,7 @@ uniform bool unlit = false;
 
 uniform vec3 viewPos;
 uniform vec3 materialColor = vec3(1.0);
+uniform float materialAlpha = 1.0;
 
 uniform float ambientStrength = 0.2;
 uniform vec3 ambientColor = vec3(1.0);
@@ -168,9 +169,13 @@ void main()
         texColor = mix(texColor, overlay, mixAmount);
     }
     vec3 baseColor = texColor * materialColor;
+    float alpha = tex1.a * materialAlpha;
+    if (alpha <= 0.001) {
+        discard;
+    }
 
     if (unlit) {
-        FragColor = vec4(baseColor, tex1.a);
+        FragColor = vec4(baseColor, alpha);
         return;
     }
 
@@ -346,7 +351,6 @@ void main()
         lighting += (1.0 - shadow) * (attenuation * diffuse + specular);
     }
 
-    float alpha = tex1.a;
     vec3 finalColor = pow(max(lighting, vec3(0.0)), vec3(1.0 / 2.2));
     FragColor = vec4(finalColor, alpha);
 }
