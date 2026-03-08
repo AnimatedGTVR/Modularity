@@ -1,6 +1,7 @@
 #include "Rendering.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <future>
@@ -16,6 +17,21 @@ extern float vertices[288];
 extern float mirrorPlaneVertices[48];
 
 namespace {
+struct Runtime2DRenderCounters {
+    uint64_t textureBindCount = 0;
+    uint64_t stateBindCount = 0;
+};
+
+Runtime2DRenderCounters gRuntime2DRenderCounters;
+
+inline void Runtime2DCountTextureBind() {
+    ++gRuntime2DRenderCounters.textureBindCount;
+}
+
+inline void Runtime2DCountStateBind() {
+    ++gRuntime2DRenderCounters.stateBindCount;
+}
+
 glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
     if (obj.ui.spriteCustomFramesEnabled &&
         !obj.ui.spriteCustomFrames.empty() &&
@@ -211,6 +227,15 @@ bool IsFiniteVec3(const glm::vec3& value) {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
+uint64_t HashStringFNV1a(const std::string& value) {
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : value) {
+        hash ^= static_cast<uint64_t>(c);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 bool TryGetObjectLocalBounds(const SceneObject& obj, glm::vec3& outCenter, glm::vec3& outExtents) {
     outCenter = glm::vec3(0.0f);
     switch (obj.renderType) {
@@ -364,7 +389,7 @@ const std::vector<float>& GetPrimitiveTriangleVertices(RenderType type) {
 }
 
 bool IsStaticMergeCandidate(const SceneObject& obj) {
-    if (!obj.enabled || !HasRendererComponent(obj)) return false;
+    if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj)) return false;
     if (obj.hasUI || obj.hasLight || obj.hasCamera || obj.hasPostFX) return false;
     if (obj.hasRigidbody || obj.hasRigidbody2D || obj.hasPlayerController) return false;
     if (obj.hasAnimation || obj.hasSkeletalAnimation) return false;
@@ -462,6 +487,20 @@ void AppendTransformedTriangleVertices(const std::vector<float>& src, const glm:
     }
 }
 } // namespace
+
+void ModuRuntime2DRenderCounters_Reset() {
+    gRuntime2DRenderCounters = Runtime2DRenderCounters{};
+}
+
+void ModuRuntime2DRenderCounters_Read(uint64_t* outTextureBindCount,
+                                      uint64_t* outStateBindCount) {
+    if (outTextureBindCount) {
+        *outTextureBindCount = gRuntime2DRenderCounters.textureBindCount;
+    }
+    if (outStateBindCount) {
+        *outStateBindCount = gRuntime2DRenderCounters.stateBindCount;
+    }
+}
 
 // Global OBJ loader instance
 OBJLoader g_objLoader;
@@ -1615,7 +1654,26 @@ void Renderer::releaseRenderTarget(RenderTarget& target) {
 void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane) {
     if (camera.orthographic || sceneObjects.empty() || width <= 0 || height <= 0) return;
 
+    bool hasEnabledMirror = false;
+    for (const auto& obj : sceneObjects) {
+        if (IsObjectEnabledInHierarchy(obj) && obj.hasRenderer && obj.renderType == RenderType::Mirror) {
+            hasEnabledMirror = true;
+            break;
+        }
+    }
+    if (!hasEnabledMirror) {
+        if (!mirrorTargets.empty()) {
+            for (auto& entry : mirrorTargets) {
+                releaseRenderTarget(entry.second);
+            }
+            mirrorTargets.clear();
+            mirrorUpdateStates.clear();
+        }
+        return;
+    }
+
     std::unordered_set<int> active;
+    active.reserve(mirrorTargets.size() + 4);
     const double nowSec = glfwGetTime();
     GLint prevFBO = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
@@ -1634,7 +1692,7 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
     };
 
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasRenderer || obj.renderType != RenderType::Mirror) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasRenderer || obj.renderType != RenderType::Mirror) continue;
         active.insert(obj.id);
 
         glm::vec3 n = planeNormal(obj);
@@ -1877,18 +1935,22 @@ void Renderer::resize(int w, int h) {
 
 void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos) {
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    Runtime2DCountStateBind();
     glViewport(0, 0, currentWidth, currentHeight);
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     displayTexture = viewportTexture;
 
     shader->use();
+    Runtime2DCountStateBind();
     shader->setMat4("view", view);
     shader->setMat4("projection", proj);
     shader->setVec3("viewPos", cameraPos);
     shader->setFloat("uTime", static_cast<float>(glfwGetTime()));
     texture1->Bind(GL_TEXTURE0);
     texture2->Bind(GL_TEXTURE1);
+    Runtime2DCountTextureBind();
+    Runtime2DCountTextureBind();
     shader->setInt("texture1", 0);
     shader->setInt("overlayTex", 1);
     shader->setInt("normalMap", 2);
@@ -2084,7 +2146,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     candidates.reserve(sceneObjects.size());
 
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasLight || !obj.light.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight || !obj.light.enabled) continue;
         if (obj.light.type == LightType::Directional) {
             LightUniform l;
             l.type = 0;
@@ -2162,11 +2224,19 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 
     if (lights.size() < kMaxLights && !candidates.empty()) {
-        std::sort(candidates.begin(), candidates.end(),
-                  [](const LightCandidate& a, const LightCandidate& b) {
-                      if (a.distSq != b.distSq) return a.distSq < b.distSq;
-                      return a.id < b.id;
-                  });
+        const auto candidateLess = [](const LightCandidate& a, const LightCandidate& b) {
+            if (a.distSq != b.distSq) return a.distSq < b.distSq;
+            return a.id < b.id;
+        };
+        const size_t remainingSlots = kMaxLights - lights.size();
+        if (candidates.size() > remainingSlots) {
+            std::nth_element(candidates.begin(),
+                             candidates.begin() + remainingSlots,
+                             candidates.end(),
+                             candidateLess);
+            candidates.resize(remainingSlots);
+        }
+        std::sort(candidates.begin(), candidates.end(), candidateLess);
         for (const auto& c : candidates) {
             if (lights.size() >= kMaxLights) break;
             lights.push_back(c.light);
@@ -2187,7 +2257,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         map.depthCube = 0;
         map.resolution = 0;
     };
-    if (shadowDepthShader && shadowDepthShader->ID != 0) {
+    const bool hasShadowCasters = std::any_of(lights.begin(), lights.end(), [](const LightUniform& light) {
+        return light.castShadows && light.type != 0 && light.sourceId >= 0;
+    });
+    if (shadowDepthShader && shadowDepthShader->ID != 0 && hasShadowCasters) {
         GLint prevViewport[4] = {0, 0, width, height};
         GLint prevFbo = 0;
         GLboolean blendWasEnabled = glIsEnabled(GL_BLEND);
@@ -2281,7 +2354,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 shadowDepthShader->setMat4("lightSpaceMatrix", shadowProj * shadowViews[face]);
 
                 for (const auto& obj : sceneObjects) {
-                    if (!obj.enabled || !HasRendererComponent(obj)) continue;
+                    if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj)) continue;
                     if (obj.renderType == RenderType::Mirror) continue;
                     if (obj.renderType == RenderType::Sprite) continue;
                     if (obj.id == light.sourceId) continue;
@@ -2349,19 +2422,40 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     renderSkybox(view, proj);
     rebuildStaticMergeBatches(sceneObjects);
 
+    const std::string emptyPath;
+    auto combineHash = [](uint64_t seed, uint64_t value) {
+        seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+        return seed;
+    };
+    auto buildOpaqueSortKey = [&](const std::string& vert,
+                                  const std::string& frag,
+                                  const std::string& material,
+                                  const std::string& albedo,
+                                  const std::string& overlay,
+                                  const std::string& normal) {
+        uint64_t key = 1469598103934665603ull;
+        key = combineHash(key, HashStringFNV1a(vert));
+        key = combineHash(key, HashStringFNV1a(frag));
+        key = combineHash(key, HashStringFNV1a(material));
+        key = combineHash(key, HashStringFNV1a(albedo));
+        key = combineHash(key, HashStringFNV1a(overlay));
+        key = combineHash(key, HashStringFNV1a(normal));
+        return key;
+    };
+
     struct RenderItem {
         const SceneObject* obj = nullptr;
         const StaticMergeBatch* staticBatch = nullptr;
         Mesh* mesh = nullptr;
         glm::mat4 model = glm::mat4(1.0f);
         glm::vec3 sortCenter = glm::vec3(0.0f);
-        std::string vertPath;
-        std::string fragPath;
+        const std::string* vertPath = nullptr;
+        const std::string* fragPath = nullptr;
         MaterialProperties material;
-        std::string materialPath;
-        std::string albedoTexturePath;
-        std::string overlayTexturePath;
-        std::string normalMapPath;
+        const std::string* materialPath = nullptr;
+        const std::string* albedoTexturePath = nullptr;
+        const std::string* overlayTexturePath = nullptr;
+        const std::string* normalMapPath = nullptr;
         bool useOverlay = false;
         int boneLimit = 0;
         int availableBones = 0;
@@ -2370,10 +2464,11 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         bool sortOpaque = false;
         bool unlit = false;
         float cameraDistanceSq = 0.0f;
+        uint64_t opaqueSortKey = 0;
     };
 
     std::vector<RenderItem> drawItems;
-    drawItems.reserve(sceneObjects.size());
+    drawItems.reserve(sceneObjects.size() + staticMergeBatches.size());
 
     auto gatherRenderItemsRange = [&](size_t beginIndex, size_t endIndex) {
         std::vector<RenderItem> localItems;
@@ -2381,7 +2476,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
         for (size_t objIndex = beginIndex; objIndex < endIndex; ++objIndex) {
             const auto& obj = sceneObjects[objIndex];
-            if (!obj.enabled) continue;
+            if (!IsObjectEnabledInHierarchy(obj)) continue;
             if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
             if (!HasRendererComponent(obj)) continue;
             if (staticMergeSourceIds.find(obj.id) != staticMergeSourceIds.end()) continue;
@@ -2402,13 +2497,13 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             item.mesh = mesh;
             item.model = model;
             item.sortCenter = obj.position;
-            item.vertPath = obj.vertexShaderPath;
-            item.fragPath = obj.fragmentShaderPath;
+            item.vertPath = &obj.vertexShaderPath;
+            item.fragPath = &obj.fragmentShaderPath;
             item.material = obj.material;
-            item.materialPath = obj.materialPath;
-            item.albedoTexturePath = obj.albedoTexturePath;
-            item.overlayTexturePath = obj.overlayTexturePath;
-            item.normalMapPath = obj.normalMapPath;
+            item.materialPath = &obj.materialPath;
+            item.albedoTexturePath = &obj.albedoTexturePath;
+            item.overlayTexturePath = &obj.overlayTexturePath;
+            item.normalMapPath = &obj.normalMapPath;
             item.useOverlay = obj.useOverlay;
             item.boneLimit = obj.skeletal.maxBones;
             item.availableBones = static_cast<int>(obj.skeletal.finalMatrices.size());
@@ -2417,8 +2512,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                                  item.boneLimit > 0 && item.availableBones > item.boneLimit;
             item.wantsGpuSkinning = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
                                     obj.skeletal.useGpuSkinning && !needsFallback;
-            if (item.vertPath.empty() && item.wantsGpuSkinning) {
-                item.vertPath = skinnedVertPath;
+            if (item.wantsGpuSkinning && item.vertPath->empty()) {
+                item.vertPath = &skinnedVertPath;
             }
             item.isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
             item.sortOpaque = item.material.alpha >= 0.999f &&
@@ -2426,6 +2521,15 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                               obj.renderType != RenderType::Sprite &&
                               obj.renderType != RenderType::Mirror;
             item.unlit = obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || item.isUiCanvas3D;
+            if (item.sortOpaque) {
+                item.opaqueSortKey = buildOpaqueSortKey(
+                    *item.vertPath,
+                    *item.fragPath,
+                    *item.materialPath,
+                    *item.albedoTexturePath,
+                    *item.overlayTexturePath,
+                    *item.normalMapPath);
+            }
             glm::vec3 toCamera = item.sortCenter - camera.position;
             item.cameraDistanceSq = glm::dot(toCamera, toCamera);
             localItems.push_back(std::move(item));
@@ -2435,9 +2539,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     };
 
     const unsigned int hardwareThreads = std::thread::hardware_concurrency();
-    const size_t minItemsPerTask = 128;
+    const size_t minItemsPerTask = 2048;
     const size_t maxTaskCountByWork = std::max<size_t>(1, sceneObjects.size() / minItemsPerTask);
-    const size_t taskCount = (hardwareThreads > 1 && sceneObjects.size() >= minItemsPerTask * 2)
+    const size_t taskCount = (hardwareThreads > 4 && sceneObjects.size() >= minItemsPerTask * 2)
         ? std::min<size_t>(hardwareThreads, maxTaskCountByWork)
         : 1;
 
@@ -2480,15 +2584,24 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         item.mesh = batch.mesh.get();
         item.model = glm::mat4(1.0f);
         item.sortCenter = batch.boundsCenter;
-        item.vertPath = batch.vertPath;
-        item.fragPath = batch.fragPath;
+        item.vertPath = &batch.vertPath;
+        item.fragPath = &batch.fragPath;
         item.material = batch.material;
-        item.materialPath = batch.materialPath;
-        item.albedoTexturePath = batch.albedoTexturePath;
-        item.overlayTexturePath = batch.overlayTexturePath;
-        item.normalMapPath = batch.normalMapPath;
+        item.materialPath = &batch.materialPath;
+        item.albedoTexturePath = &batch.albedoTexturePath;
+        item.overlayTexturePath = &batch.overlayTexturePath;
+        item.normalMapPath = &batch.normalMapPath;
         item.useOverlay = batch.useOverlay;
         item.sortOpaque = item.material.alpha >= 0.999f;
+        if (item.sortOpaque) {
+            item.opaqueSortKey = buildOpaqueSortKey(
+                *item.vertPath,
+                *item.fragPath,
+                *item.materialPath,
+                *item.albedoTexturePath,
+                *item.overlayTexturePath,
+                *item.normalMapPath);
+        }
         glm::vec3 toCamera = item.sortCenter - camera.position;
         item.cameraDistanceSq = glm::dot(toCamera, toCamera);
         drawItems.push_back(std::move(item));
@@ -2505,12 +2618,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                              int bId = b.obj ? b.obj->id : -1;
                              return aId < bId;
                          }
-                         if (a.vertPath != b.vertPath) return a.vertPath < b.vertPath;
-                         if (a.fragPath != b.fragPath) return a.fragPath < b.fragPath;
-                         if (a.materialPath != b.materialPath) return a.materialPath < b.materialPath;
-                         if (a.albedoTexturePath != b.albedoTexturePath) return a.albedoTexturePath < b.albedoTexturePath;
-                         if (a.overlayTexturePath != b.overlayTexturePath) return a.overlayTexturePath < b.overlayTexturePath;
-                         if (a.normalMapPath != b.normalMapPath) return a.normalMapPath < b.normalMapPath;
+                         if (a.opaqueSortKey != b.opaqueSortKey) return a.opaqueSortKey < b.opaqueSortKey;
                          int aId = a.obj ? a.obj->id : -1;
                          int bId = b.obj ? b.obj->id : -1;
                          return aId < bId;
@@ -2527,6 +2635,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (currentActiveTexture != static_cast<GLint>(unit)) {
             glActiveTexture(unit);
             currentActiveTexture = static_cast<GLint>(unit);
+            Runtime2DCountStateBind();
         }
         int slot = static_cast<int>(unit - GL_TEXTURE0);
         if (slot >= 0 && slot < static_cast<int>(boundTexture2D.size()) &&
@@ -2534,20 +2643,69 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             return;
         }
         glBindTexture(GL_TEXTURE_2D, textureId);
+        Runtime2DCountTextureBind();
         if (slot >= 0 && slot < static_cast<int>(boundTexture2D.size())) {
             boundTexture2D[slot] = textureId;
         }
     };
 
+    struct LightUniformNameCache {
+        std::array<std::string, kMaxLights> type;
+        std::array<std::string, kMaxLights> dir;
+        std::array<std::string, kMaxLights> pos;
+        std::array<std::string, kMaxLights> color;
+        std::array<std::string, kMaxLights> intensity;
+        std::array<std::string, kMaxLights> range;
+        std::array<std::string, kMaxLights> innerCos;
+        std::array<std::string, kMaxLights> outerCos;
+        std::array<std::string, kMaxLights> areaSize;
+        std::array<std::string, kMaxLights> areaFade;
+        std::array<std::string, kMaxLights> shadowMap;
+        std::array<std::string, kMaxLights> shadowMode;
+        std::array<std::string, kMaxLights> shadowBias;
+        std::array<std::string, kMaxLights> shadowSoftness;
+        std::array<std::string, kMaxLights> shadowFar;
+    };
+    static const LightUniformNameCache kLightNames = []() {
+        LightUniformNameCache names;
+        for (size_t i = 0; i < kMaxLights; ++i) {
+            const std::string idx = "[" + std::to_string(i) + "]";
+            names.type[i] = "lightTypeArr" + idx;
+            names.dir[i] = "lightDirArr" + idx;
+            names.pos[i] = "lightPosArr" + idx;
+            names.color[i] = "lightColorArr" + idx;
+            names.intensity[i] = "lightIntensityArr" + idx;
+            names.range[i] = "lightRangeArr" + idx;
+            names.innerCos[i] = "lightInnerCosArr" + idx;
+            names.outerCos[i] = "lightOuterCosArr" + idx;
+            names.areaSize[i] = "lightAreaSizeArr" + idx;
+            names.areaFade[i] = "lightAreaFadeArr" + idx;
+            names.shadowMap[i] = "lightShadowMapArr" + idx;
+            names.shadowMode[i] = "lightShadowModeArr" + idx;
+            names.shadowBias[i] = "lightShadowBiasArr" + idx;
+            names.shadowSoftness[i] = "lightShadowSoftnessArr" + idx;
+            names.shadowFar[i] = "lightShadowFarArr" + idx;
+        }
+        return names;
+    }();
+
     Shader* currentShader = nullptr;
     for (const RenderItem& item : drawItems) {
         const SceneObject* objPtr = item.obj;
-        Shader* active = getShader(item.vertPath, item.fragPath);
+        const std::string& vertPath = item.vertPath ? *item.vertPath : emptyPath;
+        const std::string& fragPath = item.fragPath ? *item.fragPath : emptyPath;
+        const std::string& materialPath = item.materialPath ? *item.materialPath : emptyPath;
+        const std::string& albedoTexturePath = item.albedoTexturePath ? *item.albedoTexturePath : emptyPath;
+        const std::string& overlayTexturePath = item.overlayTexturePath ? *item.overlayTexturePath : emptyPath;
+        const std::string& normalMapPath = item.normalMapPath ? *item.normalMapPath : emptyPath;
+
+        Shader* active = getShader(vertPath, fragPath);
         if (!active) continue;
         shader = active;
         if (currentShader != shader) {
             currentShader = shader;
             shader->use();
+            Runtime2DCountStateBind();
             shader->setMat4("view", view);
             shader->setMat4("projection", proj);
             shader->setVec3("viewPos", camera.position);
@@ -2563,28 +2721,27 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setInt("lightCount", static_cast<int>(lights.size()));
             for (size_t i = 0; i < lights.size() && i < kMaxLights; ++i) {
                 const auto& l = lights[i];
-                std::string idx = "[" + std::to_string(i) + "]";
-                shader->setInt("lightTypeArr" + idx, l.type);
-                shader->setVec3("lightDirArr" + idx, l.dir);
-                shader->setVec3("lightPosArr" + idx, l.pos);
-                shader->setVec3("lightColorArr" + idx, l.color);
-                shader->setFloat("lightIntensityArr" + idx, l.intensity);
-                shader->setFloat("lightRangeArr" + idx, l.range);
-                shader->setFloat("lightInnerCosArr" + idx, l.inner);
-                shader->setFloat("lightOuterCosArr" + idx, l.outer);
-                shader->setVec2("lightAreaSizeArr" + idx, l.areaSize);
-                shader->setFloat("lightAreaFadeArr" + idx, l.areaFade);
-                shader->setInt("lightShadowMapArr" + idx, l.shadowMapIndex);
-                shader->setInt("lightShadowModeArr" + idx, (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
-                shader->setFloat("lightShadowBiasArr" + idx, l.shadowBias);
-                shader->setFloat("lightShadowSoftnessArr" + idx, l.shadowSoftness);
-                shader->setFloat("lightShadowFarArr" + idx, l.shadowFar);
+                shader->setInt(kLightNames.type[i], l.type);
+                shader->setVec3(kLightNames.dir[i], l.dir);
+                shader->setVec3(kLightNames.pos[i], l.pos);
+                shader->setVec3(kLightNames.color[i], l.color);
+                shader->setFloat(kLightNames.intensity[i], l.intensity);
+                shader->setFloat(kLightNames.range[i], l.range);
+                shader->setFloat(kLightNames.innerCos[i], l.inner);
+                shader->setFloat(kLightNames.outerCos[i], l.outer);
+                shader->setVec2(kLightNames.areaSize[i], l.areaSize);
+                shader->setFloat(kLightNames.areaFade[i], l.areaFade);
+                shader->setInt(kLightNames.shadowMap[i], l.shadowMapIndex);
+                shader->setInt(kLightNames.shadowMode[i], (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
+                shader->setFloat(kLightNames.shadowBias[i], l.shadowBias);
+                shader->setFloat(kLightNames.shadowSoftness[i], l.shadowSoftness);
+                shader->setFloat(kLightNames.shadowFar[i], l.shadowFar);
             }
         }
 
-        bool hasMaterialAsset = !item.materialPath.empty();
-        bool hasCustomShader = !item.vertPath.empty() || !item.fragPath.empty();
-        bool hasAnySurfaceInput = !item.albedoTexturePath.empty() || !item.overlayTexturePath.empty() || !item.normalMapPath.empty();
+        bool hasMaterialAsset = !materialPath.empty();
+        bool hasCustomShader = !vertPath.empty() || !fragPath.empty();
+        bool hasAnySurfaceInput = !albedoTexturePath.empty() || !overlayTexturePath.empty() || !normalMapPath.empty();
         bool missingMaterialAndShader = !hasMaterialAsset && !hasCustomShader && !hasAnySurfaceInput;
 
         shader->setBool("unlit", item.unlit || missingMaterialAndShader);
@@ -2625,8 +2782,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             if (missingMaterialAndShader && missingMaterialFallbackTexture != 0) {
                 bindTexture2D(GL_TEXTURE0, missingMaterialFallbackTexture);
             } else {
-                if (!item.albedoTexturePath.empty()) {
-                    if (auto* t = getTexture(item.albedoTexturePath, item.material.textureFilter)) baseTex = t;
+                if (!albedoTexturePath.empty()) {
+                    if (auto* t = getTexture(albedoTexturePath, item.material.textureFilter)) baseTex = t;
                 }
                 if (baseTex) bindTexture2D(GL_TEXTURE0, baseTex->GetID());
             }
@@ -2640,8 +2797,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 overlayUsed = true;
             }
         }
-        if (!overlayUsed && item.useOverlay && !item.overlayTexturePath.empty()) {
-            if (auto* t = getTexture(item.overlayTexturePath, item.material.textureFilter)) {
+        if (!overlayUsed && item.useOverlay && !overlayTexturePath.empty()) {
+            if (auto* t = getTexture(overlayTexturePath, item.material.textureFilter)) {
                 bindTexture2D(GL_TEXTURE1, t->GetID());
                 overlayUsed = true;
             }
@@ -2652,8 +2809,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setBool("hasOverlay", overlayUsed);
 
         bool normalUsed = false;
-        if (!item.normalMapPath.empty()) {
-            if (auto* t = getTexture(item.normalMapPath, item.material.textureFilter)) {
+        if (!normalMapPath.empty()) {
+            if (auto* t = getTexture(normalMapPath, item.material.textureFilter)) {
                 bindTexture2D(GL_TEXTURE2, t->GetID());
                 normalUsed = true;
             }
@@ -2675,9 +2832,11 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         bool doubleSided = objPtr && (objPtr->renderType == RenderType::Sprite || objPtr->renderType == RenderType::Mirror);
         if (doubleSided) {
             glDisable(GL_CULL_FACE);
+            Runtime2DCountStateBind();
         } else {
             glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
+            Runtime2DCountStateBind();
         }
 
         bool wantsTransparency = !item.sortOpaque;
@@ -2686,18 +2845,23 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             if (!currentBlendEnabled) {
                 glEnable(GL_BLEND);
                 currentBlendEnabled = true;
+                Runtime2DCountStateBind();
             }
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            Runtime2DCountStateBind();
         } else if (currentBlendEnabled) {
             glDisable(GL_BLEND);
             currentBlendEnabled = false;
+            Runtime2DCountStateBind();
         }
         if ((wantsTransparency || item.isUiCanvas3D) && currentDepthMask) {
             glDepthMask(GL_FALSE);
             currentDepthMask = false;
+            Runtime2DCountStateBind();
         } else if (!(wantsTransparency || item.isUiCanvas3D) && !currentDepthMask) {
             glDepthMask(GL_TRUE);
             currentDepthMask = true;
+            Runtime2DCountStateBind();
         }
         recordMeshDraw();
         item.mesh->draw();
@@ -2830,22 +2994,23 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     postStats.activeEffectCount = CountEnabledPostEffects(settings);
     postStats.hdrEnabled = settings.hdrEnabled;
 
-    GLint polygonMode[2] = { GL_FILL, GL_FILL };
-#ifdef GL_POLYGON_MODE
-    glGetIntegerv(GL_POLYGON_MODE, polygonMode);
-#endif
-    bool wireframe = (polygonMode[0] == GL_LINE || polygonMode[1] == GL_LINE);
-
     bool wantsEffects = settings.enabled &&
         (settings.hdrEnabled || settings.bloomEnabled || settings.colorAdjustEnabled ||
          settings.motionBlurEnabled || settings.vignetteEnabled ||
          settings.chromaticAberrationEnabled || settings.sharpenEnabled ||
          settings.ambientOcclusionEnabled);
 
-    if (wireframe) {
-        wantsEffects = false;
-        postStats.activeEffectCount = 0;
-        postStats.hdrEnabled = false;
+    if (wantsEffects) {
+        GLint polygonMode[2] = { GL_FILL, GL_FILL };
+#ifdef GL_POLYGON_MODE
+        glGetIntegerv(GL_POLYGON_MODE, polygonMode);
+#endif
+        bool wireframe = (polygonMode[0] == GL_LINE || polygonMode[1] == GL_LINE);
+        if (wireframe) {
+            wantsEffects = false;
+            postStats.activeEffectCount = 0;
+            postStats.hdrEnabled = false;
+        }
     }
 
     if (!wantsEffects || !postShader || width <= 0 || height <= 0 || sourceTexture == 0) {
@@ -3109,7 +3274,7 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
 
     for (const auto& obj : sceneObjects) {
         if (!previewSet.empty() && previewSet.find(obj.id) == previewSet.end()) continue;
-        if (!obj.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj)) continue;
         if (!(obj.hasCollider && obj.collider.enabled) && !(obj.hasRigidbody && obj.rigidbody.enabled)) continue;
 
         Mesh* meshToDraw = nullptr;
@@ -3287,7 +3452,7 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
         drawItems.reserve(selectedSet.size());
 
         for (const auto& obj : sceneObjects) {
-            if (!obj.enabled) continue;
+            if (!IsObjectEnabledInHierarchy(obj)) continue;
             if (selectedSet.find(obj.id) == selectedSet.end()) continue;
             if (!HasRendererComponent(obj)) continue;
 
@@ -3520,4 +3685,5 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
 
 void Renderer::endRender() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    Runtime2DCountStateBind();
 }

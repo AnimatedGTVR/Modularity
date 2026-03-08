@@ -13,6 +13,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <filesystem>
@@ -26,6 +27,7 @@
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <execinfo.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -54,6 +56,14 @@ CrashContext& context() {
     static CrashContext ctx;
     return ctx;
 }
+
+#if defined(__linux__) || defined(__APPLE__)
+constexpr size_t kSignalPathBufferSize = 1024;
+char gSessionLogPathForSignal[kSignalPathBufferSize] = {};
+char gSignalCrashLogPath[kSignalPathBufferSize] = {};
+char gCrashSummaryPathForSignal[kSignalPathBufferSize] = {};
+volatile sig_atomic_t gSignalLoggingReady = 0;
+#endif
 
 fs::path executableDirectory() {
     auto& ctx = context();
@@ -99,6 +109,137 @@ std::string nowForDisplay() {
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tmNow);
     return buffer;
 }
+
+#if defined(__linux__) || defined(__APPLE__)
+void storePathForSignal(const fs::path& path, char* outBuffer, size_t outBufferSize) {
+    if (!outBuffer || outBufferSize == 0) return;
+    std::memset(outBuffer, 0, outBufferSize);
+    const std::string value = path.string();
+    const size_t copyLen = std::min(value.size(), outBufferSize - 1);
+    std::memcpy(outBuffer, value.data(), copyLen);
+    outBuffer[copyLen] = '\0';
+}
+
+size_t signalSafeStrLen(const char* text) {
+    if (!text) return 0;
+    size_t n = 0;
+    while (text[n] != '\0') ++n;
+    return n;
+}
+
+void signalSafeWrite(int fd, const char* text) {
+    if (fd < 0 || !text) return;
+    const size_t len = signalSafeStrLen(text);
+    if (len == 0) return;
+    (void)!::write(fd, text, len);
+}
+
+char* appendUnsignedDec(char* out, unsigned long long value) {
+    char tmp[32];
+    int idx = 0;
+    do {
+        tmp[idx++] = static_cast<char>('0' + (value % 10ULL));
+        value /= 10ULL;
+    } while (value && idx < static_cast<int>(sizeof(tmp)));
+    while (idx > 0) {
+        *out++ = tmp[--idx];
+    }
+    return out;
+}
+
+char* appendSignedDec(char* out, long long value) {
+    if (value < 0) {
+        *out++ = '-';
+        const unsigned long long magnitude = static_cast<unsigned long long>(-(value + 1)) + 1ULL;
+        return appendUnsignedDec(out, magnitude);
+    }
+    return appendUnsignedDec(out, static_cast<unsigned long long>(value));
+}
+
+char* appendHex(char* out, uintptr_t value) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    *out++ = '0';
+    *out++ = 'x';
+    bool started = false;
+    for (int shift = static_cast<int>(sizeof(uintptr_t) * 8) - 4; shift >= 0; shift -= 4) {
+        const unsigned nibble = static_cast<unsigned>((value >> shift) & 0xF);
+        if (!started && nibble == 0 && shift > 0) {
+            continue;
+        }
+        started = true;
+        *out++ = kHex[nibble];
+    }
+    if (!started) {
+        *out++ = '0';
+    }
+    return out;
+}
+
+void signalWriteKeyInt(int fd, const char* key, long long value) {
+    char line[128];
+    char* ptr = line;
+    for (const char* p = key; *p; ++p) *ptr++ = *p;
+    *ptr++ = '=';
+    ptr = appendSignedDec(ptr, value);
+    *ptr++ = '\n';
+    (void)!::write(fd, line, static_cast<size_t>(ptr - line));
+}
+
+void signalWriteKeyHex(int fd, const char* key, uintptr_t value) {
+    char line[128];
+    char* ptr = line;
+    for (const char* p = key; *p; ++p) *ptr++ = *p;
+    *ptr++ = '=';
+    ptr = appendHex(ptr, value);
+    *ptr++ = '\n';
+    (void)!::write(fd, line, static_cast<size_t>(ptr - line));
+}
+
+void writeSignalSummaryFile(int signalValue) {
+    if (!gCrashSummaryPathForSignal[0]) return;
+    const int fd = ::open(gCrashSummaryPathForSignal, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    signalSafeWrite(fd, "reason=Fatal signal\n");
+    signalWriteKeyInt(fd, "signal", signalValue);
+    if (gSignalCrashLogPath[0]) {
+        signalSafeWrite(fd, "log=");
+        signalSafeWrite(fd, gSignalCrashLogPath);
+        signalSafeWrite(fd, "\n");
+    } else if (gSessionLogPathForSignal[0]) {
+        signalSafeWrite(fd, "log=");
+        signalSafeWrite(fd, gSessionLogPathForSignal);
+        signalSafeWrite(fd, "\n");
+    }
+    (void)!::close(fd);
+}
+
+void writeSignalCrashLog(int signalValue, siginfo_t* info) {
+    int fd = -1;
+    if (gSignalCrashLogPath[0]) {
+        fd = ::open(gSignalCrashLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    if (fd < 0 && gSessionLogPathForSignal[0]) {
+        fd = ::open(gSessionLogPathForSignal, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    if (fd < 0) return;
+
+    signalSafeWrite(fd, "\n[CrashReporter] Fatal signal captured on POSIX.\n");
+    signalWriteKeyInt(fd, "signal", signalValue);
+    signalWriteKeyInt(fd, "pid", static_cast<long long>(::getpid()));
+    if (info) {
+        signalWriteKeyInt(fd, "si_code", static_cast<long long>(info->si_code));
+        signalWriteKeyHex(fd, "si_addr", reinterpret_cast<uintptr_t>(info->si_addr));
+    }
+    signalSafeWrite(fd, "stacktrace_begin\n");
+    void* frames[64];
+    const int count = ::backtrace(frames, 64);
+    if (count > 0) {
+        ::backtrace_symbols_fd(frames, count, fd);
+    }
+    signalSafeWrite(fd, "stacktrace_end\n");
+    (void)!::close(fd);
+}
+#endif
 
 class TeeStreamBuf final : public std::streambuf {
 public:
@@ -257,20 +398,28 @@ void launchReporterProcess(const std::string& reason, const std::string& details
     std::_Exit(exitCode);
 }
 
-void signalHandler(int signalValue) {
 #if defined(_WIN32)
+void signalHandler(int signalValue) {
     std::ostringstream details;
     details << signalValue;
     handleCrash("Fatal signal", details.str(), 128 + signalValue);
-#else
+}
+#endif
+
+#if defined(__linux__) || defined(__APPLE__)
+void signalHandlerWithInfo(int signalValue, siginfo_t* info, void* /*ucontext*/) {
     static constexpr char kMessage[] =
-        "[CrashReporter] Fatal signal received. Reporter fallback is disabled for POSIX signal crashes.\n";
+        "[CrashReporter] Fatal signal captured. Wrote POSIX crash log.\n";
+    if (gSignalLoggingReady) {
+        writeSignalCrashLog(signalValue, info);
+        writeSignalSummaryFile(signalValue);
+    }
     (void)!::write(STDERR_FILENO, kMessage, sizeof(kMessage) - 1);
     std::signal(signalValue, SIG_DFL);
     std::raise(signalValue);
     std::_Exit(128 + signalValue);
-#endif
 }
+#endif
 
 void terminateHandler() {
     std::string details = "No active exception.";
@@ -666,6 +815,16 @@ void Initialize(const std::string& productName, const std::string& executablePat
     ctx.productName = productName;
     ctx.executablePath = executablePath;
     ctx.sessionLogPath = crashDirectory() / (productName + "-session-" + nowForFileName() + ".log");
+#if defined(__linux__) || defined(__APPLE__)
+    storePathForSignal(ctx.sessionLogPath, gSessionLogPathForSignal, sizeof(gSessionLogPathForSignal));
+    storePathForSignal(crashDirectory() / (productName + "-signal-last.log"),
+                       gSignalCrashLogPath,
+                       sizeof(gSignalCrashLogPath));
+    storePathForSignal(crashDirectory() / "last_crash.txt",
+                       gCrashSummaryPathForSignal,
+                       sizeof(gCrashSummaryPathForSignal));
+    gSignalLoggingReady = 1;
+#endif
     ctx.logFile.open(ctx.sessionLogPath, std::ios::out | std::ios::trunc);
     if (ctx.logFile.is_open()) {
         ctx.oldCout = std::cout.rdbuf();
@@ -686,9 +845,9 @@ void Initialize(const std::string& productName, const std::string& executablePat
     SetUnhandledExceptionFilter(unhandledExceptionFilter);
 #else
     struct sigaction action {};
-    action.sa_handler = signalHandler;
+    action.sa_sigaction = signalHandlerWithInfo;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND;
     sigaction(SIGABRT, &action, nullptr);
     sigaction(SIGILL, &action, nullptr);
     sigaction(SIGFPE, &action, nullptr);

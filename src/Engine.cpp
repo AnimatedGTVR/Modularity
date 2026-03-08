@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstring>
 #include <ctime>
+#include <sstream>
 #include "ThirdParty/glm/gtc/constants.hpp"
 #include "ThirdParty/glfw/deps/stb_image_write.h"
 
@@ -30,6 +31,245 @@ struct MaterialFileData {
     std::string vertexShader;
     std::string fragmentShader;
 };
+
+std::string RenameTrim(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+    size_t end = value.size();
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
+bool RenameIsInteger(const std::string& value) {
+    std::string trimmed = RenameTrim(value);
+    if (trimmed.empty()) return false;
+    size_t start = (trimmed[0] == '-' || trimmed[0] == '+') ? 1 : 0;
+    if (start >= trimmed.size()) return false;
+    for (size_t i = start; i < trimmed.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(trimmed[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void RenameReplaceTrimmed(std::string& target, const std::string& replacement) {
+    size_t start = 0;
+    while (start < target.size() &&
+           std::isspace(static_cast<unsigned char>(target[start])) != 0) {
+        ++start;
+    }
+    size_t end = target.size();
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(target[end - 1])) != 0) {
+        --end;
+    }
+    target = target.substr(0, start) + replacement + target.substr(end);
+}
+
+std::vector<std::string> RenameSplitEscaped(const std::string& value, char delimiter) {
+    std::vector<std::string> fields;
+    std::string current;
+    bool escaped = false;
+    for (char c : value) {
+        if (escaped) {
+            if (c == 'n') current.push_back('\n');
+            else if (c == 'r') current.push_back('\r');
+            else if (c == 't') current.push_back('\t');
+            else current.push_back(c);
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == delimiter) {
+            fields.push_back(current);
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    if (escaped) current.push_back('\\');
+    fields.push_back(current);
+    return fields;
+}
+
+std::string RenameEscapeField(const std::string& value, char delimiter) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (char c : value) {
+        if (c == '\\' || c == delimiter || c == '\n' || c == '\r' || c == '\t') {
+            out.push_back('\\');
+            if (c == '\n') out.push_back('n');
+            else if (c == '\r') out.push_back('r');
+            else if (c == '\t') out.push_back('t');
+            else out.push_back(c);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+std::string RenameJoinEscaped(const std::vector<std::string>& values, char delimiter) {
+    std::string joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        joined += RenameEscapeField(values[i], delimiter);
+        if (i + 1 < values.size()) joined.push_back(delimiter);
+    }
+    return joined;
+}
+
+bool RenameRewriteSingleObjectRef(std::string& value,
+                                  const std::string& oldName,
+                                  const std::string& newName) {
+    std::string trimmed = RenameTrim(value);
+    if (trimmed.empty()) return false;
+
+    if (trimmed == oldName) {
+        RenameReplaceTrimmed(value, newName);
+        return true;
+    }
+
+    const std::string namePrefix = "Object.";
+    if (trimmed.rfind(namePrefix, 0) == 0) {
+        const std::string suffix = trimmed.substr(namePrefix.size());
+        if (suffix == oldName) {
+            RenameReplaceTrimmed(value, namePrefix + newName);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool RenameRewriteManagedObjectSetting(std::string& value,
+                                       const std::string& oldName,
+                                       const std::string& newName) {
+    const size_t firstBar = value.find('|');
+    if (firstBar == std::string::npos) return false;
+    if (value.find('|', firstBar + 1) != std::string::npos) return false;
+
+    std::string idPart = value.substr(0, firstBar);
+    if (!RenameIsInteger(idPart)) return false;
+
+    std::string namePart = value.substr(firstBar + 1);
+    std::string trimmedName = RenameTrim(namePart);
+    if (trimmedName != oldName) return false;
+
+    RenameReplaceTrimmed(namePart, newName);
+    value = idPart + "|" + namePart;
+    return true;
+}
+
+bool RenameRewriteObjectRefList(std::string& value,
+                                const std::string& oldName,
+                                const std::string& newName) {
+    if (value.find(';') == std::string::npos) return false;
+
+    std::vector<std::string> refs = RenameSplitEscaped(value, ';');
+    bool changed = false;
+    for (std::string& ref : refs) {
+        changed |= RenameRewriteSingleObjectRef(ref, oldName, newName);
+    }
+    if (!changed) return false;
+
+    value = RenameJoinEscaped(refs, ';');
+    return true;
+}
+
+bool RenameRewriteDialogueLines(std::string& value,
+                                const std::string& oldName,
+                                const std::string& newName) {
+    if (value.find('|') == std::string::npos) return false;
+
+    char outerDelimiter = '\t';
+    if (value.find('\t') == std::string::npos && value.find('\n') != std::string::npos) {
+        outerDelimiter = '\n';
+    }
+
+    std::vector<std::string> lines = RenameSplitEscaped(value, outerDelimiter);
+    bool changed = false;
+    for (std::string& line : lines) {
+        if (RenameTrim(line).empty()) continue;
+
+        std::vector<std::string> fields = RenameSplitEscaped(line, '|');
+        if (fields.size() < 14) continue;
+
+        bool lineChanged = false;
+        lineChanged |= RenameRewriteSingleObjectRef(fields[9], oldName, newName);
+        lineChanged |= RenameRewriteSingleObjectRef(fields[10], oldName, newName);
+        lineChanged |= RenameRewriteSingleObjectRef(fields[11], oldName, newName);
+        lineChanged |= RenameRewriteObjectRefList(fields[12], oldName, newName);
+        lineChanged |= RenameRewriteObjectRefList(fields[13], oldName, newName);
+        if (lineChanged) {
+            line = RenameJoinEscaped(fields, '|');
+            changed = true;
+        }
+    }
+
+    if (!changed) return false;
+    value = RenameJoinEscaped(lines, outerDelimiter);
+    return true;
+}
+
+bool RenameRewriteInteractableOptions(std::string& value,
+                                      const std::string& oldName,
+                                      const std::string& newName) {
+    if (value.find('|') == std::string::npos) return false;
+
+    char outerDelimiter = '\t';
+    if (value.find('\t') == std::string::npos && value.find('\n') != std::string::npos) {
+        outerDelimiter = '\n';
+    }
+
+    std::vector<std::string> options = RenameSplitEscaped(value, outerDelimiter);
+    bool changed = false;
+    for (std::string& option : options) {
+        if (RenameTrim(option).empty()) continue;
+
+        std::vector<std::string> fields = RenameSplitEscaped(option, '|');
+        if (fields.size() < 8) continue;
+
+        bool optionChanged = false;
+        optionChanged |= RenameRewriteSingleObjectRef(fields[2], oldName, newName);
+        optionChanged |= RenameRewriteDialogueLines(fields[3], oldName, newName);
+        optionChanged |= RenameRewriteObjectRefList(fields[4], oldName, newName);
+        optionChanged |= RenameRewriteObjectRefList(fields[5], oldName, newName);
+        optionChanged |= RenameRewriteObjectRefList(fields[6], oldName, newName);
+        optionChanged |= RenameRewriteObjectRefList(fields[7], oldName, newName);
+        if (optionChanged) {
+            option = RenameJoinEscaped(fields, '|');
+            changed = true;
+        }
+    }
+
+    if (!changed) return false;
+    value = RenameJoinEscaped(options, outerDelimiter);
+    return true;
+}
+
+bool RenameRewriteScriptSettingValue(std::string& value,
+                                     const std::string& oldName,
+                                     const std::string& newName) {
+    if (value.empty()) return false;
+
+    bool changed = false;
+    changed |= RenameRewriteManagedObjectSetting(value, oldName, newName);
+    changed |= RenameRewriteSingleObjectRef(value, oldName, newName);
+    changed |= RenameRewriteObjectRefList(value, oldName, newName);
+    changed |= RenameRewriteDialogueLines(value, oldName, newName);
+    changed |= RenameRewriteInteractableOptions(value, oldName, newName);
+    return changed;
+}
 
 bool IsDefaultTransform(const SceneObject& obj) {
     auto nearZero = [](float v) { return std::abs(v) < 1e-4f; };
@@ -114,7 +354,7 @@ bool isSupportedVulkanPreviewShaderPair(const SceneObject& obj) {
 }
 
 bool hasUnsupportedVulkanPreviewFeature(const SceneObject& obj) {
-    if (!obj.enabled || !obj.hasRenderer || obj.renderType == RenderType::None) {
+    if (!IsObjectEnabledInHierarchy(obj) || !obj.hasRenderer || obj.renderType == RenderType::None) {
         return false;
     }
 
@@ -345,6 +585,228 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
 }
 } // namespace
 
+void ModuRuntime2DRenderCounters_Reset();
+void ModuRuntime2DRenderCounters_Read(uint64_t* outTextureBindCount,
+                                      uint64_t* outStateBindCount);
+
+namespace {
+using Runtime2DClock = std::chrono::steady_clock;
+
+double Runtime2DMsSince(const Runtime2DClock::time_point& start,
+                        const Runtime2DClock::time_point& end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+struct Runtime2DImGuiDrawCounters {
+    uint64_t drawCalls = 0;
+    uint64_t textureBinds = 0;
+    uint64_t stateBinds = 0;
+};
+
+Runtime2DImGuiDrawCounters CollectImGuiDrawCounters(const ImDrawData* drawData) {
+    Runtime2DImGuiDrawCounters counters;
+    if (!drawData || drawData->CmdListsCount <= 0) {
+        return counters;
+    }
+
+    ImTextureID lastTexture = ImTextureID_Invalid;
+    bool hasLastTexture = false;
+    for (int listIndex = 0; listIndex < drawData->CmdListsCount; ++listIndex) {
+        const ImDrawList* drawList = drawData->CmdLists[listIndex];
+        if (!drawList) continue;
+        for (const ImDrawCmd& cmd : drawList->CmdBuffer) {
+            ++counters.drawCalls;
+            ++counters.stateBinds;
+            const ImTextureID cmdTexture = cmd.GetTexID();
+            if (!hasLastTexture || cmdTexture != lastTexture) {
+                ++counters.textureBinds;
+                lastTexture = cmdTexture;
+                hasLastTexture = true;
+            }
+        }
+    }
+    return counters;
+}
+
+struct Runtime2DProfileFrame {
+    double totalFrameMs = 0.0;
+    double update2DTotalMs = 0.0;
+    double physics2DTotalMs = 0.0;
+    double broadphaseMs = 0.0;
+    double narrowphaseSolveMs = 0.0;
+    double transformUpdateMs = 0.0;
+    double renderSubmissionMs = 0.0;
+    double actualDrawRenderMs = 0.0;
+    double uiRuntimeMs = 0.0;
+    double spriteBatchBuildMs = 0.0;
+    double presentWaitMs = 0.0;
+    double fpsCapSleepMs = 0.0;
+    uint64_t textureBindCount = 0;
+    uint64_t stateBindCount = 0;
+    uint64_t drawCallCount = 0;
+    uint64_t visibleObjectCount = 0;
+    uint64_t collisionPairCandidateCount = 0;
+    uint64_t collisionTestCount = 0;
+};
+
+struct Runtime2DProfileAggregate {
+    Runtime2DProfileFrame sum;
+    int frameCount = 0;
+    double windowStartSec = -1.0;
+};
+
+Runtime2DProfileFrame gRuntime2DProfileFrame;
+Runtime2DProfileAggregate gRuntime2DProfileAggregate;
+bool gRuntime2DProfileEnabled = false;
+
+void resetRuntime2DFrame() {
+    gRuntime2DProfileFrame = Runtime2DProfileFrame{};
+}
+
+void accumulateRuntime2DFrame() {
+    Runtime2DProfileAggregate& agg = gRuntime2DProfileAggregate;
+    agg.frameCount += 1;
+    agg.sum.totalFrameMs += gRuntime2DProfileFrame.totalFrameMs;
+    agg.sum.update2DTotalMs += gRuntime2DProfileFrame.update2DTotalMs;
+    agg.sum.physics2DTotalMs += gRuntime2DProfileFrame.physics2DTotalMs;
+    agg.sum.broadphaseMs += gRuntime2DProfileFrame.broadphaseMs;
+    agg.sum.narrowphaseSolveMs += gRuntime2DProfileFrame.narrowphaseSolveMs;
+    agg.sum.transformUpdateMs += gRuntime2DProfileFrame.transformUpdateMs;
+    agg.sum.renderSubmissionMs += gRuntime2DProfileFrame.renderSubmissionMs;
+    agg.sum.actualDrawRenderMs += gRuntime2DProfileFrame.actualDrawRenderMs;
+    agg.sum.uiRuntimeMs += gRuntime2DProfileFrame.uiRuntimeMs;
+    agg.sum.spriteBatchBuildMs += gRuntime2DProfileFrame.spriteBatchBuildMs;
+    agg.sum.presentWaitMs += gRuntime2DProfileFrame.presentWaitMs;
+    agg.sum.fpsCapSleepMs += gRuntime2DProfileFrame.fpsCapSleepMs;
+    agg.sum.textureBindCount += gRuntime2DProfileFrame.textureBindCount;
+    agg.sum.stateBindCount += gRuntime2DProfileFrame.stateBindCount;
+    agg.sum.drawCallCount += gRuntime2DProfileFrame.drawCallCount;
+    agg.sum.visibleObjectCount += gRuntime2DProfileFrame.visibleObjectCount;
+    agg.sum.collisionPairCandidateCount += gRuntime2DProfileFrame.collisionPairCandidateCount;
+    agg.sum.collisionTestCount += gRuntime2DProfileFrame.collisionTestCount;
+}
+
+void resetRuntime2DAggregate(double nowSec) {
+    gRuntime2DProfileAggregate = Runtime2DProfileAggregate{};
+    gRuntime2DProfileAggregate.windowStartSec = nowSec;
+}
+
+void emitRuntime2DProfileSummaryIfReady(double nowSec) {
+    Runtime2DProfileAggregate& agg = gRuntime2DProfileAggregate;
+    if (agg.frameCount <= 0) return;
+    if (agg.windowStartSec < 0.0) {
+        agg.windowStartSec = nowSec;
+    }
+    const double elapsedSec = std::max(0.0, nowSec - agg.windowStartSec);
+    if (agg.frameCount < 60 && elapsedSec < 1.0) {
+        return;
+    }
+
+    const double inv = 1.0 / static_cast<double>(agg.frameCount);
+    Runtime2DProfileFrame avg;
+    avg.totalFrameMs = agg.sum.totalFrameMs * inv;
+    avg.update2DTotalMs = agg.sum.update2DTotalMs * inv;
+    avg.physics2DTotalMs = agg.sum.physics2DTotalMs * inv;
+    avg.broadphaseMs = agg.sum.broadphaseMs * inv;
+    avg.narrowphaseSolveMs = agg.sum.narrowphaseSolveMs * inv;
+    avg.transformUpdateMs = agg.sum.transformUpdateMs * inv;
+    avg.renderSubmissionMs = agg.sum.renderSubmissionMs * inv;
+    avg.actualDrawRenderMs = agg.sum.actualDrawRenderMs * inv;
+    avg.uiRuntimeMs = agg.sum.uiRuntimeMs * inv;
+    avg.spriteBatchBuildMs = agg.sum.spriteBatchBuildMs * inv;
+    avg.presentWaitMs = agg.sum.presentWaitMs * inv;
+    avg.fpsCapSleepMs = agg.sum.fpsCapSleepMs * inv;
+    avg.textureBindCount = static_cast<uint64_t>(std::llround(agg.sum.textureBindCount * inv));
+    avg.stateBindCount = static_cast<uint64_t>(std::llround(agg.sum.stateBindCount * inv));
+    avg.drawCallCount = static_cast<uint64_t>(std::llround(agg.sum.drawCallCount * inv));
+    avg.visibleObjectCount = static_cast<uint64_t>(std::llround(agg.sum.visibleObjectCount * inv));
+    avg.collisionPairCandidateCount = static_cast<uint64_t>(std::llround(agg.sum.collisionPairCandidateCount * inv));
+    avg.collisionTestCount = static_cast<uint64_t>(std::llround(agg.sum.collisionTestCount * inv));
+
+    struct CostEntry {
+        const char* name = "";
+        double ms = 0.0;
+    };
+    std::array<CostEntry, 11> costs = {{
+        { "update2D", avg.update2DTotalMs },
+        { "physics2D", avg.physics2DTotalMs },
+        { "broadphase", avg.broadphaseMs },
+        { "narrowphase", avg.narrowphaseSolveMs },
+        { "transform", avg.transformUpdateMs },
+        { "renderSubmit", avg.renderSubmissionMs },
+        { "drawRender", avg.actualDrawRenderMs },
+        { "uiRuntime", avg.uiRuntimeMs },
+        { "spriteBuild", avg.spriteBatchBuildMs },
+        { "presentWait", avg.presentWaitMs },
+        { "fpsSleep", avg.fpsCapSleepMs }
+    }};
+    std::sort(costs.begin(), costs.end(), [](const CostEntry& a, const CostEntry& b) {
+        return a.ms > b.ms;
+    });
+
+    const double cpuUpdateMs = std::max(0.0, avg.update2DTotalMs - avg.physics2DTotalMs);
+    const double physicsMs = avg.physics2DTotalMs;
+    const double uiMs = avg.uiRuntimeMs;
+    const double renderSubmitMs = avg.renderSubmissionMs;
+    const double gpuDrawPresentMs = avg.actualDrawRenderMs + avg.presentWaitMs;
+    const double syncWaitMs = avg.fpsCapSleepMs;
+
+    std::array<CostEntry, 6> bottleneckGroups = {{
+        { "CPU update", cpuUpdateMs },
+        { "physics", physicsMs },
+        { "UI", uiMs },
+        { "render submission", renderSubmitMs },
+        { "GPU/draw/present", gpuDrawPresentMs },
+        { "synchronization/waiting", syncWaitMs }
+    }};
+    std::sort(bottleneckGroups.begin(), bottleneckGroups.end(),
+              [](const CostEntry& a, const CostEntry& b) { return a.ms > b.ms; });
+    const CostEntry& topGroup = bottleneckGroups.front();
+
+    const bool presentLikelyBound = avg.presentWaitMs > 0.3 &&
+        avg.presentWaitMs > avg.update2DTotalMs &&
+        avg.presentWaitMs > avg.renderSubmissionMs;
+    const bool capLikelyBound = avg.fpsCapSleepMs > 0.3;
+
+    std::fprintf(stdout,
+        "[2DProfile avg/%df] frame=%.3fms update2D=%.3fms physics=%.3fms (broad=%.3fms narrow=%.3fms) "
+        "transform=%.3fms submit=%.3fms draw=%.3fms ui=%.3fms spriteBuild=%.3fms present=%.3fms sleep=%.3fms "
+        "drawCalls=%llu texBinds=%llu stateBinds=%llu visible=%llu pairCandidates=%llu collisionTests=%llu\n",
+        agg.frameCount,
+        avg.totalFrameMs, avg.update2DTotalMs, avg.physics2DTotalMs, avg.broadphaseMs, avg.narrowphaseSolveMs,
+        avg.transformUpdateMs, avg.renderSubmissionMs, avg.actualDrawRenderMs, avg.uiRuntimeMs,
+        avg.spriteBatchBuildMs, avg.presentWaitMs, avg.fpsCapSleepMs,
+        static_cast<unsigned long long>(avg.drawCallCount),
+        static_cast<unsigned long long>(avg.textureBindCount),
+        static_cast<unsigned long long>(avg.stateBindCount),
+        static_cast<unsigned long long>(avg.visibleObjectCount),
+        static_cast<unsigned long long>(avg.collisionPairCandidateCount),
+        static_cast<unsigned long long>(avg.collisionTestCount));
+    std::fprintf(stdout,
+        "[2DProfile top5] 1)%s=%.3fms 2)%s=%.3fms 3)%s=%.3fms 4)%s=%.3fms 5)%s=%.3fms | bottleneck=%s%s%s\n",
+        costs[0].name, costs[0].ms,
+        costs[1].name, costs[1].ms,
+        costs[2].name, costs[2].ms,
+        costs[3].name, costs[3].ms,
+        costs[4].name, costs[4].ms,
+        topGroup.name,
+        presentLikelyBound ? " (present-bound likely)" : "",
+        capLikelyBound ? " (fps-cap sleep detected)" : "");
+    std::fflush(stdout);
+
+    resetRuntime2DAggregate(nowSec);
+}
+} // namespace
+
+void ModuRuntime2DProfiler_RecordUiRuntime(double uiRuntimeMs,
+                                           double spriteBatchBuildMs,
+                                           uint32_t visibleObjectCount) {
+    if (!gRuntime2DProfileEnabled) return;
+    gRuntime2DProfileFrame.uiRuntimeMs += uiRuntimeMs;
+    gRuntime2DProfileFrame.spriteBatchBuildMs += spriteBatchBuildMs;
+    gRuntime2DProfileFrame.visibleObjectCount += static_cast<uint64_t>(visibleObjectCount);
+}
+
 bool Engine::isProject2DPipeline() const {
     if (!projectManager.currentProject.isLoaded) {
         return false;
@@ -431,7 +893,8 @@ int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
 }
 
 glm::vec2 Engine::getSpriteDisplaySize(const SceneObject& obj) const {
-    glm::vec2 size(std::max(1.0f, obj.ui.size.x), std::max(1.0f, obj.ui.size.y));
+    glm::vec2 size(std::max(0.01f, obj.ui.size.x), std::max(0.01f, obj.ui.size.y));
+    // Keep frame-to-frame clip scale from bullying the object's authored size.
     return size * ResolveSpriteFrameScale(obj.ui, resolveSpriteSheetFrame(obj));
 }
 
@@ -1180,17 +1643,22 @@ void Engine::setPrimarySelection(int id, bool additive) {
         selectedObjectIds.clear();
     }
     if (id >= 0) {
-        selectedObjectIds.push_back(id);
+        if (std::find(selectedObjectIds.begin(), selectedObjectIds.end(), id) == selectedObjectIds.end()) {
+            selectedObjectIds.push_back(id);
+        }
         selectedObjectId = id;
+        hierarchyRangeAnchorId = id;
     } else {
         selectedObjectIds.clear();
         selectedObjectId = -1;
+        hierarchyRangeAnchorId = -1;
     }
 }
 
 void Engine::clearSelection() {
     selectedObjectIds.clear();
     selectedObjectId = -1;
+    hierarchyRangeAnchorId = -1;
 }
 
 Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
@@ -1422,6 +1890,9 @@ void Engine::restorePlayModeSnapshot() {
     aiAgentRuntimeStates.clear();
     activePlayerId = -1;
     updateHierarchyWorldTransforms();
+    gizmoHistoryCaptured = false;
+    worldUiGizmoHistoryCaptured = false;
+    gameUiGizmoHistoryCaptured = false;
 
     playModeSnapshot = {};
 }
@@ -1442,6 +1913,16 @@ void Engine::undo() {
     selectedObjectIds = snap.selectedIds;
     selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
     nextObjectId = snap.nextId;
+    sceneObjectIndexById.clear();
+    sceneObjectIndexData = nullptr;
+    sceneObjectIndexCount = 0;
+    markRuntimeScriptBindingsDirty();
+    aiAgentRuntimeStates.clear();
+    activePlayerId = -1;
+    updateHierarchyWorldTransforms();
+    gizmoHistoryCaptured = false;
+    worldUiGizmoHistoryCaptured = false;
+    gameUiGizmoHistoryCaptured = false;
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 
@@ -1461,6 +1942,16 @@ void Engine::redo() {
     selectedObjectIds = snap.selectedIds;
     selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
     nextObjectId = snap.nextId;
+    sceneObjectIndexById.clear();
+    sceneObjectIndexData = nullptr;
+    sceneObjectIndexCount = 0;
+    markRuntimeScriptBindingsDirty();
+    aiAgentRuntimeStates.clear();
+    activePlayerId = -1;
+    updateHierarchyWorldTransforms();
+    gizmoHistoryCaptured = false;
+    worldUiGizmoHistoryCaptured = false;
+    gameUiGizmoHistoryCaptured = false;
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 #pragma endregion
@@ -1567,6 +2058,26 @@ bool Engine::init() {
     };
     glfwSetCursorPosCallback(editorWindow, mouse_cb);
 
+    auto drop_cb = [](GLFWwindow* window, int pathCount, const char* paths[]) {
+        auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
+        if (!engine || pathCount <= 0 || !paths) return;
+
+        double mouseX = 0.0;
+        double mouseY = 0.0;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+
+        engine->pendingExternalFileDrops.reserve(engine->pendingExternalFileDrops.size() + static_cast<size_t>(pathCount));
+        for (int i = 0; i < pathCount; ++i) {
+            if (!paths[i] || !*paths[i]) continue;
+            Engine::ExternalFileDropEvent evt;
+            evt.path = fs::path(paths[i]);
+            evt.mouseX = mouseX;
+            evt.mouseY = mouseY;
+            engine->pendingExternalFileDrops.push_back(std::move(evt));
+        }
+    };
+    glfwSetDropCallback(editorWindow, drop_cb);
+
     std::cerr << "[DEBUG] Setting up ImGui..." << std::endl;
     setupImGui();
     std::cerr << "[DEBUG] ImGui setup complete" << std::endl;
@@ -1650,9 +2161,39 @@ bool Engine::initVulkanRenderer() {
 
 void Engine::run() {
     std::cerr << "[DEBUG] Entering main loop, showLauncher=" << showLauncher << std::endl;
+    constexpr float kRigidbody2DFixedStep = 1.0f / 120.0f;
+    constexpr int kMaxRigidbody2DStepsPerFrame = 4;
+    float rigidbody2DAccumulator = 0.0f;
+    bool runtime2DProfileWasEnabled = false;
     
     while (!glfwWindowShouldClose(editorWindow)) {
         double frameStart = glfwGetTime();
+        const auto frameStartClock = Runtime2DClock::now();
+        const bool runtime2DProfileThisFrame =
+            projectManager.currentProject.isLoaded &&
+            !showLauncher &&
+            isProject2DPipeline() &&
+            (playerMode || isPlaying || specMode || testMode);
+        gRuntime2DProfileEnabled = runtime2DProfileThisFrame;
+        if (runtime2DProfileThisFrame) {
+            if (!runtime2DProfileWasEnabled || gRuntime2DProfileAggregate.windowStartSec < 0.0) {
+                resetRuntime2DAggregate(frameStart);
+            }
+            resetRuntime2DFrame();
+            ModuRuntime2DRenderCounters_Reset();
+        }
+        runtime2DProfileWasEnabled = runtime2DProfileThisFrame;
+
+        double profilePhysics2DMs = 0.0;
+        double profileTransformMs = 0.0;
+        double profileRenderSubmissionMs = 0.0;
+        double profileActualDrawMs = 0.0;
+        Runtime2DImGuiDrawCounters imguiDrawCounters;
+        Runtime2DClock::time_point update2DStart;
+        if (runtime2DProfileThisFrame) {
+            update2DStart = Runtime2DClock::now();
+        }
+
         if (glfwGetWindowAttrib(editorWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
             continue;
@@ -1717,27 +2258,96 @@ void Engine::run() {
 
         bool simulate2D = (isPlaying && !isPaused) || (!isPlaying && specMode) || (!isPlaying && testMode);
         if (simulate2D) {
-            updateRigidbody2D(deltaTime);
+            rigidbody2DAccumulator = std::min(
+                rigidbody2DAccumulator + deltaTime,
+                kRigidbody2DFixedStep * static_cast<float>(kMaxRigidbody2DStepsPerFrame));
+
+            int simulateSteps = 0;
+            while (rigidbody2DAccumulator >= kRigidbody2DFixedStep &&
+                   simulateSteps < kMaxRigidbody2DStepsPerFrame) {
+                Runtime2DClock::time_point physicsStepStart;
+                if (runtime2DProfileThisFrame) {
+                    physicsStepStart = Runtime2DClock::now();
+                }
+                updateRigidbody2D(kRigidbody2DFixedStep);
+                if (runtime2DProfileThisFrame) {
+                    profilePhysics2DMs += Runtime2DMsSince(physicsStepStart, Runtime2DClock::now());
+                }
+                rigidbody2DAccumulator -= kRigidbody2DFixedStep;
+                ++simulateSteps;
+            }
+        } else {
+            rigidbody2DAccumulator = 0.0f;
         }
 
         if (isPlaying) {
             updateCameraFollow2D(deltaTime);
         }
 
+        float runtimeAnimDelta = ((isPlaying && isPaused) ? 0.0f : deltaTime);
+        updateRuntimeAnimations(runtimeAnimDelta);
         updateSkeletalAnimations(deltaTime);
-        updateHierarchyWorldTransforms();
+        if (runtime2DProfileThisFrame) {
+            const auto transformStart = Runtime2DClock::now();
+            updateHierarchyWorldTransforms();
+            profileTransformMs += Runtime2DMsSince(transformStart, Runtime2DClock::now());
+        } else {
+            updateHierarchyWorldTransforms();
+        }
 
-        bool simulatePhysics = physics.isReady() && ((isPlaying && !isPaused) || (!isPlaying && specMode));
+        bool hasRuntime3DPhysics = false;
+        bool hasRuntimeAIAgent = false;
+        bool hasRuntimeSkeletal = false;
+        const bool runtimeSystemsActive = (isPlaying || specMode || testMode);
+        if (runtimeSystemsActive) {
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj)) continue;
+                if (!hasRuntime3DPhysics &&
+                    ((obj.hasRigidbody && obj.rigidbody.enabled) ||
+                     (obj.hasCollider && obj.collider.enabled))) {
+                    hasRuntime3DPhysics = true;
+                }
+                if (!hasRuntimeAIAgent && obj.hasAIAgent) {
+                    hasRuntimeAIAgent = true;
+                }
+                if (!hasRuntimeSkeletal &&
+                    obj.hasSkeletalAnimation &&
+                    obj.skeletal.enabled &&
+                    !obj.skeletal.finalMatrices.empty()) {
+                    hasRuntimeSkeletal = true;
+                }
+                if (hasRuntime3DPhysics && hasRuntimeAIAgent && hasRuntimeSkeletal) {
+                    break;
+                }
+            }
+        }
+
+        bool simulatePhysics = physics.isReady() &&
+                               ((isPlaying && !isPaused) || (!isPlaying && specMode)) &&
+                               hasRuntime3DPhysics;
         if (simulatePhysics) {
             physics.simulate(deltaTime, sceneObjects);
         }
-        bool runAI = isPlaying || specMode || testMode;
+        bool runAI = (isPlaying || specMode || testMode) && hasRuntimeAIAgent;
         if (runAI) {
             updateAIAgents(deltaTime);
         }
 
-        updateHierarchyWorldTransforms();
-        updateSkinningMatrices();
+        if (runtime2DProfileThisFrame) {
+            const auto transformStart = Runtime2DClock::now();
+            updateHierarchyWorldTransforms();
+            profileTransformMs += Runtime2DMsSince(transformStart, Runtime2DClock::now());
+        } else {
+            updateHierarchyWorldTransforms();
+        }
+        if (hasRuntimeSkeletal) {
+            updateSkinningMatrices();
+        }
+        if (runtime2DProfileThisFrame) {
+            gRuntime2DProfileFrame.update2DTotalMs += Runtime2DMsSince(update2DStart, Runtime2DClock::now());
+            gRuntime2DProfileFrame.physics2DTotalMs += profilePhysics2DMs;
+            gRuntime2DProfileFrame.transformUpdateMs += profileTransformMs;
+        }
 
         if (playerMode) {
             syncPlayerCamera();
@@ -1748,7 +2358,7 @@ void Engine::run() {
             const SceneObject* sceneCam = nullptr;
             const SceneObject* anyCam = nullptr;
             for (const auto& obj : sceneObjects) {
-                if (!obj.enabled || !obj.hasCamera) continue;
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
                 if (!anyCam) anyCam = &obj;
                 if (!sceneCam && obj.camera.type == SceneCameraType::Scene) {
                     sceneCam = &obj;
@@ -1762,6 +2372,8 @@ void Engine::run() {
             if (sceneCam) return sceneCam;
             return anyCam;
         };
+
+        const SceneObject* runtimeCameraObject = pickRuntimeCameraObject();
 
         if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
             if (!showLauncher && projectManager.currentProject.isLoaded) {
@@ -1787,7 +2399,8 @@ void Engine::run() {
                     buildSettings.editorCameraNear,
                     buildSettings.editorCameraFar);
 
-                if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+                if (runtimeCameraObject) {
+                    const SceneObject* runtimeCam = runtimeCameraObject;
                     Camera gameCamera = makeCameraFromObject(*runtimeCam);
                     gameCamera.position = runtimeCam->position;
                     vulkanRenderer->setGameSceneData(
@@ -1807,7 +2420,8 @@ void Engine::run() {
 
         bool audioShouldPlay = isPlaying || specMode || testMode;
         Camera listenerCamera = camera;
-        if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+        if (runtimeCameraObject) {
+            const SceneObject* runtimeCam = runtimeCameraObject;
             listenerCamera = makeCameraFromObject(*runtimeCam);
             listenerCamera.position = runtimeCam->position;
         }
@@ -1834,12 +2448,17 @@ void Engine::run() {
         }
 
         if (playerMode && !showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
+            Runtime2DClock::time_point renderSubmissionStart;
+            if (runtime2DProfileThisFrame) {
+                renderSubmissionStart = Runtime2DClock::now();
+            }
             glm::mat4 view = camera.getViewMatrix();
             float renderFov = buildSettings.editorCameraFov;
             float renderNear = buildSettings.editorCameraNear;
             float renderFar = buildSettings.editorCameraFar;
             if (playerMode) {
-                if (const SceneObject* runtimeCam = pickRuntimeCameraObject()) {
+                if (runtimeCameraObject) {
+                    const SceneObject* runtimeCam = runtimeCameraObject;
                     renderFov = runtimeCam->camera.fov;
                     renderNear = std::max(0.01f, runtimeCam->camera.nearClip);
                     renderFar = std::max(renderNear + 0.01f, runtimeCam->camera.farClip);
@@ -1860,6 +2479,9 @@ void Engine::run() {
                                  false,
                                  &selectedObjectIds);
             renderer.endRender();
+            if (runtime2DProfileThisFrame) {
+                profileRenderSubmissionMs += Runtime2DMsSince(renderSubmissionStart, Runtime2DClock::now());
+            }
         }
 
         if (firstFrame) {
@@ -1946,6 +2568,14 @@ void Engine::run() {
         autosaveWorkspaceLayout();
         renderUiCanvas3DTargets();
         ImGui::Render();
+        if (runtime2DProfileThisFrame) {
+            imguiDrawCounters = CollectImGuiDrawCounters(ImGui::GetDrawData());
+        }
+
+        Runtime2DClock::time_point drawRenderStart;
+        if (runtime2DProfileThisFrame) {
+            drawRenderStart = Runtime2DClock::now();
+        }
 
         if (usingVulkan()) {
             if (vulkanRendererInitialized && vulkanRenderer) {
@@ -1971,11 +2601,17 @@ void Engine::run() {
 
             ImGuiIO& io = ImGui::GetIO();
             if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-                GLFWwindow* backup_current_context = glfwGetCurrentContext();
-                ImGui::UpdatePlatformWindows();
-                ImGui::RenderPlatformWindowsDefault();
-                glfwMakeContextCurrent(backup_current_context);
+                const ImGuiPlatformIO& platformIo = ImGui::GetPlatformIO();
+                if (platformIo.Viewports.Size > 1) {
+                    GLFWwindow* backup_current_context = glfwGetCurrentContext();
+                    ImGui::UpdatePlatformWindows();
+                    ImGui::RenderPlatformWindowsDefault();
+                    glfwMakeContextCurrent(backup_current_context);
+                }
             }
+        }
+        if (runtime2DProfileThisFrame) {
+            profileActualDrawMs += Runtime2DMsSince(drawRenderStart, Runtime2DClock::now());
         }
 
         // Enforce cursor lock state at the end of the frame based on latest flags.
@@ -1991,7 +2627,13 @@ void Engine::run() {
         }
 
         if (!usingVulkan()) {
-            glfwSwapBuffers(editorWindow);
+            if (runtime2DProfileThisFrame) {
+                const auto presentStart = Runtime2DClock::now();
+                glfwSwapBuffers(editorWindow);
+                gRuntime2DProfileFrame.presentWaitMs += Runtime2DMsSince(presentStart, Runtime2DClock::now());
+            } else {
+                glfwSwapBuffers(editorWindow);
+            }
         }
 
         if (fpsCapEnabled && fpsCap > 1.0f) {
@@ -2000,8 +2642,38 @@ void Engine::run() {
             double elapsed = frameEnd - frameStart;
             if (elapsed < target) {
                 int sleepMs = static_cast<int>((target - elapsed) * 1000.0);
-                if (sleepMs > 0) ImGui_ImplGlfw_Sleep(sleepMs);
+                if (sleepMs > 0) {
+                    if (runtime2DProfileThisFrame) {
+                        const auto sleepStart = Runtime2DClock::now();
+                        ImGui_ImplGlfw_Sleep(sleepMs);
+                        gRuntime2DProfileFrame.fpsCapSleepMs += Runtime2DMsSince(sleepStart, Runtime2DClock::now());
+                    } else {
+                        ImGui_ImplGlfw_Sleep(sleepMs);
+                    }
+                }
             }
+        }
+
+        if (runtime2DProfileThisFrame) {
+            gRuntime2DProfileFrame.renderSubmissionMs += profileRenderSubmissionMs;
+            gRuntime2DProfileFrame.actualDrawRenderMs += profileActualDrawMs;
+
+            uint64_t rendererTextureBinds = 0;
+            uint64_t rendererStateBinds = 0;
+            ModuRuntime2DRenderCounters_Read(&rendererTextureBinds, &rendererStateBinds);
+
+            uint64_t rendererDrawCalls = 0;
+            if (rendererInitialized) {
+                rendererDrawCalls = static_cast<uint64_t>(std::max(0, renderer.getLastViewportStats().drawCalls));
+            }
+
+            gRuntime2DProfileFrame.drawCallCount += rendererDrawCalls + imguiDrawCounters.drawCalls;
+            gRuntime2DProfileFrame.textureBindCount += rendererTextureBinds + imguiDrawCounters.textureBinds;
+            gRuntime2DProfileFrame.stateBindCount += rendererStateBinds + imguiDrawCounters.stateBinds;
+            gRuntime2DProfileFrame.totalFrameMs += Runtime2DMsSince(frameStartClock, Runtime2DClock::now());
+
+            accumulateRuntime2DFrame();
+            emitRuntime2DProfileSummaryIfReady(glfwGetTime());
         }
         
         if (firstFrame) {
@@ -2456,8 +3128,14 @@ bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     if (extLower != ".rmesh") return false;
 
     if (meshEditLoaded && meshEditPath == obj->meshPath) {
-        if (meshEditSelectedVertices.empty() && !meshEditAsset.positions.empty()) {
-            meshEditSelectedVertices.push_back(0);
+        if (meshEditAsset.materialSlots.empty()) {
+            meshEditAsset.materialSlots.push_back("Default");
+        }
+        if (meshEditAsset.faceMaterialIndices.size() != meshEditAsset.faces.size()) {
+            meshEditAsset.faceMaterialIndices.resize(meshEditAsset.faces.size(), 0u);
+        }
+        if (meshEditActiveMaterialSlot < 0 || meshEditActiveMaterialSlot >= static_cast<int>(meshEditAsset.materialSlots.size())) {
+            meshEditActiveMaterialSlot = 0;
         }
         return true;
     }
@@ -2471,15 +3149,30 @@ bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     meshEditLoaded = true;
     meshEditPath = obj->meshPath;
     meshEditDirty = false;
+    if (meshEditAsset.materialSlots.empty()) {
+        meshEditAsset.materialSlots.push_back("Default");
+    }
+    if (meshEditAsset.faceMaterialIndices.size() != meshEditAsset.faces.size()) {
+        meshEditAsset.faceMaterialIndices.resize(meshEditAsset.faces.size(), 0u);
+    }
+    meshEditActiveMaterialSlot = std::clamp(meshEditActiveMaterialSlot, 0, static_cast<int>(meshEditAsset.materialSlots.size()) - 1);
     meshEditSelectedVertices.clear();
     meshEditSelectedEdges.clear();
     meshEditSelectedFaces.clear();
-    if (!meshEditAsset.positions.empty()) meshEditSelectedVertices.push_back(0);
     return true;
 }
 
 bool Engine::syncMeshEditToGPU(SceneObject* obj) {
     if (!obj || !meshEditLoaded) return false;
+    if (obj->meshId < 0 && !obj->meshPath.empty()) {
+        ModelLoadResult loaded = getModelLoader().loadModel(obj->meshPath);
+        if (loaded.success) {
+            obj->meshId = loaded.meshIndex;
+        } else {
+            addConsoleMessage("Mesh GPU sync failed: " + loaded.errorMessage, ConsoleMessageType::Error);
+            return false;
+        }
+    }
     std::string err;
     if (!getModelLoader().updateRawMesh(obj->meshId, meshEditAsset, err)) {
         addConsoleMessage("Mesh GPU sync failed: " + err, ConsoleMessageType::Error);
@@ -2632,6 +3325,43 @@ void Engine::handleKeyboardShortcuts() {
         ctrlNPressed = false;
     }
 
+    const bool textInputFocused = ImGui::GetIO().WantTextInput;
+    static bool deletePressed = false;
+    if (!textInputFocused && glfwGetKey(editorWindow, GLFW_KEY_DELETE) == GLFW_PRESS && !deletePressed) {
+        deleteSelected();
+        deletePressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_DELETE) == GLFW_RELEASE) {
+        deletePressed = false;
+    }
+
+    static bool ctrlCPressed = false;
+    if (!textInputFocused && ctrlDown && !shiftDown && glfwGetKey(editorWindow, GLFW_KEY_C) == GLFW_PRESS && !ctrlCPressed) {
+        copySelected();
+        ctrlCPressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_C) == GLFW_RELEASE) {
+        ctrlCPressed = false;
+    }
+
+    static bool ctrlVPressed = false;
+    if (!textInputFocused && ctrlDown && !shiftDown && glfwGetKey(editorWindow, GLFW_KEY_V) == GLFW_PRESS && !ctrlVPressed) {
+        pasteClipboard();
+        ctrlVPressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_V) == GLFW_RELEASE) {
+        ctrlVPressed = false;
+    }
+
+    static bool ctrlAPressed = false;
+    if (!textInputFocused && ctrlDown && !shiftDown && glfwGetKey(editorWindow, GLFW_KEY_A) == GLFW_PRESS && !ctrlAPressed) {
+        selectAllObjects();
+        ctrlAPressed = true;
+    }
+    if (glfwGetKey(editorWindow, GLFW_KEY_A) == GLFW_RELEASE) {
+        ctrlAPressed = false;
+    }
+
     bool cameraActive = cursorLocked || (viewportController.isViewportFocused() && cursorLocked);
     if (!isPlaying && gameViewCursorLocked) {
         // Prevent edit-mode freelook from conflicting with game view capture
@@ -2721,7 +3451,7 @@ void Engine::updateScripts(float delta) {
         auto objIt = sceneObjectIndexById.find(binding.objectId);
         if (objIt == sceneObjectIndexById.end()) continue;
         SceneObject& obj = sceneObjects[objIt->second];
-        if (!obj.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj)) continue;
         if (binding.scriptIndex >= obj.scripts.size()) continue;
         ScriptComponent& sc = obj.scripts[binding.scriptIndex];
         if (!sc.enabled) continue;
@@ -3031,7 +3761,7 @@ void Engine::updatePlayerController(float delta) {
 
     SceneObject* player = nullptr;
     for (auto& obj : sceneObjects) {
-        if (obj.enabled && obj.hasPlayerController && obj.playerController.enabled) {
+        if (IsObjectEnabledInHierarchy(obj) && obj.hasPlayerController && obj.playerController.enabled) {
             player = &obj;
             activePlayerId = obj.id;
             break;
@@ -3253,6 +3983,13 @@ void Engine::updatePlayerController(float delta) {
 
 void Engine::updateRigidbody2D(float delta) {
     if (delta <= 0.0f) return;
+    const bool profileEnabled = gRuntime2DProfileEnabled;
+    uint64_t profileCollisionTests = 0;
+    Runtime2DClock::time_point broadphaseStart;
+    Runtime2DClock::time_point broadphaseEnd;
+    Runtime2DClock::time_point narrowphaseStart;
+    Runtime2DClock::time_point narrowphaseEnd;
+
     refreshSceneObjectIndexCache();
     const float gravity = -9.81f;
     const float minEdgeThickness = 0.01f;
@@ -3404,7 +4141,7 @@ void Engine::updateRigidbody2D(float delta) {
     float broadPhaseExtentSum = 0.0f;
     size_t broadPhaseExtentCount = 0;
     for (auto& obj : sceneObjects) {
-        if (!obj.enabled || !HasUIComponent(obj)) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !HasUIComponent(obj)) continue;
         bool hasDynamic = obj.hasRigidbody2D && obj.rigidbody2D.enabled;
         bool hasCollider2D = obj.hasCollider2D && obj.collider2D.enabled;
         if (!hasDynamic && !hasCollider2D) continue;
@@ -3540,6 +4277,9 @@ void Engine::updateRigidbody2D(float delta) {
         }
     };
 
+    if (profileEnabled) {
+        broadphaseStart = Runtime2DClock::now();
+    }
     const float broadPhaseCellSize = std::clamp(
         broadPhaseExtentCount > 0 ? (broadPhaseExtentSum / static_cast<float>(broadPhaseExtentCount)) : 64.0f,
         16.0f,
@@ -3548,8 +4288,17 @@ void Engine::updateRigidbody2D(float delta) {
         return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) |
                static_cast<uint32_t>(y);
     };
-    std::unordered_map<uint64_t, std::vector<int>> broadPhaseCells;
-    broadPhaseCells.reserve(bodies.size() * 2);
+    struct BroadPhaseCellEntry {
+        uint64_t key = 0;
+        int bodyIndex = -1;
+    };
+    static thread_local std::vector<BroadPhaseCellEntry> broadPhaseEntries;
+    static thread_local std::vector<uint64_t> candidatePairs;
+    broadPhaseEntries.clear();
+    candidatePairs.clear();
+    broadPhaseEntries.reserve(bodies.size() * 4);
+    candidatePairs.reserve(bodies.size() * 8);
+
     for (size_t bodyIndex = 0; bodyIndex < bodies.size(); ++bodyIndex) {
         const Body2DRef& body = bodies[bodyIndex];
         int minCellX = static_cast<int>(std::floor(body.aabbMin.x / broadPhaseCellSize));
@@ -3558,22 +4307,47 @@ void Engine::updateRigidbody2D(float delta) {
         int maxCellY = static_cast<int>(std::floor(body.aabbMax.y / broadPhaseCellSize));
         for (int cellY = minCellY; cellY <= maxCellY; ++cellY) {
             for (int cellX = minCellX; cellX <= maxCellX; ++cellX) {
-                broadPhaseCells[makeCellKey(cellX, cellY)].push_back(static_cast<int>(bodyIndex));
+                BroadPhaseCellEntry entry;
+                entry.key = makeCellKey(cellX, cellY);
+                entry.bodyIndex = static_cast<int>(bodyIndex);
+                broadPhaseEntries.push_back(entry);
             }
         }
     }
 
-    std::unordered_set<uint64_t> candidatePairs;
-    candidatePairs.reserve(bodies.size() * 4);
-    for (const auto& [cellKey, indices] : broadPhaseCells) {
-        (void)cellKey;
-        for (size_t i = 0; i < indices.size(); ++i) {
-            for (size_t j = i + 1; j < indices.size(); ++j) {
-                uint32_t aIndex = static_cast<uint32_t>(std::min(indices[i], indices[j]));
-                uint32_t bIndex = static_cast<uint32_t>(std::max(indices[i], indices[j]));
-                candidatePairs.insert((static_cast<uint64_t>(aIndex) << 32) | bIndex);
+    std::sort(broadPhaseEntries.begin(), broadPhaseEntries.end(),
+              [](const BroadPhaseCellEntry& a, const BroadPhaseCellEntry& b) {
+                  if (a.key != b.key) return a.key < b.key;
+                  return a.bodyIndex < b.bodyIndex;
+              });
+
+    size_t runStart = 0;
+    while (runStart < broadPhaseEntries.size()) {
+        size_t runEnd = runStart + 1;
+        const uint64_t cellKey = broadPhaseEntries[runStart].key;
+        while (runEnd < broadPhaseEntries.size() && broadPhaseEntries[runEnd].key == cellKey) {
+            ++runEnd;
+        }
+
+        for (size_t i = runStart; i < runEnd; ++i) {
+            for (size_t j = i + 1; j < runEnd; ++j) {
+                int idxA = broadPhaseEntries[i].bodyIndex;
+                int idxB = broadPhaseEntries[j].bodyIndex;
+                if (idxA == idxB) continue;
+                uint32_t aIndex = static_cast<uint32_t>(std::min(idxA, idxB));
+                uint32_t bIndex = static_cast<uint32_t>(std::max(idxA, idxB));
+                candidatePairs.push_back((static_cast<uint64_t>(aIndex) << 32) | bIndex);
             }
         }
+        runStart = runEnd;
+    }
+
+    std::sort(candidatePairs.begin(), candidatePairs.end());
+    candidatePairs.erase(std::unique(candidatePairs.begin(), candidatePairs.end()), candidatePairs.end());
+    if (profileEnabled) {
+        broadphaseEnd = Runtime2DClock::now();
+        narrowphaseStart = broadphaseEnd;
+        gRuntime2DProfileFrame.collisionPairCandidateCount += static_cast<uint64_t>(candidatePairs.size());
     }
 
     for (uint64_t pairKey : candidatePairs) {
@@ -3591,6 +4365,9 @@ void Engine::updateRigidbody2D(float delta) {
 
         auto polyVsPoly = [&](Body2DRef& pA, Body2DRef& pB) {
             if (pA.poly.empty() || pB.poly.empty()) return;
+            if (profileEnabled) {
+                ++profileCollisionTests;
+            }
             glm::vec2 axis(0.0f);
             float depth = 0.0f;
             if (!satOverlap(pA.poly, pB.poly, axis, depth)) return;
@@ -3608,6 +4385,7 @@ void Engine::updateRigidbody2D(float delta) {
         auto polyVsEdge = [&](Body2DRef& polyBody, Body2DRef& edgeBody) {
             if (polyBody.poly.empty() || edgeBody.segments.empty()) return;
             std::vector<glm::vec2> rect;
+            rect.reserve(4);
             for (const auto& seg : edgeBody.segments) {
                 segmentRect(seg.first, seg.second, edgeBody.edgeThickness, rect);
                 if (rect.size() < 3) continue;
@@ -3617,6 +4395,9 @@ void Engine::updateRigidbody2D(float delta) {
                 if (polyBody.aabbMax.x <= rectMin.x || polyBody.aabbMin.x >= rectMax.x ||
                     polyBody.aabbMax.y <= rectMin.y || polyBody.aabbMin.y >= rectMax.y) {
                     continue;
+                }
+                if (profileEnabled) {
+                    ++profileCollisionTests;
                 }
                 glm::vec2 axis(0.0f);
                 float depth = 0.0f;
@@ -3640,6 +4421,12 @@ void Engine::updateRigidbody2D(float delta) {
         } else if (a.isEdge && !b.isEdge) {
             polyVsEdge(b, a);
         }
+    }
+    if (profileEnabled) {
+        narrowphaseEnd = Runtime2DClock::now();
+        gRuntime2DProfileFrame.broadphaseMs += Runtime2DMsSince(broadphaseStart, broadphaseEnd);
+        gRuntime2DProfileFrame.narrowphaseSolveMs += Runtime2DMsSince(narrowphaseStart, narrowphaseEnd);
+        gRuntime2DProfileFrame.collisionTestCount += profileCollisionTests;
     }
 }
 
@@ -3682,12 +4469,13 @@ void Engine::updateCameraFollow2D(float delta) {
     UiHierarchyCache uiHierarchyCache(sceneObjects, sceneObjectIndexById);
 
     for (auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasCamera || !obj.hasCameraFollow2D || !obj.cameraFollow2D.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera || !obj.hasCameraFollow2D || !obj.cameraFollow2D.enabled) continue;
         if (obj.cameraFollow2D.targetId < 0) continue;
         auto targetIt = sceneObjectIndexById.find(obj.cameraFollow2D.targetId);
         if (targetIt == sceneObjectIndexById.end()) continue;
 
         const SceneObject& target = sceneObjects[targetIt->second];
+        if (!IsObjectEnabledInHierarchy(target)) continue;
         glm::vec2 desired2D = (target.hasUI && target.ui.type != UIElementType::None)
             ? uiHierarchyCache.getWorldPosition(target)
             : glm::vec2(target.position.x, target.position.y);
@@ -3713,6 +4501,358 @@ void Engine::updateCameraFollow2D(float delta) {
                                      QuatFromEulerXYZ(parent.rotation),
                                      parent.scale);
             }
+        }
+    }
+}
+#pragma endregion
+
+#pragma region Runtime Animation
+fs::path Engine::resolveAnimationClipPath(const std::string& storedPath) const {
+    if (storedPath.empty()) return {};
+    fs::path clipPath(storedPath);
+    if (clipPath.is_absolute()) {
+        return clipPath.lexically_normal();
+    }
+    if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
+        return (projectManager.currentProject.projectPath / clipPath).lexically_normal();
+    }
+    return clipPath.lexically_normal();
+}
+
+bool Engine::loadRuntimeAnimationClipFile(const fs::path& path, RuntimeAnimationClip& outClip) const {
+    std::ifstream in(path);
+    if (!in.is_open()) return false;
+
+    RuntimeAnimationClip loaded;
+    std::string token;
+    while (in >> token) {
+        if (token == "moduanimateVersion") {
+            int version = 0;
+            in >> version;
+            if (version != 1) return false;
+        } else if (token == "name") {
+            in >> std::quoted(loaded.name);
+        } else if (token == "duration") {
+            in >> loaded.duration;
+        } else if (token == "sampleRate") {
+            in >> loaded.sampleRate;
+        } else if (token == "bindingCount") {
+            size_t bindingCount = 0;
+            in >> bindingCount;
+            loaded.bindings.reserve(bindingCount);
+        } else if (token == "binding") {
+            RuntimeAnimBinding binding;
+            std::string targetType;
+            in >> std::quoted(binding.path) >> std::quoted(targetType);
+
+            std::string trackCountToken;
+            size_t trackCount = 0;
+            in >> trackCountToken >> trackCount;
+            if (trackCountToken != "trackCount") return false;
+            binding.tracks.reserve(trackCount);
+
+            for (size_t ti = 0; ti < trackCount; ++ti) {
+                std::string trackToken;
+                in >> trackToken;
+                if (trackToken != "track") return false;
+
+                RuntimeAnimTrack track;
+                int visible = 1;
+                int locked = 0;
+                in >> std::quoted(track.propertyId) >> visible >> locked;
+                (void)visible;
+                (void)locked;
+
+                std::string keyCountToken;
+                size_t keyCount = 0;
+                in >> keyCountToken >> keyCount;
+                if (keyCountToken != "keyCount") return false;
+                track.keys.reserve(keyCount);
+
+                for (size_t ki = 0; ki < keyCount; ++ki) {
+                    std::string keyToken;
+                    in >> keyToken;
+                    if (keyToken != "key") return false;
+
+                    uint64_t uid = 0;
+                    int tangentMode = 0;
+                    RuntimeAnimKey key;
+                    in >> uid >> key.time >> key.value >> key.inTangent >> key.outTangent >> tangentMode >> key.interpolation;
+                    (void)uid;
+                    (void)tangentMode;
+                    key.interpolation = std::clamp(key.interpolation, 0, 2);
+                    track.keys.push_back(key);
+                }
+                std::sort(track.keys.begin(), track.keys.end(), [](const RuntimeAnimKey& a, const RuntimeAnimKey& b) {
+                    return a.time < b.time;
+                });
+                binding.tracks.push_back(std::move(track));
+            }
+            loaded.bindings.push_back(std::move(binding));
+        } else {
+            std::string discard;
+            std::getline(in, discard);
+        }
+    }
+
+    if (!in.eof() && in.fail()) return false;
+    loaded.duration = std::max(0.01f, loaded.duration);
+    loaded.sampleRate = std::clamp(loaded.sampleRate, 1.0f, 240.0f);
+    outClip = std::move(loaded);
+    return true;
+}
+
+const Engine::RuntimeAnimationClip* Engine::getRuntimeAnimationClip(const std::string& storedPath) {
+    if (storedPath.empty()) return nullptr;
+    const fs::path absPath = resolveAnimationClipPath(storedPath);
+    if (absPath.empty()) return nullptr;
+
+    const std::string cacheKey = absPath.generic_string();
+    RuntimeClipCacheEntry& entry = runtimeAnimationClipCache[cacheKey];
+
+    std::error_code ec;
+    const fs::file_time_type stamp = fs::last_write_time(absPath, ec);
+    const bool haveStamp = !ec;
+    if (entry.hasWriteTime == haveStamp &&
+        (!haveStamp || entry.lastWriteTime == stamp)) {
+        return entry.valid ? &entry.clip : nullptr;
+    }
+
+    RuntimeAnimationClip loaded;
+    const bool ok = haveStamp && loadRuntimeAnimationClipFile(absPath, loaded);
+    entry.hasWriteTime = haveStamp;
+    entry.lastWriteTime = stamp;
+    entry.valid = ok;
+    if (ok) {
+        entry.clip = std::move(loaded);
+    } else {
+        entry.clip = RuntimeAnimationClip{};
+    }
+    return entry.valid ? &entry.clip : nullptr;
+}
+
+float Engine::getAnimationDurationForObject(const SceneObject& obj) const {
+    const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj.animation);
+    if (!activeClipPath.empty()) {
+        const fs::path absPath = resolveAnimationClipPath(activeClipPath);
+        auto it = runtimeAnimationClipCache.find(absPath.generic_string());
+        if (it != runtimeAnimationClipCache.end() && it->second.valid) {
+            return std::max(0.01f, it->second.clip.duration);
+        }
+    }
+    return std::max(0.01f, obj.animation.clipLength);
+}
+
+bool Engine::applyRuntimeAnimatedProperty(SceneObject& obj, const std::string& propertyId, float value) {
+    if (propertyId == "localPosition.x") { obj.localPosition.x = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localPosition.y") { obj.localPosition.y = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localPosition.z") { obj.localPosition.z = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localRotation.x") { obj.localRotation.x = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localRotation.y") { obj.localRotation.y = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localRotation.z") { obj.localRotation.z = value; obj.localInitialized = true; return true; }
+    if (propertyId == "localScale.x") { obj.localScale.x = std::max(0.0001f, value); obj.localInitialized = true; return true; }
+    if (propertyId == "localScale.y") { obj.localScale.y = std::max(0.0001f, value); obj.localInitialized = true; return true; }
+    if (propertyId == "localScale.z") { obj.localScale.z = std::max(0.0001f, value); obj.localInitialized = true; return true; }
+
+    if (propertyId == "UI.Position.x" && obj.hasUI) { obj.ui.position.x = value; return true; }
+    if (propertyId == "UI.Position.y" && obj.hasUI) { obj.ui.position.y = value; return true; }
+    if ((propertyId == "UI.Size.x" || propertyId == "UI.Size.y") && obj.hasUI) {
+        const float minUiSize = (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)
+            ? 0.01f
+            : 1.0f;
+        if (propertyId == "UI.Size.x") {
+            obj.ui.size.x = std::max(minUiSize, value);
+        } else {
+            obj.ui.size.y = std::max(minUiSize, value);
+        }
+        return true;
+    }
+    if (propertyId == "UI.Rotation" && obj.hasUI) { obj.ui.rotation = value; return true; }
+    if (propertyId == "UI.SliderValue" && obj.hasUI) { obj.ui.sliderValue = std::clamp(value, obj.ui.sliderMin, obj.ui.sliderMax); return true; }
+    if (propertyId == "UI.TextScale" && obj.hasUI) { obj.ui.textScale = std::max(0.01f, value); return true; }
+    if (propertyId == "UI.SpriteFrame" && obj.hasUI) {
+        int frameCount = 1;
+        if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+            frameCount = static_cast<int>(obj.ui.spriteCustomFrames.size());
+        } else {
+            frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
+        }
+        obj.ui.spriteSheetFrame = std::clamp(static_cast<int>(std::round(value)), 0, std::max(0, frameCount - 1));
+        return true;
+    }
+    if (propertyId == "UI.SpriteSheetFPS" && obj.hasUI) { obj.ui.spriteSheetFps = std::clamp(value, 1.0f, 120.0f); return true; }
+    if (propertyId == "UI.SpriteSheetLoop" && obj.hasUI) { obj.ui.spriteSheetLoop = value >= 0.5f; return true; }
+
+    if (propertyId == "Light.Intensity" && obj.hasLight) { obj.light.intensity = value; return true; }
+    if (propertyId == "Light.Range" && obj.hasLight) { obj.light.range = std::max(0.0f, value); return true; }
+    if (propertyId == "Light.InnerAngle" && obj.hasLight) { obj.light.innerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
+    if (propertyId == "Light.OuterAngle" && obj.hasLight) { obj.light.outerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
+    if (propertyId == "Light.Enabled" && obj.hasLight) { obj.light.enabled = value >= 0.5f; return true; }
+
+    if (propertyId == "Camera.FOV" && obj.hasCamera) { obj.camera.fov = std::clamp(value, 1.0f, 179.0f); return true; }
+    if (propertyId == "Camera.NearClip" && obj.hasCamera) { obj.camera.nearClip = std::max(0.001f, value); return true; }
+    if (propertyId == "Camera.FarClip" && obj.hasCamera) { obj.camera.farClip = std::max(obj.camera.nearClip + 0.01f, value); return true; }
+    if (propertyId == "Camera.PixelsPerUnit" && obj.hasCamera) { obj.camera.pixelsPerUnit = std::max(1.0f, value); return true; }
+
+    if (propertyId == "PostFX.BloomIntensity" && obj.hasPostFX) { obj.postFx.bloomIntensity = std::max(0.0f, value); return true; }
+    if (propertyId == "PostFX.Exposure" && obj.hasPostFX) { obj.postFx.exposure = value; return true; }
+    if (propertyId == "PostFX.Contrast" && obj.hasPostFX) { obj.postFx.contrast = std::max(0.0f, value); return true; }
+    if (propertyId == "PostFX.Saturation" && obj.hasPostFX) { obj.postFx.saturation = std::max(0.0f, value); return true; }
+
+    if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { obj.rigidbody.mass = std::max(0.001f, value); return true; }
+
+    if (propertyId == "Audio.Volume" && obj.hasAudioSource) { obj.audioSource.volume = std::clamp(value, 0.0f, 2.0f); return true; }
+    if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { obj.audioSource.minDistance = std::max(0.01f, value); return true; }
+    if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { obj.audioSource.maxDistance = std::max(obj.audioSource.minDistance + 0.01f, value); return true; }
+    if (propertyId == "Audio.Loop" && obj.hasAudioSource) { obj.audioSource.loop = value >= 0.5f; return true; }
+    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { obj.audioSource.spatial = value >= 0.5f; return true; }
+
+    if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { obj.aiAgent.speed = std::max(0.05f, value); return true; }
+    if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { obj.aiAgent.stoppingDistance = std::max(0.0f, value); return true; }
+
+    int scriptIndex = -1;
+    int settingIndex = -1;
+    if (std::sscanf(propertyId.c_str(), "ScriptSetting.%d.%d", &scriptIndex, &settingIndex) == 2) {
+        if (scriptIndex >= 0 && scriptIndex < static_cast<int>(obj.scripts.size())) {
+            auto& script = obj.scripts[scriptIndex];
+            if (settingIndex >= 0 && settingIndex < static_cast<int>(script.settings.size())) {
+                char buffer[64];
+                std::snprintf(buffer, sizeof(buffer), "%.6g", value);
+                script.settings[settingIndex].value = buffer;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+void Engine::evaluateRuntimeAnimationClip(const RuntimeAnimationClip& clip, float time, int rootObjectId) {
+    SceneObject* root = findObjectById(rootObjectId);
+    if (!root) return;
+
+    auto resolvePath = [&](const std::string& path) -> SceneObject* {
+        if (path.empty()) return root;
+        SceneObject* current = root;
+        size_t start = 0;
+        while (start <= path.size()) {
+            size_t slash = path.find('/', start);
+            std::string segment = path.substr(start, slash == std::string::npos ? std::string::npos : (slash - start));
+            if (segment.empty()) {
+                start = (slash == std::string::npos) ? path.size() + 1 : slash + 1;
+                continue;
+            }
+
+            SceneObject* next = nullptr;
+            for (int childId : current->childIds) {
+                SceneObject* child = findObjectById(childId);
+                if (child && child->name == segment) {
+                    next = child;
+                    break;
+                }
+            }
+            if (!next) return nullptr;
+            current = next;
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+        }
+        return current;
+    };
+
+    auto sampleTrack = [](const RuntimeAnimTrack& track, float t) -> float {
+        if (track.keys.empty()) return 0.0f;
+        if (t <= track.keys.front().time) return track.keys.front().value;
+        if (t >= track.keys.back().time) return track.keys.back().value;
+        for (size_t i = 0; i + 1 < track.keys.size(); ++i) {
+            const RuntimeAnimKey& a = track.keys[i];
+            const RuntimeAnimKey& b = track.keys[i + 1];
+            if (t < a.time || t > b.time) continue;
+            float span = b.time - a.time;
+            if (span <= 1e-6f) return b.value;
+            float u = std::clamp((t - a.time) / span, 0.0f, 1.0f);
+            if (a.interpolation == 0) {
+                return a.value;
+            }
+            if (a.interpolation == 2) {
+                float u2 = u * u;
+                float u3 = u2 * u;
+                float h00 = (2.0f * u3) - (3.0f * u2) + 1.0f;
+                float h10 = u3 - (2.0f * u2) + u;
+                float h01 = (-2.0f * u3) + (3.0f * u2);
+                float h11 = u3 - u2;
+                float m0 = a.outTangent * span;
+                float m1 = b.inTangent * span;
+                return (h00 * a.value) + (h10 * m0) + (h01 * b.value) + (h11 * m1);
+            }
+            return a.value + (b.value - a.value) * u;
+        }
+        return track.keys.back().value;
+    };
+
+    for (const RuntimeAnimBinding& binding : clip.bindings) {
+        SceneObject* target = resolvePath(binding.path);
+        if (!target) continue;
+        for (const RuntimeAnimTrack& track : binding.tracks) {
+            if (track.keys.empty()) continue;
+            const float value = sampleTrack(track, time);
+            applyRuntimeAnimatedProperty(*target, track.propertyId, value);
+        }
+    }
+}
+
+void Engine::updateRuntimeAnimations(float delta) {
+    const bool runRuntimeAnimations = isPlaying || specMode || testMode;
+    if (!runRuntimeAnimations || sceneObjects.empty()) return;
+
+    for (SceneObject& obj : sceneObjects) {
+        if (!IsObjectEnabledInHierarchy(obj)) continue;
+        if (!obj.hasAnimation || !obj.animation.enabled) continue;
+        NormalizeAnimationClipSlots(obj.animation);
+        const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj.animation);
+        if (activeClipPath.empty()) continue;
+
+        if (obj.animation.runtimeClipPath != activeClipPath) {
+            obj.animation.runtimeClipPath = activeClipPath;
+            obj.animation.runtimeTime = 0.0f;
+            obj.animation.runtimeDirection = 1.0f;
+            obj.animation.runtimePaused = false;
+            obj.animation.runtimePlaying = obj.animation.playOnAwake;
+            obj.animation.runtimeInitialized = true;
+        } else if (!obj.animation.runtimeInitialized) {
+            obj.animation.runtimeTime = 0.0f;
+            obj.animation.runtimeDirection = 1.0f;
+            obj.animation.runtimePaused = false;
+            obj.animation.runtimePlaying = obj.animation.playOnAwake;
+            obj.animation.runtimeInitialized = true;
+        }
+
+        const RuntimeAnimationClip* clip = getRuntimeAnimationClip(activeClipPath);
+        if (!clip) continue;
+
+        const float duration = std::max(0.01f, clip->duration);
+        obj.animation.clipLength = duration;
+
+        if (obj.animation.runtimePlaying) {
+            if (!obj.animation.runtimePaused && delta > 0.0f) {
+                float speed = std::max(0.0f, obj.animation.playSpeed);
+                float dir = (obj.animation.runtimeDirection < 0.0f) ? -1.0f : 1.0f;
+                obj.animation.runtimeTime += delta * speed * dir;
+                if (obj.animation.loop) {
+                    while (obj.animation.runtimeTime < 0.0f) obj.animation.runtimeTime += duration;
+                    while (obj.animation.runtimeTime > duration) obj.animation.runtimeTime -= duration;
+                } else {
+                    if (obj.animation.runtimeTime <= 0.0f) {
+                        obj.animation.runtimeTime = 0.0f;
+                        if (dir < 0.0f) obj.animation.runtimePlaying = false;
+                    } else if (obj.animation.runtimeTime >= duration) {
+                        obj.animation.runtimeTime = duration;
+                        if (dir > 0.0f) obj.animation.runtimePlaying = false;
+                    }
+                }
+            }
+
+            const float evalTime = std::clamp(obj.animation.runtimeTime, 0.0f, duration);
+            evaluateRuntimeAnimationClip(*clip, evalTime, obj.id);
         }
     }
 }
@@ -3751,7 +4891,7 @@ glm::quat sampleQuatKeys(const std::vector<ModelSceneData::AnimQuatKey>& keys, f
 
 void Engine::updateSkeletalAnimations(float delta) {
     for (auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
         if (!obj.skeletal.useAnimation) continue;
         if (obj.meshPath.empty()) continue;
 
@@ -3803,7 +4943,7 @@ void Engine::updateSkeletalAnimations(float delta) {
 
 void Engine::updateSkinningMatrices() {
     for (auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasSkeletalAnimation || !obj.skeletal.enabled) continue;
         if (obj.skeletal.inverseBindMatrices.empty()) continue;
 
         glm::mat4 meshWorld = ComposeTransform(obj.position, obj.rotation, obj.scale);
@@ -3988,6 +5128,7 @@ void Engine::updateHierarchyWorldTransforms() {
         const glm::quat rootRot(1.0f, 0.0f, 0.0f, 0.0f);
         const glm::vec3 rootScale(1.0f);
         for (auto& obj : sceneObjects) {
+            obj.hierarchyEnabled = true;
             if (!obj.localInitialized) {
                 obj.localPosition = obj.position;
                 obj.localRotation = NormalizeEulerDegrees(obj.rotation);
@@ -4020,8 +5161,12 @@ void Engine::updateHierarchyWorldTransforms() {
     visiting.reserve(sceneObjects.size());
     visited.reserve(sceneObjects.size());
 
-    std::function<void(int, const glm::vec3&, const glm::quat&, const glm::vec3&)> processNode =
-        [&](int id, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale) {
+    std::function<void(int, const glm::vec3&, const glm::quat&, const glm::vec3&, bool)> processNode =
+        [&](int id,
+            const glm::vec3& parentPos,
+            const glm::quat& parentRot,
+            const glm::vec3& parentScale,
+            bool parentHierarchyEnabled) {
         if (visited.count(id)) return;
         if (visiting.count(id)) return;
         auto itIndex = sceneObjectIndexById.find(id);
@@ -4029,6 +5174,7 @@ void Engine::updateHierarchyWorldTransforms() {
 
         visiting.insert(id);
         SceneObject& obj = sceneObjects[itIndex->second];
+        obj.hierarchyEnabled = parentHierarchyEnabled;
         if (!obj.localInitialized) {
             obj.localPosition = obj.position;
             obj.localRotation = NormalizeEulerDegrees(obj.rotation);
@@ -4066,8 +5212,9 @@ void Engine::updateHierarchyWorldTransforms() {
             obj.scale = worldScale;
         }
 
+        const bool childParentHierarchyEnabled = IsObjectEnabledInHierarchy(obj);
         for (int childId : obj.childIds) {
-            processNode(childId, worldPos, worldRot, worldScale);
+            processNode(childId, worldPos, worldRot, worldScale, childParentHierarchyEnabled);
         }
 
         visiting.erase(id);
@@ -4076,7 +5223,11 @@ void Engine::updateHierarchyWorldTransforms() {
 
     for (const auto& obj : sceneObjects) {
         if (obj.parentId == -1 || sceneObjectIndexById.find(obj.parentId) == sceneObjectIndexById.end()) {
-            processNode(obj.id, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f));
+            processNode(obj.id,
+                        glm::vec3(0.0f),
+                        glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                        glm::vec3(1.0f),
+                        true);
         }
     }
 }
@@ -4412,7 +5563,7 @@ void Engine::syncPlayerCamera() {
     const SceneObject* sceneCamObj = nullptr;
     const SceneObject* fallbackCamObj = nullptr;
     for (const auto& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasCamera) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
         if (!fallbackCamObj) fallbackCamObj = &obj;
         if (!sceneCamObj && obj.camera.type == SceneCameraType::Scene) {
             sceneCamObj = &obj;
@@ -4508,6 +5659,15 @@ void Engine::loadAutoStartConfig() {
 }
 
 void Engine::applyAutoStartMode() {
+    for (SceneObject& obj : sceneObjects) {
+        if (!obj.hasAnimation) continue;
+        obj.animation.runtimePlaying = false;
+        obj.animation.runtimePaused = false;
+        obj.animation.runtimeTime = 0.0f;
+        obj.animation.runtimeDirection = 1.0f;
+        obj.animation.runtimeInitialized = false;
+        obj.animation.runtimeClipPath.clear();
+    }
     playerMode = true;
     isPlaying = true;
     specMode = false;
@@ -5773,6 +6933,119 @@ void Engine::duplicateSelected() {
     }
 }
 
+void Engine::copySelected() {
+    std::vector<int> ids = selectedObjectIds;
+    if (ids.empty() && selectedObjectId >= 0) {
+        ids.push_back(selectedObjectId);
+    }
+    if (ids.empty()) {
+        return;
+    }
+
+    std::unordered_set<int> idSet(ids.begin(), ids.end());
+    objectClipboard.clear();
+    objectClipboard.reserve(idSet.size());
+    for (const auto& obj : sceneObjects) {
+        if (idSet.count(obj.id) == 0) continue;
+        SceneObject copy = obj;
+        copy.childIds.erase(std::remove_if(copy.childIds.begin(), copy.childIds.end(),
+                          [&idSet](int id) { return idSet.count(id) == 0; }),
+                          copy.childIds.end());
+        objectClipboard.push_back(std::move(copy));
+    }
+
+    addConsoleMessage("Copied " + std::to_string(objectClipboard.size()) + " object(s).", ConsoleMessageType::Info);
+}
+
+void Engine::pasteClipboard() {
+    if (objectClipboard.empty()) {
+        return;
+    }
+
+    recordState("paste");
+
+    std::unordered_map<int, int> idMap;
+    idMap.reserve(objectClipboard.size());
+    std::vector<int> newIds;
+    newIds.reserve(objectClipboard.size());
+    std::vector<int> oldParents;
+    oldParents.reserve(objectClipboard.size());
+
+    for (const auto& tpl : objectClipboard) {
+        SceneObject copy = tpl;
+        const int oldId = copy.id;
+        const int newId = nextObjectId++;
+        idMap[oldId] = newId;
+        oldParents.push_back(copy.parentId);
+
+        copy.id = newId;
+        copy.name += " (Copy)";
+        copy.position = tpl.position + glm::vec3(1.0f, 0.0f, 0.0f);
+        copy.parentId = -1;
+        copy.childIds.clear();
+        copy.localPosition = copy.position;
+        copy.localRotation = NormalizeEulerDegrees(copy.rotation);
+        copy.localScale = copy.scale;
+        copy.localInitialized = true;
+
+        sceneObjects.push_back(std::move(copy));
+        newIds.push_back(newId);
+    }
+
+    for (size_t i = 0; i < newIds.size(); ++i) {
+        SceneObject* newObj = findObjectById(newIds[i]);
+        if (!newObj) continue;
+
+        const int oldParentId = oldParents[i];
+        int resolvedParent = -1;
+        auto mapped = idMap.find(oldParentId);
+        if (mapped != idMap.end()) {
+            resolvedParent = mapped->second;
+        } else if (findObjectById(oldParentId) != nullptr) {
+            resolvedParent = oldParentId;
+        }
+        newObj->parentId = resolvedParent;
+
+        if (resolvedParent != -1) {
+            if (SceneObject* parent = findObjectById(resolvedParent)) {
+                if (std::find(parent->childIds.begin(), parent->childIds.end(), newObj->id) == parent->childIds.end()) {
+                    parent->childIds.push_back(newObj->id);
+                }
+            }
+        }
+
+        glm::vec3 parentPos(0.0f);
+        glm::quat parentRot(1.0f, 0.0f, 0.0f, 0.0f);
+        glm::vec3 parentScale(1.0f);
+        if (newObj->parentId != -1) {
+            if (SceneObject* parent = findObjectById(newObj->parentId)) {
+                parentPos = parent->position;
+                parentRot = QuatFromEulerXYZ(parent->rotation);
+                parentScale = parent->scale;
+            }
+        }
+        updateLocalFromWorld(*newObj, parentPos, parentRot, parentScale);
+    }
+
+    updateHierarchyWorldTransforms();
+    markRuntimeScriptBindingsDirty();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    selectedObjectIds = newIds;
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+    addConsoleMessage("Pasted " + std::to_string(newIds.size()) + " object(s).", ConsoleMessageType::Success);
+}
+
+void Engine::selectAllObjects() {
+    selectedObjectIds.clear();
+    selectedObjectIds.reserve(sceneObjects.size());
+    for (const auto& obj : sceneObjects) {
+        selectedObjectIds.push_back(obj.id);
+    }
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+}
+
 void Engine::deleteSelected() {
     if (selectedObjectId < 0 && selectedObjectIds.empty()) {
         return;
@@ -5840,42 +7113,108 @@ void Engine::deleteSelected() {
     }
 }
 
-void Engine::setParent(int childId, int parentId) {
+void Engine::setParent(int childId, int parentId, int beforeSiblingId) {
     recordState("reparent");
     auto childIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
         [childId](const SceneObject& obj) { return obj.id == childId; });
 
     if (childIt == sceneObjects.end()) return;
+    if (parentId == childId) return;
+    if (beforeSiblingId == childId) {
+        if (parentId == childIt->parentId) {
+            return;
+        }
+        beforeSiblingId = -1;
+    }
 
-    if (childIt->parentId != -1) {
+    if (parentId != -1) {
+        int current = parentId;
+        while (current != -1) {
+            if (current == childId) return;
+            SceneObject* ancestor = findObjectById(current);
+            current = ancestor ? ancestor->parentId : -1;
+        }
+    }
+
+    const int oldParentId = childIt->parentId;
+
+    if (oldParentId != -1) {
         auto oldParentIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-            [&childIt](const SceneObject& obj) { return obj.id == childIt->parentId; });
+            [oldParentId](const SceneObject& obj) { return obj.id == oldParentId; });
         if (oldParentIt != sceneObjects.end()) {
             auto& children = oldParentIt->childIds;
             children.erase(std::remove(children.begin(), children.end(), childId), children.end());
         }
     }
 
-    childIt->parentId = parentId;
-
-    if (parentId != -1) {
+    int resolvedParentId = parentId;
+    if (resolvedParentId != -1) {
         auto newParentIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-            [parentId](const SceneObject& obj) { return obj.id == parentId; });
+            [resolvedParentId](const SceneObject& obj) { return obj.id == resolvedParentId; });
+        if (newParentIt == sceneObjects.end()) {
+            resolvedParentId = -1;
+        }
+    }
+
+    childIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+        [childId](const SceneObject& obj) { return obj.id == childId; });
+    if (childIt == sceneObjects.end()) return;
+    childIt->parentId = resolvedParentId;
+
+    if (resolvedParentId != -1) {
+        auto newParentIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+            [resolvedParentId](const SceneObject& obj) { return obj.id == resolvedParentId; });
         if (newParentIt != sceneObjects.end()) {
-            newParentIt->childIds.push_back(childId);
+            auto& children = newParentIt->childIds;
+            children.erase(std::remove(children.begin(), children.end(), childId), children.end());
+            if (beforeSiblingId != -1) {
+                auto beforeIt = std::find(children.begin(), children.end(), beforeSiblingId);
+                if (beforeIt != children.end()) {
+                    children.insert(beforeIt, childId);
+                } else {
+                    children.push_back(childId);
+                }
+            } else {
+                children.push_back(childId);
+            }
+        }
+    } else {
+        auto currentIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+            [childId](const SceneObject& obj) { return obj.id == childId; });
+        if (currentIt != sceneObjects.end()) {
+            size_t insertIndex = sceneObjects.size();
+            if (beforeSiblingId != -1) {
+                auto beforeIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                    [beforeSiblingId](const SceneObject& obj) { return obj.id == beforeSiblingId && obj.parentId == -1; });
+                if (beforeIt != sceneObjects.end()) {
+                    insertIndex = static_cast<size_t>(std::distance(sceneObjects.begin(), beforeIt));
+                }
+            }
+
+            size_t oldIndex = static_cast<size_t>(std::distance(sceneObjects.begin(), currentIt));
+            SceneObject moved = std::move(*currentIt);
+            sceneObjects.erase(currentIt);
+            if (oldIndex < insertIndex && insertIndex > 0) {
+                --insertIndex;
+            }
+            if (insertIndex > sceneObjects.size()) insertIndex = sceneObjects.size();
+            sceneObjects.insert(sceneObjects.begin() + static_cast<std::ptrdiff_t>(insertIndex), std::move(moved));
         }
     }
     {
         glm::vec3 parentPos(0.0f);
         glm::quat parentRot(1.0f, 0.0f, 0.0f, 0.0f);
         glm::vec3 parentScale(1.0f);
-        if (parentId != -1) {
-            if (SceneObject* parent = findObjectById(parentId)) {
+        if (resolvedParentId != -1) {
+            if (SceneObject* parent = findObjectById(resolvedParentId)) {
                 parentPos = parent->position;
                 parentRot = QuatFromEulerXYZ(parent->rotation);
                 parentScale = parent->scale;
             }
         }
+        childIt = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+            [childId](const SceneObject& obj) { return obj.id == childId; });
+        if (childIt == sceneObjects.end()) return;
         updateLocalFromWorld(*childIt, parentPos, parentRot, parentScale);
     }
 
@@ -5994,6 +7333,29 @@ SceneObject* Engine::findObjectById(int id) {
     if (it == sceneObjectIndexById.end()) return nullptr;
     if (it->second >= sceneObjects.size()) return nullptr;
     return &sceneObjects[it->second];
+}
+
+bool Engine::propagateObjectRenameReferences(const std::string& oldName,
+                                             const std::string& newName,
+                                             int renamedObjectId) {
+    (void)renamedObjectId;
+    if (oldName.empty() || oldName == newName) return false;
+
+    bool changed = false;
+    for (SceneObject& obj : sceneObjects) {
+        for (ScriptComponent& script : obj.scripts) {
+            for (ScriptSetting& setting : script.settings) {
+                if (RenameRewriteScriptSettingValue(setting.value, oldName, newName)) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if (changed) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return changed;
 }
 #pragma endregion
 
@@ -6271,6 +7633,155 @@ bool Engine::setAudioClipFromScript(int id, const std::string& path) {
     audio.setObjectLoop(*obj, obj->audioSource.loop);
     return true;
 }
+
+bool Engine::playAudioOneShotFromScript(int id, const std::string& clipPath, float volumeScale) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAudioSource) return false;
+    return audio.playObjectOneShot(*obj, clipPath, volumeScale);
+}
+
+bool Engine::hasAnimationFromScript(int id) const {
+    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [id](const SceneObject& obj) {
+        return obj.id == id;
+    });
+    if (it == sceneObjects.end()) return false;
+    return it->hasAnimation && it->animation.enabled && !AnimationGetActiveClipAssetPath(it->animation).empty();
+}
+
+bool Engine::playAnimationFromScript(int id, bool restart) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation || !obj->animation.enabled) return false;
+    NormalizeAnimationClipSlots(obj->animation);
+    const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj->animation);
+    if (activeClipPath.empty()) return false;
+
+    obj->animation.runtimeInitialized = true;
+    obj->animation.runtimeClipPath = activeClipPath;
+    obj->animation.runtimeDirection = 1.0f;
+    obj->animation.runtimePaused = false;
+    obj->animation.runtimePlaying = true;
+
+    const RuntimeAnimationClip* clip = getRuntimeAnimationClip(activeClipPath);
+    const float duration = clip ? std::max(0.01f, clip->duration) : std::max(0.01f, obj->animation.clipLength);
+    if (clip) {
+        obj->animation.clipLength = duration;
+    }
+    if (restart) {
+        obj->animation.runtimeTime = 0.0f;
+    }
+    obj->animation.runtimeTime = std::clamp(obj->animation.runtimeTime, 0.0f, duration);
+    return true;
+}
+
+bool Engine::stopAnimationFromScript(int id, bool resetTime) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    NormalizeAnimationClipSlots(obj->animation);
+    const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj->animation);
+    if (activeClipPath.empty()) return false;
+
+    obj->animation.runtimePlaying = false;
+    obj->animation.runtimePaused = false;
+    obj->animation.runtimeInitialized = true;
+    obj->animation.runtimeClipPath = activeClipPath;
+    if (resetTime) {
+        obj->animation.runtimeTime = 0.0f;
+    }
+    return true;
+}
+
+bool Engine::pauseAnimationFromScript(int id, bool pause) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    if (AnimationGetActiveClipAssetPath(obj->animation).empty()) return false;
+    if (!obj->animation.runtimePlaying) return false;
+    obj->animation.runtimePaused = pause;
+    return true;
+}
+
+bool Engine::reverseAnimationFromScript(int id, bool restartIfStopped) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation || !obj->animation.enabled) return false;
+    NormalizeAnimationClipSlots(obj->animation);
+    const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj->animation);
+    if (activeClipPath.empty()) return false;
+
+    const RuntimeAnimationClip* clip = getRuntimeAnimationClip(activeClipPath);
+    const float duration = clip ? std::max(0.01f, clip->duration) : std::max(0.01f, obj->animation.clipLength);
+    if (clip) {
+        obj->animation.clipLength = duration;
+    }
+
+    obj->animation.runtimeInitialized = true;
+    obj->animation.runtimeClipPath = activeClipPath;
+    obj->animation.runtimeDirection = -1.0f;
+    if (!obj->animation.runtimePlaying && restartIfStopped) {
+        obj->animation.runtimeTime = duration;
+    }
+    obj->animation.runtimeTime = std::clamp(obj->animation.runtimeTime, 0.0f, duration);
+    obj->animation.runtimePaused = false;
+    obj->animation.runtimePlaying = true;
+    return true;
+}
+
+bool Engine::setAnimationTimeFromScript(int id, float timeSeconds) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    NormalizeAnimationClipSlots(obj->animation);
+    const std::string activeClipPath = AnimationGetActiveClipAssetPath(obj->animation);
+    if (activeClipPath.empty()) return false;
+
+    const RuntimeAnimationClip* clip = getRuntimeAnimationClip(activeClipPath);
+    const float duration = clip ? std::max(0.01f, clip->duration) : std::max(0.01f, obj->animation.clipLength);
+    if (clip) {
+        obj->animation.clipLength = duration;
+    }
+
+    obj->animation.runtimeInitialized = true;
+    obj->animation.runtimeClipPath = activeClipPath;
+    obj->animation.runtimeTime = std::clamp(timeSeconds, 0.0f, duration);
+    return true;
+}
+
+float Engine::getAnimationTimeFromScript(int id) const {
+    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [id](const SceneObject& obj) {
+        return obj.id == id;
+    });
+    if (it == sceneObjects.end() || !it->hasAnimation) return 0.0f;
+    return it->animation.runtimeTime;
+}
+
+bool Engine::isAnimationPlayingFromScript(int id) const {
+    auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [id](const SceneObject& obj) {
+        return obj.id == id;
+    });
+    if (it == sceneObjects.end() || !it->hasAnimation) return false;
+    return it->animation.runtimePlaying && !it->animation.runtimePaused;
+}
+
+bool Engine::setAnimationLoopFromScript(int id, bool loop) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    obj->animation.loop = loop;
+    markProjectDirty();
+    return true;
+}
+
+bool Engine::setAnimationPlaySpeedFromScript(int id, float speed) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    obj->animation.playSpeed = std::max(0.0f, speed);
+    markProjectDirty();
+    return true;
+}
+
+bool Engine::setAnimationPlayOnAwakeFromScript(int id, bool playOnAwake) {
+    SceneObject* obj = findObjectById(id);
+    if (!obj || !obj->hasAnimation) return false;
+    obj->animation.playOnAwake = playOnAwake;
+    markProjectDirty();
+    return true;
+}
 #pragma endregion
 
 #pragma region Script Compilation + Editor Tabs
@@ -6310,10 +7821,11 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     }
 
     fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
+    fs::path projectRoot = projectManager.currentProject.projectPath;
 
     compileInProgress = true;
     compileResultReady = false;
-    compileWorker = std::thread([this, scriptPath, configPath]() {
+    compileWorker = std::thread([this, scriptPath, configPath, projectRoot]() {
         auto setProgress = [this](float value, const char* stage) {
             std::lock_guard<std::mutex> lock(compileMutex);
             compileProgress = value;
@@ -6343,7 +7855,22 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
                     result.compileLog = output.compileLog;
                     result.linkLog = output.linkLog;
                     result.binaryPath = commands.binaryPath;
-                    result.compiledSource = fs::absolute(scriptPath).lexically_normal().string();
+
+                    fs::path compiledSourcePath = scriptPath;
+                    if (compiledSourcePath.is_relative()) {
+                        std::error_code projectEc;
+                        fs::path projectCandidate = projectRoot / compiledSourcePath;
+                        if (fs::exists(projectCandidate, projectEc) && !projectEc) {
+                            compiledSourcePath = projectCandidate;
+                        }
+                    }
+
+                    std::error_code sourceEc;
+                    fs::path sourceAbs = fs::absolute(compiledSourcePath, sourceEc);
+                    if (sourceEc) sourceAbs = compiledSourcePath;
+                    fs::path sourceCanonical = fs::weakly_canonical(sourceAbs, sourceEc);
+                    if (!sourceEc) sourceAbs = sourceCanonical;
+                    result.compiledSource = sourceAbs.lexically_normal().string();
                     setProgress(0.85f, "Reloading");
                 }
             }
@@ -6515,17 +8042,56 @@ void Engine::updateCompileJob() {
                     }
                 }
             } else {
+                auto normalizeSourcePath = [&](const fs::path& path, bool treatAsProjectRelative) {
+                    if (path.empty()) return std::string();
+
+                    fs::path candidate = path;
+                    if (treatAsProjectRelative && candidate.is_relative() &&
+                        projectManager.currentProject.isLoaded) {
+                        candidate = projectManager.currentProject.projectPath / candidate;
+                    }
+
+                    std::error_code ec;
+                    fs::path absolutePath = fs::absolute(candidate, ec);
+                    if (ec) absolutePath = candidate;
+                    fs::path canonicalPath = fs::weakly_canonical(absolutePath, ec);
+                    if (!ec) absolutePath = canonicalPath;
+
+                    std::string normalized = absolutePath.lexically_normal().string();
+#if defined(_WIN32)
+                    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+                    return normalized;
+                };
+
+                const std::string compiledFromSource = normalizeSourcePath(
+                    result.compiledSource.empty() ? result.scriptPath : fs::path(result.compiledSource), false);
+                const std::string compiledFromRequest = normalizeSourcePath(result.scriptPath, true);
+                const std::string compiledBinary = result.binaryPath.string();
+
                 for (auto& obj : sceneObjects) {
                     for (auto& sc : obj.scripts) {
-                        std::error_code ec;
-                        fs::path scAbs = fs::absolute(sc.path, ec);
-                        std::string scPathNorm = (ec ? fs::path(sc.path) : scAbs).lexically_normal().string();
-                        if (scPathNorm == result.compiledSource) {
-                            sc.lastBinaryPath = result.binaryPath.string();
-                            sc.lastBinaryVerified = true;
+                        if (sc.language == ScriptLanguage::CSharp) continue;
+
+                        const std::string scriptSource = normalizeSourcePath(sc.path, true);
+                        const bool isCompiledScript =
+                            (!compiledFromSource.empty() && scriptSource == compiledFromSource) ||
+                            (!compiledFromRequest.empty() && scriptSource == compiledFromRequest);
+
+                        if (isCompiledScript) {
+                            sc.lastBinaryPath = compiledBinary;
+                            sc.lastBinaryVerified = !compiledBinary.empty();
+                        } else {
+                            // Force re-resolution after compile so inspector/runtime can't stay on stale binaries.
+                            sc.lastBinaryPath.clear();
+                            sc.lastBinaryVerified = false;
                         }
                     }
                 }
+
+                nativeScriptMissingLogged.clear();
+                nativeScriptLoadErrorLogged.clear();
             }
 
             scriptEditorWindowsDirty = true;
@@ -7128,7 +8694,7 @@ void Engine::loadEditorUserSettings() {
         } else if (key == "gameViewportAutoFit") {
             gameViewportAutoFit = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gameViewportZoom") {
-            try { gameViewportZoom = std::clamp(std::stof(value), 0.2f, 4.0f); } catch (...) {}
+            try { gameViewportZoom = std::clamp(std::stof(value), 0.1f, 8.0f); } catch (...) {}
         } else if (key == "scriptAutoCompileInterval") {
             try { scriptAutoCompileInterval = std::clamp(std::stod(value), 0.1, 10.0); } catch (...) {}
         } else if (key == "scriptAutoCompileOnSave") {
@@ -7180,7 +8746,7 @@ void Engine::loadEditorUserSettings() {
     fpsCap = std::max(1.0f, fpsCap);
     gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
     gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
-    gameViewportZoom = std::clamp(gameViewportZoom, 0.2f, 4.0f);
+    gameViewportZoom = std::clamp(gameViewportZoom, 0.1f, 8.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
 

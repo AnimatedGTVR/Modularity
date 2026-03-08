@@ -17,6 +17,8 @@ struct ScriptBuildCommands {
     std::string link;
     fs::path objectPath;
     fs::path secondaryObjectPath;
+    fs::path dependencyPath;
+    fs::path secondaryDependencyPath;
     fs::path binaryPath;
     fs::path wrapperPath;
     fs::path sourcePath;

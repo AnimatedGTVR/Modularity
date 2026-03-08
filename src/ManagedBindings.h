@@ -17,6 +17,17 @@ int modu_ctx_set_rigidbody_velocity(ScriptContext* ctx, float x, float y, float 
 int modu_ctx_get_rigidbody_velocity(ScriptContext* ctx, float* x, float* y, float* z);
 int modu_ctx_add_rigidbody_force(ScriptContext* ctx, float x, float y, float z);
 int modu_ctx_add_rigidbody_impulse(ScriptContext* ctx, float x, float y, float z);
+int modu_ctx_has_animation(ScriptContext* ctx);
+int modu_ctx_play_animation(ScriptContext* ctx, int restart);
+int modu_ctx_stop_animation(ScriptContext* ctx, int resetTime);
+int modu_ctx_pause_animation(ScriptContext* ctx, int pause);
+int modu_ctx_reverse_animation(ScriptContext* ctx, int restartIfStopped);
+int modu_ctx_set_animation_time(ScriptContext* ctx, float timeSeconds);
+float modu_ctx_get_animation_time(ScriptContext* ctx);
+int modu_ctx_is_animation_playing(ScriptContext* ctx);
+int modu_ctx_set_animation_loop(ScriptContext* ctx, int loop);
+int modu_ctx_set_animation_play_speed(ScriptContext* ctx, float speed);
+int modu_ctx_set_animation_play_on_awake(ScriptContext* ctx, int playOnAwake);
 float modu_ctx_get_setting_float(ScriptContext* ctx, const char* key, float fallback);
 int modu_ctx_get_setting_bool(ScriptContext* ctx, const char* key, int fallback);
 void modu_ctx_get_setting_string(ScriptContext* ctx, const char* key, const char* fallback,
@@ -83,6 +94,18 @@ struct ManagedNativeApi {
     int (*imguiBeginCombo)(const char* label, const char* previewValue) = nullptr;
     void (*imguiEndCombo)() = nullptr;
     int (*imguiSelectable)(const char* label, int selected) = nullptr;
+    // Version 5+ additions.
+    int (*hasAnimation)(ScriptContext* ctx) = nullptr;
+    int (*playAnimation)(ScriptContext* ctx, int restart) = nullptr;
+    int (*stopAnimation)(ScriptContext* ctx, int resetTime) = nullptr;
+    int (*pauseAnimation)(ScriptContext* ctx, int pause) = nullptr;
+    int (*reverseAnimation)(ScriptContext* ctx, int restartIfStopped) = nullptr;
+    int (*setAnimationTime)(ScriptContext* ctx, float timeSeconds) = nullptr;
+    float (*getAnimationTime)(ScriptContext* ctx) = nullptr;
+    int (*isAnimationPlaying)(ScriptContext* ctx) = nullptr;
+    int (*setAnimationLoop)(ScriptContext* ctx, int loop) = nullptr;
+    int (*setAnimationPlaySpeed)(ScriptContext* ctx, float speed) = nullptr;
+    int (*setAnimationPlayOnAwake)(ScriptContext* ctx, int playOnAwake) = nullptr;
 };
 
 ManagedNativeApi BuildManagedNativeApi();

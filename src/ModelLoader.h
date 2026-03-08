@@ -36,7 +36,11 @@ struct RawMeshAsset {
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;
     std::vector<glm::vec2> uvs;
+    std::vector<glm::u32vec2> edges;
     std::vector<glm::u32vec3> faces;
+    std::vector<uint32_t> faceMaterialIndices;
+    std::vector<uint32_t> faceIslandIds;
+    std::vector<std::string> materialSlots;
     glm::vec3 boundsMin = glm::vec3(FLT_MAX);
     glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
     bool hasNormals = false;

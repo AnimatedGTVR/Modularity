@@ -3,6 +3,8 @@
 #include <unordered_map>
 
 namespace {
+constexpr float kEditorBottomStatusReserveHeight = 24.0f;
+
 struct TouchSwipeWindowState {
     ImVec2 virtualScroll = ImVec2(0.0f, 0.0f);
     ImVec2 velocity = ImVec2(0.0f, 0.0f);
@@ -212,6 +214,7 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
     
     // Scene files
     if (ext == ".modu" || ext == ".scene") return FileCategory::Scene;
+    if (ext == ".modupak") return FileCategory::Text;
     
     // Model files
     if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" ||
@@ -566,10 +569,17 @@ ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
     }
 
     ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
-    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), dockspaceFlags);
+    const float reserveHeight = getEditorBottomStatusReserveHeight();
+    ImVec2 dockspaceSize = ImGui::GetContentRegionAvail();
+    dockspaceSize.y = ImMax(0.0f, dockspaceSize.y - reserveHeight);
+    ImGui::DockSpace(dockspaceId, dockspaceSize, dockspaceFlags);
 
     ImGui::End();
     return dockspaceId;
+}
+
+float getEditorBottomStatusReserveHeight() {
+    return kEditorBottomStatusReserveHeight;
 }
 #pragma endregion
 
@@ -585,6 +595,26 @@ void updateTouchSwipeScrolling() {
     static TouchSwipeRuntimeState runtime;
 
     const bool touchScreenMode = (io.ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+    const bool hasWheelInput = std::abs(io.MouseWheelH) > 0.0001f || std::abs(io.MouseWheel) > 0.0001f;
+
+    // On non-touch platforms, skip the full window traversal when there is no
+    // scroll input and no active inertial movement to process.
+    if (!touchScreenMode && !hasWheelInput && runtime.activeWindowId == 0) {
+        bool hasResidualMotion = false;
+        for (const auto& [id, state] : runtime.windowStates) {
+            (void)id;
+            if (state.isDragging ||
+                std::abs(state.velocity.x) > 0.35f ||
+                std::abs(state.velocity.y) > 0.35f) {
+                hasResidualMotion = true;
+                break;
+            }
+        }
+        if (!hasResidualMotion) {
+            runtime.windowStates.clear();
+            return;
+        }
+    }
 
     const float dt = std::max(io.DeltaTime, 1.0f / 240.0f);
     const float dragThresholdSqr = 16.0f;

@@ -142,6 +142,19 @@ struct ScriptContext {
     bool SetAudioLoop(bool loop);
     bool SetAudioVolume(float volume);
     bool SetAudioClip(const std::string& path);
+    bool PlayAudioOneShot(const std::string& clipPath = "", float volumeScale = 1.0f);
+    // Animation helpers
+    bool HasAnimation() const;
+    bool PlayAnimation(bool restart = true);
+    bool StopAnimation(bool resetTime = true);
+    bool PauseAnimation(bool pause = true);
+    bool ReverseAnimation(bool restartIfStopped = true);
+    bool SetAnimationTime(float timeSeconds);
+    float GetAnimationTime() const;
+    bool IsAnimationPlaying() const;
+    bool SetAnimationLoop(bool loop);
+    bool SetAnimationPlaySpeed(float speed);
+    bool SetAnimationPlayOnAwake(bool playOnAwake);
     // Settings helpers (auto-mark dirty)
     std::string GetSetting(const std::string& key, const std::string& fallback = "") const;
     void SetSetting(const std::string& key, const std::string& value);

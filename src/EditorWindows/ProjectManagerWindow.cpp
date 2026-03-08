@@ -278,6 +278,80 @@ static float EaseOutCubic(float t) {
     return 1.0f - inv * inv * inv;
 }
 
+static float EaseInOutCubic(float t) {
+    t = ImClamp(t, 0.0f, 1.0f);
+    if (t < 0.5f) {
+        return 4.0f * t * t * t;
+    }
+    const float f = -2.0f * t + 2.0f;
+    return 1.0f - (f * f * f) * 0.5f;
+}
+
+static float EaseOutBack(float t) {
+    t = ImClamp(t, 0.0f, 1.0f);
+    constexpr float c1 = 1.70158f;
+    constexpr float c3 = c1 + 1.0f;
+    const float p = t - 1.0f;
+    return 1.0f + c3 * p * p * p + c1 * p * p;
+}
+
+struct LauncherIntroTimings {
+    float fadeIn = 0.16f;
+    float popIn = 0.44f;
+    float hold = 0.10f;
+    float drift = 0.64f;
+};
+
+struct LauncherIntroState {
+    float elapsed = 0.0f;
+    float introTotal = 0.0f;
+    float textAlpha = 0.0f;
+    float popT = 1.0f;
+    float driftT = 1.0f;
+    float driftEase = 1.0f;
+    float contentRevealT = 1.0f;
+    bool finished = true;
+};
+
+static LauncherIntroState EvaluateLauncherIntro(double now,
+                                                double introStartTime,
+                                                bool forceFinished,
+                                                const LauncherIntroTimings& timings) {
+    LauncherIntroState state;
+    const float popStart = timings.fadeIn;
+    const float driftStart = popStart + timings.popIn + timings.hold;
+    state.introTotal = driftStart + timings.drift;
+    state.elapsed = forceFinished
+        ? state.introTotal
+        : static_cast<float>(now - introStartTime);
+
+    if (timings.fadeIn <= 0.0001f) {
+        state.textAlpha = 1.0f;
+    } else {
+        state.textAlpha = ImClamp(state.elapsed / timings.fadeIn, 0.0f, 1.0f);
+    }
+
+    state.popT = timings.popIn <= 0.0001f
+        ? 1.0f
+        : ImClamp((state.elapsed - popStart) / timings.popIn, 0.0f, 1.0f);
+    state.driftT = timings.drift <= 0.0001f
+        ? 1.0f
+        : ImClamp((state.elapsed - driftStart) / timings.drift, 0.0f, 1.0f);
+    state.driftEase = EaseInOutCubic(state.driftT);
+    const float contentWindow = std::max(0.001f, timings.drift + timings.hold);
+    state.contentRevealT = ImClamp((state.elapsed - (driftStart - timings.hold * 0.55f)) / contentWindow, 0.0f, 1.0f);
+    state.finished = forceFinished || state.driftT >= 1.0f;
+    return state;
+}
+
+static const PackageInfo* FindRegistryPackageById(const std::vector<PackageInfo>& registry,
+                                                  const std::string& id) {
+    auto it = std::find_if(registry.begin(), registry.end(), [&](const PackageInfo& pkg) {
+        return pkg.id == id;
+    });
+    return it != registry.end() ? &(*it) : nullptr;
+}
+
 struct LauncherPackageSnapshot {
     std::string fingerprint;
     std::string sourceProjectName;
@@ -344,25 +418,38 @@ static bool ParsePackageManifestLabels(const fs::path& manifestPath,
             continue;
         }
 
+        std::string sourceTag;
+        std::string sourceSuffix;
+        size_t sourcePrefixLen = 0;
         if (cleaned.rfind("git=", 0) == 0) {
-            const auto parts = SplitString(cleaned.substr(4), '|');
-            if (parts.empty()) continue;
+            sourceTag = "git";
+            sourceSuffix = " (Git)";
+            sourcePrefixLen = 4;
+        } else if (cleaned.rfind("modupak=", 0) == 0) {
+            sourceTag = "modupak";
+            sourceSuffix = " (.modupak)";
+            sourcePrefixLen = 8;
+        } else {
+            continue;
+        }
 
-            const std::string id = TrimCopy(parts[0]);
-            std::string label = id;
-            if (parts.size() > 1) {
-                const std::string parsedName = TrimCopy(parts[1]);
-                if (!parsedName.empty()) {
-                    label = parsedName;
-                }
+        const auto parts = SplitString(cleaned.substr(sourcePrefixLen), '|');
+        if (parts.empty()) continue;
+
+        const std::string id = TrimCopy(parts[0]);
+        std::string label = id;
+        if (parts.size() > 1) {
+            const std::string parsedName = TrimCopy(parts[1]);
+            if (!parsedName.empty()) {
+                label = parsedName;
             }
-            if (!label.empty()) {
-                const std::string key = "git:" + id;
-                if (seen.insert(key).second) {
-                    outLabels.push_back(label + " (Git)");
-                    outExternalCount++;
-                }
-            }
+        }
+
+        if (label.empty()) continue;
+        const std::string key = sourceTag + ":" + id;
+        if (seen.insert(key).second) {
+            outLabels.push_back(label + sourceSuffix);
+            outExternalCount++;
         }
     }
 
@@ -769,34 +856,12 @@ void Engine::renderLauncher() {
         launcherIntroSoundPlayed = true;
     }
 
-    const float introFadeIn = 0.6f;
-    const float introHold = 0.5f;
-    const float introFadeOut = 0.7f;
-    const float introSlide = 0.8f;
-    const float introSlideStart = introFadeIn + introHold + introFadeOut;
-    const float introTotal = introSlideStart + introSlide;
-    const double introElapsedRaw = launcherIntroFinished ? introTotal : (now - launcherIntroStartTime);
-    const float introElapsed = static_cast<float>(introElapsedRaw);
-
-    float textAlpha = 0.0f;
-    if (!launcherIntroFinished) {
-        if (introElapsed < introFadeIn) {
-            textAlpha = introElapsed / introFadeIn;
-        } else if (introElapsed < introFadeIn + introHold) {
-            textAlpha = 1.0f;
-        } else if (introElapsed < introSlideStart) {
-            textAlpha = 1.0f - (introElapsed - (introFadeIn + introHold)) / introFadeOut;
-        }
+    const LauncherIntroTimings introTimings{};
+    LauncherIntroState introState = EvaluateLauncherIntro(now, launcherIntroStartTime, launcherIntroFinished, introTimings);
+    if (!launcherIntroFinished && introState.finished) {
+        launcherIntroFinished = true;
+        introState = EvaluateLauncherIntro(now, launcherIntroStartTime, true, introTimings);
     }
-
-    float slideT = 1.0f;
-    if (!launcherIntroFinished) {
-        slideT = ImClamp((introElapsed - introSlideStart) / introSlide, 0.0f, 1.0f);
-        if (slideT >= 1.0f) {
-            launcherIntroFinished = true;
-        }
-    }
-    const float slideEase = 1.0f - std::pow(1.0f - slideT, 3.0f);
 
     const float transitionDuration = 0.45f;
     float transitionT = 0.0f;
@@ -805,9 +870,15 @@ void Engine::renderLauncher() {
     }
     const float transitionEase = 1.0f - std::pow(1.0f - transitionT, 3.0f);
     const float transitionAlpha = 1.0f - transitionEase;
-    const float uiScale = 1.0f + 0.06f * transitionEase;
-    const float introOffsetT = launcherIntroFinished ? 0.0f : (1.0f - slideEase);
-    const float contentAlpha = launcherIntroFinished ? 1.0f : slideEase;
+    const float menuBuildT = launcherIntroFinished ? 1.0f : EaseOutCubic(introState.contentRevealT);
+    const float sidebarBuildSeed = launcherIntroFinished ? 1.0f : ImClamp((menuBuildT - 0.02f) / 0.92f, 0.0f, 1.0f);
+    const float contentBuildSeed = launcherIntroFinished ? 1.0f : ImClamp((menuBuildT - 0.16f) / 0.94f, 0.0f, 1.0f);
+    const float sidebarBuildT = launcherIntroFinished ? 1.0f : std::pow(sidebarBuildSeed, 1.32f);
+    const float contentBuildT = launcherIntroFinished ? 1.0f : std::pow(contentBuildSeed, 1.40f);
+    const float introMenuScale = launcherIntroFinished ? 1.0f : ImLerp(1.07f, 1.0f, menuBuildT);
+    const float uiScale = (1.0f + 0.06f * transitionEase) * introMenuScale;
+    const float introOffsetT = launcherIntroFinished ? 0.0f : (1.0f - introState.driftEase);
+    const float contentAlpha = launcherIntroFinished ? 1.0f : ImClamp(0.12f + introState.contentRevealT * 0.88f, 0.0f, 1.0f);
     const float introHeroOffsetY = -90.0f * uiScale * introOffsetT;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -982,7 +1053,8 @@ void Engine::renderLauncher() {
         const float paneGap = 12.0f * uiScale;
         const float shellHeight = ImMax(0.0f, ImGui::GetContentRegionAvail().y - shellInsetTop - shellInsetBottom);
 
-        ImGui::SetCursorPos(ImVec2(contentStart.x + shellInsetX, contentStart.y + introHeroOffsetY + shellInsetTop));
+        ImGui::SetCursorPos(ImVec2(contentStart.x + shellInsetX,
+                                   contentStart.y + introHeroOffsetY + shellInsetTop));
         ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, shellBg);
         ImGui::BeginChild("LauncherShell", ImVec2(-shellInsetX, shellHeight), false);
@@ -991,21 +1063,55 @@ void Engine::renderLauncher() {
         const ImVec2 sidebarPadding(14.0f * uiScale, 14.0f * uiScale);
         const ImVec2 contentPadding(14.0f * uiScale, 12.0f * uiScale);
         const ImVec2 sectionInset(0.0f, 0.0f);
+        const ImVec2 shellLayoutOrigin = ImGui::GetCursorPos();
+        const ImVec2 shellLayoutAvail = ImGui::GetContentRegionAvail();
+        const float paneHeight = ImMax(0.0f, shellLayoutAvail.y);
+        const float contentPaneWidth = ImMax(0.0f, shellLayoutAvail.x - sidebarWidth - paneGap);
 
+        const float sidebarPaneT = launcherIntroFinished ? 1.0f : EaseOutCubic(sidebarBuildT);
+        const float sidebarPaneOffsetX = -(1.0f - sidebarPaneT) * 88.0f * uiScale;
+        const float sidebarPaneOffsetY = (1.0f - sidebarPaneT) * 14.0f * uiScale;
+        const float sidebarPaneAlpha = ImLerp(0.0f, 1.0f, sidebarPaneT);
+
+        const float contentPaneT = launcherIntroFinished ? 1.0f : EaseOutCubic(contentBuildT);
+        const float contentPaneOffsetX = (1.0f - contentPaneT) * 96.0f * uiScale;
+        const float contentPaneOffsetY = (1.0f - contentPaneT) * 12.0f * uiScale;
+        const float contentPaneAlpha = ImLerp(0.0f, 1.0f, contentPaneT);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, sidebarPaneAlpha);
+        ImGui::SetCursorPos(ImVec2(shellLayoutOrigin.x + sidebarPaneOffsetX,
+                                   shellLayoutOrigin.y + sidebarPaneOffsetY));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sidebarPadding);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebarBg);
-        ImGui::BeginChild("LauncherSidebar", ImVec2(sidebarWidth, 0), false);
+        ImGui::BeginChild("LauncherSidebar", ImVec2(sidebarWidth, paneHeight), false);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
-
-        ImGui::TextColored(ImVec4(0.86f, 0.89f, 0.96f, 1.0f), "Modularity Project Manager");
-        ImGui::Spacing();
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
+        int sidebarAnimIndex = 0;
+        auto beginSidebarBuildStep = [&](float delayStep = 0.132f) {
+            const float delay = std::min(0.86f, delayStep * static_cast<float>(sidebarAnimIndex));
+            const float localT = ImClamp(
+                (sidebarBuildT - delay) / std::max(0.0001f, 1.0f - delay),
+                0.0f,
+                1.0f);
+            const float eased = EaseOutCubic(localT);
+            const float alpha = ImLerp(0.0f, 1.0f, eased);
+            const float yOffset = (1.0f - eased) * (24.0f + static_cast<float>(sidebarAnimIndex) * 2.0f) * uiScale;
+            const float xOffset = -(1.0f - eased) * 34.0f * uiScale;
+            ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + xOffset, ImGui::GetCursorPosY() + yOffset));
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+            ++sidebarAnimIndex;
+        };
+        auto endSidebarBuildStep = [&]() {
+            ImGui::PopStyleVar();
+        };
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f * uiScale, 10.0f * uiScale));
+        beginSidebarBuildStep();
         ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 0 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
@@ -1013,6 +1119,9 @@ void Engine::renderLauncher() {
             setLauncherSection(0);
         }
         ImGui::PopStyleColor(3);
+        endSidebarBuildStep();
+
+        beginSidebarBuildStep();
         ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 1 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
@@ -1020,6 +1129,9 @@ void Engine::renderLauncher() {
             setLauncherSection(1);
         }
         ImGui::PopStyleColor(3);
+
+        endSidebarBuildStep();
+        beginSidebarBuildStep();
         ImGui::PushStyleColor(ImGuiCol_Button, launcherSection == 2 ? ImVec4(0.21f, 0.32f, 0.47f, 1.0f) : ImVec4(0.16f, 0.19f, 0.28f, 0.95f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.36f, 0.54f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.21f, 0.32f, 0.47f, 1.0f));
@@ -1027,12 +1139,14 @@ void Engine::renderLauncher() {
             setLauncherSection(2);
         }
         ImGui::PopStyleColor(3);
+        endSidebarBuildStep();
         ImGui::PopStyleVar();
         const float footerY = ImGui::GetWindowHeight() - 60.0f * uiScale;
         if (ImGui::GetCursorPosY() < footerY) {
             ImGui::SetCursorPosY(footerY);
         }
         ImGui::Separator();
+        beginSidebarBuildStep();
         if (ImGui::Button("Modularity Website", ImVec2(-1, 28.0f * uiScale))) {
             #ifdef _WIN32
             system("start https://moduengine.xyz");
@@ -1040,6 +1154,8 @@ void Engine::renderLauncher() {
             system("xdg-open https://moduengine.xyz &");
             #endif
         }
+        endSidebarBuildStep();
+        beginSidebarBuildStep();
         if (ImGui::Button("Documentation", ImVec2(-1, 28.0f * uiScale))) {
             #ifdef _WIN32
             system("start https://moduengine.xyz/docs");
@@ -1047,16 +1163,21 @@ void Engine::renderLauncher() {
             system("xdg-open https://moduengine.xyz/docs &");
             #endif
         }
+        endSidebarBuildStep();
+        beginSidebarBuildStep();
         if (ImGui::Button("Exit", ImVec2(-1, 28.0f * uiScale))) {
             glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
         }
+        endSidebarBuildStep();
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
-        ImGui::SameLine(0.0f, paneGap);
-
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, contentPaneAlpha);
+        ImGui::SetCursorPos(ImVec2(shellLayoutOrigin.x + sidebarWidth + paneGap + contentPaneOffsetX,
+                                   shellLayoutOrigin.y + contentPaneOffsetY));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, contentPadding);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::BeginChild("LauncherContent", ImVec2(0, 0), false);
+        ImGui::BeginChild("LauncherContent", ImVec2(contentPaneWidth, paneHeight), false);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
 
@@ -1070,8 +1191,14 @@ void Engine::renderLauncher() {
             const float projectsInsetX = 10.0f * uiScale;
             const float projectsInsetY = 6.0f * uiScale;
             const float projectsHeaderGap = 12.0f * uiScale;
+            const float panelBuildT = launcherIntroFinished ? 1.0f : EaseOutCubic(contentBuildT);
+            const float headerAlpha = ImLerp(0.0f, 1.0f, panelBuildT);
+            const float headerOffsetY = (1.0f - panelBuildT) * 24.0f * uiScale;
+            const float headerOffsetX = (1.0f - panelBuildT) * 30.0f * uiScale;
             ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + projectsInsetX,
-                                       ImGui::GetCursorPosY() + projectsInsetY));
+                                       ImGui::GetCursorPosY() + projectsInsetY + headerOffsetY));
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, headerAlpha);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + headerOffsetX);
             ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "Projects");
             const float buttonWidth = 112.0f * uiScale;
             const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -1113,12 +1240,15 @@ void Engine::renderLauncher() {
             ImGui::Dummy(ImVec2(0.0f, projectsHeaderGap));
             ImGui::Separator();
             ImGui::Dummy(ImVec2(0.0f, projectsHeaderGap));
+            ImGui::PopStyleVar();
 
             const std::string filter = toLower(TrimCopy(launcherSearch));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
             ImGui::BeginChild("RecentProjectsList", ImVec2(0, 0), false);
             bool hadVisible = false;
             bool removedProject = false;
+            int visibleRowIndex = 0;
+            const float cardsBuildT = launcherIntroFinished ? 1.0f : EaseOutCubic(contentBuildT);
 
             for (size_t i = 0; i < projectManager.recentProjects.size(); ++i) {
                 const auto& rp = projectManager.recentProjects[i];
@@ -1128,6 +1258,16 @@ void Engine::renderLauncher() {
                 }
 
                 hadVisible = true;
+                const int rowIndex = visibleRowIndex++;
+                const float rowDelay = std::min(0.74f, static_cast<float>(rowIndex) * 0.072f);
+                const float rowInput = ImClamp(
+                    (cardsBuildT - rowDelay) / std::max(0.0001f, 1.0f - rowDelay),
+                    0.0f,
+                    1.0f);
+                const float rowReveal = EaseOutCubic(rowInput);
+                const float rowSlideX = (1.0f - rowReveal) * 56.0f * uiScale;
+                const float rowSlideY = (1.0f - rowReveal) * (20.0f + static_cast<float>(rowIndex) * 2.8f) * uiScale;
+                const float rowAlpha = ImLerp(0.0f, 1.0f, rowReveal);
                 ImGui::PushID(static_cast<int>(i));
 
                 ImTextureID previewTexId = static_cast<ImTextureID>(0);
@@ -1150,6 +1290,8 @@ void Engine::renderLauncher() {
 
                 const float cardHeight = 92.0f * uiScale;
                 const ImVec2 cardSize(ImGui::GetContentRegionAvail().x, cardHeight);
+                const ImVec2 rowBasePos = ImGui::GetCursorScreenPos();
+                ImGui::SetCursorScreenPos(ImVec2(rowBasePos.x + rowSlideX, rowBasePos.y + rowSlideY));
                 const ImVec2 cardPos = ImGui::GetCursorScreenPos();
                 ImGui::InvisibleButton("RecentProjectCard", cardSize);
                 const bool hovered = ImGui::IsItemHovered();
@@ -1172,20 +1314,23 @@ void Engine::renderLauncher() {
                 }
 
                 ImDrawList* list = ImGui::GetWindowDrawList();
+                auto withRowAlpha = [rowAlpha](const ImVec4& col) {
+                    return ImVec4(col.x, col.y, col.z, col.w * rowAlpha);
+                };
                 const float hoverT = EaseOutCubic(hovered ? 1.0f : 0.0f);
                 const ImU32 cardBg = ImGui::GetColorU32(hovered
-                    ? ImVec4(0.18f, 0.22f, 0.31f, 1.0f)
-                    : ImVec4(0.14f, 0.16f, 0.22f, 0.98f));
+                    ? withRowAlpha(ImVec4(0.18f, 0.22f, 0.31f, 1.0f))
+                    : withRowAlpha(ImVec4(0.14f, 0.16f, 0.22f, 0.98f)));
                 const ImU32 cardBorder = ImGui::GetColorU32(hovered
-                    ? ImVec4(0.30f, 0.52f, 0.80f, 1.0f)
-                    : ImVec4(0.22f, 0.27f, 0.36f, 0.95f));
+                    ? withRowAlpha(ImVec4(0.30f, 0.52f, 0.80f, 1.0f))
+                    : withRowAlpha(ImVec4(0.22f, 0.27f, 0.36f, 0.95f)));
                 const float cardRounding = 12.0f * uiScale;
                 list->AddRectFilled(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardBg, cardRounding);
                 list->AddRect(cardPos, ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y), cardBorder, cardRounding, 0, hovered ? 2.0f : 1.0f);
                 if (hovered) {
                     list->AddRectFilled(cardPos,
                                         ImVec2(cardPos.x + cardSize.x, cardPos.y + cardSize.y),
-                                        ImGui::GetColorU32(ImVec4(0.22f, 0.36f, 0.58f, 0.06f + 0.08f * hoverT)),
+                                        ImGui::GetColorU32(withRowAlpha(ImVec4(0.22f, 0.36f, 0.58f, 0.06f + 0.08f * hoverT))),
                                         cardRounding);
                 }
 
@@ -1195,21 +1340,22 @@ void Engine::renderLauncher() {
                 const ImVec2 thumbMax(thumbMin.x + thumbSize.x, thumbMin.y + thumbSize.y);
                 if (previewTexId != static_cast<ImTextureID>(0)) {
                     DrawImageCover(list, previewTexId, thumbMin, thumbMax, previewTexWidth, previewTexHeight,
-                                   ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 8.0f * uiScale);
+                                   ImGui::GetColorU32(withRowAlpha(ImVec4(1, 1, 1, 1))), 8.0f * uiScale);
                 } else {
-                    list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.11f, 0.13f, 0.18f, 1.0f)), 8.0f * uiScale);
+                    list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(withRowAlpha(ImVec4(0.11f, 0.13f, 0.18f, 1.0f))), 8.0f * uiScale);
                     const char* noPreview = "No Preview";
                     ImVec2 txt = ImGui::CalcTextSize(noPreview);
                     list->AddText(ImVec2(thumbMin.x + (thumbSize.x - txt.x) * 0.5f,
                                          thumbMin.y + (thumbSize.y - txt.y) * 0.5f),
-                                  ImGui::GetColorU32(ImVec4(0.66f, 0.70f, 0.78f, 1.0f)),
+                                  ImGui::GetColorU32(withRowAlpha(ImVec4(0.66f, 0.70f, 0.78f, 1.0f))),
                                   noPreview);
                 }
-                list->AddRect(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.24f, 0.28f, 0.38f, 0.95f)), 8.0f * uiScale);
+                list->AddRect(thumbMin, thumbMax, ImGui::GetColorU32(withRowAlpha(ImVec4(0.24f, 0.28f, 0.38f, 0.95f))), 8.0f * uiScale);
 
                 const float actionWidth = 112.0f * uiScale;
                 const float textStartX = thumbMax.x + 16.0f * uiScale;
                 const float textWidth = std::max(140.0f * uiScale, cardMax.x - textStartX - actionWidth - 28.0f * uiScale);
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, rowAlpha);
                 ImGui::SetCursorScreenPos(ImVec2(textStartX, cardPos.y + 15.0f * uiScale));
                 ImGui::PushTextWrapPos(textStartX + textWidth);
                 ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.98f, 1.0f), "%s",
@@ -1235,6 +1381,7 @@ void Engine::renderLauncher() {
                 }
                 ImGui::PopStyleColor(3);
                 ImGui::EndDisabled();
+                ImGui::PopStyleVar();
 
                 if (shouldRemove) {
                     projectManager.recentProjects.erase(
@@ -1250,7 +1397,7 @@ void Engine::renderLauncher() {
                     launchRecentProject(rp, rowCenter);
                 }
 
-                ImGui::SetCursorScreenPos(ImVec2(cardPos.x, cardPos.y + cardHeight));
+                ImGui::SetCursorScreenPos(ImVec2(rowBasePos.x, rowBasePos.y + cardHeight));
                 ImGui::Dummy(ImVec2(cardSize.x, 5.0f * uiScale));
                 ImGui::PopID();
             }
@@ -1661,6 +1808,7 @@ void Engine::renderLauncher() {
         ImGui::PopStyleVar(2);
 
         ImGui::EndChild();
+        ImGui::PopStyleVar();
         ImGui::EndChild();
         ImGui::PopStyleVar();
 
@@ -1670,54 +1818,87 @@ void Engine::renderLauncher() {
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleVar();
 
-        if (textAlpha > 0.001f) {
-            ImDrawList* overlay = ImGui::GetWindowDrawList();
+        if (introState.textAlpha > 0.001f) {
+            ImDrawList* overlay = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
             const char* title = "Modularity";
             ImFont* font = ImGui::GetFont();
             const float baseFontSize = ImGui::GetFontSize();
-            const float fadeOutT = ImClamp((introElapsed - (introFadeIn + introHold)) / introFadeOut, 0.0f, 1.0f);
-            const float globalScale = 2.0f - 0.18f * fadeOutT;
-            const float fontSizeNormal = baseFontSize * 2.6f * globalScale;
+            const float centerFontSize = baseFontSize * 2.62f;
+            const float headerFontSize = baseFontSize * 1.24f;
             const ImVec4 baseCol = ImVec4(0.95f, 0.96f, 0.98f, 1.0f);
-            const float letterDelay = 0.07f;
-            const float letterIn = 0.18f;
 
-            auto ease = [](float t) {
-                t = ImClamp(t, 0.0f, 1.0f);
-                return t * t * (3.0f - 2.0f * t);
-            };
-
-            ImVec2 center = ImVec2(displaySize.x * 0.5f, displaySize.y * 0.38f);
-            float totalWidth = 0.0f;
+            ImVec2 center = ImVec2(displaySize.x * 0.5f, displaySize.y * 0.36f);
+            float centerTotalWidth = 0.0f;
+            float headerTotalWidth = 0.0f;
             for (const char* c = title; *c; ++c) {
                 char letter[2] = { *c, 0 };
-                totalWidth += font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
+                centerTotalWidth += font->CalcTextSizeA(centerFontSize, FLT_MAX, 0.0f, letter).x;
+                headerTotalWidth += font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.0f, letter).x;
             }
 
-            ImVec2 textPos = ImVec2(center.x - totalWidth * 0.5f,
-                                    center.y - fontSizeNormal * 0.5f);
+            const ImVec2 centerTextPos(center.x - centerTotalWidth * 0.5f,
+                                       center.y - centerFontSize * 0.5f);
+            const float headerMarginLeft = 26.0f * uiScale;
+            const float headerTop = windowPos.y + 14.0f * uiScale;
+            const ImVec2 headerTextPos(
+                windowPos.x + headerMarginLeft,
+                headerTop);
 
-            float advanceX = 0.0f;
+            float centerAdvanceX = 0.0f;
+            float headerAdvanceX = 0.0f;
             int index = 0;
+            const int totalLetters = static_cast<int>(std::strlen(title));
+            const float popDelayStep = 0.055f;
+            const float driftDelayStep = 0.024f;
             for (const char* c = title; *c; ++c, ++index) {
                 char letter[2] = { *c, 0 };
-                float letterT = (introElapsed - (letterDelay * index)) / letterIn;
-                float letterEase = ease(letterT);
-                float letterAlpha = textAlpha * letterEase;
-                if (letterAlpha <= 0.001f) {
-                    float letterWidth = font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
-                    advanceX += letterWidth;
-                    continue;
-                }
+                const float popDelay = (totalLetters > 1) ? (popDelayStep * static_cast<float>(index)) : 0.0f;
+                const float popInput = ImClamp(
+                    (introState.elapsed - introTimings.fadeIn - popDelay) / std::max(0.0001f, introTimings.popIn),
+                    0.0f,
+                    1.0f);
+                const float popEase = EaseOutBack(popInput);
+                const float popAlpha = EaseOutCubic(popInput);
 
-                float letterScale = (1.15f - 0.15f * letterEase) * globalScale;
-                float letterFontSize = baseFontSize * 2.6f * letterScale;
-                float letterWidth = font->CalcTextSizeA(fontSizeNormal, FLT_MAX, 0.0f, letter).x;
-                float offsetX = (letterWidth * (letterScale / globalScale - 1.0f)) * 0.5f;
-                ImVec2 letterPos = ImVec2(textPos.x + advanceX - offsetX, textPos.y);
-                ImU32 textCol = ImGui::GetColorU32(ImVec4(baseCol.x, baseCol.y, baseCol.z, letterAlpha));
-                overlay->AddText(font, letterFontSize, letterPos, textCol, letter);
-                advanceX += letterWidth;
+                const float driftDelay = (totalLetters > 1) ? (driftDelayStep * static_cast<float>(index)) : 0.0f;
+                const float driftInput = ImClamp(
+                    (introState.driftT - driftDelay) / std::max(0.0001f, 1.0f - driftDelay),
+                    0.0f,
+                    1.0f);
+                const float driftEase = EaseInOutCubic(driftInput);
+
+                const float centerWidth = font->CalcTextSizeA(centerFontSize, FLT_MAX, 0.0f, letter).x;
+                const float headerWidth = font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.0f, letter).x;
+                const ImVec2 centerLetterPos(centerTextPos.x + centerAdvanceX, centerTextPos.y);
+                const ImVec2 headerLetterPos(headerTextPos.x + headerAdvanceX, headerTextPos.y);
+
+                const float popScale = std::max(0.05f, 0.34f + 0.66f * popEase);
+                const float popSize = centerFontSize * popScale;
+                const ImVec2 spawnPos(centerLetterPos.x, centerLetterPos.y + (1.0f - popAlpha) * 22.0f * uiScale);
+                const ImVec2 popPos(
+                    ImLerp(spawnPos.x, centerLetterPos.x, popAlpha),
+                    ImLerp(spawnPos.y, centerLetterPos.y, popAlpha));
+
+                const float letterSize = ImLerp(popSize, headerFontSize, driftEase);
+                const ImVec2 letterPos(
+                    ImLerp(popPos.x, headerLetterPos.x, driftEase),
+                    ImLerp(popPos.y, headerLetterPos.y, driftEase));
+                const float letterAlpha = introState.textAlpha * popAlpha * ImLerp(0.92f, 1.0f, driftEase);
+                const ImU32 textCol = ImGui::GetColorU32(ImVec4(baseCol.x, baseCol.y, baseCol.z, letterAlpha));
+                overlay->AddText(font, letterSize, letterPos, textCol, letter);
+
+                centerAdvanceX += centerWidth;
+                headerAdvanceX += headerWidth;
+            }
+
+            const float packageTagAlpha = introState.textAlpha * ImClamp((introState.driftT - 0.23f) / 0.62f, 0.0f, 1.0f);
+            if (packageTagAlpha > 0.001f) {
+                const char* packageLabel = "Project manager";
+                const float packageFontSize = baseFontSize * 0.95f;
+                const ImU32 tagCol = ImGui::GetColorU32(ImVec4(0.79f, 0.84f, 0.92f, packageTagAlpha));
+                const ImVec2 tagPos(headerTextPos.x + headerTotalWidth + 14.0f * uiScale,
+                                    headerTextPos.y + headerFontSize * 0.18f);
+                overlay->AddText(font, packageFontSize, tagPos, tagCol, packageLabel);
             }
         }
     }
@@ -2075,6 +2256,7 @@ void Engine::renderProjectBrowserPanel() {
         static char gitUrlBuf[256] = "";
         static char gitNameBuf[128] = "";
         static char gitIncludeBuf[128] = "include";
+        static char moduPakPathBuf[512] = "";
 
         auto pollPackageTask = [&]() {
             if (!packageTask.active) return;
@@ -2139,6 +2321,25 @@ void Engine::renderProjectBrowserPanel() {
             });
         }
 
+        ImGui::Spacing();
+        ImGui::TextDisabled("Install from .modupak");
+        ImGui::InputTextWithHint("Bundle path", "/path/to/package.modupak", moduPakPathBuf, sizeof(moduPakPathBuf));
+        if (ImGui::Button("Install .modupak")) {
+            const std::string bundlePath = TrimCopy(moduPakPathBuf);
+            startPackageTask("Importing .modupak...", [this, bundlePath]() {
+                PackageTaskResult result;
+                std::string newId;
+                if (packageManager.installModuPak(fs::path(bundlePath), newId)) {
+                    result.success = true;
+                    result.message = "Installed .modupak package: " + newId;
+                } else {
+                    result.message = packageManager.getLastError();
+                }
+                return result;
+            });
+        }
+        ImGui::TextDisabled("Expected bundle layout: manifest.modu + payload/ (tar archive or .modupak folder).");
+
         ImGui::EndDisabled();
         ImGui::Separator();
         ImGui::TextDisabled("Installed packages");
@@ -2151,57 +2352,74 @@ void Engine::renderProjectBrowserPanel() {
                 ImGui::TextDisabled("None installed");
             } else {
                 for (const auto& id : installedIds) {
-                    const PackageInfo* pkg = nullptr;
-                    for (const auto& p : registry) {
-                        if (p.id == id) { pkg = &p; break; }
-                    }
+                    const PackageInfo* pkg = FindRegistryPackageById(registry, id);
                     if (!pkg) continue;
 
                     ImGui::PushID(pkg->id.c_str());
                     ImGui::Separator();
                     ImGui::Text("%s", pkg->name.c_str());
                     ImGui::TextDisabled("%s", pkg->description.c_str());
-                    if (!pkg->external) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "[bundled]");
+
+                    const char* sourceBadge = "[bundled]";
+                    ImVec4 badgeColor = ImVec4(0.4f, 0.7f, 0.95f, 1.0f);
+                    if (pkg->modupak) {
+                        sourceBadge = "[.modupak]";
+                        badgeColor = ImVec4(0.62f, 0.86f, 0.68f, 1.0f);
+                    } else if (pkg->external) {
+                        sourceBadge = "[git]";
+                        badgeColor = ImVec4(0.96f, 0.79f, 0.49f, 1.0f);
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextColored(badgeColor, "%s", sourceBadge);
+
+                    if (pkg->external) {
+                        ImGui::TextDisabled("Path: %s", pkg->localPath.string().c_str());
+                    }
+                    if (pkg->modupak && !pkg->modupakSourcePath.empty()) {
+                        ImGui::TextDisabled("Bundle: %s", pkg->modupakSourcePath.string().c_str());
+                    } else if (pkg->external && !pkg->gitUrl.empty()) {
+                        ImGui::TextDisabled("Git: %s", pkg->gitUrl.c_str());
+                    }
+                    if (pkg->builtIn) {
+                        ImGui::TextDisabled("Required package.");
                         ImGui::PopID();
                         continue;
                     }
 
-                    ImGui::TextDisabled("Path: %s", pkg->localPath.string().c_str());
-                    ImGui::TextDisabled("Git: %s", pkg->gitUrl.c_str());
+                    if (pkg->external && !pkg->gitUrl.empty()) {
+                        if (ImGui::Button("Check updates")) {
+                            std::string id = pkg->id;
+                            startPackageTask("Checking package status...", [this, id]() {
+                                PackageTaskResult result;
+                                std::string status;
+                                if (packageManager.checkGitStatus(id, status)) {
+                                    result.success = true;
+                                    result.message = status;
+                                } else {
+                                    result.message = packageManager.getLastError();
+                                }
+                                return result;
+                            });
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Update")) {
+                            std::string id = pkg->id;
+                            std::string name = pkg->name;
+                            startPackageTask("Updating package...", [this, id, name]() {
+                                PackageTaskResult result;
+                                std::string log;
+                                if (packageManager.updateGitPackage(id, log)) {
+                                    result.success = true;
+                                    result.message = "Updated " + name + "\n" + log;
+                                } else {
+                                    result.message = packageManager.getLastError();
+                                }
+                                return result;
+                            });
+                        }
+                        ImGui::SameLine();
+                    }
 
-                    if (ImGui::Button("Check updates")) {
-                        std::string id = pkg->id;
-                        startPackageTask("Checking package status...", [this, id]() {
-                            PackageTaskResult result;
-                            std::string status;
-                            if (packageManager.checkGitStatus(id, status)) {
-                                result.success = true;
-                                result.message = status;
-                            } else {
-                                result.message = packageManager.getLastError();
-                            }
-                            return result;
-                        });
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Update")) {
-                        std::string id = pkg->id;
-                        std::string name = pkg->name;
-                        startPackageTask("Updating package...", [this, id, name]() {
-                            PackageTaskResult result;
-                            std::string log;
-                            if (packageManager.updateGitPackage(id, log)) {
-                                result.success = true;
-                                result.message = "Updated " + name + "\n" + log;
-                            } else {
-                                result.message = packageManager.getLastError();
-                            }
-                            return result;
-                        });
-                    }
-                    ImGui::SameLine();
                     if (ImGui::Button("Uninstall")) {
                         std::string id = pkg->id;
                         std::string name = pkg->name;

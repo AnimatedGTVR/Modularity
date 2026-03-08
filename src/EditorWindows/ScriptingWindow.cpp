@@ -457,9 +457,11 @@ void Engine::openScriptInEditor(const fs::path& path) {
 void Engine::renderScriptingWindow() {
     if (!showScriptingWindow) return;
 
+    bool listRefreshedThisFrame = false;
     if (scriptingFilesDirty) {
         refreshScriptingFileList();
         scriptingFilesDirty = false;
+        listRefreshedThisFrame = true;
     }
 
     ImGui::Begin("Scripting", &showScriptingWindow);
@@ -480,7 +482,17 @@ void Engine::renderScriptingWindow() {
     static std::vector<std::string> completionPool;
     static std::vector<std::string> activeSuggestions;
     static std::string activePrefix;
+    static bool completionPoolDirty = true;
     static bool completionPanelOpen = true;
+    static fs::path reloadCheckPath;
+    static bool cachedCanReload = false;
+    static double lastReloadCheckTime = 0.0;
+    static std::string cachedFilterLower;
+    static std::vector<int> filteredScriptIndices;
+
+    if (listRefreshedThisFrame) {
+        completionPoolDirty = true;
+    }
 
     ImGui::TextDisabled("Script & Shader Editor");
     ImGui::SameLine();
@@ -493,21 +505,35 @@ void Engine::renderScriptingWindow() {
     float leftWidth = 240.0f;
     ImGui::BeginChild("ScriptingFiles", ImVec2(leftWidth, 0.0f), true);
     ImGui::TextDisabled("Scripts / Shaders");
-    ImGui::InputTextWithHint("##ScriptFilter", "Filter", scriptingFilter, sizeof(scriptingFilter));
+    bool filterChanged = ImGui::InputTextWithHint("##ScriptFilter", "Filter", scriptingFilter, sizeof(scriptingFilter));
     ImGui::Separator();
 
-    for (const auto& scriptPath : scriptingFileList) {
-        std::string label = scriptPath.filename().string();
-        std::string filter = scriptingFilter;
-        std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
-        std::string lowerLabel = label;
-        std::transform(lowerLabel.begin(), lowerLabel.end(), lowerLabel.begin(), ::tolower);
-        if (!filter.empty() && lowerLabel.find(filter) == std::string::npos) {
-            continue;
+    std::string filterLower = toLowerCopy(scriptingFilter);
+    if (listRefreshedThisFrame || filterChanged || filterLower != cachedFilterLower) {
+        cachedFilterLower = filterLower;
+        filteredScriptIndices.clear();
+        filteredScriptIndices.reserve(scriptingFileList.size());
+        for (size_t i = 0; i < scriptingFileList.size(); ++i) {
+            if (!cachedFilterLower.empty()) {
+                std::string labelLower = toLowerCopy(scriptingFileList[i].filename().string());
+                if (labelLower.find(cachedFilterLower) == std::string::npos) {
+                    continue;
+                }
+            }
+            filteredScriptIndices.push_back(static_cast<int>(i));
         }
-        bool selected = (scriptEditorState.filePath == scriptPath);
-        if (ImGui::Selectable(label.c_str(), selected)) {
-            openScriptInEditor(scriptPath);
+    }
+
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(filteredScriptIndices.size()));
+    while (clipper.Step()) {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+            const fs::path& scriptPath = scriptingFileList[filteredScriptIndices[row]];
+            std::string label = scriptPath.filename().string();
+            bool selected = (scriptEditorState.filePath == scriptPath);
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                openScriptInEditor(scriptPath);
+            }
         }
     }
     ImGui::EndChild();
@@ -537,6 +563,8 @@ void Engine::renderScriptingWindow() {
             std::error_code ec;
             scriptEditorState.lastWriteTime = fs::last_write_time(scriptEditorState.filePath, ec);
             scriptEditorState.hasWriteTime = !ec;
+            cachedCanReload = false;
+            lastReloadCheckTime = glfwGetTime();
             if (scriptEditorState.autoCompileOnSave && canCompileFile) {
                 compileScriptFile(scriptEditorState.filePath);
             }
@@ -565,14 +593,25 @@ void Engine::renderScriptingWindow() {
     }
 
     bool canReload = false;
+    if (reloadCheckPath != scriptEditorState.filePath) {
+        reloadCheckPath = scriptEditorState.filePath;
+        cachedCanReload = false;
+        lastReloadCheckTime = 0.0;
+    }
     if (hasFile && scriptEditorState.hasWriteTime) {
-        std::error_code ec;
-        if (fs::exists(scriptEditorState.filePath, ec)) {
-            auto diskTime = fs::last_write_time(scriptEditorState.filePath, ec);
-            if (!ec && diskTime > scriptEditorState.lastWriteTime) {
-                canReload = true;
+        const double now = glfwGetTime();
+        if (now - lastReloadCheckTime >= 0.25) {
+            lastReloadCheckTime = now;
+            cachedCanReload = false;
+            std::error_code ec;
+            if (fs::exists(scriptEditorState.filePath, ec)) {
+                auto diskTime = fs::last_write_time(scriptEditorState.filePath, ec);
+                if (!ec && diskTime > scriptEditorState.lastWriteTime) {
+                    cachedCanReload = true;
+                }
             }
         }
+        canReload = cachedCanReload;
     }
     if (canReload) {
         ImGui::SameLine();
@@ -580,6 +619,8 @@ void Engine::renderScriptingWindow() {
         ImGui::SameLine();
         if (ImGui::Button("Reload")) {
             openScriptInEditor(scriptEditorState.filePath);
+            cachedCanReload = false;
+            lastReloadCheckTime = glfwGetTime();
         }
     }
 
@@ -593,62 +634,81 @@ void Engine::renderScriptingWindow() {
                         scriptTextEditorReady = true;
                     }
 
-                ScriptEditorLanguage language = detectScriptEditorLanguage(scriptEditorState.filePath);
-                uint64_t bufferHash = hashBuffer(scriptEditorState.buffer);
-                bool fileChanged = (identifiersFilePath != scriptEditorState.filePath);
-                bool languageChanged = (activeLanguage != language);
-                if (bufferHash != identifiersHash || fileChanged || languageChanged) {
-                    identifiersHash = bufferHash;
-                    identifiersFilePath = scriptEditorState.filePath;
-                    activeLanguage = language;
+                    ScriptEditorLanguage language = detectScriptEditorLanguage(scriptEditorState.filePath);
+                    uint64_t bufferHash = hashBuffer(scriptEditorState.buffer);
+                    bool fileChanged = (identifiersFilePath != scriptEditorState.filePath);
+                    bool languageChanged = (activeLanguage != language);
+                    if (bufferHash != identifiersHash || fileChanged || languageChanged) {
+                        identifiersHash = bufferHash;
+                        identifiersFilePath = scriptEditorState.filePath;
+                        activeLanguage = language;
 
-                    const auto& keywords = keywordsForLanguage(language);
-                    bufferIdentifiers = extractIdentifiers(scriptEditorState.buffer, keywords);
-                    bufferFunctions = extractFunctionIdentifiers(scriptEditorState.buffer, keywords);
-                    bufferDefines = extractDefineIdentifiers(scriptEditorState.buffer);
-                    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(language, bufferFunctions, bufferDefines));
-                }
-
-                completionPool.clear();
-                std::unordered_set<std::string> poolSet;
-                const auto& langDef = scriptTextEditor.GetLanguageDefinition();
-                for (const auto& kw : langDef.mKeywords) {
-                    poolSet.insert(kw);
-                }
-                for (const auto& identifier : langDef.mIdentifiers) {
-                    poolSet.insert(identifier.first);
-                }
-                for (const auto& identifier : langDef.mPreprocIdentifiers) {
-                    poolSet.insert(identifier.first);
-                }
-                for (const auto& entry : scriptingCompletions) {
-                    poolSet.insert(entry);
-                }
-                for (const auto& entry : symbols) {
-                    poolSet.insert(entry);
-                }
-                for (const auto& entry : bufferIdentifiers) {
-                    poolSet.insert(entry);
-                }
-                for (const auto& entry : bufferFunctions) {
-                    poolSet.insert(entry);
-                }
-                for (const auto& entry : bufferDefines) {
-                    poolSet.insert(entry);
-                }
-                completionPool.assign(poolSet.begin(), poolSet.end());
-                std::sort(completionPool.begin(), completionPool.end());
-
-                    TextEditor::Coordinates cursorBefore = scriptTextEditor.GetCursorPosition();
-                    activePrefix = scriptTextEditor.GetWordAtPublic(cursorBefore);
-                    if (activePrefix.empty() && cursorBefore.mColumn > 0) {
-                        TextEditor::Coordinates prev(cursorBefore.mLine, cursorBefore.mColumn - 1);
-                        activePrefix = scriptTextEditor.GetWordAtPublic(prev);
+                        const auto& keywords = keywordsForLanguage(language);
+                        bufferIdentifiers = extractIdentifiers(scriptEditorState.buffer, keywords);
+                        bufferFunctions = extractFunctionIdentifiers(scriptEditorState.buffer, keywords);
+                        bufferDefines = extractDefineIdentifiers(scriptEditorState.buffer);
+                        scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(language, bufferFunctions, bufferDefines));
+                        completionPoolDirty = true;
                     }
-                    if (!activePrefix.empty() && activePrefix.size() >= 2) {
-                        activeSuggestions = buildCompletionList(completionPool, activePrefix);
-                    } else {
-                        activeSuggestions.clear();
+
+                    auto rebuildCompletionPool = [&]() -> bool {
+                        if (!completionPoolDirty) return false;
+                        completionPool.clear();
+                        std::unordered_set<std::string> poolSet;
+                        const auto& langDef = scriptTextEditor.GetLanguageDefinition();
+                        for (const auto& kw : langDef.mKeywords) {
+                            poolSet.insert(kw);
+                        }
+                        for (const auto& identifier : langDef.mIdentifiers) {
+                            poolSet.insert(identifier.first);
+                        }
+                        for (const auto& identifier : langDef.mPreprocIdentifiers) {
+                            poolSet.insert(identifier.first);
+                        }
+                        for (const auto& entry : scriptingCompletions) {
+                            poolSet.insert(entry);
+                        }
+                        for (const auto& entry : symbols) {
+                            poolSet.insert(entry);
+                        }
+                        for (const auto& entry : bufferIdentifiers) {
+                            poolSet.insert(entry);
+                        }
+                        for (const auto& entry : bufferFunctions) {
+                            poolSet.insert(entry);
+                        }
+                        for (const auto& entry : bufferDefines) {
+                            poolSet.insert(entry);
+                        }
+                        completionPool.assign(poolSet.begin(), poolSet.end());
+                        std::sort(completionPool.begin(), completionPool.end());
+                        completionPoolDirty = false;
+                        return true;
+                    };
+
+                    auto extractPrefixAtCursor = [&]() {
+                        TextEditor::Coordinates cursor = scriptTextEditor.GetCursorPosition();
+                        std::string prefix = scriptTextEditor.GetWordAtPublic(cursor);
+                        if (prefix.empty() && cursor.mColumn > 0) {
+                            TextEditor::Coordinates prev(cursor.mLine, cursor.mColumn - 1);
+                            prefix = scriptTextEditor.GetWordAtPublic(prev);
+                        }
+                        return prefix;
+                    };
+
+                    auto updateSuggestions = [&](const std::string& prefix) {
+                        activePrefix = prefix;
+                        if (!activePrefix.empty() && activePrefix.size() >= 2) {
+                            activeSuggestions = buildCompletionList(completionPool, activePrefix);
+                        } else {
+                            activeSuggestions.clear();
+                        }
+                    };
+
+                    bool poolRebuiltBeforeRender = rebuildCompletionPool();
+                    std::string prefixBeforeRender = extractPrefixAtCursor();
+                    if (poolRebuiltBeforeRender || prefixBeforeRender != activePrefix) {
+                        updateSuggestions(prefixBeforeRender);
                     }
 
                     bool tabPressed = ImGui::IsKeyPressed(ImGuiKey_Tab);
@@ -668,18 +728,13 @@ void Engine::renderScriptingWindow() {
                     if (newHash != symbolsHash) {
                         symbolsHash = newHash;
                         symbols = buildSymbolList(scriptEditorState.buffer);
+                        completionPoolDirty = true;
                     }
 
-                    TextEditor::Coordinates cursorAfter = scriptTextEditor.GetCursorPosition();
-                    activePrefix = scriptTextEditor.GetWordAtPublic(cursorAfter);
-                    if (activePrefix.empty() && cursorAfter.mColumn > 0) {
-                        TextEditor::Coordinates prev(cursorAfter.mLine, cursorAfter.mColumn - 1);
-                        activePrefix = scriptTextEditor.GetWordAtPublic(prev);
-                    }
-                    if (!activePrefix.empty() && activePrefix.size() >= 2) {
-                        activeSuggestions = buildCompletionList(completionPool, activePrefix);
-                    } else {
-                        activeSuggestions.clear();
+                    bool poolRebuiltAfterRender = rebuildCompletionPool();
+                    std::string prefixAfterRender = extractPrefixAtCursor();
+                    if (poolRebuiltAfterRender || prefixAfterRender != activePrefix) {
+                        updateSuggestions(prefixAfterRender);
                     }
                     bool canCompleteNow = !activeSuggestions.empty() && !ImGui::GetIO().KeyShift;
 

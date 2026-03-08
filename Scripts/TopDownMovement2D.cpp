@@ -2,6 +2,9 @@
 #include "SceneObject.h"
 #include "ThirdParty/imgui/imgui.h"
 #include <array>
+#include <cctype>
+#include <cstdio>
+#include <random>
 #include <string>
 #include <unordered_map>
 
@@ -26,6 +29,7 @@ enum class FacingDirection : int {
 struct ControllerState {
     FacingDirection facing = FacingDirection::Down;
     float animationTime = 0.0f;
+    int lastWalkFrame = -1;
     bool warnedMissingRb = false;
     bool warnedMissingSprite = false;
 };
@@ -39,6 +43,28 @@ std::array<std::array<int, 4>, 4> walkClips = {{
     {{ 0, 0, 0, 0 }}
 }};
 constexpr const char* kDirectionLabels[4] = { "Down", "Up", "Right", "Left" };
+constexpr std::array<const char*, 6> kDefaultStepSounds = {
+    "Resources/Sounds/Footstep_01.wav",
+    "Resources/Sounds/Footstep_02.wav",
+    "Resources/Sounds/Footstep_03.wav",
+    "Resources/Sounds/Footstep_04.wav",
+    "Resources/Sounds/Footstep_05.wav",
+    "Resources/Sounds/Footstep_06.wav"
+};
+std::array<std::string, 6> stepSounds = {
+    kDefaultStepSounds[0],
+    kDefaultStepSounds[1],
+    kDefaultStepSounds[2],
+    kDefaultStepSounds[3],
+    kDefaultStepSounds[4],
+    kDefaultStepSounds[5]
+};
+std::mt19937 rng(std::random_device{}());
+
+std::string loadStringSetting(ScriptContext& ctx, const std::string& key, const std::string& fallback) {
+    const std::string raw = ctx.GetSetting(key, "");
+    return raw.empty() ? fallback : raw;
+}
 
 int loadIntSetting(ScriptContext& ctx, const std::string& key, int fallback) {
     const std::string raw = ctx.GetSetting(key, "");
@@ -55,6 +81,61 @@ void saveIntSettingIfChanged(ScriptContext& ctx, const std::string& key, int val
     if (ctx.GetSetting(key, "") != desired) {
         ctx.SetSetting(key, desired);
     }
+}
+
+void saveStringSettingIfChanged(ScriptContext& ctx, const std::string& key, const std::string& value) {
+    if (ctx.GetSetting(key, "") != value) {
+        ctx.SetSetting(key, value);
+    }
+}
+
+bool isAudioPath(const std::string& path) {
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= path.size()) return false;
+
+    std::string ext = path.substr(dot + 1);
+    for (char& c : ext) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return ext == "wav" || ext == "mp3" || ext == "ogg" || ext == "flac" || ext == "aac" || ext == "m4a";
+}
+
+bool drawStepSoundSlot(ScriptContext& ctx, int slotIndex, std::string& path) {
+    bool changed = false;
+    ImGui::PushID(slotIndex);
+
+    char buffer[512] = {};
+    std::snprintf(buffer, sizeof(buffer), "%s", path.c_str());
+    ImGui::SetNextItemWidth(-84.0f);
+    if (ImGui::InputText("##StepSoundPath", buffer, sizeof(buffer))) {
+        path = buffer;
+        changed = true;
+    }
+
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+            if (payload->Data && payload->DataSize > 0) {
+                const char* droppedPath = static_cast<const char*>(payload->Data);
+                if (droppedPath && isAudioPath(droppedPath)) {
+                    path = droppedPath;
+                    changed = true;
+                } else {
+                    ctx.AddConsoleMessage("TopDownMovement2D: dropped file is not a supported audio format.",
+                                          ConsoleMessageType::Warning);
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        path.clear();
+        changed = true;
+    }
+
+    ImGui::PopID();
+    return changed;
 }
 
 void bindSettings(ScriptContext& ctx) {
@@ -75,6 +156,10 @@ void bindSettings(ScriptContext& ctx) {
                                                    "walk" + std::to_string(dir) + "_" + std::to_string(frame),
                                                    walkClips[dir][frame]);
         }
+    }
+
+    for (int i = 0; i < 6; ++i) {
+        stepSounds[i] = loadStringSetting(ctx, "stepSound" + std::to_string(i), kDefaultStepSounds[i]);
     }
 }
 
@@ -107,6 +192,23 @@ int selectWalkClip(const ScriptContext& ctx, FacingDirection dir, int frameIndex
     return isValidClip(ctx, candidate) ? candidate : -1;
 }
 
+void playRandomFootstep(ScriptContext& ctx) {
+    if (!ctx.HasAudioSource()) return;
+
+    std::array<int, 6> validIndices{};
+    int count = 0;
+    for (int i = 0; i < 6; ++i) {
+        if (!stepSounds[i].empty()) {
+            validIndices[count++] = i;
+        }
+    }
+    if (count <= 0) return;
+
+    std::uniform_int_distribution<int> dist(0, count - 1);
+    const std::string& clipPath = stepSounds[validIndices[dist(rng)]];
+    ctx.PlayAudioOneShot(clipPath);
+}
+
 void applySpriteAnimation(ScriptContext& ctx, ControllerState& state, const glm::vec2& motion, float dt, bool isRunning) {
     if (!useSpriteAnimation || !ctx.object) return;
 
@@ -131,10 +233,28 @@ void applySpriteAnimation(ScriptContext& ctx, ControllerState& state, const glm:
         if (clip >= 0) {
             ctx.SetSpriteClipIndex(clip);
         }
+
+        // Human-readable walk frames 1 and 3 map to zero-based indices 0 and 2.
+        // Treat idle->move as coming from frame 4 (index 3) so the first step (frame 1) is not skipped.
+        int probe = (state.lastWalkFrame >= 0) ? state.lastWalkFrame : 3;
+        int stepHits = 0;
+        while (probe != walkFrame) {
+            probe = (probe + 1) % 4;
+            if (probe == 0 || probe == 2) {
+                ++stepHits;
+            }
+        }
+
+        // At low FPS, we may cross multiple step frames in a single tick.
+        for (int i = 0; i < stepHits; ++i) {
+            playRandomFootstep(ctx);
+        }
+        state.lastWalkFrame = walkFrame;
         return;
     }
 
     state.animationTime = 0.0f;
+    state.lastWalkFrame = -1;
     const int idleClip = idleClips[facingIndex(state.facing)];
     if (isValidClip(ctx, idleClip)) {
         ctx.SetSpriteClipIndex(idleClip);
@@ -188,6 +308,7 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
     ImGui::Checkbox("Use Sprite Animation", &useSpriteAnimation);
 
     bool clipSettingsChanged = false;
+    bool stepSoundsChanged = false;
     if (useSpriteAnimation) {
         const int clipCount = ctx.GetSpriteClipCount();
         ImGui::Separator();
@@ -212,6 +333,17 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
         }
     }
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("Footstep Sounds");
+    ImGui::TextDisabled("Drop audio files from File Browser or type paths. Randomized on step frames 1 and 3.");
+    if (!ctx.object || !ctx.object->hasAudioSource) {
+        ImGui::TextDisabled("Add an Audio Source component to this object for footsteps.");
+    }
+    for (int i = 0; i < 6; ++i) {
+        ImGui::Text("Sound %d", i + 1);
+        stepSoundsChanged |= drawStepSoundSlot(ctx, i, stepSounds[i]);
+    }
+
     ctx.SaveAutoSettings();
     if (clipSettingsChanged) {
         for (int dir = 0; dir < 4; ++dir) {
@@ -221,6 +353,11 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
                                         "walk" + std::to_string(dir) + "_" + std::to_string(frame),
                                         walkClips[dir][frame]);
             }
+        }
+    }
+    if (stepSoundsChanged) {
+        for (int i = 0; i < 6; ++i) {
+            saveStringSettingIfChanged(ctx, "stepSound" + std::to_string(i), stepSounds[i]);
         }
     }
 }
@@ -278,5 +415,6 @@ void TickUpdate(ScriptContext& ctx, float dt) {
         ctx.SetPosition2D(pos);
     }
 
-    applySpriteAnimation(ctx, state, actualVelocity, dt, isRunning);
+    const glm::vec2 animationMotion = (glm::length(input) > 1e-3f) ? targetVel : actualVelocity;
+    applySpriteAnimation(ctx, state, animationMotion, dt, isRunning);
 }

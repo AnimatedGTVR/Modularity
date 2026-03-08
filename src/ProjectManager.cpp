@@ -86,6 +86,9 @@ bool Project::create() {
 
         std::ofstream packageManifest(projectPath / "packages.modu");
         packageManifest << "# Modularity package manifest\n";
+        packageManifest << "# package=<id>\n";
+        packageManifest << "# git=<id>|<name>|<url>|<path>|<includeDirs>|<defines>|<linuxLibs>|<windowsLibs>|<description>\n";
+        packageManifest << "# modupak=<id>|<name>|<bundlePath>|<path>|<includeDirs>|<defines>|<linuxLibs>|<windowsLibs>|<description>\n";
         packageManifest.close();
 
         currentSceneName = "Main";
@@ -566,14 +569,25 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             }
             file << "hasAnimation=" << (obj.hasAnimation ? 1 : 0) << "\n";
             if (obj.hasAnimation) {
-                file << "animEnabled=" << (obj.animation.enabled ? 1 : 0) << "\n";
-                file << "animClipLength=" << obj.animation.clipLength << "\n";
-                file << "animPlaySpeed=" << obj.animation.playSpeed << "\n";
-                file << "animLoop=" << (obj.animation.loop ? 1 : 0) << "\n";
-                file << "animApplyOnScrub=" << (obj.animation.applyOnScrub ? 1 : 0) << "\n";
-                file << "animKeyCount=" << obj.animation.keyframes.size() << "\n";
-                for (size_t ki = 0; ki < obj.animation.keyframes.size(); ++ki) {
-                    const auto& key = obj.animation.keyframes[ki];
+                AnimationComponent animation = obj.animation;
+                NormalizeAnimationClipSlots(animation);
+                file << "animEnabled=" << (animation.enabled ? 1 : 0) << "\n";
+                file << "animClipAsset=" << animation.clipAssetPath << "\n";
+                file << "animClipCount=" << animation.clips.size() << "\n";
+                file << "animActiveClipIndex=" << animation.activeClipIndex << "\n";
+                for (size_t ci = 0; ci < animation.clips.size(); ++ci) {
+                    const auto& clip = animation.clips[ci];
+                    file << "animClip" << ci << "_name=" << clip.name << "\n";
+                    file << "animClip" << ci << "_asset=" << clip.assetPath << "\n";
+                }
+                file << "animClipLength=" << animation.clipLength << "\n";
+                file << "animPlaySpeed=" << animation.playSpeed << "\n";
+                file << "animLoop=" << (animation.loop ? 1 : 0) << "\n";
+                file << "animPlayOnAwake=" << (animation.playOnAwake ? 1 : 0) << "\n";
+                file << "animApplyOnScrub=" << (animation.applyOnScrub ? 1 : 0) << "\n";
+                file << "animKeyCount=" << animation.keyframes.size() << "\n";
+                for (size_t ki = 0; ki < animation.keyframes.size(); ++ki) {
+                    const auto& key = animation.keyframes[ki];
                     file << "animKey" << ki << "_time=" << key.time << "\n";
                     file << "animKey" << ki << "_pos=" << key.position.x << "," << key.position.y << "," << key.position.z << "\n";
                     file << "animKey" << ki << "_rot=" << key.rotation.x << "," << key.rotation.y << "," << key.rotation.z << "\n";
@@ -583,16 +597,16 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                     file << "animKey" << ki << "_in=" << key.bezierIn.x << "," << key.bezierIn.y << "\n";
                     file << "animKey" << ki << "_out=" << key.bezierOut.x << "," << key.bezierOut.y << "\n";
                 }
-                file << "animEventCount=" << obj.animation.events.size() << "\n";
-                for (size_t ei = 0; ei < obj.animation.events.size(); ++ei) {
-                    const auto& evt = obj.animation.events[ei];
+                file << "animEventCount=" << animation.events.size() << "\n";
+                for (size_t ei = 0; ei < animation.events.size(); ++ei) {
+                    const auto& evt = animation.events[ei];
                     file << "animEvent" << ei << "_time=" << evt.time << "\n";
                     file << "animEvent" << ei << "_id=" << evt.eventId << "\n";
                     file << "animEvent" << ei << "_payload=" << evt.payload << "\n";
                 }
-                file << "animTrackCount=" << obj.animation.tracks.size() << "\n";
-                for (size_t ti = 0; ti < obj.animation.tracks.size(); ++ti) {
-                    const auto& track = obj.animation.tracks[ti];
+                file << "animTrackCount=" << animation.tracks.size() << "\n";
+                for (size_t ti = 0; ti < animation.tracks.size(); ++ti) {
+                    const auto& track = animation.tracks[ti];
                     file << "animTrack" << ti << "_enabled=" << (track.enabled ? 1 : 0) << "\n";
                     file << "animTrack" << ti << "_path=" << track.path << "\n";
                     file << "animTrack" << ti << "_label=" << track.label << "\n";
@@ -676,6 +690,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiPosition=" << obj.ui.position.x << "," << obj.ui.position.y << "\n";
             file << "uiRotation=" << obj.ui.rotation << "\n";
             file << "uiSize=" << obj.ui.size.x << "," << obj.ui.size.y << "\n";
+            file << "uiMaskChildren=" << (obj.ui.maskChildren ? 1 : 0) << "\n";
             file << "uiSliderValue=" << obj.ui.sliderValue << "\n";
             file << "uiSliderMin=" << obj.ui.sliderMin << "\n";
             file << "uiSliderMax=" << obj.ui.sliderMax << "\n";
@@ -686,6 +701,12 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiButtonStyle=" << static_cast<int>(obj.ui.buttonStyle) << "\n";
             file << "uiStylePreset=" << obj.ui.stylePreset << "\n";
             file << "uiTextScale=" << obj.ui.textScale << "\n";
+            file << "uiTextWrap=" << (obj.ui.textAutoWrap ? 1 : 0) << "\n";
+            file << "uiTextHAlign=" << static_cast<int>(obj.ui.textHAlign) << "\n";
+            file << "uiTextVAlign=" << static_cast<int>(obj.ui.textVAlign) << "\n";
+            file << "uiTextEffectFlags=" << obj.ui.textEffectFlags << "\n";
+            file << "uiTextEffectSpeed=" << obj.ui.textEffectSpeed << "\n";
+            file << "uiTextEffectIntensity=" << obj.ui.textEffectIntensity << "\n";
             file << "uiRenderIn3D=" << (obj.ui.renderIn3D ? 1 : 0) << "\n";
             file << "uiRenderTargetSize=" << obj.ui.renderTargetSize.x << "," << obj.ui.renderTargetSize.y << "\n";
             file << "uiSpriteSheetEnabled=" << (obj.ui.spriteSheetEnabled ? 1 : 0) << "\n";
@@ -695,6 +716,14 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiSpriteSheetLoop=" << (obj.ui.spriteSheetLoop ? 1 : 0) << "\n";
             file << "uiSpriteCustomFramesEnabled=" << (obj.ui.spriteCustomFramesEnabled ? 1 : 0) << "\n";
             file << "uiSpriteSourceSize=" << obj.ui.spriteSourceWidth << "," << obj.ui.spriteSourceHeight << "\n";
+            file << "uiNineSliceEnabled=" << (obj.ui.nineSliceEnabled ? 1 : 0) << "\n";
+            file << "uiNineSliceBorder="
+                 << obj.ui.nineSliceBorder.x << ","
+                 << obj.ui.nineSliceBorder.y << ","
+                 << obj.ui.nineSliceBorder.z << ","
+                 << obj.ui.nineSliceBorder.w << "\n";
+            file << "uiNineSliceTileEdges=" << (obj.ui.nineSliceTileEdges ? 1 : 0) << "\n";
+            file << "uiNineSliceTileCenter=" << (obj.ui.nineSliceTileCenter ? 1 : 0) << "\n";
             if (!obj.ui.spriteCustomFrames.empty()) {
                 file << "uiSpriteCustomFrames=";
                 for (size_t i = 0; i < obj.ui.spriteCustomFrames.size(); ++i) {
@@ -1121,9 +1150,18 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"aiAgentDebugDrawPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.debugDrawPath = std::stoi(value) != 0; }},
         {"hasAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = std::stoi(value) != 0; }},
         {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.animation.enabled = std::stoi(value) != 0; }},
+        {"animClipAsset", +[](SceneObject& obj, const std::string& value) { obj.animation.clipAssetPath = value; }},
+        {"animClipCount", +[](SceneObject& obj, const std::string& value) {
+             int count = std::stoi(value);
+             obj.animation.clips.resize(std::max(0, count));
+         }},
+        {"animActiveClipIndex", +[](SceneObject& obj, const std::string& value) {
+             obj.animation.activeClipIndex = std::stoi(value);
+         }},
         {"animClipLength", +[](SceneObject& obj, const std::string& value) { obj.animation.clipLength = std::stof(value); }},
         {"animPlaySpeed", +[](SceneObject& obj, const std::string& value) { obj.animation.playSpeed = std::stof(value); }},
         {"animLoop", +[](SceneObject& obj, const std::string& value) { obj.animation.loop = std::stoi(value) != 0; }},
+        {"animPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.animation.playOnAwake = std::stoi(value) != 0; }},
         {"animApplyOnScrub", +[](SceneObject& obj, const std::string& value) { obj.animation.applyOnScrub = std::stoi(value) != 0; }},
         {"animKeyCount", +[](SceneObject& obj, const std::string& value) {
              int count = std::stoi(value);
@@ -1203,6 +1241,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiPosition", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.position); }},
         {"uiRotation", +[](SceneObject& obj, const std::string& value) { obj.ui.rotation = std::stof(value); }},
         {"uiSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.size); }},
+        {"uiMaskChildren", +[](SceneObject& obj, const std::string& value) { obj.ui.maskChildren = (std::stoi(value) != 0); }},
         {"uiSliderValue", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderValue = std::stof(value); }},
         {"uiSliderMin", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderMin = std::stof(value); }},
         {"uiSliderMax", +[](SceneObject& obj, const std::string& value) { obj.ui.sliderMax = std::stof(value); }},
@@ -1213,6 +1252,16 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiButtonStyle", +[](SceneObject& obj, const std::string& value) { obj.ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value)); }},
         {"uiStylePreset", +[](SceneObject& obj, const std::string& value) { obj.ui.stylePreset = value; }},
         {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
+        {"uiTextWrap", +[](SceneObject& obj, const std::string& value) { obj.ui.textAutoWrap = (std::stoi(value) != 0); }},
+        {"uiTextHAlign", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.textHAlign = static_cast<UITextHAlign>(std::clamp(std::stoi(value), 0, 2));
+         }},
+        {"uiTextVAlign", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.textVAlign = static_cast<UITextVAlign>(std::clamp(std::stoi(value), 0, 2));
+         }},
+        {"uiTextEffectFlags", +[](SceneObject& obj, const std::string& value) { obj.ui.textEffectFlags = std::stoi(value); }},
+        {"uiTextEffectSpeed", +[](SceneObject& obj, const std::string& value) { obj.ui.textEffectSpeed = std::max(0.01f, std::stof(value)); }},
+        {"uiTextEffectIntensity", +[](SceneObject& obj, const std::string& value) { obj.ui.textEffectIntensity = std::max(0.0f, std::stof(value)); }},
         {"uiRenderIn3D", +[](SceneObject& obj, const std::string& value) { obj.ui.renderIn3D = (std::stoi(value) != 0); }},
         {"uiRenderTargetSize", +[](SceneObject& obj, const std::string& value) { ParseIVec2(value, obj.ui.renderTargetSize); }},
         {"uiSpriteSheetEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetEnabled = (std::stoi(value) != 0); }},
@@ -1231,6 +1280,22 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
              ParseIVec2(value, size);
              obj.ui.spriteSourceWidth = std::max(0, size.x);
              obj.ui.spriteSourceHeight = std::max(0, size.y);
+         }},
+        {"uiNineSliceEnabled", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.nineSliceEnabled = (std::stoi(value) != 0);
+         }},
+        {"uiNineSliceBorder", +[](SceneObject& obj, const std::string& value) {
+             ParseVec4(value, obj.ui.nineSliceBorder);
+             obj.ui.nineSliceBorder.x = std::max(0.0f, obj.ui.nineSliceBorder.x);
+             obj.ui.nineSliceBorder.y = std::max(0.0f, obj.ui.nineSliceBorder.y);
+             obj.ui.nineSliceBorder.z = std::max(0.0f, obj.ui.nineSliceBorder.z);
+             obj.ui.nineSliceBorder.w = std::max(0.0f, obj.ui.nineSliceBorder.w);
+         }},
+        {"uiNineSliceTileEdges", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.nineSliceTileEdges = (std::stoi(value) != 0);
+         }},
+        {"uiNineSliceTileCenter", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.nineSliceTileCenter = (std::stoi(value) != 0);
          }},
         {"uiSpriteCustomFrames", +[](SceneObject& obj, const std::string& value) {
              obj.ui.spriteCustomFrames.clear();
@@ -1464,6 +1529,20 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                 auto handlerIt = handlers.find(key);
                 if (handlerIt != handlers.end()) {
                     handlerIt->second(*currentObj, value);
+                } else if (key.rfind("animClip", 0) == 0) {
+                    size_t underscore = key.find('_');
+                    if (underscore != std::string::npos && underscore > 8) {
+                        int clipIdx = std::stoi(key.substr(8, underscore - 8));
+                        if (clipIdx >= 0 && clipIdx < static_cast<int>(currentObj->animation.clips.size())) {
+                            std::string sub = key.substr(underscore + 1);
+                            auto& clip = currentObj->animation.clips[clipIdx];
+                            if (sub == "name") {
+                                clip.name = value;
+                            } else if (sub == "asset") {
+                                clip.assetPath = value;
+                            }
+                        }
+                    }
                 } else if (key.rfind("animKey", 0) == 0) {
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 7) {
@@ -1619,6 +1698,9 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
 
         file.close();
         for (auto& obj : objects) {
+            if (obj.hasAnimation) {
+                NormalizeAnimationClipSlots(obj.animation);
+            }
             obj.type = GetLegacyTypeFromComponents(obj);
         }
         outVersion = sceneVersion;

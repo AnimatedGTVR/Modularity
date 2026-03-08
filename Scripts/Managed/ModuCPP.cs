@@ -76,6 +76,18 @@ namespace ModuCPP {
         public IntPtr ImGuiBeginCombo;
         public IntPtr ImGuiEndCombo;
         public IntPtr ImGuiSelectable;
+        // Version 5+ additions.
+        public IntPtr HasAnimation;
+        public IntPtr PlayAnimation;
+        public IntPtr StopAnimation;
+        public IntPtr PauseAnimation;
+        public IntPtr ReverseAnimation;
+        public IntPtr SetAnimationTime;
+        public IntPtr GetAnimationTime;
+        public IntPtr IsAnimationPlaying;
+        public IntPtr SetAnimationLoop;
+        public IntPtr SetAnimationPlaySpeed;
+        public IntPtr SetAnimationPlayOnAwake;
     }
 
     internal unsafe static class Native {
@@ -116,6 +128,17 @@ namespace ModuCPP {
         public static ImGuiEndComboFn ImGuiEndCombo;
         public static ImGuiSelectableFn ImGuiSelectable;
         public static ImGuiAcceptSceneObjectDropFn ImGuiAcceptSceneObjectDrop;
+        public static HasAnimationFn HasAnimation;
+        public static PlayAnimationFn PlayAnimation;
+        public static StopAnimationFn StopAnimation;
+        public static PauseAnimationFn PauseAnimation;
+        public static ReverseAnimationFn ReverseAnimation;
+        public static SetAnimationTimeFn SetAnimationTime;
+        public static GetAnimationTimeFn GetAnimationTime;
+        public static IsAnimationPlayingFn IsAnimationPlaying;
+        public static SetAnimationLoopFn SetAnimationLoop;
+        public static SetAnimationPlaySpeedFn SetAnimationPlaySpeed;
+        public static SetAnimationPlayOnAwakeFn SetAnimationPlayOnAwake;
 
         public static void BindDelegates() {
             GetObjectId = Marshal.GetDelegateForFunctionPointer<GetObjectIdFn>(Api.GetObjectId);
@@ -175,6 +198,61 @@ namespace ModuCPP {
                 ImGuiSelectable = Marshal.GetDelegateForFunctionPointer<ImGuiSelectableFn>(Api.ImGuiSelectable);
             } else {
                 ImGuiSelectable = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.HasAnimation != IntPtr.Zero) {
+                HasAnimation = Marshal.GetDelegateForFunctionPointer<HasAnimationFn>(Api.HasAnimation);
+            } else {
+                HasAnimation = _ => 0;
+            }
+            if (Api.Version >= 5 && Api.PlayAnimation != IntPtr.Zero) {
+                PlayAnimation = Marshal.GetDelegateForFunctionPointer<PlayAnimationFn>(Api.PlayAnimation);
+            } else {
+                PlayAnimation = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.StopAnimation != IntPtr.Zero) {
+                StopAnimation = Marshal.GetDelegateForFunctionPointer<StopAnimationFn>(Api.StopAnimation);
+            } else {
+                StopAnimation = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.PauseAnimation != IntPtr.Zero) {
+                PauseAnimation = Marshal.GetDelegateForFunctionPointer<PauseAnimationFn>(Api.PauseAnimation);
+            } else {
+                PauseAnimation = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.ReverseAnimation != IntPtr.Zero) {
+                ReverseAnimation = Marshal.GetDelegateForFunctionPointer<ReverseAnimationFn>(Api.ReverseAnimation);
+            } else {
+                ReverseAnimation = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.SetAnimationTime != IntPtr.Zero) {
+                SetAnimationTime = Marshal.GetDelegateForFunctionPointer<SetAnimationTimeFn>(Api.SetAnimationTime);
+            } else {
+                SetAnimationTime = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.GetAnimationTime != IntPtr.Zero) {
+                GetAnimationTime = Marshal.GetDelegateForFunctionPointer<GetAnimationTimeFn>(Api.GetAnimationTime);
+            } else {
+                GetAnimationTime = _ => 0f;
+            }
+            if (Api.Version >= 5 && Api.IsAnimationPlaying != IntPtr.Zero) {
+                IsAnimationPlaying = Marshal.GetDelegateForFunctionPointer<IsAnimationPlayingFn>(Api.IsAnimationPlaying);
+            } else {
+                IsAnimationPlaying = _ => 0;
+            }
+            if (Api.Version >= 5 && Api.SetAnimationLoop != IntPtr.Zero) {
+                SetAnimationLoop = Marshal.GetDelegateForFunctionPointer<SetAnimationLoopFn>(Api.SetAnimationLoop);
+            } else {
+                SetAnimationLoop = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.SetAnimationPlaySpeed != IntPtr.Zero) {
+                SetAnimationPlaySpeed = Marshal.GetDelegateForFunctionPointer<SetAnimationPlaySpeedFn>(Api.SetAnimationPlaySpeed);
+            } else {
+                SetAnimationPlaySpeed = (_, _) => 0;
+            }
+            if (Api.Version >= 5 && Api.SetAnimationPlayOnAwake != IntPtr.Zero) {
+                SetAnimationPlayOnAwake = Marshal.GetDelegateForFunctionPointer<SetAnimationPlayOnAwakeFn>(Api.SetAnimationPlayOnAwake);
+            } else {
+                SetAnimationPlayOnAwake = (_, _) => 0;
             }
         }
 
@@ -250,6 +328,28 @@ namespace ModuCPP {
         public unsafe delegate int ImGuiSelectableFn(byte* label, int selected);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int ImGuiAcceptSceneObjectDropFn(int* outId);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int HasAnimationFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int PlayAnimationFn(IntPtr ctx, int restart);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int StopAnimationFn(IntPtr ctx, int resetTime);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int PauseAnimationFn(IntPtr ctx, int pause);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int ReverseAnimationFn(IntPtr ctx, int restartIfStopped);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAnimationTimeFn(IntPtr ctx, float timeSeconds);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate float GetAnimationTimeFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsAnimationPlayingFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAnimationLoopFn(IntPtr ctx, int loop);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAnimationPlaySpeedFn(IntPtr ctx, float speed);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAnimationPlayOnAwakeFn(IntPtr ctx, int playOnAwake);
     }
 
     public struct ModuObject {
@@ -373,6 +473,48 @@ namespace ModuCPP {
 
         public void AddRigidbodyImpulse(Vec3 impulse) {
             Native.AddRigidbodyImpulse(handle, impulse.X, impulse.Y, impulse.Z);
+        }
+
+        public bool HasAnimation => Native.HasAnimation(handle) != 0;
+
+        public bool PlayAnimation(bool restart = true) {
+            return Native.PlayAnimation(handle, restart ? 1 : 0) != 0;
+        }
+
+        public bool StopAnimation(bool resetTime = true) {
+            return Native.StopAnimation(handle, resetTime ? 1 : 0) != 0;
+        }
+
+        public bool PauseAnimation(bool pause = true) {
+            return Native.PauseAnimation(handle, pause ? 1 : 0) != 0;
+        }
+
+        public bool ReverseAnimation(bool restartIfStopped = true) {
+            return Native.ReverseAnimation(handle, restartIfStopped ? 1 : 0) != 0;
+        }
+
+        public bool SetAnimationTime(float timeSeconds) {
+            return Native.SetAnimationTime(handle, timeSeconds) != 0;
+        }
+
+        public float GetAnimationTime() {
+            return Native.GetAnimationTime(handle);
+        }
+
+        public bool IsAnimationPlaying() {
+            return Native.IsAnimationPlaying(handle) != 0;
+        }
+
+        public bool SetAnimationLoop(bool loop) {
+            return Native.SetAnimationLoop(handle, loop ? 1 : 0) != 0;
+        }
+
+        public bool SetAnimationPlaySpeed(float speed) {
+            return Native.SetAnimationPlaySpeed(handle, speed) != 0;
+        }
+
+        public bool SetAnimationPlayOnAwake(bool playOnAwake) {
+            return Native.SetAnimationPlayOnAwake(handle, playOnAwake ? 1 : 0) != 0;
         }
 
         public float GetSettingFloat(string key, float fallback = 0f) {

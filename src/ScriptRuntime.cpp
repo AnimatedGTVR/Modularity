@@ -168,7 +168,7 @@ SceneObject* ScriptContext::ResolveObjectRef(const std::string& ref) {
 }
 
 bool ScriptContext::IsObjectEnabled() const {
-    return object ? object->enabled : false;
+    return object ? IsObjectEnabledInHierarchy(*object) : false;
 }
 
 void ScriptContext::SetObjectEnabled(bool enabled) {
@@ -915,6 +915,66 @@ bool ScriptContext::SetAudioClip(const std::string& path) {
     object->audioSource.clipPath = path;
     engine->markProjectDirty();
     return engine->setAudioClipFromScript(object->id, path);
+}
+
+bool ScriptContext::PlayAudioOneShot(const std::string& clipPath, float volumeScale) {
+    if (!engine || !object || !object->hasAudioSource) return false;
+    return engine->playAudioOneShotFromScript(object->id, clipPath, std::max(0.0f, volumeScale));
+}
+
+bool ScriptContext::HasAnimation() const {
+    if (!engine || !object) return false;
+    return engine->hasAnimationFromScript(object->id);
+}
+
+bool ScriptContext::PlayAnimation(bool restart) {
+    if (!engine || !object) return false;
+    return engine->playAnimationFromScript(object->id, restart);
+}
+
+bool ScriptContext::StopAnimation(bool resetTime) {
+    if (!engine || !object) return false;
+    return engine->stopAnimationFromScript(object->id, resetTime);
+}
+
+bool ScriptContext::PauseAnimation(bool pause) {
+    if (!engine || !object) return false;
+    return engine->pauseAnimationFromScript(object->id, pause);
+}
+
+bool ScriptContext::ReverseAnimation(bool restartIfStopped) {
+    if (!engine || !object) return false;
+    return engine->reverseAnimationFromScript(object->id, restartIfStopped);
+}
+
+bool ScriptContext::SetAnimationTime(float timeSeconds) {
+    if (!engine || !object) return false;
+    return engine->setAnimationTimeFromScript(object->id, timeSeconds);
+}
+
+float ScriptContext::GetAnimationTime() const {
+    if (!engine || !object) return 0.0f;
+    return engine->getAnimationTimeFromScript(object->id);
+}
+
+bool ScriptContext::IsAnimationPlaying() const {
+    if (!engine || !object) return false;
+    return engine->isAnimationPlayingFromScript(object->id);
+}
+
+bool ScriptContext::SetAnimationLoop(bool loop) {
+    if (!engine || !object) return false;
+    return engine->setAnimationLoopFromScript(object->id, loop);
+}
+
+bool ScriptContext::SetAnimationPlaySpeed(float speed) {
+    if (!engine || !object) return false;
+    return engine->setAnimationPlaySpeedFromScript(object->id, speed);
+}
+
+bool ScriptContext::SetAnimationPlayOnAwake(bool playOnAwake) {
+    if (!engine || !object) return false;
+    return engine->setAnimationPlayOnAwakeFromScript(object->id, playOnAwake);
 }
 
 std::string ScriptContext::GetSetting(const std::string& key, const std::string& fallback) const {

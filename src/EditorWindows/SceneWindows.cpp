@@ -11,6 +11,7 @@
 #include <functional>
 #include <sstream>
 #include <fstream>
+#include <iomanip>
 #include <regex>
 #include <unordered_set>
 #include <unordered_map>
@@ -730,10 +731,40 @@ void Engine::renderHierarchyPanel() {
         }
     }
 
+    hierarchyVisibleOrder.clear();
+    hierarchyVisibleOrder.reserve(sceneObjects.size());
+    std::function<void(const SceneObject&)> gatherVisibleOrder = [&](const SceneObject& current) {
+        std::string currentLower = current.name;
+        std::transform(currentLower.begin(), currentLower.end(), currentLower.begin(), ::tolower);
+        if (!filter.empty() && currentLower.find(filter) == std::string::npos) {
+            return;
+        }
+
+        hierarchyVisibleOrder.push_back(current.id);
+        for (int childId : current.childIds) {
+            auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+                [childId](const SceneObject& o) { return o.id == childId; });
+            if (it != sceneObjects.end()) {
+                gatherVisibleOrder(*it);
+            }
+        }
+    };
+    for (size_t index : rootIndices) {
+        gatherVisibleOrder(sceneObjects[index]);
+    }
+
     std::vector<bool> ancestorHasNext;
     for (size_t i = 0; i < rootIndices.size(); ++i) {
         bool isLastRoot = (i + 1 == rootIndices.size());
         renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0, animStep);
+    }
+
+    const bool hierarchyBackgroundLeftClicked =
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsAnyItemHovered();
+    if (hierarchyBackgroundLeftClicked) {
+        clearSelection();
     }
 
     if (ImGui::BeginPopupContextWindow("HierarchyBackground",
@@ -930,8 +961,54 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     }
 
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-        bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
-        setPrimarySelection(obj.id, additive);
+        const bool shift = ImGui::GetIO().KeyShift;
+        const bool ctrl = ImGui::GetIO().KeyCtrl;
+
+        if (shift && !hierarchyVisibleOrder.empty()) {
+            int anchorId = (hierarchyRangeAnchorId >= 0) ? hierarchyRangeAnchorId : selectedObjectId;
+            if (anchorId < 0) {
+                anchorId = obj.id;
+            }
+
+            auto findOrderIndex = [&](int id) -> int {
+                auto it = std::find(hierarchyVisibleOrder.begin(), hierarchyVisibleOrder.end(), id);
+                if (it == hierarchyVisibleOrder.end()) return -1;
+                return static_cast<int>(std::distance(hierarchyVisibleOrder.begin(), it));
+            };
+
+            const int anchorIndex = findOrderIndex(anchorId);
+            const int currentIndex = findOrderIndex(obj.id);
+            if (anchorIndex >= 0 && currentIndex >= 0) {
+                if (!ctrl) {
+                    selectedObjectIds.clear();
+                }
+                int rangeStart = std::min(anchorIndex, currentIndex);
+                int rangeEnd = std::max(anchorIndex, currentIndex);
+                for (int i = rangeStart; i <= rangeEnd; ++i) {
+                    int rangeId = hierarchyVisibleOrder[static_cast<size_t>(i)];
+                    if (std::find(selectedObjectIds.begin(), selectedObjectIds.end(), rangeId) == selectedObjectIds.end()) {
+                        selectedObjectIds.push_back(rangeId);
+                    }
+                }
+                selectedObjectId = obj.id;
+            } else {
+                setPrimarySelection(obj.id, ctrl);
+            }
+        } else if (ctrl) {
+            auto selectedIt = std::find(selectedObjectIds.begin(), selectedObjectIds.end(), obj.id);
+            if (selectedIt == selectedObjectIds.end()) {
+                selectedObjectIds.push_back(obj.id);
+                selectedObjectId = obj.id;
+            } else {
+                selectedObjectIds.erase(selectedIt);
+                if (selectedObjectId == obj.id) {
+                    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+                }
+            }
+            hierarchyRangeAnchorId = obj.id;
+        } else {
+            setPrimarySelection(obj.id, false);
+        }
     }
 
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -962,7 +1039,43 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
             int draggedId = *(const int*)payload->Data;
             if (draggedId != obj.id) {
-                setParent(draggedId, obj.id);
+                auto nextSiblingId = [&]() -> int {
+                    if (obj.parentId != -1) {
+                        SceneObject* parent = findObjectById(obj.parentId);
+                        if (!parent) return -1;
+                        auto it = std::find(parent->childIds.begin(), parent->childIds.end(), obj.id);
+                        if (it == parent->childIds.end()) return -1;
+                        ++it;
+                        while (it != parent->childIds.end()) {
+                            if (*it != draggedId) return *it;
+                            ++it;
+                        }
+                        return -1;
+                    }
+
+                    bool found = false;
+                    for (const auto& candidate : sceneObjects) {
+                        if (candidate.parentId != -1) continue;
+                        if (candidate.id == draggedId) continue;
+                        if (found) return candidate.id;
+                        if (candidate.id == obj.id) found = true;
+                    }
+                    return -1;
+                };
+
+                float mouseY = ImGui::GetMousePos().y;
+                float upperThreshold = itemMin.y + lineHeight * 0.25f;
+                float lowerThreshold = itemMax.y - lineHeight * 0.25f;
+                if (mouseY <= upperThreshold) {
+                    // Reorder before this object at current depth.
+                    setParent(draggedId, obj.parentId, obj.id);
+                } else if (mouseY >= lowerThreshold) {
+                    // Reorder after this object at current depth.
+                    setParent(draggedId, obj.parentId, nextSiblingId());
+                } else {
+                    // Default center drop: parent under this object.
+                    setParent(draggedId, obj.id, -1);
+                }
             }
         }
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
@@ -1472,6 +1585,7 @@ void Engine::renderInspectorPanel() {
         std::vector<glm::ivec4> clips;
         std::vector<std::string> clipNames;
         std::vector<glm::vec2> clipScales;
+        // I swear, trying to get this working with the spritesheet management system took far too long lmfao, at least I got it down.
         if (fs::exists(sidecarPath)) {
             if (std::optional<SpritesheetDocument> sidecar = LoadSpriteSheetDocument(sidecarPath)) {
                 clips = std::move(sidecar->rects);
@@ -1497,6 +1611,7 @@ void Engine::renderInspectorPanel() {
         }
 
         if (target.ui.spriteCustomFramesEnabled) {
+            // GOD damn, this sprite used to hate scaling properly to the object. BRUH.
             target.ui.size.x = static_cast<float>(std::max(1, target.ui.spriteCustomFrames[0].z));
             target.ui.size.y = static_cast<float>(std::max(1, target.ui.spriteCustomFrames[0].w));
         }
@@ -1562,6 +1677,8 @@ void Engine::renderInspectorPanel() {
                 glm::vec4 inspectedBaseColor(inspectedMaterial.color, inspectedMaterial.alpha);
                 if (ImGui::ColorEdit4("Base Color", &inspectedBaseColor.x)) {
                     inspectedMaterial.color = glm::vec3(inspectedBaseColor);
+                    // Can this alpha properly work??
+                    // Okay, never mind, that worked just fine; Modularity just didn't pass alpha to the ImGui renderer for some odd reason.
                     inspectedMaterial.alpha = std::clamp(inspectedBaseColor.w, 0.0f, 1.0f);
                     matChanged = true;
                 }
@@ -1882,10 +1999,153 @@ void Engine::renderInspectorPanel() {
         return target.hasUI && target.ui.type != UIElementType::None;
     };
 
-    if (selectedObjectIds.size() > 1) {
-        ImGui::Text("Multiple objects selected: %zu", selectedObjectIds.size());
+    std::vector<SceneObject*> selectedObjects;
+    selectedObjects.reserve(selectedObjectIds.size() + 1);
+    std::unordered_set<int> seenSelectedIds;
+    for (int id : selectedObjectIds) {
+        if (id < 0 || seenSelectedIds.count(id) > 0) continue;
+        if (SceneObject* selectedObj = findObjectById(id)) {
+            selectedObjects.push_back(selectedObj);
+            seenSelectedIds.insert(id);
+        }
+    }
+    if (seenSelectedIds.count(obj.id) == 0) {
+        selectedObjects.push_back(&obj);
+    }
+
+    const bool multiSelection = selectedObjects.size() > 1;
+
+    auto allSelected = [&](auto&& predicate) {
+        if (selectedObjects.empty()) return false;
+        for (const SceneObject* selectedObj : selectedObjects) {
+            if (!selectedObj || !predicate(*selectedObj)) return false;
+        }
+        return true;
+    };
+    auto hasMixedSelected = [&](auto&& predicate) {
+        bool any = false;
+        bool all = true;
+        for (const SceneObject* selectedObj : selectedObjects) {
+            if (!selectedObj) continue;
+            const bool value = predicate(*selectedObj);
+            any = any || value;
+            all = all && value;
+        }
+        return any && !all;
+    };
+
+    const bool sharedUIObject = allSelected([&](const SceneObject& candidate) { return isUIObject(candidate); });
+    const bool sharedCollider = allSelected([](const SceneObject& candidate) { return candidate.hasCollider; });
+    const bool sharedPlayerController = allSelected([](const SceneObject& candidate) { return candidate.hasPlayerController; });
+    const bool sharedRigidbody = allSelected([](const SceneObject& candidate) { return candidate.hasRigidbody; });
+    const bool sharedRigidbody2D = allSelected([](const SceneObject& candidate) { return candidate.hasRigidbody2D; });
+    const bool sharedCollider2D = allSelected([](const SceneObject& candidate) { return candidate.hasCollider2D; });
+    const bool sharedParallax2D = allSelected([](const SceneObject& candidate) { return candidate.hasParallaxLayer2D; });
+    const bool sharedAudioSource = allSelected([](const SceneObject& candidate) { return candidate.hasAudioSource; });
+    const bool sharedGroundBaked = allSelected([](const SceneObject& candidate) { return candidate.hasGroundBakedType; });
+    const bool sharedObstacle = allSelected([](const SceneObject& candidate) { return candidate.hasObsticleObject; });
+    const bool sharedAgent = allSelected([](const SceneObject& candidate) { return candidate.hasAIAgent; });
+    const bool sharedAnimation = allSelected([](const SceneObject& candidate) { return candidate.hasAnimation; });
+    const bool sharedSkeletal = allSelected([](const SceneObject& candidate) { return candidate.hasSkeletalAnimation; });
+    const bool sharedReverb = allSelected([](const SceneObject& candidate) { return candidate.hasReverbZone; });
+    const bool sharedCamera = allSelected([](const SceneObject& candidate) { return candidate.hasCamera; });
+    const bool sharedCameraFollow2D = allSelected([](const SceneObject& candidate) { return candidate.hasCameraFollow2D; });
+    const bool sharedPostFX = allSelected([](const SceneObject& candidate) { return candidate.hasPostFX; });
+    const bool sharedRenderer = allSelected([](const SceneObject& candidate) { return candidate.hasRenderer; });
+    const bool sharedLight = allSelected([](const SceneObject& candidate) { return candidate.hasLight; });
+
+    auto scriptSignature = [](const ScriptComponent& script) {
+        return std::to_string(static_cast<int>(script.language)) + "|" + script.path + "|" + script.managedType;
+    };
+    auto hasScriptSignature = [&](const SceneObject& candidate, const std::string& signature) {
+        for (const ScriptComponent& script : candidate.scripts) {
+            if (scriptSignature(script) == signature) return true;
+        }
+        return false;
+    };
+    const bool sharedScriptsLayout = allSelected([&](const SceneObject& candidate) {
+        if (candidate.scripts.size() != obj.scripts.size()) return false;
+        for (size_t i = 0; i < obj.scripts.size(); ++i) {
+            if (scriptSignature(candidate.scripts[i]) != scriptSignature(obj.scripts[i])) {
+                return false;
+            }
+        }
+        return true;
+    });
+    std::vector<bool> sharedScriptByIndex(obj.scripts.size(), !multiSelection);
+    std::vector<std::string> sharedScriptSignatures(obj.scripts.size());
+    if (multiSelection) {
+        for (size_t i = 0; i < obj.scripts.size(); ++i) {
+            const std::string signature = scriptSignature(obj.scripts[i]);
+            sharedScriptSignatures[i] = signature;
+            bool shared = true;
+            for (const SceneObject* selectedObj : selectedObjects) {
+                if (!selectedObj || selectedObj->id == obj.id) continue;
+                if (!hasScriptSignature(*selectedObj, signature)) {
+                    shared = false;
+                    break;
+                }
+            }
+            sharedScriptByIndex[i] = shared;
+        }
+    } else {
+        for (size_t i = 0; i < obj.scripts.size(); ++i) {
+            sharedScriptSignatures[i] = scriptSignature(obj.scripts[i]);
+        }
+    }
+
+    const bool hasMixedComponents = multiSelection && (
+        hasMixedSelected([&](const SceneObject& candidate) { return isUIObject(candidate); }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasCollider; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasPlayerController; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasRigidbody; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasRigidbody2D; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasCollider2D; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasParallaxLayer2D; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasAudioSource; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasGroundBakedType; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasObsticleObject; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasAIAgent; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasAnimation; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasSkeletalAnimation; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasReverbZone; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasCamera; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasCameraFollow2D; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasPostFX; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasRenderer; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasLight; }) ||
+        !sharedScriptsLayout
+    );
+
+    if (multiSelection) {
+        ImGui::Text("Multiple objects selected: %zu", selectedObjects.size());
         ImGui::Separator();
     }
+
+    bool objectNameChanged = false;
+    bool objectEnabledChanged = false;
+    bool objectLayerChanged = false;
+    bool objectTagChanged = false;
+    bool objectTransformChanged = false;
+    bool uiSectionChanged = false;
+    bool colliderSectionChanged = false;
+    bool playerControllerSectionChanged = false;
+    bool rigidbodySectionChanged = false;
+    bool rigidbody2DSectionChanged = false;
+    bool collider2DSectionChanged = false;
+    bool parallax2DSectionChanged = false;
+    bool audioSourceSectionChanged = false;
+    bool groundBakedSectionChanged = false;
+    bool obstacleSectionChanged = false;
+    bool agentSectionChanged = false;
+    bool animationSectionChanged = false;
+    bool skeletalSectionChanged = false;
+    bool reverbSectionChanged = false;
+    bool cameraSectionChanged = false;
+    bool cameraFollowSectionChanged = false;
+    bool postFxSectionChanged = false;
+    bool rendererSectionChanged = false;
+    bool lightSectionChanged = false;
 
     auto objectHeader = drawComponentHeader("Object Info", "ObjectInfo", nullptr, true, std::function<void()>{});
     if (objectHeader.open) {
@@ -1897,8 +2157,14 @@ void Engine::renderInspectorPanel() {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputText("##Name", nameBuffer, sizeof(nameBuffer))) {
-            obj.name = nameBuffer;
-            projectManager.currentProject.hasUnsavedChanges = true;
+            const std::string oldName = obj.name;
+            const std::string newName = nameBuffer;
+            if (oldName != newName) {
+                obj.name = newName;
+                objectNameChanged = true;
+                propagateObjectRenameReferences(oldName, newName, obj.id);
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
         }
 
         ImGui::Text("Type:");
@@ -1948,6 +2214,7 @@ void Engine::renderInspectorPanel() {
         ImGui::TextDisabled("%d", obj.id);
 
         if (ImGui::Checkbox("Enabled##ObjEnabled", &obj.enabled)) {
+            objectEnabledChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
@@ -1957,6 +2224,7 @@ void Engine::renderInspectorPanel() {
         ImGui::SetNextItemWidth(120);
         if (ImGui::SliderInt("##Layer", &layer, 0, 31)) {
             obj.layer = layer;
+            objectLayerChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::SameLine();
@@ -1969,6 +2237,7 @@ void Engine::renderInspectorPanel() {
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputText("##Tag", tagBuf, sizeof(tagBuf))) {
             obj.tag = tagBuf;
+            objectTagChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
@@ -1986,6 +2255,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Position", &obj.position.x, 0.1f)) {
             syncLocalTransform(obj);
+            objectTransformChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -1995,6 +2265,7 @@ void Engine::renderInspectorPanel() {
         if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f)) {
             obj.rotation = NormalizeEulerDegrees(obj.rotation);
             syncLocalTransform(obj);
+            objectTransformChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -2003,6 +2274,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PushItemWidth(-1);
         if (ImGui::DragFloat3("##Scale", &obj.scale.x, 0.05f, 0.01f, 100.0f)) {
             syncLocalTransform(obj);
+            objectTransformChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopItemWidth();
@@ -2012,13 +2284,14 @@ void Engine::renderInspectorPanel() {
             obj.rotation = glm::vec3(0.0f);
             obj.scale = glm::vec3(1.0f);
             syncLocalTransform(obj);
+            objectTransformChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
     }
 
     ImGui::Spacing();
 
-    if (isUIObject(obj)) {
+    if (isUIObject(obj) && sharedUIObject) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.45f, 0.65f, 1.0f));
         bool changed = false;
@@ -2055,6 +2328,9 @@ void Engine::renderInspectorPanel() {
             }
 
             glm::vec2 minSize(1.0f, 1.0f);
+            if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
+                minSize = glm::vec2(0.01f, 0.01f);
+            }
             if (ImGui::DragFloat2("Size (px)", &obj.ui.size.x, 1.0f, minSize.x, 4096.0f)) {
                 obj.ui.size.x = std::max(minSize.x, obj.ui.size.x);
                 obj.ui.size.y = std::max(minSize.y, obj.ui.size.y);
@@ -2063,6 +2339,9 @@ void Engine::renderInspectorPanel() {
 
             if (obj.ui.type == UIElementType::Canvas) {
                 if (ImGui::Checkbox("Render In 3D", &obj.ui.renderIn3D)) {
+                    changed = true;
+                }
+                if (ImGui::Checkbox("Mask Children", &obj.ui.maskChildren)) {
                     changed = true;
                 }
                 if (obj.ui.renderIn3D) {
@@ -2106,16 +2385,91 @@ void Engine::renderInspectorPanel() {
             if (obj.ui.type == UIElementType::Button || obj.ui.type == UIElementType::Slider ||
                 obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Text ||
                 obj.ui.type == UIElementType::Sprite2D) {
-                char labelBuf[128] = {};
-                std::snprintf(labelBuf, sizeof(labelBuf), "%s", obj.ui.label.c_str());
-                if (ImGui::InputText(obj.ui.type == UIElementType::Text ? "Text" : "Label", labelBuf, sizeof(labelBuf))) {
-                    obj.ui.label = labelBuf;
-                    changed = true;
+                if (obj.ui.type == UIElementType::Text) {
+                    char labelBuf[4096] = {};
+                    std::snprintf(labelBuf, sizeof(labelBuf), "%s", obj.ui.label.c_str());
+                    if (ImGui::InputTextMultiline("Text", labelBuf, sizeof(labelBuf), ImVec2(-FLT_MIN, 96.0f))) {
+                        obj.ui.label = labelBuf;
+                        changed = true;
+                    }
+                } else {
+                    char labelBuf[128] = {};
+                    std::snprintf(labelBuf, sizeof(labelBuf), "%s", obj.ui.label.c_str());
+                    if (ImGui::InputText("Label", labelBuf, sizeof(labelBuf))) {
+                        obj.ui.label = labelBuf;
+                        changed = true;
+                    }
                 }
             }
             if (obj.ui.type == UIElementType::Text) {
                 if (ImGui::DragFloat("Text Size", &obj.ui.textScale, 0.05f, 0.1f, 10.0f, "%.2f")) {
                     obj.ui.textScale = std::max(0.1f, obj.ui.textScale);
+                    changed = true;
+                }
+                if (ImGui::Checkbox("Auto Wrap", &obj.ui.textAutoWrap)) {
+                    changed = true;
+                }
+                const char* hAlignLabels[] = { "Left", "Center", "Right" };
+                int hAlignIndex = static_cast<int>(obj.ui.textHAlign);
+                if (ImGui::Combo("Horizontal Align", &hAlignIndex, hAlignLabels, IM_ARRAYSIZE(hAlignLabels))) {
+                    obj.ui.textHAlign = static_cast<UITextHAlign>(std::clamp(hAlignIndex, 0, 2));
+                    changed = true;
+                }
+                const char* vAlignLabels[] = { "Top", "Middle", "Bottom" };
+                int vAlignIndex = static_cast<int>(obj.ui.textVAlign);
+                if (ImGui::Combo("Vertical Align", &vAlignIndex, vAlignLabels, IM_ARRAYSIZE(vAlignLabels))) {
+                    obj.ui.textVAlign = static_cast<UITextVAlign>(std::clamp(vAlignIndex, 0, 2));
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Effect Speed", &obj.ui.textEffectSpeed, 0.01f, 0.01f, 20.0f, "%.2f")) {
+                    obj.ui.textEffectSpeed = std::max(0.01f, obj.ui.textEffectSpeed);
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Effect Intensity", &obj.ui.textEffectIntensity, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                    obj.ui.textEffectIntensity = std::max(0.0f, obj.ui.textEffectIntensity);
+                    changed = true;
+                }
+                int textEffectFlags = obj.ui.textEffectFlags;
+                bool wave = (textEffectFlags & (1 << 0)) != 0;
+                bool shake = (textEffectFlags & (1 << 1)) != 0;
+                bool bounce = (textEffectFlags & (1 << 2)) != 0;
+                bool rotate = (textEffectFlags & (1 << 3)) != 0;
+                bool fade = (textEffectFlags & (1 << 4)) != 0;
+                if (ImGui::Checkbox("Wave", &wave)) {
+                    if (wave) textEffectFlags |= (1 << 0);
+                    else textEffectFlags &= ~(1 << 0);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Shake", &shake)) {
+                    if (shake) textEffectFlags |= (1 << 1);
+                    else textEffectFlags &= ~(1 << 1);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Bounce", &bounce)) {
+                    if (bounce) textEffectFlags |= (1 << 2);
+                    else textEffectFlags &= ~(1 << 2);
+                    changed = true;
+                }
+                if (ImGui::Checkbox("Rotate", &rotate)) {
+                    if (rotate) textEffectFlags |= (1 << 3);
+                    else textEffectFlags &= ~(1 << 3);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Fade", &fade)) {
+                    if (fade) textEffectFlags |= (1 << 4);
+                    else textEffectFlags &= ~(1 << 4);
+                    changed = true;
+                }
+                obj.ui.textEffectFlags = textEffectFlags;
+                const char* textFilterOptions[] = { "Bilinear", "Point" };
+                int textFilterIndex = (obj.material.textureFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
+                if (ImGui::Combo("Text Filter", &textFilterIndex, textFilterOptions, IM_ARRAYSIZE(textFilterOptions))) {
+                    obj.material.textureFilter =
+                        (textFilterIndex == 1) ? MaterialProperties::TextureFilter::Point
+                                               : MaterialProperties::TextureFilter::Bilinear;
                     changed = true;
                 }
             }
@@ -2260,6 +2614,34 @@ void Engine::renderInspectorPanel() {
                     }
                     ImGui::EndDisabled();
                 }
+
+                if (ImGui::CollapsingHeader("9-Slice")) {
+                    if (ImGui::Checkbox("Enable 9-Slice", &obj.ui.nineSliceEnabled)) {
+                        changed = true;
+                    }
+                    ImGui::BeginDisabled(!obj.ui.nineSliceEnabled);
+                    float border[4] = {
+                        obj.ui.nineSliceBorder.x,
+                        obj.ui.nineSliceBorder.y,
+                        obj.ui.nineSliceBorder.z,
+                        obj.ui.nineSliceBorder.w
+                    };
+                    if (ImGui::DragFloat4("Border L/R/T/B", border, 1.0f, 0.0f, 2048.0f, "%.0f")) {
+                        obj.ui.nineSliceBorder = glm::vec4(
+                            std::max(0.0f, border[0]),
+                            std::max(0.0f, border[1]),
+                            std::max(0.0f, border[2]),
+                            std::max(0.0f, border[3]));
+                        changed = true;
+                    }
+                    if (ImGui::Checkbox("Tile Edges", &obj.ui.nineSliceTileEdges)) {
+                        changed = true;
+                    }
+                    if (ImGui::Checkbox("Tile Center", &obj.ui.nineSliceTileCenter)) {
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                }
             }
 
             if (obj.ui.type == UIElementType::Slider) {
@@ -2309,12 +2691,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            uiSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasCollider) {
+    if (obj.hasCollider && sharedCollider) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.35f, 1.0f));
         bool removeCollider = false;
@@ -2394,12 +2777,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            colliderSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasPlayerController) {
+    if (obj.hasPlayerController && sharedPlayerController) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.7f, 1.0f));
         bool removePlayerController = false;
@@ -2485,12 +2869,13 @@ void Engine::renderInspectorPanel() {
                 obj.rigidbody.enabled = true;
                 obj.rigidbody.useGravity = true;
             }
+            playerControllerSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasRigidbody) {
+    if (obj.hasRigidbody && sharedRigidbody) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.45f, 0.25f, 1.0f));
         bool removeRigidbody = false;
@@ -2547,12 +2932,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            rigidbodySectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasRigidbody2D) {
+    if (obj.hasRigidbody2D && sharedRigidbody2D) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.55f, 0.45f, 1.0f));
         bool removeRigidbody2D = false;
@@ -2593,12 +2979,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            rigidbody2DSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasCollider2D) {
+    if (obj.hasCollider2D && sharedCollider2D) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.65f, 1.0f));
         bool removeCollider2D = false;
@@ -2717,12 +3104,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            collider2DSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasParallaxLayer2D) {
+    if (obj.hasParallaxLayer2D && sharedParallax2D) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.28f, 0.45f, 0.6f, 1.0f));
         bool removeParallax = false;
@@ -2777,12 +3165,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            parallax2DSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasAudioSource) {
+    if (obj.hasAudioSource && sharedAudioSource) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.55f, 0.4f, 0.3f, 1.0f));
         bool removeAudioSource = false;
@@ -2921,12 +3310,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            audioSourceSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasGroundBakedType) {
+    if (obj.hasGroundBakedType && sharedGroundBaked) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.28f, 0.5f, 0.34f, 1.0f));
         bool removeGroundBaked = false;
@@ -2967,12 +3357,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            groundBakedSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasObsticleObject) {
+    if (obj.hasObsticleObject && sharedObstacle) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.3f, 0.28f, 1.0f));
         bool removeObstacle = false;
@@ -3013,12 +3404,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            obstacleSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasAIAgent) {
+    if (obj.hasAIAgent && sharedAgent) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.32f, 0.4f, 0.58f, 1.0f));
         bool removeAgent = false;
@@ -3108,12 +3500,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            agentSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasAnimation) {
+    if (obj.hasAnimation && sharedAnimation) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.35f, 0.55f, 1.0f));
         bool removeAnimation = false;
@@ -3133,14 +3526,89 @@ void Engine::renderInspectorPanel() {
         if (header.open) {
             ImGui::PushID("Animation");
             ImGui::Indent(10.0f);
+            NormalizeAnimationClipSlots(obj.animation);
             if (ImGui::Button("Open Animator")) {
                 showAnimationWindow = true;
                 animationTargetId = obj.id;
             }
             ImGui::SameLine();
+            if (!obj.animation.clips.empty()) {
+                int activeIndex = AnimationGetActiveClipIndex(obj.animation);
+                const char* preview = (activeIndex >= 0 && activeIndex < static_cast<int>(obj.animation.clips.size()))
+                    ? obj.animation.clips[activeIndex].name.c_str()
+                    : "<none>";
+                if (ImGui::BeginCombo("##AnimActiveClip", preview)) {
+                    for (int i = 0; i < static_cast<int>(obj.animation.clips.size()); ++i) {
+                        const bool selected = (i == activeIndex);
+                        const char* clipName = obj.animation.clips[i].name.empty()
+                            ? "<unnamed>"
+                            : obj.animation.clips[i].name.c_str();
+                        if (ImGui::Selectable(clipName, selected)) {
+                            obj.animation.activeClipIndex = i;
+                            NormalizeAnimationClipSlots(obj.animation);
+                            changed = true;
+                        }
+                        if (selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            } else {
+                ImGui::TextDisabled("No clips");
+            }
+
+            size_t displayKeyCount = obj.animation.keyframes.size();
+            size_t displayTrackCount = obj.animation.tracks.size();
+            const std::string activeClipAssetPath = AnimationGetActiveClipAssetPath(obj.animation);
+            if (!activeClipAssetPath.empty()) {
+                auto resolveClipPath = [&](const std::string& storedPath) -> fs::path {
+                    if (storedPath.empty()) return {};
+                    fs::path p = storedPath;
+                    if (p.is_absolute()) return p;
+                    if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
+                        return projectManager.currentProject.projectPath / p;
+                    }
+                    return p;
+                };
+                auto gatherClipStats = [](const fs::path& clipPath, size_t& outTracks, size_t& outKeys) -> bool {
+                    std::ifstream in(clipPath);
+                    if (!in.is_open()) return false;
+                    outTracks = 0;
+                    outKeys = 0;
+                    std::string token;
+                    while (in >> token) {
+                        if (token == "track") {
+                            std::string propertyId;
+                            int visible = 1;
+                            int locked = 0;
+                            in >> std::quoted(propertyId) >> visible >> locked;
+                            (void)visible;
+                            (void)locked;
+                            ++outTracks;
+                        } else if (token == "keyCount") {
+                            size_t keyCount = 0;
+                            in >> keyCount;
+                            outKeys += keyCount;
+                        } else {
+                            std::string discard;
+                            std::getline(in, discard);
+                        }
+                    }
+                    return !in.bad();
+                };
+                const fs::path clipPath = resolveClipPath(activeClipAssetPath);
+                size_t clipTrackCount = 0;
+                size_t clipKeyCount = 0;
+                if (!clipPath.empty() && gatherClipStats(clipPath, clipTrackCount, clipKeyCount)) {
+                    displayTrackCount = clipTrackCount;
+                    displayKeyCount = clipKeyCount;
+                }
+            }
+            ImGui::TextDisabled("Clips: %zu", obj.animation.clips.size());
             ImGui::TextDisabled("Keyframes: %zu | Tracks: %zu",
-                                obj.animation.keyframes.size(),
-                                obj.animation.tracks.size());
+                                displayKeyCount,
+                                displayTrackCount);
 
             if (ImGui::DragFloat("Clip Length", &obj.animation.clipLength, 0.05f, 0.1f, 120.0f, "%.2f")) {
                 obj.animation.clipLength = std::max(0.1f, obj.animation.clipLength);
@@ -3151,6 +3619,9 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
             if (ImGui::Checkbox("Loop", &obj.animation.loop)) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Play On Awake", &obj.animation.playOnAwake)) {
                 changed = true;
             }
             if (ImGui::Checkbox("Apply On Scrub", &obj.animation.applyOnScrub)) {
@@ -3171,12 +3642,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            animationSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasSkeletalAnimation) {
+    if (obj.hasSkeletalAnimation && sharedSkeletal) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.4f, 0.6f, 1.0f));
         bool removeSkeletal = false;
@@ -3243,12 +3715,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            skeletalSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasReverbZone) {
+    if (obj.hasReverbZone && sharedReverb) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.45f, 0.6f, 1.0f));
         bool removeReverbZone = false;
@@ -3371,12 +3844,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            reverbSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasCamera) {
+    if (obj.hasCamera && sharedCamera) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.35f, 0.65f, 1.0f));
         bool changed = false;
@@ -3435,12 +3909,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            cameraSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasCameraFollow2D) {
+    if (obj.hasCameraFollow2D && sharedCameraFollow2D) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.55f, 0.4f, 1.0f));
         bool changed = false;
@@ -3513,12 +3988,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            cameraFollowSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasPostFX) {
+    if (obj.hasPostFX && sharedPostFX) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
         bool changed = false;
@@ -3705,12 +4181,13 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            postFxSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasRenderer) {
+    if (obj.hasRenderer && sharedRenderer) {
         ImGui::Spacing();
         bool rendererChanged = false;
         bool removeRenderer = false;
@@ -3789,6 +4266,7 @@ void Engine::renderInspectorPanel() {
             glm::vec4 baseColor(obj.material.color, obj.material.alpha);
             if (ImGui::ColorEdit4("Base Color", &baseColor.x)) {
                 obj.material.color = glm::vec3(baseColor);
+                // Alpha looked cursed here once, but this assignment is fine.
                 obj.material.alpha = std::clamp(baseColor.w, 0.0f, 1.0f);
                 materialChanged = true;
             }
@@ -4214,11 +4692,12 @@ void Engine::renderInspectorPanel() {
             rendererChanged = true;
         }
         if (rendererChanged) {
+            rendererSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
     }
 
-    if (obj.hasLight) {
+    if (obj.hasLight && sharedLight) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.45f, 0.2f, 1.0f));
         bool changed = false;
@@ -4319,6 +4798,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (changed) {
+            lightSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
@@ -4344,6 +4824,10 @@ void Engine::renderInspectorPanel() {
 
     for (size_t i = 0; i < obj.scripts.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
+        if (multiSelection && i < sharedScriptByIndex.size() && !sharedScriptByIndex[i]) {
+            ImGui::PopID();
+            continue;
+        }
         ScriptComponent& sc = obj.scripts[i];
 
         std::string headerLabel = "Script";
@@ -4629,7 +5113,7 @@ void Engine::renderInspectorPanel() {
         scriptsChanged = true;
     }
 
-    if (obj.hasRenderer) {
+    if (obj.hasRenderer && sharedRenderer) {
         std::string matName = obj.materialPath.empty()
             ? "In-Built Material"
             : fs::path(obj.materialPath).filename().string();
@@ -4645,8 +5129,13 @@ void Engine::renderInspectorPanel() {
     ImGui::Separator();
     bool componentChanged = false;
     ImGui::PushID("AddComponent");
+    ImGui::BeginDisabled(multiSelection);
     if (ImGui::Button("Add Component", ImVec2(-1, 0))) {
         ImGui::OpenPopup("AddComponentPopup");
+    }
+    ImGui::EndDisabled();
+    if (multiSelection) {
+        ImGui::TextDisabled("Add Component is disabled for multi-selection.");
     }
     ImGui::SetNextWindowSize(ImVec2(360.0f, 420.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopup("AddComponentPopup")) {
@@ -5136,6 +5625,248 @@ void Engine::renderInspectorPanel() {
     }
     ImGui::PopID();
 
+    auto forEachSecondarySelected = [&](auto&& fn) {
+        for (SceneObject* selectedObj : selectedObjects) {
+            if (!selectedObj || selectedObj->id == obj.id) continue;
+            fn(*selectedObj);
+        }
+    };
+
+    if (multiSelection) {
+        bool propagated = false;
+
+        if (objectNameChanged || objectEnabledChanged || objectLayerChanged || objectTagChanged || objectTransformChanged) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                if (objectNameChanged) {
+                    const std::string oldTargetName = target.name;
+                    target.name = obj.name;
+                    propagateObjectRenameReferences(oldTargetName, target.name, target.id);
+                }
+                if (objectEnabledChanged) {
+                    target.enabled = obj.enabled;
+                }
+                if (objectLayerChanged) {
+                    target.layer = obj.layer;
+                }
+                if (objectTagChanged) {
+                    target.tag = obj.tag;
+                }
+                if (objectTransformChanged) {
+                    target.position = obj.position;
+                    target.rotation = obj.rotation;
+                    target.scale = obj.scale;
+                    syncLocalTransform(target);
+                }
+            });
+            propagated = true;
+        }
+
+        if (uiSectionChanged && sharedUIObject) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasUI = obj.hasUI;
+                target.ui = obj.ui;
+                target.albedoTexturePath = obj.albedoTexturePath;
+                target.material.textureFilter = obj.material.textureFilter;
+            });
+            propagated = true;
+        }
+        if (colliderSectionChanged && sharedCollider) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasCollider = obj.hasCollider;
+                target.collider = obj.collider;
+            });
+            propagated = true;
+        }
+        if (playerControllerSectionChanged && sharedPlayerController) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasPlayerController = obj.hasPlayerController;
+                target.playerController = obj.playerController;
+                if (target.hasPlayerController) {
+                    target.hasCollider = true;
+                    target.collider.type = ColliderType::Capsule;
+                    target.collider.convex = true;
+                    target.hasRigidbody = true;
+                    target.rigidbody.enabled = true;
+                    target.rigidbody.useGravity = true;
+                }
+            });
+            propagated = true;
+        }
+        if (rigidbodySectionChanged && sharedRigidbody) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasRigidbody = obj.hasRigidbody;
+                target.rigidbody = obj.rigidbody;
+            });
+            propagated = true;
+        }
+        if (rigidbody2DSectionChanged && sharedRigidbody2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasRigidbody2D = obj.hasRigidbody2D;
+                target.rigidbody2D = obj.rigidbody2D;
+            });
+            propagated = true;
+        }
+        if (collider2DSectionChanged && sharedCollider2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasCollider2D = obj.hasCollider2D;
+                target.collider2D = obj.collider2D;
+            });
+            propagated = true;
+        }
+        if (parallax2DSectionChanged && sharedParallax2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasParallaxLayer2D = obj.hasParallaxLayer2D;
+                target.parallaxLayer2D = obj.parallaxLayer2D;
+            });
+            propagated = true;
+        }
+        if (audioSourceSectionChanged && sharedAudioSource) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasAudioSource = obj.hasAudioSource;
+                target.audioSource = obj.audioSource;
+            });
+            propagated = true;
+        }
+        if (groundBakedSectionChanged && sharedGroundBaked) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasGroundBakedType = obj.hasGroundBakedType;
+                target.groundBakedType = obj.groundBakedType;
+            });
+            propagated = true;
+        }
+        if (obstacleSectionChanged && sharedObstacle) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasObsticleObject = obj.hasObsticleObject;
+                target.obsticleObject = obj.obsticleObject;
+            });
+            propagated = true;
+        }
+        if (agentSectionChanged && sharedAgent) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasAIAgent = obj.hasAIAgent;
+                target.aiAgent = obj.aiAgent;
+            });
+            propagated = true;
+        }
+        if (animationSectionChanged && sharedAnimation) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasAnimation = obj.hasAnimation;
+                target.animation = obj.animation;
+            });
+            propagated = true;
+        }
+        if (skeletalSectionChanged && sharedSkeletal) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasSkeletalAnimation = obj.hasSkeletalAnimation;
+                target.skeletal = obj.skeletal;
+            });
+            propagated = true;
+        }
+        if (reverbSectionChanged && sharedReverb) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasReverbZone = obj.hasReverbZone;
+                target.reverbZone = obj.reverbZone;
+            });
+            propagated = true;
+        }
+        if (cameraSectionChanged && sharedCamera) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasCamera = obj.hasCamera;
+                target.camera = obj.camera;
+            });
+            propagated = true;
+        }
+        if (cameraFollowSectionChanged && sharedCameraFollow2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasCameraFollow2D = obj.hasCameraFollow2D;
+                target.cameraFollow2D = obj.cameraFollow2D;
+            });
+            propagated = true;
+        }
+        if (postFxSectionChanged && sharedPostFX) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasPostFX = obj.hasPostFX;
+                target.postFx = obj.postFx;
+            });
+            propagated = true;
+        }
+        if (rendererSectionChanged && sharedRenderer) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasRenderer = obj.hasRenderer;
+                target.renderType = obj.renderType;
+                target.faceCamera = obj.faceCamera;
+                target.meshPath = obj.meshPath;
+                target.meshId = obj.meshId;
+                target.meshSourceIndex = obj.meshSourceIndex;
+                target.material = obj.material;
+                target.materialPath = obj.materialPath;
+                target.albedoTexturePath = obj.albedoTexturePath;
+                target.overlayTexturePath = obj.overlayTexturePath;
+                target.normalMapPath = obj.normalMapPath;
+                target.vertexShaderPath = obj.vertexShaderPath;
+                target.fragmentShaderPath = obj.fragmentShaderPath;
+                target.useOverlay = obj.useOverlay;
+                target.additionalMaterialPaths = obj.additionalMaterialPaths;
+                target.ui.spriteSheetEnabled = obj.ui.spriteSheetEnabled;
+                target.ui.spriteSheetColumns = obj.ui.spriteSheetColumns;
+                target.ui.spriteSheetRows = obj.ui.spriteSheetRows;
+                target.ui.spriteSheetFrame = obj.ui.spriteSheetFrame;
+                target.ui.spriteSheetFps = obj.ui.spriteSheetFps;
+                target.ui.spriteSheetLoop = obj.ui.spriteSheetLoop;
+                target.ui.spriteCustomFramesEnabled = obj.ui.spriteCustomFramesEnabled;
+                target.ui.spriteCustomFrames = obj.ui.spriteCustomFrames;
+                target.ui.spriteCustomFrameNames = obj.ui.spriteCustomFrameNames;
+                target.ui.spriteCustomFrameScales = obj.ui.spriteCustomFrameScales;
+                target.ui.spriteSourceWidth = obj.ui.spriteSourceWidth;
+                target.ui.spriteSourceHeight = obj.ui.spriteSourceHeight;
+                target.ui.nineSliceEnabled = obj.ui.nineSliceEnabled;
+                target.ui.nineSliceBorder = obj.ui.nineSliceBorder;
+                target.ui.nineSliceTileEdges = obj.ui.nineSliceTileEdges;
+                target.ui.nineSliceTileCenter = obj.ui.nineSliceTileCenter;
+            });
+            propagated = true;
+        }
+        if (lightSectionChanged && sharedLight) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasLight = obj.hasLight;
+                target.light = obj.light;
+            });
+            propagated = true;
+        }
+        if (scriptsChanged) {
+            if (sharedScriptsLayout) {
+                forEachSecondarySelected([&](SceneObject& target) {
+                    target.scripts = obj.scripts;
+                });
+                propagated = true;
+            } else {
+                forEachSecondarySelected([&](SceneObject& target) {
+                    for (size_t i = 0; i < sharedScriptByIndex.size() && i < obj.scripts.size(); ++i) {
+                        if (!sharedScriptByIndex[i]) continue;
+                        const std::string& oldSignature = sharedScriptSignatures[i];
+                        const std::string newSignature = scriptSignature(obj.scripts[i]);
+                        auto targetIt = std::find_if(target.scripts.begin(), target.scripts.end(),
+                            [&](const ScriptComponent& candidate) {
+                                const std::string candidateSignature = scriptSignature(candidate);
+                                return candidateSignature == oldSignature || candidateSignature == newSignature;
+                            });
+                        if (targetIt != target.scripts.end()) {
+                            *targetIt = obj.scripts[i];
+                        }
+                    }
+                });
+                propagated = true;
+            }
+        }
+
+        if (propagated) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                UpdateLegacyTypeFromComponents(target);
+            });
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+    }
+
     if (scriptsChanged) {
         markRuntimeScriptBindingsDirty();
         projectManager.currentProject.hasUnsavedChanges = true;
@@ -5151,6 +5882,10 @@ void Engine::renderInspectorPanel() {
     if (browserHasMaterial) {
         ImGui::Spacing();
         renderMaterialAssetPanel("Material Asset (File Browser)", true);
+    }
+    if (multiSelection && hasMixedComponents) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("Note: not all components are shown because one or more selected objects have different components/scripts.");
     }
 
     ImGui::PopID(); // object scope
@@ -5434,72 +6169,142 @@ void Engine::renderLatestErrorBar() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     if (!viewport) return;
 
-    const bool hasError = !latestErrorMessage.empty();
+    const bool hasMessage = !consoleLog.empty();
+    const ConsoleEntry* latest = hasMessage ? &consoleLog.back() : nullptr;
+    const ConsoleMessageType latestType = latest ? latest->type : ConsoleMessageType::Info;
+
     Texture* errorLogo = nullptr;
     Texture* infoLogo = nullptr;
+    Texture* warningLogo = nullptr;
+    Texture* successLogo = nullptr;
     if (rendererInitialized) {
         errorLogo = renderer.getTexture("Resources/Engine-Root/Error Logo.png");
         infoLogo = renderer.getTexture("Resources/Engine-Root/Info Logo.png");
+        warningLogo = renderer.getTexture("Resources/Engine-Root/Warning Logo.png");
+        successLogo = renderer.getTexture("Resources/Engine-Root/Modu-Logo.png");
     }
-    Texture* icon = hasError ? errorLogo : infoLogo;
 
-    std::string bodyText = hasError
-        ? ("[" + latestErrorTimestamp + "] " + latestErrorMessage)
-        : "No errors yet.";
-
-    const float margin = 8.0f;
-    const float barHeight = 30.0f;
-    ImVec2 barPos(viewport->WorkPos.x + margin,
-                  viewport->WorkPos.y + viewport->WorkSize.y - barHeight - margin);
-    ImVec2 barSize(viewport->WorkSize.x - margin * 2.0f, barHeight);
-    if (barSize.x <= 40.0f || barSize.y <= 8.0f) return;
-
-    ImGuiWindowFlags barFlags = ImGuiWindowFlags_NoDecoration |
-                                ImGuiWindowFlags_NoDocking |
-                                ImGuiWindowFlags_NoSavedSettings |
-                                ImGuiWindowFlags_NoMove |
-                                ImGuiWindowFlags_NoNav |
-                                ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                ImGuiWindowFlags_NoInputs;
-
-    ImGui::SetNextWindowPos(barPos, ImGuiCond_Always);
-    ImGui::SetNextWindowSize(barSize, ImGuiCond_Always);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg,
-                          hasError ? ImVec4(0.30f, 0.10f, 0.10f, 0.93f)
-                                   : ImVec4(0.10f, 0.18f, 0.24f, 0.88f));
-    ImGui::PushStyleColor(ImGuiCol_Border,
-                          hasError ? ImVec4(0.85f, 0.25f, 0.25f, 0.80f)
-                                   : ImVec4(0.30f, 0.50f, 0.70f, 0.60f));
-
-    if (ImGui::Begin("##LatestErrorBar", nullptr, barFlags)) {
-        if (icon && icon->GetID()) {
-            ImGui::Image((ImTextureID)(intptr_t)icon->GetID(), ImVec2(16.0f, 16.0f),
-                         ImVec2(0, 1), ImVec2(1, 0));
-            ImGui::SameLine();
+    auto typeLabel = [](ConsoleMessageType type) -> const char* {
+        switch (type) {
+            case ConsoleMessageType::Warning: return "Warning";
+            case ConsoleMessageType::Error: return "Error";
+            case ConsoleMessageType::Success: return "Success";
+            case ConsoleMessageType::Info:
+            default:
+                return "Info";
         }
+    };
 
-        ImGui::TextColored(hasError ? ImVec4(1.0f, 0.46f, 0.46f, 1.0f)
-                                    : ImVec4(0.70f, 0.88f, 1.0f, 1.0f),
-                           "%s:",
-                           hasError ? "Latest Error" : "Status");
-        ImGui::SameLine();
-        ImGui::TextUnformatted(bodyText.c_str());
+    auto typeAccentColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(1.0f, 0.84f, 0.35f, 1.0f);
+            case ConsoleMessageType::Error: return ImVec4(1.0f, 0.46f, 0.46f, 1.0f);
+            case ConsoleMessageType::Success: return ImVec4(0.50f, 0.95f, 0.55f, 1.0f);
+            case ConsoleMessageType::Info:
+            default:
+                return ImVec4(0.70f, 0.88f, 1.0f, 1.0f);
+        }
+    };
+
+    auto typeBackgroundColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(0.30f, 0.22f, 0.08f, 0.93f);
+            case ConsoleMessageType::Error: return ImVec4(0.30f, 0.10f, 0.10f, 0.93f);
+            case ConsoleMessageType::Success: return ImVec4(0.10f, 0.23f, 0.12f, 0.90f);
+            case ConsoleMessageType::Info:
+            default:
+                return ImVec4(0.10f, 0.18f, 0.24f, 0.88f);
+        }
+    };
+
+    auto typeBorderColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(0.85f, 0.65f, 0.20f, 0.75f);
+            case ConsoleMessageType::Error: return ImVec4(0.85f, 0.25f, 0.25f, 0.80f);
+            case ConsoleMessageType::Success: return ImVec4(0.25f, 0.70f, 0.35f, 0.70f);
+            case ConsoleMessageType::Info:
+            default:
+                return ImVec4(0.30f, 0.50f, 0.70f, 0.60f);
+        }
+    };
+
+    auto typeIcon = [&](ConsoleMessageType type) -> Texture* {
+        switch (type) {
+            case ConsoleMessageType::Warning: return warningLogo;
+            case ConsoleMessageType::Error: return errorLogo;
+            case ConsoleMessageType::Success: return successLogo;
+            case ConsoleMessageType::Info:
+            default:
+                return infoLogo;
+        }
+    };
+
+    Texture* icon = typeIcon(latestType);
+    ImVec4 accentColor = typeAccentColor(latestType);
+    ImVec4 bgColor = typeBackgroundColor(latestType);
+    ImVec4 borderColor = typeBorderColor(latestType);
+
+    std::string bodyText;
+    if (latest) {
+        bodyText = "[" + latest->timestamp + "] " + latest->message;
+    } else {
+        bodyText = "No console messages yet.";
     }
-    ImGui::End();
 
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
+    const ImGuiWindow* dockHost = ImGui::FindWindowByName("DockSpace");
+    ImVec2 hostPos = dockHost ? dockHost->Pos : viewport->WorkPos;
+    ImVec2 hostSize = dockHost ? dockHost->Size : viewport->WorkSize;
+
+    const float reserveHeight = getEditorBottomStatusReserveHeight();
+    const float barHeight = ImMax(14.0f, reserveHeight - 6.0f);
+    const float marginX = 6.0f;
+    const float stripTop = hostPos.y + hostSize.y - reserveHeight;
+
+    ImVec2 barMin(hostPos.x + marginX,
+                  stripTop + (reserveHeight - barHeight) * 0.5f);
+    ImVec2 barMax(hostPos.x + hostSize.x - marginX, barMin.y + barHeight);
+    if (barMax.x - barMin.x <= 40.0f || barMax.y - barMin.y <= 8.0f) return;
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList(const_cast<ImGuiViewport*>(viewport));
+    if (!draw) return;
+
+    const ImU32 bgU32 = ImGui::ColorConvertFloat4ToU32(bgColor);
+    const ImU32 borderU32 = ImGui::ColorConvertFloat4ToU32(borderColor);
+    const ImU32 accentU32 = ImGui::ColorConvertFloat4ToU32(accentColor);
+    const ImU32 textU32 = ImGui::GetColorU32(ImGuiCol_Text);
+
+    draw->AddRectFilled(barMin, barMax, bgU32, 5.0f);
+    draw->AddRect(barMin, barMax, borderU32, 5.0f, 0, 1.0f);
+
+    float cursorX = barMin.x + 6.0f;
+    const float fontY = barMin.y + (barHeight - ImGui::GetFontSize()) * 0.5f;
+
+    if (icon && icon->GetID()) {
+        const float iconSize = ImClamp(barHeight - 4.0f, 10.0f, 14.0f);
+        const ImVec2 iconMin(cursorX, barMin.y + (barHeight - iconSize) * 0.5f);
+        const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
+        draw->AddImage((ImTextureID)(intptr_t)icon->GetID(), iconMin, iconMax,
+                       ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE);
+        cursorX += iconSize + 5.0f;
+    }
+
+    const char* label = latest ? typeLabel(latestType) : "Status";
+    std::string labelText = std::string(label) + ":";
+    draw->AddText(ImVec2(cursorX, fontY), accentU32, labelText.c_str());
+    cursorX += ImGui::CalcTextSize(labelText.c_str()).x + 6.0f;
+
+    draw->PushClipRect(ImVec2(cursorX, barMin.y + 1.0f), ImVec2(barMax.x - 6.0f, barMax.y - 1.0f), true);
+    draw->AddText(ImVec2(cursorX, fontY), textU32, bodyText.c_str());
+    draw->PopClipRect();
 }
 
 #pragma endregion
 
 #pragma region Mesh Builder Panel
 void Engine::renderMeshBuilderPanel() {
-    ImGui::Begin("Mesh Builder", &showMeshBuilder);
+    ImGui::Begin("Mesh Builder (Legacy)", &showMeshBuilder);
+    ImGui::TextDisabled("Primary workflow moved to the viewport toolbar RMesh edit mode.");
+    ImGui::Separator();
 
     auto recalcBounds = [this]() {
         if (!meshBuilder.hasMesh || meshBuilder.mesh.positions.empty()) return;

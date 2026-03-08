@@ -4,9 +4,11 @@
 #include <array>
 #include <cstring>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cfloat>
 #include <cmath>
+#include <cctype>
 #include <iomanip>
 #include <functional>
 #include <sstream>
@@ -17,6 +19,7 @@
 #include <future>
 
 #ifdef _WIN32
+#include <commdlg.h>
 #include <shlobj.h>
 #include <shellapi.h>
 #endif
@@ -965,6 +968,154 @@ namespace {
         openPathInShell(path);
         #endif
     }
+
+    std::string trimWhitespace(std::string value) {
+        auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+        while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
+            value.erase(value.begin());
+        }
+        while (!value.empty() && isSpace(static_cast<unsigned char>(value.back()))) {
+            value.pop_back();
+        }
+        return value;
+    }
+
+    #if defined(__linux__)
+    std::string shellQuote(const std::string& value) {
+        std::string out;
+        out.reserve(value.size() + 2);
+        out.push_back('\'');
+        for (char c : value) {
+            if (c == '\'') {
+                out += "'\\''";
+            } else {
+                out.push_back(c);
+            }
+        }
+        out.push_back('\'');
+        return out;
+    }
+
+    bool commandExists(const char* command) {
+        if (!command || !*command) {
+            return false;
+        }
+        std::string check = "command -v ";
+        check += command;
+        check += " >/dev/null 2>&1";
+        return std::system(check.c_str()) == 0;
+    }
+
+    std::optional<std::string> runSelectionDialogCommand(const std::string& command) {
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) {
+            return std::nullopt;
+        }
+        std::string output;
+        char buffer[512];
+        while (std::fgets(buffer, static_cast<int>(sizeof(buffer)), pipe)) {
+            output += buffer;
+        }
+        pclose(pipe);
+        output = trimWhitespace(output);
+        if (output.empty()) {
+            return std::nullopt;
+        }
+        return output;
+    }
+    #endif
+
+    std::optional<fs::path> chooseImportFilePath(const fs::path& initialDir) {
+        #ifdef _WIN32
+        std::wstring initialDirWide = initialDir.wstring();
+        std::array<wchar_t, MAX_PATH> fileBuffer{};
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = nullptr;
+        ofn.lpstrFilter = L"All Files\0*.*\0";
+        ofn.lpstrFile = fileBuffer.data();
+        ofn.nMaxFile = static_cast<DWORD>(fileBuffer.size());
+        ofn.lpstrInitialDir = initialDirWide.empty() ? nullptr : initialDirWide.c_str();
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+        if (GetOpenFileNameW(&ofn) == TRUE) {
+            return fs::path(fileBuffer.data());
+        }
+        return std::nullopt;
+        #elif __linux__
+        const fs::path initial = initialDir.empty() ? fs::current_path() : initialDir;
+        const std::string initialString = initial.string();
+        const std::string initialForDialog =
+            (!initialString.empty() && initialString.back() == '/') ? initialString : (initialString + "/");
+
+        if (commandExists("zenity")) {
+            std::string cmd = "zenity --file-selection --filename=" + shellQuote(initialForDialog) + " 2>/dev/null";
+            if (auto selected = runSelectionDialogCommand(cmd)) {
+                return fs::path(*selected);
+            }
+        }
+        if (commandExists("kdialog")) {
+            std::string cmd = "kdialog --getopenfilename " + shellQuote(initialString) + " 2>/dev/null";
+            if (auto selected = runSelectionDialogCommand(cmd)) {
+                return fs::path(*selected);
+            }
+        }
+        return std::nullopt;
+        #else
+        (void)initialDir;
+        return std::nullopt;
+        #endif
+    }
+
+    std::optional<fs::path> chooseImportFolderPath(const fs::path& initialDir) {
+        #ifdef _WIN32
+        BROWSEINFOW info{};
+        info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        info.lpszTitle = L"Select Folder";
+        LPITEMIDLIST selected = SHBrowseForFolderW(&info);
+        if (!selected) {
+            return std::nullopt;
+        }
+        std::array<wchar_t, MAX_PATH> folderPath{};
+        std::optional<fs::path> result;
+        if (SHGetPathFromIDListW(selected, folderPath.data())) {
+            result = fs::path(folderPath.data());
+        }
+        CoTaskMemFree(selected);
+        return result;
+        #elif __linux__
+        const fs::path initial = initialDir.empty() ? fs::current_path() : initialDir;
+        const std::string initialString = initial.string();
+        const std::string initialForDialog =
+            (!initialString.empty() && initialString.back() == '/') ? initialString : (initialString + "/");
+
+        if (commandExists("zenity")) {
+            std::string cmd = "zenity --file-selection --directory --filename=" + shellQuote(initialForDialog) + " 2>/dev/null";
+            if (auto selected = runSelectionDialogCommand(cmd)) {
+                return fs::path(*selected);
+            }
+        }
+        if (commandExists("kdialog")) {
+            std::string cmd = "kdialog --getexistingdirectory " + shellQuote(initialString) + " 2>/dev/null";
+            if (auto selected = runSelectionDialogCommand(cmd)) {
+                return fs::path(*selected);
+            }
+        }
+        return std::nullopt;
+        #else
+        (void)initialDir;
+        return std::nullopt;
+        #endif
+    }
+
+    bool supportsNativeImportPathPicker() {
+        #ifdef _WIN32
+        return true;
+        #elif __linux__
+        return commandExists("zenity") || commandExists("kdialog");
+        #else
+        return false;
+        #endif
+    }
 }
 #pragma endregion
 
@@ -989,6 +1140,10 @@ void Engine::renderFileBrowserPanel() {
     static fs::path pendingDeletePath;
     static fs::path pendingRenamePath;
     static char renameName[256] = "";
+    static bool showImportAssetsPopup = false;
+    static bool triggerImportAssetsPopup = false;
+    static fs::path pendingImportTargetPath;
+    static char importAssetPaths[4096] = "";
     bool settingsDirty = false;
 
     auto openEntry = [&](const fs::directory_entry& entry) {
@@ -1147,6 +1302,234 @@ void Engine::renderFileBrowserPanel() {
         }
         return path.lexically_normal();
     };
+
+    auto isPathWithin = [&](const fs::path& root, const fs::path& path) {
+        if (root.empty()) return true;
+        const fs::path normalizedRoot = normalizePath(root);
+        const fs::path normalizedPath = normalizePath(path);
+        if (normalizedPath == normalizedRoot) return true;
+        fs::path current = normalizedPath;
+        while (current.has_parent_path()) {
+            fs::path parent = current.parent_path();
+            if (parent.empty() || parent == current) {
+                break;
+            }
+            current = parent;
+            if (current == normalizedRoot) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto remapSelectedPathAfterMove = [&](const fs::path& sourcePath, const fs::path& movedPath) {
+        fs::path selected = normalizePath(fileBrowser.selectedFile);
+        fs::path source = normalizePath(sourcePath);
+        fs::path moved = normalizePath(movedPath);
+        if (selected.empty()) return;
+        if (selected == source) {
+            fileBrowser.selectedFile = moved;
+            return;
+        }
+        if (!isPathWithin(source, selected)) {
+            return;
+        }
+        std::error_code relEc;
+        fs::path rel = fs::relative(selected, source, relEc);
+        if (relEc || rel.empty()) {
+            return;
+        }
+        fileBrowser.selectedFile = moved / rel;
+    };
+
+    auto importPathIntoDirectory = [&](const fs::path& sourcePath, const fs::path& destinationDir) {
+        std::error_code ec;
+        if (sourcePath.empty() || destinationDir.empty()) {
+            return false;
+        }
+        if (!fs::exists(sourcePath, ec) || ec) {
+            addConsoleMessage("Import failed: source missing " + sourcePath.string(), ConsoleMessageType::Error);
+            return false;
+        }
+        if (!fs::exists(destinationDir, ec) || ec || !fs::is_directory(destinationDir, ec)) {
+            addConsoleMessage("Import failed: destination folder missing " + destinationDir.string(), ConsoleMessageType::Error);
+            return false;
+        }
+
+        const fs::path normalizedSource = normalizePath(sourcePath);
+        const fs::path normalizedDestination = normalizePath(destinationDir);
+        if (fs::is_directory(normalizedSource, ec) && !ec && isPathWithin(normalizedSource, normalizedDestination)) {
+            addConsoleMessage("Import failed: cannot import a folder into itself " + normalizedSource.string(),
+                              ConsoleMessageType::Error);
+            return false;
+        }
+
+        fs::path targetPath = makeUniquePath(normalizedDestination / normalizedSource.filename());
+        ec.clear();
+        if (fs::is_directory(normalizedSource, ec) && !ec) {
+            fs::copy(normalizedSource, targetPath,
+                     fs::copy_options::recursive |
+                     fs::copy_options::copy_symlinks |
+                     fs::copy_options::skip_existing,
+                     ec);
+        } else {
+            fs::copy_file(normalizedSource, targetPath, fs::copy_options::overwrite_existing, ec);
+        }
+
+        if (ec) {
+            addConsoleMessage("Import failed: " + normalizedSource.string() + " (" + ec.message() + ")",
+                              ConsoleMessageType::Error);
+            return false;
+        }
+        addConsoleMessage("Imported: " + targetPath.string(), ConsoleMessageType::Success);
+        fileBrowser.selectedFile = targetPath;
+        fileBrowser.needsRefresh = true;
+        projectManager.currentProject.hasUnsavedChanges = true;
+        return true;
+    };
+
+    auto importDirectoryContentsIntoDirectory = [&](const fs::path& sourceDir, const fs::path& destinationDir) {
+        std::error_code ec;
+        if (sourceDir.empty() || destinationDir.empty()) {
+            return false;
+        }
+        if (!fs::exists(sourceDir, ec) || ec || !fs::is_directory(sourceDir, ec)) {
+            addConsoleMessage("Import failed: source folder missing " + sourceDir.string(), ConsoleMessageType::Error);
+            return false;
+        }
+        if (!fs::exists(destinationDir, ec) || ec || !fs::is_directory(destinationDir, ec)) {
+            addConsoleMessage("Import failed: destination folder missing " + destinationDir.string(), ConsoleMessageType::Error);
+            return false;
+        }
+
+        const fs::path normalizedSource = normalizePath(sourceDir);
+        const fs::path normalizedDestination = normalizePath(destinationDir);
+        if (normalizedSource == normalizedDestination) {
+            addConsoleMessage("Import failed: source and destination folder are the same.", ConsoleMessageType::Error);
+            return false;
+        }
+
+        int importedCount = 0;
+        int failedCount = 0;
+        for (const auto& child : fs::directory_iterator(normalizedSource, ec)) {
+            if (ec) {
+                addConsoleMessage("Import failed while reading folder: " + normalizedSource.string() +
+                                  " (" + ec.message() + ")", ConsoleMessageType::Error);
+                return false;
+            }
+            if (importPathIntoDirectory(child.path(), normalizedDestination)) {
+                ++importedCount;
+            } else {
+                ++failedCount;
+            }
+        }
+
+        if (importedCount == 0 && failedCount == 0) {
+            addConsoleMessage("Import skipped: folder is empty " + normalizedSource.string(), ConsoleMessageType::Info);
+            return false;
+        }
+        if (importedCount > 0) {
+            addConsoleMessage("Imported " + std::to_string(importedCount) + " item(s) from folder contents.",
+                              ConsoleMessageType::Success);
+        }
+        if (failedCount > 0) {
+            addConsoleMessage("Failed to import " + std::to_string(failedCount) + " item(s) from folder contents.",
+                              ConsoleMessageType::Warning);
+        }
+        return importedCount > 0;
+    };
+
+    auto movePathIntoDirectory = [&](const fs::path& sourcePath, const fs::path& destinationDir) {
+        std::error_code ec;
+        if (sourcePath.empty() || destinationDir.empty()) {
+            return false;
+        }
+        if (!fs::exists(sourcePath, ec) || ec) {
+            return false;
+        }
+        if (!fs::exists(destinationDir, ec) || ec || !fs::is_directory(destinationDir, ec)) {
+            return false;
+        }
+        if (!fileBrowser.projectRoot.empty() && !isPathWithin(fileBrowser.projectRoot, sourcePath)) {
+            addConsoleMessage("Move blocked: source is outside the project root.", ConsoleMessageType::Warning);
+            return false;
+        }
+        if (!fileBrowser.projectRoot.empty() && !isPathWithin(fileBrowser.projectRoot, destinationDir)) {
+            addConsoleMessage("Move blocked: destination is outside the project root.", ConsoleMessageType::Warning);
+            return false;
+        }
+
+        fs::path normalizedSource = normalizePath(sourcePath);
+        fs::path normalizedDestination = normalizePath(destinationDir);
+        fs::path sourceParent = normalizePath(normalizedSource.parent_path());
+        if (normalizedDestination == sourceParent) {
+            return false;
+        }
+        if (fs::is_directory(normalizedSource, ec) && !ec && isPathWithin(normalizedSource, normalizedDestination)) {
+            addConsoleMessage("Move failed: cannot move a folder into itself.", ConsoleMessageType::Error);
+            return false;
+        }
+
+        fs::path targetPath = normalizedDestination / normalizedSource.filename();
+        if (targetPath == normalizedSource) {
+            return false;
+        }
+        if (fs::exists(targetPath, ec) && !ec) {
+            targetPath = makeUniquePath(targetPath);
+        }
+
+        ec.clear();
+        fs::rename(normalizedSource, targetPath, ec);
+        if (ec) {
+            ec.clear();
+            if (fs::is_directory(normalizedSource, ec) && !ec) {
+                fs::copy(normalizedSource, targetPath,
+                         fs::copy_options::recursive |
+                         fs::copy_options::copy_symlinks |
+                         fs::copy_options::skip_existing,
+                         ec);
+                if (!ec) {
+                    fs::remove_all(normalizedSource, ec);
+                }
+            } else {
+                fs::copy_file(normalizedSource, targetPath, fs::copy_options::overwrite_existing, ec);
+                if (!ec) {
+                    fs::remove(normalizedSource, ec);
+                }
+            }
+        }
+
+        if (ec) {
+            addConsoleMessage("Move failed: " + normalizedSource.string() + " (" + ec.message() + ")",
+                              ConsoleMessageType::Error);
+            return false;
+        }
+
+        remapSelectedPathAfterMove(normalizedSource, targetPath);
+        fileBrowser.needsRefresh = true;
+        projectManager.currentProject.hasUnsavedChanges = true;
+        addConsoleMessage("Moved: " + normalizedSource.filename().string() + " -> " + targetPath.string(),
+                          ConsoleMessageType::Success);
+        return true;
+    };
+
+    auto handleMovePayloadToDirectory = [&](const ImGuiPayload* payload, const fs::path& destinationDir) {
+        if (!payload || payload->DataSize <= 0 || !payload->Data) {
+            return false;
+        }
+        const char* sourcePathChars = static_cast<const char*>(payload->Data);
+        if (!sourcePathChars || !*sourcePathChars) {
+            return false;
+        }
+        return movePathIntoDirectory(fs::path(sourcePathChars), destinationDir);
+    };
+
+    auto queueImportAssetsDialog = [&](const fs::path& destinationDir) {
+        pendingImportTargetPath = destinationDir.empty() ? fileBrowser.currentPath : destinationDir;
+        importAssetPaths[0] = '\0';
+        showImportAssetsPopup = true;
+        triggerImportAssetsPopup = true;
+    };
     
     // Get colors for categories
     auto getCategoryColor = [](FileCategory cat) -> ImU32 {
@@ -1194,6 +1577,16 @@ void Engine::renderFileBrowserPanel() {
     ImGui::Button("^##Up", ImVec2(24, 0));
     if (ImGui::IsItemActivated()) fileBrowser.navigateUp();
     ImGui::EndDisabled();
+    if (canGoUp && ImGui::BeginDragDropTarget()) {
+        fs::path parentTarget = fileBrowser.currentPath.parent_path();
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+            handleMovePayloadToDirectory(payload, parentTarget);
+        }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+            handleMovePayloadToDirectory(payload, parentTarget);
+        }
+        ImGui::EndDragDropTarget();
+    }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Up one folder");
     ImGui::PopStyleVar();
 
@@ -1244,6 +1637,15 @@ void Engine::renderFileBrowserPanel() {
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton(crumbs[i].label.c_str())) {
             fileBrowser.navigateTo(crumbs[i].target);
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+                handleMovePayloadToDirectory(payload, crumbs[i].target);
+            }
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                handleMovePayloadToDirectory(payload, crumbs[i].target);
+            }
+            ImGui::EndDragDropTarget();
         }
         ImGui::PopID();
         if (i < crumbs.size() - 1) {
@@ -1343,6 +1745,22 @@ void Engine::renderFileBrowserPanel() {
     contentBg.z = std::min(contentBg.z + 0.01f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, contentBg);
     ImGui::BeginChild("FileContent", ImVec2(0, 0), true);
+
+    if (!pendingExternalFileDrops.empty()) {
+        const ImVec2 contentMin = ImGui::GetWindowPos();
+        const ImVec2 contentMax(contentMin.x + ImGui::GetWindowWidth(),
+                                contentMin.y + ImGui::GetWindowHeight());
+        for (const ExternalFileDropEvent& drop : pendingExternalFileDrops) {
+            const bool droppedOverPanel =
+                (drop.mouseX >= contentMin.x && drop.mouseX <= contentMax.x &&
+                 drop.mouseY >= contentMin.y && drop.mouseY <= contentMax.y);
+            if (droppedOverPanel) {
+                importPathIntoDirectory(drop.path, fileBrowser.currentPath);
+            }
+        }
+        pendingExternalFileDrops.clear();
+    }
+
     if (showFileBrowserSidebar) {
         float minSidebarWidth = 150.0f;
         float maxSidebarWidth = std::max(minSidebarWidth, ImGui::GetContentRegionAvail().x * 0.5f);
@@ -1443,6 +1861,15 @@ void Engine::renderFileBrowserPanel() {
             bool open = ImGui::TreeNodeEx(name.c_str(), flags);
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
                 fileBrowser.navigateTo(path);
+            }
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+                    handleMovePayloadToDirectory(payload, path);
+                }
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                    handleMovePayloadToDirectory(payload, path);
+                }
+                ImGui::EndDragDropTarget();
             }
             if (open) {
                 std::vector<fs::path> dirs;
@@ -1656,6 +2083,9 @@ void Engine::renderFileBrowserPanel() {
                         }
                         ImGui::EndMenu();
                     }
+                    if (entry.is_directory() && ImGui::MenuItem("Import Assets Here...")) {
+                        queueImportAssetsDialog(entry.path());
+                    }
                     if (fileBrowser.isModelFile(entry)) {
                         bool isObj = fileBrowser.isOBJFile(entry);
                         if (ImGui::MenuItem("Import to Scene")) {
@@ -1744,6 +2174,14 @@ void Engine::renderFileBrowserPanel() {
                     if (ImGui::MenuItem("Open in File Explorer")) {
                         openPathInFileManager(entry.path());
                     }
+                    if (ImGui::MenuItem("Move to Parent Folder")) {
+                        movePathIntoDirectory(entry.path(), entry.path().parent_path());
+                    }
+                    if (!fileBrowser.projectRoot.empty() &&
+                        normalizePath(entry.path().parent_path()) != normalizePath(fileBrowser.projectRoot) &&
+                        ImGui::MenuItem("Move to Project Root")) {
+                        movePathIntoDirectory(entry.path(), fileBrowser.projectRoot);
+                    }
                     if (ImGui::MenuItem("Rename")) {
                         pendingRenamePath = entry.path();
                         std::string baseName = pendingRenamePath.filename().string();
@@ -1762,9 +2200,20 @@ void Engine::renderFileBrowserPanel() {
                     ImGui::EndPopup();
                 }
 
-                if (!entry.is_directory() && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                if (entry.is_directory() && ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+                        handleMovePayloadToDirectory(payload, entry.path());
+                    }
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                        handleMovePayloadToDirectory(payload, entry.path());
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                     std::string payloadPath = entry.path().string();
-                    ImGui::SetDragDropPayload("FILE_PATH", payloadPath.c_str(), payloadPath.size() + 1);
+                    const char* payloadType = entry.is_directory() ? "FILE_BROWSER_ENTRY" : "FILE_PATH";
+                    ImGui::SetDragDropPayload(payloadType, payloadPath.c_str(), payloadPath.size() + 1);
                     ImGui::Text("%s", filename.c_str());
                     ImGui::EndDragDropSource();
                 }
@@ -1940,6 +2389,9 @@ void Engine::renderFileBrowserPanel() {
                     }
                     ImGui::EndMenu();
                 }
+                if (entry.is_directory() && ImGui::MenuItem("Import Assets Here...")) {
+                    queueImportAssetsDialog(entry.path());
+                }
                 if (fileBrowser.isModelFile(entry)) {
                     bool isObj = fileBrowser.isOBJFile(entry);
                     std::string ext = entry.path().extension().string();
@@ -2031,6 +2483,14 @@ void Engine::renderFileBrowserPanel() {
                 if (ImGui::MenuItem("Open in File Explorer")) {
                     openPathInFileManager(entry.path());
                 }
+                if (ImGui::MenuItem("Move to Parent Folder")) {
+                    movePathIntoDirectory(entry.path(), entry.path().parent_path());
+                }
+                if (!fileBrowser.projectRoot.empty() &&
+                    normalizePath(entry.path().parent_path()) != normalizePath(fileBrowser.projectRoot) &&
+                    ImGui::MenuItem("Move to Project Root")) {
+                    movePathIntoDirectory(entry.path(), fileBrowser.projectRoot);
+                }
                 if (ImGui::MenuItem("Rename")) {
                     pendingRenamePath = entry.path();
                     std::string baseName = pendingRenamePath.filename().string();
@@ -2049,9 +2509,20 @@ void Engine::renderFileBrowserPanel() {
                 ImGui::EndPopup();
             }
 
-            if (!entry.is_directory() && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            if (entry.is_directory() && ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+                    handleMovePayloadToDirectory(payload, entry.path());
+                }
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                    handleMovePayloadToDirectory(payload, entry.path());
+                }
+                ImGui::EndDragDropTarget();
+            }
+
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                 std::string payloadPath = entry.path().string();
-                ImGui::SetDragDropPayload("FILE_PATH", payloadPath.c_str(), payloadPath.size() + 1);
+                const char* payloadType = entry.is_directory() ? "FILE_BROWSER_ENTRY" : "FILE_PATH";
+                ImGui::SetDragDropPayload(payloadType, payloadPath.c_str(), payloadPath.size() + 1);
                 ImGui::Text("%s", filename.c_str());
                 ImGui::EndDragDropSource();
             }
@@ -2062,9 +2533,30 @@ void Engine::renderFileBrowserPanel() {
         ImGui::PopStyleVar();
     }
 
+    const bool fileMainBackgroundLeftClicked =
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !ImGui::IsAnyItemHovered();
+    if (fileMainBackgroundLeftClicked) {
+        fileBrowser.selectedFile.clear();
+    }
+
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+            handleMovePayloadToDirectory(payload, fileBrowser.currentPath);
+        }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+            handleMovePayloadToDirectory(payload, fileBrowser.currentPath);
+        }
+        ImGui::EndDragDropTarget();
+    }
+
     if (ImGui::BeginPopupContextWindow("FileBrowserEmptyContext", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight)) {
         if (ImGui::MenuItem("Open in File Explorer")) {
             openPathInFileManager(fileBrowser.currentPath);
+        }
+        if (ImGui::MenuItem("Import Assets...")) {
+            queueImportAssetsDialog(fileBrowser.currentPath);
         }
         if (ImGui::MenuItem("Refresh")) {
             fileBrowser.needsRefresh = true;
@@ -2200,6 +2692,104 @@ void Engine::renderFileBrowserPanel() {
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(120, 0))) {
             showRenamePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (triggerImportAssetsPopup) {
+        ImGui::OpenPopup("Import Assets");
+        triggerImportAssetsPopup = false;
+    }
+    if (ImGui::BeginPopupModal("Import Assets", &showImportAssetsPopup, ImGuiWindowFlags_AlwaysAutoResize)) {
+        fs::path targetDir = pendingImportTargetPath.empty() ? fileBrowser.currentPath : pendingImportTargetPath;
+        ImGui::Text("Import assets into:");
+        ImGui::TextDisabled("%s", targetDir.string().c_str());
+        ImGui::Spacing();
+        ImGui::TextWrapped("Use your file explorer to import a single file or an entire folder's contents.");
+        const bool nativePickerAvailable = supportsNativeImportPathPicker();
+        ImGui::BeginDisabled(!nativePickerAvailable);
+        if (ImGui::Button("Select File...", ImVec2(180, 0))) {
+            if (auto selectedPath = chooseImportFilePath(targetDir)) {
+                if (importPathIntoDirectory(*selectedPath, targetDir)) {
+                    showImportAssetsPopup = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Select Folder Contents...", ImVec2(220, 0))) {
+            if (auto selectedFolder = chooseImportFolderPath(targetDir)) {
+                if (importDirectoryContentsIntoDirectory(*selectedFolder, targetDir)) {
+                    showImportAssetsPopup = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::EndDisabled();
+        if (!nativePickerAvailable) {
+            ImGui::TextDisabled("Native picker unavailable. Install zenity/kdialog or paste paths below.");
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextWrapped("Paste one or more source paths. Separate paths with new lines, semicolons, or commas.");
+        ImGui::InputTextMultiline("##ImportAssetPaths", importAssetPaths, sizeof(importAssetPaths),
+                                  ImVec2(520.0f, 120.0f));
+        bool canImport = importAssetPaths[0] != '\0';
+        ImGui::BeginDisabled(!canImport);
+        if (ImGui::Button("Import", ImVec2(120, 0))) {
+            auto trim = [](std::string value) {
+                auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+                while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
+                    value.erase(value.begin());
+                }
+                while (!value.empty() && isSpace(static_cast<unsigned char>(value.back()))) {
+                    value.pop_back();
+                }
+                return value;
+            };
+
+            int importedCount = 0;
+            int failedCount = 0;
+            std::string raw(importAssetPaths);
+            size_t start = 0;
+            for (size_t i = 0; i <= raw.size(); ++i) {
+                const bool split = (i == raw.size()) || raw[i] == '\n' || raw[i] == '\r' || raw[i] == ';' || raw[i] == ',';
+                if (!split) continue;
+                std::string token = trim(raw.substr(start, i - start));
+                start = i + 1;
+                if (token.empty()) continue;
+
+                std::error_code absEc;
+                fs::path source = fs::absolute(fs::path(token), absEc);
+                if (absEc) {
+                    source = fs::path(token);
+                }
+                if (importPathIntoDirectory(source, targetDir)) {
+                    ++importedCount;
+                } else {
+                    ++failedCount;
+                }
+            }
+
+            if (importedCount > 0) {
+                addConsoleMessage("Imported " + std::to_string(importedCount) + " asset(s).",
+                                  ConsoleMessageType::Success);
+            }
+            if (failedCount > 0) {
+                addConsoleMessage("Failed to import " + std::to_string(failedCount) + " path(s).",
+                                  ConsoleMessageType::Warning);
+            }
+            if (importedCount > 0 || failedCount > 0) {
+                showImportAssetsPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            showImportAssetsPopup = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

@@ -42,6 +42,13 @@ public:
 class OBJLoader {
 public:
     struct LoadedMesh {
+        struct SubMesh {
+            std::unique_ptr<Mesh> mesh;
+            int materialIndex = 0;
+            int vertexCount = 0;
+            int faceCount = 0;
+        };
+
         std::string path;
         std::unique_ptr<Mesh> mesh;
         std::string name;
@@ -60,6 +67,8 @@ public:
         std::vector<glm::ivec4> boneIds;
         std::vector<glm::vec4> boneWeights;
         std::vector<float> baseVertices;
+        std::vector<SubMesh> subMeshes;
+        std::vector<std::string> materialSlots;
     };
     
 private:

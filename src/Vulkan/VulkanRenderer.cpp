@@ -1805,7 +1805,7 @@ void VulkanRenderer::setSceneDataForTarget(SceneCameraData& targetCamera,
     std::vector<OrderedInstance> ordered;
     ordered.reserve(sceneObjects.size());
     for (const SceneObject& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasRenderer || obj.renderType == RenderType::None) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasRenderer || obj.renderType == RenderType::None) {
             continue;
         }
         if (obj.renderType == RenderType::Sprite) {
@@ -1873,7 +1873,7 @@ void VulkanRenderer::setSceneDataForTarget(SceneCameraData& targetCamera,
     targetLights.clear();
     targetLights.reserve(std::min<size_t>(sceneObjects.size(), kMaxSceneLights));
     for (const SceneObject& obj : sceneObjects) {
-        if (!obj.enabled || !obj.hasLight || !obj.light.enabled) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight || !obj.light.enabled) {
             continue;
         }
         if (obj.light.intensity <= 0.0f) {

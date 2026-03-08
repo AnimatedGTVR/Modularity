@@ -9,6 +9,8 @@ int width, height, channels;
 namespace
 {
     constexpr int kAnyProfile = 0;
+    constexpr int kDefaultWindowWidth = 1000;
+    constexpr int kDefaultWindowHeight = 800;
 
     void glfwErrorCallback(int code, const char* description)
     {
@@ -17,26 +19,66 @@ namespace
                   << "\n";
     }
 
+    void centerWindowOnPrimaryMonitor(GLFWwindow* window)
+    {
+        if (!window) return;
+#if defined(__linux__)
+        // Wayland does not allow clients to set absolute window positions.
+        if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+            return;
+        }
+#endif
+
+        GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+        if (!monitor) return;
+
+        int workX = 0;
+        int workY = 0;
+        int workW = 0;
+        int workH = 0;
+        glfwGetMonitorWorkarea(monitor, &workX, &workY, &workW, &workH);
+        if (workW <= 0 || workH <= 0) {
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            if (!mode) return;
+            workW = mode->width;
+            workH = mode->height;
+            workX = 0;
+            workY = 0;
+        }
+
+        int windowW = 0;
+        int windowH = 0;
+        glfwGetWindowSize(window, &windowW, &windowH);
+        if (windowW <= 0) windowW = kDefaultWindowWidth;
+        if (windowH <= 0) windowH = kDefaultWindowHeight;
+
+        const int centeredX = workX + (workW - windowW) / 2;
+        const int centeredY = workY + (workH - windowH) / 2;
+        glfwSetWindowPos(window, centeredX, centeredY);
+    }
+
     GLFWwindow* tryCreateWindow(int major, int minor, int profile)
     {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, major);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minor);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
         if (profile != kAnyProfile)
         {
             glfwWindowHint(GLFW_OPENGL_PROFILE, profile);
         }
 
-        return glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
+        return glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, "Modularity", nullptr, nullptr);
     }
 
     GLFWwindow* tryCreateVulkanWindow()
     {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-        return glfwCreateWindow(1000, 800, "Modularity", nullptr, nullptr);
+        return glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, "Modularity", nullptr, nullptr);
     }
 
 } // namespace
@@ -145,6 +187,9 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         glfwSetWindowIcon(window, 1, &icon);
         stbi_image_free(pixels);
     }
+
+    centerWindowOnPrimaryMonitor(window);
+    glfwShowWindow(window);
 
     return window;
 }

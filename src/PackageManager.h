@@ -10,7 +10,9 @@ struct PackageInfo {
     std::string description;
     bool builtIn = false;
     bool external = false;
+    bool modupak = false;
     std::string gitUrl;
+    fs::path modupakSourcePath;
     fs::path localPath;     // Absolute path for external packages
     fs::path includeHint;   // Absolute include root for external packages
     std::vector<fs::path> includeDirs;
@@ -36,6 +38,7 @@ public:
                            const std::string& nameHint,
                            const std::string& includeRel,
                            std::string& outId);
+    bool installModuPak(const fs::path& modupakPath, std::string& outId);
     bool checkGitStatus(const std::string& id, std::string& outStatus);
     bool updateGitPackage(const std::string& id, std::string& outLog);
     bool remove(const std::string& id);

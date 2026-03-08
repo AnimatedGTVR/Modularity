@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <regex>
+#include <unordered_set>
 #if defined(_WIN32)
     #include <windows.h>
 #endif
@@ -73,6 +74,128 @@ namespace {
         auto t = fs::last_write_time(path, ec);
         if (ec) return std::nullopt;
         return t;
+    }
+
+    struct DependencyInfo {
+        bool hasDepFile = false;
+        bool missingDependency = false;
+        std::optional<fs::file_time_type> newestInput;
+    };
+
+    DependencyInfo readDependencyInfo(const fs::path& depFilePath) {
+        DependencyInfo info;
+        if (depFilePath.empty()) {
+            return info;
+        }
+
+        info.hasDepFile = true;
+        std::error_code ec;
+        if (!fs::exists(depFilePath, ec) || ec) {
+            info.missingDependency = true;
+            return info;
+        }
+
+        std::ifstream depFile(depFilePath, std::ios::binary);
+        if (!depFile.is_open()) {
+            info.missingDependency = true;
+            return info;
+        }
+
+        std::ostringstream depStream;
+        depStream << depFile.rdbuf();
+        std::string content = depStream.str();
+        if (content.empty()) {
+            info.missingDependency = true;
+            return info;
+        }
+
+        // Flatten line continuations used by Make-style dep files.
+        std::string flattened;
+        flattened.reserve(content.size());
+        for (size_t i = 0; i < content.size(); ++i) {
+            if (content[i] == '\\') {
+                if (i + 1 < content.size() && content[i + 1] == '\n') {
+                    ++i;
+                    continue;
+                }
+                if (i + 2 < content.size() && content[i + 1] == '\r' && content[i + 2] == '\n') {
+                    i += 2;
+                    continue;
+                }
+            }
+            flattened.push_back(content[i]);
+        }
+
+        const size_t colonPos = flattened.find(':');
+        if (colonPos == std::string::npos || colonPos + 1 >= flattened.size()) {
+            info.missingDependency = true;
+            return info;
+        }
+
+        std::string depList = flattened.substr(colonPos + 1);
+        std::vector<std::string> tokens;
+        std::string current;
+        bool escaped = false;
+        for (char c : depList) {
+            if (escaped) {
+                current.push_back(c);
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (std::isspace(static_cast<unsigned char>(c))) {
+                if (!current.empty()) {
+                    tokens.push_back(current);
+                    current.clear();
+                }
+                continue;
+            }
+            current.push_back(c);
+        }
+        if (escaped) {
+            current.push_back('\\');
+        }
+        if (!current.empty()) {
+            tokens.push_back(current);
+        }
+
+        if (tokens.empty()) {
+            info.missingDependency = true;
+            return info;
+        }
+
+        std::unordered_set<std::string> seen;
+        for (const std::string& rawToken : tokens) {
+            if (rawToken.empty() || !seen.insert(rawToken).second) continue;
+
+            fs::path depPath = fs::path(rawToken);
+            if (depPath.is_relative()) {
+                depPath = fs::absolute(depPath, ec);
+                ec.clear();
+            }
+
+            if (!fs::exists(depPath, ec) || ec) {
+                info.missingDependency = true;
+                ec.clear();
+                continue;
+            }
+
+            auto depTime = fs::last_write_time(depPath, ec);
+            if (ec) {
+                info.missingDependency = true;
+                ec.clear();
+                continue;
+            }
+            info.newestInput = info.newestInput ? std::max(*info.newestInput, depTime) : depTime;
+        }
+
+        if (!info.newestInput) {
+            info.missingDependency = true;
+        }
+        return info;
     }
 
 #if !defined(_WIN32)
@@ -372,6 +495,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     std::string baseName = scriptAbs.stem().string();
     fs::path objectPath = config.outDir / relativeParent / (baseName + ".o");
     fs::path secondaryObjectPath;
+    fs::path dependencyPath;
+    fs::path secondaryDependencyPath;
 
     fs::path binaryPath = config.outDir / relativeParent;
 #ifdef _WIN32
@@ -379,6 +504,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     binaryPath /= baseName + ".dll";
 #else
     binaryPath /= baseName + ".so";
+    dependencyPath = config.outDir / relativeParent / (baseName + ".d");
 #endif
 
     std::string extLower = scriptAbs.extension().string();
@@ -511,6 +637,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         secondaryObjectPath = config.outDir / relativeParent / (baseName + ".wrap.obj");
 #else
         secondaryObjectPath = config.outDir / relativeParent / (baseName + ".wrap.o");
+        secondaryDependencyPath = config.outDir / relativeParent / (baseName + ".wrap.d");
 #endif
         std::ostringstream wrapper;
 
@@ -625,6 +752,50 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         wrapper << "int Modu_EnsureRigidbody(ModuScriptContext* ctx, int useGravity, int kinematic) {\n";
         wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
         wrapper << "    return (cpp && cpp->EnsureRigidbody(useGravity != 0, kinematic != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_HasAnimation(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->HasAnimation()) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_PlayAnimation(ModuScriptContext* ctx, int restart) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->PlayAnimation(restart != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_StopAnimation(ModuScriptContext* ctx, int resetTime) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->StopAnimation(resetTime != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_PauseAnimation(ModuScriptContext* ctx, int pause) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->PauseAnimation(pause != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_ReverseAnimation(ModuScriptContext* ctx, int restartIfStopped) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->ReverseAnimation(restartIfStopped != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_SetAnimationTime(ModuScriptContext* ctx, float timeSeconds) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->SetAnimationTime(timeSeconds)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "float Modu_GetAnimationTime(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return cpp ? cpp->GetAnimationTime() : 0.0f;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_IsAnimationPlaying(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->IsAnimationPlaying()) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_SetAnimationLoop(ModuScriptContext* ctx, int loop) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->SetAnimationLoop(loop != 0)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_SetAnimationPlaySpeed(ModuScriptContext* ctx, float speed) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->SetAnimationPlaySpeed(speed)) ? 1 : 0;\n";
+        wrapper << "}\n\n";
+        wrapper << "int Modu_SetAnimationPlayOnAwake(ModuScriptContext* ctx, int playOnAwake) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return (cpp && cpp->SetAnimationPlayOnAwake(playOnAwake != 0)) ? 1 : 0;\n";
         wrapper << "}\n\n";
         wrapper << "int Modu_IsSprintDown(ModuScriptContext* ctx) {\n";
         wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
@@ -948,10 +1119,12 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #else
         compileCmd << posixCompileDriver(false) << " -std=c11 -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << scriptAbs.string() << "\" -o \"" << objectPath.string() << "\"";
         compileCmd << " && ";
         compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -MMD -MF \"" << secondaryDependencyPath.string() << "\"";
         compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
         linkCmd << "g++ -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
                 << "\" -o \"" << binaryPath.string() << "\"";
@@ -1076,6 +1249,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #else
         compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
+        compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
         linkCmd << "g++ -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
         for (const auto& lib : config.linuxLinkLibs) {
@@ -1108,6 +1282,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.link = linkStr;
     outCommands.objectPath = objectPath;
     outCommands.secondaryObjectPath = secondaryObjectPath;
+    outCommands.dependencyPath = dependencyPath;
+    outCommands.secondaryDependencyPath = secondaryDependencyPath;
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath;
     outCommands.sourcePath = scriptAbs;
@@ -1169,22 +1345,34 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
                                          : std::optional<fs::file_time_type>{};
     const auto binaryTime = getFileWriteTime(commands.binaryPath);
 
-    std::optional<fs::file_time_type> newestInput = sourceTime;
+    std::optional<fs::file_time_type> fallbackNewestInput = sourceTime;
     if (wrapperTime) {
-        newestInput = newestInput ? std::max(*newestInput, *wrapperTime) : wrapperTime;
+        fallbackNewestInput = fallbackNewestInput
+            ? std::max(*fallbackNewestInput, *wrapperTime)
+            : wrapperTime;
     }
 
-    if (objectTime && newestInput) {
-        needsCompile = (*objectTime < *newestInput);
-        if (hasSecondaryObject) {
-            if (!secondaryObjectTime) {
-                needsCompile = true;
-            } else {
-                needsCompile = needsCompile || (*secondaryObjectTime < *newestInput);
+    auto objectNeedsCompile = [&](const std::optional<fs::file_time_type>& builtTime,
+                                  const fs::path& depPath) {
+        if (!builtTime) return true;
+
+        std::optional<fs::file_time_type> newestInput = fallbackNewestInput;
+        if (!depPath.empty()) {
+            DependencyInfo depInfo = readDependencyInfo(depPath);
+            if (!depInfo.hasDepFile || depInfo.missingDependency || !depInfo.newestInput) {
+                return true;
             }
+            newestInput = depInfo.newestInput;
         }
-    } else {
-        needsCompile = true;
+
+        if (!newestInput) return true;
+        return *builtTime < *newestInput;
+    };
+
+    needsCompile = objectNeedsCompile(objectTime, commands.dependencyPath);
+    if (hasSecondaryObject) {
+        needsCompile = needsCompile ||
+                       objectNeedsCompile(secondaryObjectTime, commands.secondaryDependencyPath);
     }
 
     if (!needsCompile) {

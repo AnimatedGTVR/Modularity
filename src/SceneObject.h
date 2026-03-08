@@ -81,6 +81,18 @@ enum class UIAnchor {
     BottomRight = 4
 };
 
+enum class UITextHAlign {
+    Left = 0,
+    Center = 1,
+    Right = 2
+};
+
+enum class UITextVAlign {
+    Top = 0,
+    Middle = 1,
+    Bottom = 2
+};
+
 enum class UISliderStyle {
     ImGui = 0,
     Fill = 1,
@@ -161,16 +173,126 @@ struct AnimationPropertyTrack {
     std::vector<AnimationPropertyKeyframe> keyframes;
 };
 
+struct AnimationClipSlot {
+    std::string name;
+    std::string assetPath;
+};
+
 struct AnimationComponent {
     bool enabled = true;
+    std::string clipAssetPath;
+    std::vector<AnimationClipSlot> clips;
+    int activeClipIndex = -1;
     float clipLength = 2.0f;
     float playSpeed = 1.0f;
     bool loop = true;
+    bool playOnAwake = true;
     bool applyOnScrub = true;
+    bool runtimePlaying = false;
+    bool runtimePaused = false;
+    float runtimeTime = 0.0f;
+    float runtimeDirection = 1.0f;
+    bool runtimeInitialized = false;
+    std::string runtimeClipPath;
     std::vector<AnimationKeyframe> keyframes;
     std::vector<AnimationEvent> events;
     std::vector<AnimationPropertyTrack> tracks;
 };
+
+inline std::string AnimationClipNameFromPath(const std::string& assetPath) {
+    if (assetPath.empty()) return "Animation";
+    fs::path path(assetPath);
+    std::string stem = path.stem().string();
+    if (!stem.empty()) return stem;
+    std::string fileName = path.filename().string();
+    if (!fileName.empty()) return fileName;
+    return "Animation";
+}
+
+inline int AnimationGetActiveClipIndex(const AnimationComponent& animation) {
+    if (animation.clips.empty()) return -1;
+    if (animation.activeClipIndex >= 0 &&
+        animation.activeClipIndex < static_cast<int>(animation.clips.size())) {
+        return animation.activeClipIndex;
+    }
+    if (!animation.clipAssetPath.empty()) {
+        for (int i = 0; i < static_cast<int>(animation.clips.size()); ++i) {
+            if (animation.clips[i].assetPath == animation.clipAssetPath) {
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+
+inline const AnimationClipSlot* AnimationGetActiveClip(const AnimationComponent& animation) {
+    const int index = AnimationGetActiveClipIndex(animation);
+    if (index < 0 || index >= static_cast<int>(animation.clips.size())) return nullptr;
+    return &animation.clips[index];
+}
+
+inline AnimationClipSlot* AnimationGetActiveClip(AnimationComponent& animation) {
+    const int index = AnimationGetActiveClipIndex(animation);
+    if (index < 0 || index >= static_cast<int>(animation.clips.size())) return nullptr;
+    return &animation.clips[index];
+}
+
+inline std::string AnimationGetActiveClipAssetPath(const AnimationComponent& animation) {
+    const AnimationClipSlot* clip = AnimationGetActiveClip(animation);
+    if (clip) return clip->assetPath;
+    return animation.clipAssetPath;
+}
+
+inline std::string AnimationGetActiveClipName(const AnimationComponent& animation) {
+    const AnimationClipSlot* clip = AnimationGetActiveClip(animation);
+    if (clip == nullptr) {
+        if (!animation.clipAssetPath.empty()) {
+            return AnimationClipNameFromPath(animation.clipAssetPath);
+        }
+        return {};
+    }
+    if (!clip->name.empty()) return clip->name;
+    return AnimationClipNameFromPath(clip->assetPath);
+}
+
+inline void NormalizeAnimationClipSlots(AnimationComponent& animation) {
+    if (!animation.clipAssetPath.empty()) {
+        bool foundLegacyPath = false;
+        for (AnimationClipSlot& clip : animation.clips) {
+            if (clip.assetPath == animation.clipAssetPath) {
+                foundLegacyPath = true;
+            }
+            if (clip.name.empty()) {
+                clip.name = AnimationClipNameFromPath(clip.assetPath);
+            }
+        }
+        if (!foundLegacyPath) {
+            AnimationClipSlot clip;
+            clip.assetPath = animation.clipAssetPath;
+            clip.name = AnimationClipNameFromPath(clip.assetPath);
+            animation.clips.push_back(std::move(clip));
+        }
+    } else {
+        for (AnimationClipSlot& clip : animation.clips) {
+            if (clip.name.empty()) {
+                clip.name = AnimationClipNameFromPath(clip.assetPath);
+            }
+        }
+    }
+
+    if (animation.clips.empty()) {
+        animation.activeClipIndex = -1;
+        animation.clipAssetPath.clear();
+        return;
+    }
+
+    int resolvedIndex = AnimationGetActiveClipIndex(animation);
+    if (resolvedIndex < 0 || resolvedIndex >= static_cast<int>(animation.clips.size())) {
+        resolvedIndex = 0;
+    }
+    animation.activeClipIndex = resolvedIndex;
+    animation.clipAssetPath = animation.clips[resolvedIndex].assetPath;
+}
 
 struct SkeletalAnimationComponent {
     bool enabled = true;
@@ -347,6 +469,7 @@ struct UIElementComponent {
     UIAnchor anchor = UIAnchor::Center;
     glm::vec2 position = glm::vec2(0.0f); // offset in pixels from anchor
     glm::vec2 size = glm::vec2(160.0f, 40.0f);
+    bool maskChildren = true; // Canvas-only: clip descendants to this canvas rect.
     float rotation = 0.0f;
     float sliderValue = 0.5f;
     float sliderMin = 0.0f;
@@ -359,6 +482,12 @@ struct UIElementComponent {
     UIButtonStyle buttonStyle = UIButtonStyle::ImGui;
     std::string stylePreset = "Default";
     float textScale = 1.0f;
+    bool textAutoWrap = true;
+    UITextHAlign textHAlign = UITextHAlign::Left;
+    UITextVAlign textVAlign = UITextVAlign::Top;
+    int textEffectFlags = 0;
+    float textEffectSpeed = 1.0f;
+    float textEffectIntensity = 1.0f;
     bool renderIn3D = false;
     glm::ivec2 renderTargetSize = glm::ivec2(512, 512);
     bool spriteSheetEnabled = false;
@@ -373,6 +502,10 @@ struct UIElementComponent {
     std::vector<glm::ivec4> spriteCustomFrames;
     std::vector<std::string> spriteCustomFrameNames;
     std::vector<glm::vec2> spriteCustomFrameScales;
+    bool nineSliceEnabled = false;
+    glm::vec4 nineSliceBorder = glm::vec4(12.0f, 12.0f, 12.0f, 12.0f); // left, right, top, bottom in source pixels
+    bool nineSliceTileEdges = true;
+    bool nineSliceTileCenter = false;
 };
 
 struct Rigidbody2DComponent {
@@ -486,6 +619,8 @@ public:
     std::string name;
     ObjectType type;
     bool enabled = true;
+    // Derived each hierarchy update: true when all ancestors are locally enabled.
+    bool hierarchyEnabled = true;
     int layer = 0;
     std::string tag = "Untagged";
     bool hasRenderer = false;
@@ -567,6 +702,10 @@ public:
 
 inline bool HasRendererComponent(const SceneObject& obj) {
     return obj.hasRenderer && obj.renderType != RenderType::None;
+}
+
+inline bool IsObjectEnabledInHierarchy(const SceneObject& obj) {
+    return obj.enabled && obj.hierarchyEnabled;
 }
 
 inline bool HasUIComponent(const SceneObject& obj) {

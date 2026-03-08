@@ -280,6 +280,7 @@ bool AudioSystem::init() {
 void AudioSystem::shutdown() {
     stopPreview();
     destroyActiveSounds();
+    destroyOneShotSounds();
     shutdownReverbGraph();
     if (initialized) {
         ma_engine_uninit(&engine);
@@ -297,11 +298,37 @@ void AudioSystem::destroyActiveSounds() {
     activeSounds.clear();
 }
 
+void AudioSystem::destroyOneShotSounds() {
+    for (auto& snd : oneShotSounds) {
+        if (snd) {
+            ma_sound_uninit(&snd->sound);
+            releaseDecodedAudio(snd->decodedData);
+        }
+    }
+    oneShotSounds.clear();
+}
+
+void AudioSystem::cleanupFinishedOneShots() {
+    for (auto it = oneShotSounds.begin(); it != oneShotSounds.end(); ) {
+        bool erase = !(*it) || !ma_sound_is_playing(&(*it)->sound);
+        if (erase) {
+            if (*it) {
+                ma_sound_uninit(&(*it)->sound);
+                releaseDecodedAudio((*it)->decodedData);
+            }
+            it = oneShotSounds.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void AudioSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     if (!initialized && !init()) return;
     destroyActiveSounds();
+    destroyOneShotSounds();
     for (const auto& obj : objects) {
-        if (!obj.enabled || !obj.hasAudioSource || obj.audioSource.clipPath.empty()) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasAudioSource || obj.audioSource.clipPath.empty()) continue;
         if (!obj.audioSource.enabled) continue;
         if (ensureSoundFor(obj) && obj.audioSource.playOnStart) {
             ma_sound_start(&activeSounds[obj.id]->sound);
@@ -311,6 +338,7 @@ void AudioSystem::onPlayStart(const std::vector<SceneObject>& objects) {
 
 void AudioSystem::onPlayStop() {
     destroyActiveSounds();
+    destroyOneShotSounds();
 }
 
 bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
@@ -396,6 +424,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
 
     if (!playing) {
         destroyActiveSounds();
+        destroyOneShotSounds();
         return;
     }
 
@@ -405,7 +434,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
         stillPresent.insert(obj.id);
 
         auto eraseIt = activeSounds.find(obj.id);
-        if (!obj.enabled || !obj.audioSource.enabled || obj.audioSource.clipPath.empty()) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.audioSource.enabled || obj.audioSource.clipPath.empty()) {
             if (eraseIt != activeSounds.end()) {
                 if (eraseIt->second) {
                     ma_sound_uninit(&eraseIt->second->sound);
@@ -436,6 +465,8 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
             ++it;
         }
     }
+
+    cleanupFinishedOneShots();
 }
 
 bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) {
@@ -554,11 +585,73 @@ bool AudioSystem::setPreviewLoop(bool loop) {
 }
 
 bool AudioSystem::playObjectSound(const SceneObject& obj) {
-    if (!obj.hasAudioSource || obj.audioSource.clipPath.empty() || !obj.audioSource.enabled) return false;
+    if (!IsObjectEnabledInHierarchy(obj) || !obj.hasAudioSource || obj.audioSource.clipPath.empty() || !obj.audioSource.enabled) return false;
     if (!ensureSoundFor(obj)) return false;
     ActiveSound& snd = *activeSounds[obj.id];
     snd.started = true;
     return ma_sound_start(&snd.sound) == MA_SUCCESS;
+}
+
+bool AudioSystem::playObjectOneShot(const SceneObject& obj, const std::string& clipPathOverride, float volumeScale) {
+    if (!IsObjectEnabledInHierarchy(obj) || !obj.hasAudioSource || !obj.audioSource.enabled) return false;
+    const std::string& clipPath = clipPathOverride.empty() ? obj.audioSource.clipPath : clipPathOverride;
+    if (clipPath.empty()) return false;
+    if (!initialized && !init()) return false;
+
+    if (!fs::exists(clipPath)) {
+        if (missingClips.insert(clipPath).second) {
+            std::cerr << "AudioSystem: clip not found " << clipPath << "\n";
+        }
+        return false;
+    }
+    missingClips.erase(clipPath);
+
+    auto oneShot = std::make_unique<OneShotSound>();
+    if (!initSoundFromPath(clipPath, 0, reverbReady ? &reverbGroup : nullptr,
+                           oneShot->sound, oneShot->decodedData))
+    {
+        return false;
+    }
+
+    const float minDist = std::max(0.1f, obj.audioSource.minDistance);
+    const float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
+    ma_sound_set_looping(&oneShot->sound, MA_FALSE);
+    ma_sound_set_volume(&oneShot->sound, std::max(0.0f, obj.audioSource.volume * volumeScale));
+    ma_sound_set_spatialization_enabled(&oneShot->sound, obj.audioSource.spatial ? MA_TRUE : MA_FALSE);
+    ma_sound_set_min_distance(&oneShot->sound, minDist);
+    ma_sound_set_max_distance(&oneShot->sound, maxDist);
+    ma_sound_set_position(&oneShot->sound, obj.position.x, obj.position.y, obj.position.z);
+
+    if (obj.audioSource.spatial) {
+        switch (obj.audioSource.rolloffMode) {
+            case AudioRolloffMode::Linear:
+                ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_linear);
+                break;
+            case AudioRolloffMode::Exponential:
+                ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_exponential);
+                break;
+            case AudioRolloffMode::Custom:
+                ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_none);
+                break;
+            case AudioRolloffMode::Logarithmic:
+            default:
+                ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_inverse);
+                break;
+        }
+        ma_sound_set_rolloff(&oneShot->sound, std::max(0.01f, obj.audioSource.rolloff));
+    } else {
+        ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_none);
+    }
+
+    if (ma_sound_start(&oneShot->sound) != MA_SUCCESS) {
+        ma_sound_uninit(&oneShot->sound);
+        releaseDecodedAudio(oneShot->decodedData);
+        return false;
+    }
+
+    oneShotSounds.emplace_back(std::move(oneShot));
+    cleanupFinishedOneShots();
+    return true;
 }
 
 bool AudioSystem::stopObjectSound(int objectId) {
@@ -616,7 +709,7 @@ AudioSystem::ReverbSettings AudioSystem::getReverbTarget(const std::vector<Scene
     float bestBlend = 0.0f;
 
     for (const auto& obj : objects) {
-        if (!obj.enabled || !obj.hasReverbZone || !obj.reverbZone.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasReverbZone || !obj.reverbZone.enabled) continue;
         const auto& zone = obj.reverbZone;
         float blend = 0.0f;
 

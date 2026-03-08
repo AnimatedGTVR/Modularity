@@ -78,6 +78,59 @@ int modu_ctx_add_rigidbody_impulse(ScriptContext* ctx, float x, float y, float z
     return ctx->AddRigidbodyImpulse(glm::vec3(x, y, z)) ? 1 : 0;
 }
 
+int modu_ctx_has_animation(ScriptContext* ctx) {
+    return (ctx && ctx->HasAnimation()) ? 1 : 0;
+}
+
+int modu_ctx_play_animation(ScriptContext* ctx, int restart) {
+    if (!ctx) return 0;
+    return ctx->PlayAnimation(restart != 0) ? 1 : 0;
+}
+
+int modu_ctx_stop_animation(ScriptContext* ctx, int resetTime) {
+    if (!ctx) return 0;
+    return ctx->StopAnimation(resetTime != 0) ? 1 : 0;
+}
+
+int modu_ctx_pause_animation(ScriptContext* ctx, int pause) {
+    if (!ctx) return 0;
+    return ctx->PauseAnimation(pause != 0) ? 1 : 0;
+}
+
+int modu_ctx_reverse_animation(ScriptContext* ctx, int restartIfStopped) {
+    if (!ctx) return 0;
+    return ctx->ReverseAnimation(restartIfStopped != 0) ? 1 : 0;
+}
+
+int modu_ctx_set_animation_time(ScriptContext* ctx, float timeSeconds) {
+    if (!ctx) return 0;
+    return ctx->SetAnimationTime(timeSeconds) ? 1 : 0;
+}
+
+float modu_ctx_get_animation_time(ScriptContext* ctx) {
+    if (!ctx) return 0.0f;
+    return ctx->GetAnimationTime();
+}
+
+int modu_ctx_is_animation_playing(ScriptContext* ctx) {
+    return (ctx && ctx->IsAnimationPlaying()) ? 1 : 0;
+}
+
+int modu_ctx_set_animation_loop(ScriptContext* ctx, int loop) {
+    if (!ctx) return 0;
+    return ctx->SetAnimationLoop(loop != 0) ? 1 : 0;
+}
+
+int modu_ctx_set_animation_play_speed(ScriptContext* ctx, float speed) {
+    if (!ctx) return 0;
+    return ctx->SetAnimationPlaySpeed(speed) ? 1 : 0;
+}
+
+int modu_ctx_set_animation_play_on_awake(ScriptContext* ctx, int playOnAwake) {
+    if (!ctx) return 0;
+    return ctx->SetAnimationPlayOnAwake(playOnAwake != 0) ? 1 : 0;
+}
+
 float modu_ctx_get_setting_float(ScriptContext* ctx, const char* key, float fallback) {
     if (!ctx || !key) return fallback;
     return ctx->GetSettingFloat(key, fallback);
@@ -221,7 +274,7 @@ int modu_imgui_accept_scene_object_drop(int* outId) {
 
 ManagedNativeApi BuildManagedNativeApi() {
     ManagedNativeApi api;
-    api.version = 4;
+    api.version = 5;
     api.getObjectId = modu_ctx_get_object_id;
     api.getPosition = modu_ctx_get_position;
     api.setPosition = modu_ctx_set_position;
@@ -258,5 +311,16 @@ ManagedNativeApi BuildManagedNativeApi() {
     api.imguiBeginCombo = modu_imgui_begin_combo;
     api.imguiEndCombo = modu_imgui_end_combo;
     api.imguiSelectable = modu_imgui_selectable;
+    api.hasAnimation = modu_ctx_has_animation;
+    api.playAnimation = modu_ctx_play_animation;
+    api.stopAnimation = modu_ctx_stop_animation;
+    api.pauseAnimation = modu_ctx_pause_animation;
+    api.reverseAnimation = modu_ctx_reverse_animation;
+    api.setAnimationTime = modu_ctx_set_animation_time;
+    api.getAnimationTime = modu_ctx_get_animation_time;
+    api.isAnimationPlaying = modu_ctx_is_animation_playing;
+    api.setAnimationLoop = modu_ctx_set_animation_loop;
+    api.setAnimationPlaySpeed = modu_ctx_set_animation_play_speed;
+    api.setAnimationPlayOnAwake = modu_ctx_set_animation_play_on_awake;
     return api;
 }

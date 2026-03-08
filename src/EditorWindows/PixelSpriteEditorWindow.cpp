@@ -282,6 +282,9 @@ void Engine::renderPixelSpriteEditorWindow() {
     EnsureSpriteClipScales(pixelSpriteDocument.spriteFrameScales, pixelSpriteDocument.spriteFrames.size());
     pixelSpriteDocument.activeLayer = std::clamp(pixelSpriteDocument.activeLayer, 0, std::max(0, static_cast<int>(pixelSpriteDocument.layers.size()) - 1));
 
+    if (mainDockspaceId != 0) {
+        ImGui::SetNextWindowDockID(mainDockspaceId, ImGuiCond_FirstUseEver);
+    }
     if (!ImGui::Begin("Pixel Sprite Editor", &showPixelSpriteEditorWindow, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;

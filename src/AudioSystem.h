@@ -48,6 +48,7 @@ public:
 
     // Scene audio control (runtime)
     bool playObjectSound(const SceneObject& obj);
+    bool playObjectOneShot(const SceneObject& obj, const std::string& clipPathOverride = "", float volumeScale = 1.0f);
     bool stopObjectSound(int objectId);
     bool setObjectLoop(const SceneObject& obj, bool loop);
     bool setObjectVolume(const SceneObject& obj, float volume);
@@ -105,9 +106,15 @@ private:
         std::shared_ptr<DecodedAudioData> decodedData;
     };
 
+    struct OneShotSound {
+        ma_sound sound{};
+        std::shared_ptr<DecodedAudioData> decodedData;
+    };
+
     ma_engine engine{};
     bool initialized = false;
     std::unordered_map<int, std::unique_ptr<ActiveSound>> activeSounds;
+    std::vector<std::unique_ptr<OneShotSound>> oneShotSounds;
     std::unordered_map<std::string, AudioClipPreview> previewCache;
     std::unordered_set<std::string> missingClips;
 
@@ -123,6 +130,8 @@ private:
     std::shared_ptr<DecodedAudioData> previewDecodedData;
 
     void destroyActiveSounds();
+    void destroyOneShotSounds();
+    void cleanupFinishedOneShots();
     bool ensureSoundFor(const SceneObject& obj);
     void refreshSoundParams(const SceneObject& obj, ActiveSound& snd);
     float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos) const;

@@ -36,6 +36,17 @@ int Modu_GetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3* outVelocity);
 int Modu_SetRigidbodyRotation(ModuScriptContext* ctx, ModuVec3 rotation);
 int Modu_EnsureCapsuleCollider(ModuScriptContext* ctx, float height, float radius);
 int Modu_EnsureRigidbody(ModuScriptContext* ctx, int useGravity, int kinematic);
+int Modu_HasAnimation(ModuScriptContext* ctx);
+int Modu_PlayAnimation(ModuScriptContext* ctx, int restart);
+int Modu_StopAnimation(ModuScriptContext* ctx, int resetTime);
+int Modu_PauseAnimation(ModuScriptContext* ctx, int pause);
+int Modu_ReverseAnimation(ModuScriptContext* ctx, int restartIfStopped);
+int Modu_SetAnimationTime(ModuScriptContext* ctx, float timeSeconds);
+float Modu_GetAnimationTime(ModuScriptContext* ctx);
+int Modu_IsAnimationPlaying(ModuScriptContext* ctx);
+int Modu_SetAnimationLoop(ModuScriptContext* ctx, int loop);
+int Modu_SetAnimationPlaySpeed(ModuScriptContext* ctx, float speed);
+int Modu_SetAnimationPlayOnAwake(ModuScriptContext* ctx, int playOnAwake);
 
 int Modu_IsSprintDown(ModuScriptContext* ctx);
 int Modu_IsJumpDown(ModuScriptContext* ctx);

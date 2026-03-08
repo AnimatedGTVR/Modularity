@@ -538,7 +538,7 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     cookInfos.reserve(objects.size());
 
     for (const auto& obj : objects) {
-        if (!obj.enabled || !obj.hasCollider || !obj.collider.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCollider || !obj.collider.enabled) continue;
         if (obj.collider.type == ColliderType::Box || obj.collider.type == ColliderType::Capsule) continue;
         const OBJLoader::LoadedMesh* meshInfo = nullptr;
         if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
@@ -574,7 +574,7 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     }
 
     for (const auto& obj : objects) {
-        if (!obj.enabled) continue;
+        if (!IsObjectEnabledInHierarchy(obj)) continue;
         ActorRecord rec = createActorFor(obj);
         if (!rec.actor) continue;
         mScene->addActor(*rec.actor);
@@ -802,7 +802,7 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         if (!rec.actor) continue;
         auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
         if (it == objects.end()) continue;
-        if (!it->enabled) {
+        if (!IsObjectEnabledInHierarchy(*it)) {
             rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, true);
             continue;
         } else {
@@ -825,7 +825,7 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         if (!rec.actor || !rec.isDynamic || rec.isKinematic) continue;
         PxTransform pose = rec.actor->getGlobalPose();
         auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
-        if (it == objects.end() || !it->enabled) continue;
+        if (it == objects.end() || !IsObjectEnabledInHierarchy(*it)) continue;
 
         it->position = ToGlmVec3(pose.p);
         if (it->hasPlayerController && it->playerController.enabled) {

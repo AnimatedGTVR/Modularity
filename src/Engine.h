@@ -45,6 +45,8 @@ private:
     int viewportWidth = 800;
     int viewportHeight = 600;
     bool gizmoHistoryCaptured = false;
+    bool worldUiGizmoHistoryCaptured = false;
+    bool gameUiGizmoHistoryCaptured = false;
     // Standalone material inspection cache
     std::string inspectedMaterialPath;
     MaterialProperties inspectedMaterial;
@@ -82,6 +84,9 @@ private:
     uint64_t runtimeScriptBindingsCachedVersion = 0;
     int selectedObjectId = -1; // primary selection (last)
     std::vector<int> selectedObjectIds; // multi-select
+    std::vector<int> hierarchyVisibleOrder;
+    int hierarchyRangeAnchorId = -1;
+    std::vector<SceneObject> objectClipboard;
     int nextObjectId = 0;
 
     // Gizmo state
@@ -165,6 +170,12 @@ private:
     float fileBrowserSidebarWidth = 220.0f;
     bool showFileBrowserSidebar = true;
     std::vector<fs::path> fileBrowserFavorites;
+    struct ExternalFileDropEvent {
+        fs::path path;
+        double mouseX = 0.0;
+        double mouseY = 0.0;
+    };
+    std::vector<ExternalFileDropEvent> pendingExternalFileDrops;
     std::string uiStylePresetName = "Current";
     enum class UIAnimationMode {
         Off = 0,
@@ -341,11 +352,21 @@ private:
     bool meshEditLoaded = false;
     bool meshEditDirty = false;
     bool meshEditExtrudeMode = false;
+    bool meshEditAutoUV = true;
+    bool meshEditTriangleSelection = false;
     std::string meshEditPath;
     RawMeshAsset meshEditAsset;
     std::vector<int> meshEditSelectedVertices;
     std::vector<int> meshEditSelectedEdges; // indices into generated edge list
     std::vector<int> meshEditSelectedFaces; // indices into mesh faces
+    int meshEditActiveMaterialSlot = 0;
+    float meshEditInsetAmount = 0.2f;
+    float meshEditExtrudeAmount = 0.3f;
+    float meshEditBevelAmount = 0.1f;
+    float meshEditGridSnap = 0.1f;
+    float meshEditUvMoveStep = 0.1f;
+    float meshEditUvScaleStep = 1.1f;
+    float meshEditUvRotateStep = 15.0f;
     struct UIAnimationState {
         float hover = 0.0f;
         float active = 0.0f;
@@ -390,8 +411,8 @@ private:
     std::unordered_map<int, UiCanvas3DContext> uiCanvas3DContexts;
     std::unordered_map<int, UiCanvas3DInput> uiCanvas3DInputs;
     bool consoleWrapText = true;
-    enum class MeshEditSelectionMode { Vertex = 0, Edge = 1, Face = 2 };
-    MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Vertex;
+    enum class MeshEditSelectionMode { Object = 0, Vertex = 1, Edge = 2, Face = 3, UV = 4 };
+    MeshEditSelectionMode meshEditSelectionMode = MeshEditSelectionMode::Object;
     ScriptCompiler scriptCompiler;
     ScriptRuntime scriptRuntime;
     ManagedScriptRuntime managedRuntime;
@@ -551,6 +572,34 @@ private:
     bool scriptTextEditorReady = false;
     char scriptingFilter[128] = "";
     bool scriptingFilesDirty = true;
+    struct RuntimeAnimKey {
+        float time = 0.0f;
+        float value = 0.0f;
+        float inTangent = 0.0f;
+        float outTangent = 0.0f;
+        int interpolation = 1; // 0=constant, 1=linear, 2=cubic
+    };
+    struct RuntimeAnimTrack {
+        std::string propertyId;
+        std::vector<RuntimeAnimKey> keys;
+    };
+    struct RuntimeAnimBinding {
+        std::string path;
+        std::vector<RuntimeAnimTrack> tracks;
+    };
+    struct RuntimeAnimationClip {
+        std::string name;
+        float duration = 2.0f;
+        float sampleRate = 30.0f;
+        std::vector<RuntimeAnimBinding> bindings;
+    };
+    struct RuntimeClipCacheEntry {
+        RuntimeAnimationClip clip;
+        fs::file_time_type lastWriteTime{};
+        bool hasWriteTime = false;
+        bool valid = false;
+    };
+    std::unordered_map<std::string, RuntimeClipCacheEntry> runtimeAnimationClipCache;
     // Private methods
     SceneObject* getSelectedObject();
     glm::vec3 getSelectionCenterWorld(bool worldSpace) const;
@@ -625,9 +674,16 @@ private:
     void updatePlayerController(float delta);
     void updateRigidbody2D(float delta);
     void updateCameraFollow2D(float delta);
+    void updateRuntimeAnimations(float delta);
     void updateAIAgents(float delta);
     void updateSkeletalAnimations(float delta);
     void updateSkinningMatrices();
+    fs::path resolveAnimationClipPath(const std::string& storedPath) const;
+    bool loadRuntimeAnimationClipFile(const fs::path& path, RuntimeAnimationClip& outClip) const;
+    const RuntimeAnimationClip* getRuntimeAnimationClip(const std::string& storedPath);
+    float getAnimationDurationForObject(const SceneObject& obj) const;
+    bool applyRuntimeAnimatedProperty(SceneObject& obj, const std::string& propertyId, float value);
+    void evaluateRuntimeAnimationClip(const RuntimeAnimationClip& clip, float time, int rootObjectId);
     void rebuildSkeletalBindings();
     void initUIStylePresets();
     int findUIStylePreset(const std::string& name) const;
@@ -687,8 +743,11 @@ private:
     // Scene object management
     void addObject(ObjectType type, const std::string& baseName);
     void duplicateSelected();
+    void copySelected();
+    void pasteClipboard();
+    void selectAllObjects();
     void deleteSelected();
-    void setParent(int childId, int parentId);
+    void setParent(int childId, int parentId, int beforeSiblingId = -1);
     void loadMaterialFromFile(SceneObject& obj);
     void saveMaterialToFile(const SceneObject& obj);
     void recordState(const char* reason = "");
@@ -729,6 +788,9 @@ public:
     void shutdown();
     SceneObject* findObjectByName(const std::string& name);
     SceneObject* findObjectById(int id);
+    bool propagateObjectRenameReferences(const std::string& oldName,
+                                         const std::string& newName,
+                                         int renamedObjectId = -1);
     bool loadPixelSpriteDocument(const fs::path& imagePath);
     bool savePixelSpriteDocument();
     fs::path resolveScriptBinary(const fs::path& sourcePath);
@@ -767,6 +829,18 @@ public:
     bool setAudioLoopFromScript(int id, bool loop);
     bool setAudioVolumeFromScript(int id, float volume);
     bool setAudioClipFromScript(int id, const std::string& path);
+    bool playAudioOneShotFromScript(int id, const std::string& clipPath, float volumeScale = 1.0f);
+    bool hasAnimationFromScript(int id) const;
+    bool playAnimationFromScript(int id, bool restart = true);
+    bool stopAnimationFromScript(int id, bool resetTime = true);
+    bool pauseAnimationFromScript(int id, bool pause);
+    bool reverseAnimationFromScript(int id, bool restartIfStopped = true);
+    bool setAnimationTimeFromScript(int id, float timeSeconds);
+    float getAnimationTimeFromScript(int id) const;
+    bool isAnimationPlayingFromScript(int id) const;
+    bool setAnimationLoopFromScript(int id, bool loop);
+    bool setAnimationPlaySpeedFromScript(int id, float speed);
+    bool setAnimationPlayOnAwakeFromScript(int id, bool playOnAwake);
     void syncLocalTransform(SceneObject& obj);
     const std::vector<SceneObject>& getSceneObjects() const { return sceneObjects; }
     const std::vector<UIStylePreset>& getUIStylePresets() const { return uiStylePresets; }
