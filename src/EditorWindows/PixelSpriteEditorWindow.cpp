@@ -674,7 +674,7 @@ void Engine::renderPixelSpriteEditorWindow() {
 
     auto openPixelSpriteImagePicker = [&]() {
         if (!projectManager.currentProject.isLoaded) {
-            addConsoleMessage("Load a project before opening images from project assets.", ConsoleMessageType::Warning);
+            addConsoleMessage("Please Load a project before opening images from project assets.", ConsoleMessageType::Warning);
             return;
         }
 
