@@ -1,0 +1,25 @@
+#include "ModuCPP"
+
+public class AutoEnableAndDisableListsOfObjectsAfterAmountOfTime : ModuBehaviour {
+    public List<SceneObj*> enable;
+    public List<SceneObj*> disable;
+    public float interval = 1.0f @range(0.0f, 60.0f) @step(0.05f);
+    private float timer = 0.0f;
+
+    void Begin(MODU_obj, float dt) {
+        (void)dt;
+        timer = 0.0f;
+    }
+
+    void TickUpdate(MODU_obj, float dt) {
+        if (!obj || dt <= 0.0f) return;
+
+        timer += dt;
+        if (timer < interval) return;
+
+        each enable.state(true);
+        each disable.state(false);
+
+        timer = 0.0f;
+    }
+}

@@ -1,0 +1,10 @@
+build/
+.cache/
+Images-thingy/
+svgimagesamples/
+compile_commands.json
+Scripts/Managed/bin/
+Scripts/Managed/obj/
+CrashReports/
+.vscode/
+.idea/

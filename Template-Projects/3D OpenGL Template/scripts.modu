@@ -1,0 +1,14 @@
+# scripts.modu
+cppStandard=c++20
+scriptsDir=Assets/Scripts
+outDir=Library/CompiledScripts
+includeDir=/home/anemunt/Git-base/Modularity/build/src
+includeDir=/home/anemunt/Git-base/Modularity/build/include
+includeDir=/home/anemunt/Git-base/Modularity/build/src/ThirdParty
+includeDir=/home/anemunt/Git-base/Modularity/build/src/ThirdParty/glm
+define=MODU_SCRIPTING=1
+define=MODU_PROJECT_NAME="3D OpenGL Template"
+linux.linkLib=pthread
+linux.linkLib=dl
+win.linkLib=User32.lib
+win.linkLib=Advapi32.lib

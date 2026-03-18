@@ -1,0 +1,37 @@
+#include "ModuCPP"
+
+public class EditorWindowSample : ModuBehaviour {
+    private bool toggle = false;
+    private float sliderValue = 0.5f;
+    private string note = "Hello from script!";
+
+    void RenderEditorWindow(MODU_obj) {
+        ImGui::TextUnformatted("EditorWindowSample");
+        ImGui::Separator();
+
+        ImGui::Checkbox("Toggle", &toggle);
+        ImGui::SliderFloat("Value", &sliderValue, 0.0f, 1.0f, "%.2f");
+        ModuCPP::EditString("Note", note, 128, "note");
+
+        if (ImGui::Button("Log Message")) {
+            ctx.AddConsoleMessage("Script tab says: " + note);
+        }
+
+        if (obj) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Selected object: %s (id=%d)", obj->name.c_str(), obj->id);
+            if (ImGui::Button("Nudge +Y")) {
+                auto pos = obj->position;
+                pos.y += 0.25f;
+                ctx.SetPosition(pos);
+                ctx.MarkDirty();
+            }
+        } else {
+            ImGui::TextDisabled("Select an object to enable actions");
+        }
+    }
+
+    void ExitRenderEditorWindow(MODU_obj) {
+        (void)obj;
+    }
+}
