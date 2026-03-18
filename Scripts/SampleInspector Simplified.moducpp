@@ -1,0 +1,82 @@
+#include "ModuCPP"
+
+using namespace ModuCPP;
+
+public class SampleInspectorSimplified : ModuBehaviour {
+    void Script_OnInspector(MODU_obj) {
+        MODU_SCRIPT(ctx);
+
+        auto& config = Config<SampleInspectorSimpleConfig>();
+        bindConfig(ctx, config);
+
+        ImGui::TextUnformatted("SampleInspector");
+        ImGui::Separator();
+
+        bool changed = false;
+        changed |= ImGui::Checkbox("Auto Rotate", &config.autoRotate);
+        changed |= ImGui::DragFloat3("Spin Speed (deg/s)", &config.spinSpeed.x, 1.0f, -360.0f, 360.0f, "%.2f");
+        changed |= ImGui::DragFloat3("Offset", &config.offset.x, 0.1f, -1000.0f, 1000.0f, "%.2f");
+        EditString("Target Name", config.targetName, 128, "targetName");
+        if (changed) {
+            ctx.SaveAutoSettings();
+        }
+
+        if (obj) {
+            ImGui::TextDisabled("Attached to: %s (id=%d)", obj->name.c_str(), obj->id);
+
+            if (ImGui::Button("Apply Offset To Self")) {
+                ctx.SetPosition(obj->position + config.offset);
+            }
+        }
+
+        if (ImGui::Button("Nudge Target")) {
+            if (SceneObject* target = ctx.ResolveObjectRef(config.targetName)) {
+                target->position += config.offset;
+            }
+        }
+    }
+
+    void Spec(MODU_obj, float dt) {
+        MODU_SCRIPT(ctx);
+        auto& config = Config<SampleInspectorSimpleConfig>();
+        bindConfig(ctx, config);
+        ApplyAutoRotate(ctx, config, dt);
+    }
+
+    void TestEditor(MODU_obj, float dt) {
+        MODU_SCRIPT(ctx);
+        auto& config = Config<SampleInspectorSimpleConfig>();
+        bindConfig(ctx, config);
+        ApplyAutoRotate(ctx, config, dt);
+    }
+
+    void TickUpdate(MODU_obj, float dt) {
+        MODU_SCRIPT(ctx);
+        auto& config = Config<SampleInspectorSimpleConfig>();
+        bindConfig(ctx, config);
+        ApplyAutoRotate(ctx, config, dt);
+    }
+}
+
+namespace {
+
+struct SampleInspectorSimpleConfig {
+    bool autoRotate = false;
+    vec3 spinSpeed = vec3(0.0f, 45.0f, 0.0f);
+    vec3 offset = vec3(0.0f, 1.0f, 0.0f);
+    std::string targetName = "MyTarget";
+};
+
+void bindConfig(ScriptContext& ctx, SampleInspectorSimpleConfig& config) {
+    BindSetting(ctx, "autoRotate", config.autoRotate);
+    BindSetting(ctx, "spinSpeed", config.spinSpeed);
+    BindSetting(ctx, "offset", config.offset);
+    BindSetting(ctx, "targetName", config.targetName);
+}
+
+void ApplyAutoRotate(ScriptContext& ctx, const SampleInspectorSimpleConfig& config, float deltaTime) {
+    if (!ctx.object || !config.autoRotate) return;
+    ctx.SetRotation(ctx.object->rotation + config.spinSpeed * deltaTime);
+}
+
+} // namespace

@@ -4,6 +4,7 @@
 #include "SceneObject.h"
 #include "Camera.h"
 #include "Rendering.h"
+#include "Lighting2D.h"
 #include "ProjectManager.h"
 #include "EditorUI.h"
 #include "MeshBuilder.h"
@@ -29,6 +30,12 @@
 void window_size_callback(GLFWwindow* window, int width, int height);
 fs::path resolveScriptsConfigPath(const Project& project);
 
+struct PixelSpriteLayerState {
+    std::string name = "Layer_0";
+    bool visible = true;
+    std::vector<unsigned char> pixels;
+};
+
 class Engine {
     friend void window_size_callback(GLFWwindow* window, int width, int height);
 private:
@@ -36,6 +43,7 @@ private:
     GLFWwindow* editorWindow = nullptr;
     Modularity::GraphicsBackend graphicsBackend = Modularity::GraphicsBackend::OpenGL;
     Renderer renderer;
+    Lighting2DRenderer lighting2DRenderer;
     std::unique_ptr<Modularity::VulkanRenderer> vulkanRenderer;
     Camera camera;
     ViewportController viewportController;
@@ -111,6 +119,7 @@ private:
     bool playerMode = false;
     bool autoStartRequested = false;
     bool autoStartPlayerMode = false;
+    std::string autoStartBundlePath;
     std::string autoStartProjectPath;
     std::string autoStartSceneName;
     struct ConsoleEntry {
@@ -189,11 +198,13 @@ private:
     };
     UIAnimationMode uiAnimationMode = UIAnimationMode::Fluid;
     WorkspaceMode currentWorkspace = WorkspaceMode::Default;
+    std::array<bool, 3> workspaceTabVisible = { true, true, true };
     bool workspaceLayoutDirty = false;
     bool pendingWorkspaceReload = false;
     bool workspaceLayoutSavePending = false;
     bool workspaceLayoutAutoRepairPending = false;
     double workspaceLayoutStabilizeUntil = 0.0;
+    double workspaceSwitchLockUntil = 0.0;
     fs::path pendingWorkspaceIniPath;
     ImGuiID mainDockspaceId = 0;
     bool editorSettingsDirty = false;
@@ -202,6 +213,10 @@ private:
     bool showAnimationWindow = false;
     bool showAIPathfindingWindow = false;
     bool showPixelSpriteEditorWindow = false;
+    bool pixelSpriteOpenImagePopupOpen = false;
+    bool pixelSpriteOpenImagePopupTrigger = false;
+    FileBrowser pixelSpriteOpenImageBrowser;
+    char pixelSpriteOpenImageSearch[256] = "";
     int animationTargetId = -1;
     std::vector<int> animationEditTargetIds;
     bool animationApplyToSelection = true;
@@ -256,6 +271,11 @@ private:
     bool gizmoShowCameraFrustumLabels = true;
     bool gizmoShowLightOverlays = true;
     bool gizmoShowLightIntensityLabels = true;
+    bool showViewportHintOverlay = true;
+    bool showLight2DStatsOverlay = true;
+    bool gizmoShowLight2DBounds = true;
+    bool gizmoShowLight2DShapes = true;
+    bool gizmoShowShadowCaster2DBounds = true;
     float sceneGizmoIconScale = 1.0f;
     float sceneGizmoOverlayScale = 1.0f;
     bool showGameViewport = true;
@@ -268,10 +288,6 @@ private:
     bool showSceneGrid3D = false;
     bool pixelGridSnapEnabled = true;
     int pixelGridSnapStep = 1;
-    bool showSpritePreviewPanel = true;
-    bool spriteTimelinePreviewPlaying = false;
-    double spriteTimelineLastTick = 0.0;
-    int spriteTimelineTargetId = -1;
     enum class PixelSpriteEditorMode {
         Edit = 0,
         SpriteSheet = 1
@@ -279,8 +295,16 @@ private:
     enum class PixelSpriteTool {
         Pencil = 0,
         Eraser = 1,
-        Fill = 2,
-        Select = 3
+        Bucket = 2,
+        ColorPicker = 3,
+        MagicSelect = 4,
+        Lasso = 5,
+        LineCurve = 6,
+        MoveSelectedArea = 7,
+        Rectangle = 8,
+        RoundedRectangle = 9,
+        Circle = 10,
+        SelectArea = 11
     };
     enum class PixelSpriteCheckerTheme {
         Light = 0,
@@ -303,11 +327,12 @@ private:
         std::vector<glm::ivec4> spriteFrames;
         std::vector<std::string> spriteFrameNames;
         std::vector<glm::vec2> spriteFrameScales;
-        std::vector<SpritesheetLayer> layers;
+        std::vector<PixelSpriteLayerState> layers;
         int activeLayer = 0;
         int activeFrame = 0;
     };
     struct PixelSpriteHistoryState {
+        std::string label = "Edit";
         int width = 16;
         int height = 16;
         std::vector<unsigned char> pixels;
@@ -319,7 +344,7 @@ private:
         std::vector<glm::ivec4> spriteFrames;
         std::vector<std::string> spriteFrameNames;
         std::vector<glm::vec2> spriteFrameScales;
-        std::vector<SpritesheetLayer> layers;
+        std::vector<PixelSpriteLayerState> layers;
         int activeLayer = 0;
         int activeFrame = 0;
     };
@@ -336,14 +361,24 @@ private:
     bool pixelSpriteCanvasCenterPending = false;
     glm::vec4 pixelSpritePrimaryColor = glm::vec4(0.12f, 0.12f, 0.12f, 1.0f);
     glm::vec4 pixelSpriteSecondaryColor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    std::vector<glm::vec4> pixelSpriteRecentColors;
+    int pixelSpriteBrushSize = 1;
     bool pixelSpriteShowGrid = true;
     bool pixelSpritePixelPerfect = true;
     PixelSpriteCheckerTheme pixelSpriteCheckerTheme = PixelSpriteCheckerTheme::Light;
+    bool pixelSpriteRightPanelCollapsed = false;
+    bool pixelSpriteFloatingSelectionActive = false;
+    std::vector<unsigned char> pixelSpriteFloatingSelectionPixels;
+    glm::ivec2 pixelSpriteFloatingSelectionSize = glm::ivec2(0);
+    glm::ivec2 pixelSpriteFloatingSelectionPosition = glm::ivec2(0);
+    int pixelSpriteFloatingSelectionLayer = -1;
     int gameViewportResolutionIndex = 0;
     int gameViewportCustomWidth = 1920;
     int gameViewportCustomHeight = 1080;
     float gameViewportZoom = 1.0f;
     bool gameViewportAutoFit = true;
+    int gameViewportLastRenderWidth = 0;
+    int gameViewportLastRenderHeight = 0;
     int activePlayerId = -1;
     MeshBuilder meshBuilder;
     char meshBuilderPath[260] = "";
@@ -397,6 +432,21 @@ private:
     bool uiWorldMode = false;
     bool uiWorldPanning = false;
     UIWorldCamera2D uiWorldCamera;
+    std::array<Light2DBlendStyleDefinition, 4> light2DBlendStyles = {{
+        { "Additive", Light2DBlendMode::Additive, glm::vec4(1.0f), 1.0f },
+        { "Multiply", Light2DBlendMode::Multiply, glm::vec4(1.0f), 1.0f },
+        { "Subtractive", Light2DBlendMode::Subtractive, glm::vec4(1.0f), 1.0f },
+        { "Soft Additive", Light2DBlendMode::Additive, glm::vec4(0.85f, 0.85f, 0.85f, 1.0f), 0.65f }
+    }};
+    bool light2DCompositorRanLastFrame = false;
+    bool light2DLightBufferHadContentLastFrame = false;
+    int light2DActiveCountLastFrame = 0;
+    int light2DLitSprite2DCountLastFrame = 0;
+    int light2DLitWorldImageCountLastFrame = 0;
+    std::unordered_map<int, std::string> light2DObjectRoutingReasonsLastFrame;
+    bool light2DShapeEditMode = false;
+    int light2DShapeEditingObjectId = -1;
+    int light2DShapeEditingPointIndex = -1;
     struct UiCanvas3DContext {
         ImGuiContext* context = nullptr;
         bool backendReady = false;
@@ -663,6 +713,9 @@ private:
     void updateAutoCompileScripts();
     void processAutoCompileQueue();
     void queueAutoCompile(const fs::path& scriptPath, const fs::file_time_type& sourceTime);
+    void resetScriptRuntimeStateForReload(bool clearBinaryPaths);
+    void getRuntimeInternalResolution(int& outWidth, int& outHeight) const;
+    float getRuntimeInternalAspect() const;
     void startProjectLoad(const std::string& path);
     void pollProjectLoad();
     void finishProjectLoad(ProjectLoadResult& result);

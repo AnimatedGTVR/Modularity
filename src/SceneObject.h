@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common.h"
+#include "Lighting2D.h"
 
 enum class ObjectType {
     Cube = 0,
@@ -25,7 +26,9 @@ enum class ObjectType {
     UIButton = 19,
     UIText = 20,
     Empty = 21,
-    Sprite25D = 22
+    Sprite25D = 22,
+    Light2D = 23,
+    ShadowCaster2D = 24
 };
 
 enum class RenderType {
@@ -490,6 +493,25 @@ struct UIElementComponent {
     float textEffectIntensity = 1.0f;
     bool renderIn3D = false;
     glm::ivec2 renderTargetSize = glm::ivec2(512, 512);
+    bool pseudo3DEnabled = false;
+    bool pseudo3DUseOffscreenSurface = true;
+    glm::vec2 pseudo3DPanelSize = glm::vec2(0.0f); // <= 0 uses ui.size
+    glm::vec2 pseudo3DTopLeftOffset = glm::vec2(0.0f);
+    glm::vec2 pseudo3DTopRightOffset = glm::vec2(0.0f);
+    glm::vec2 pseudo3DBottomRightOffset = glm::vec2(0.0f);
+    glm::vec2 pseudo3DBottomLeftOffset = glm::vec2(0.0f);
+    glm::vec2 pseudo3DPivot = glm::vec2(0.5f, 0.5f);
+    float pseudo3DPerspectiveIntensity = 0.0f;
+    float pseudo3DSkewAmount = 0.0f;
+    float pseudo3DCurvatureAmount = 0.0f;
+    int pseudo3DAnchorTargetId = -1;
+    bool pseudo3DDistanceScalingEnabled = false;
+    bool pseudo3DAdjustPerspectiveWithDistance = false;
+    float pseudo3DMinDistance = 1.0f;
+    float pseudo3DMaxDistance = 20.0f;
+    float pseudo3DInteractionDistance = 0.0f; // 0 disables distance gating
+    int pseudo3DDepthSort = 0;
+    bool pseudo3DAllowInteraction = true;
     bool spriteSheetEnabled = false;
     int spriteSheetColumns = 1;
     int spriteSheetRows = 1;
@@ -506,6 +528,9 @@ struct UIElementComponent {
     glm::vec4 nineSliceBorder = glm::vec4(12.0f, 12.0f, 12.0f, 12.0f); // left, right, top, bottom in source pixels
     bool nineSliceTileEdges = true;
     bool nineSliceTileCenter = false;
+    bool receiveLighting2D = true;
+    bool unlitLighting2D = false;
+    float emissiveLighting2D = 0.0f;
 };
 
 struct Rigidbody2DComponent {
@@ -627,9 +652,11 @@ public:
     RenderType renderType = RenderType::None;
     bool faceCamera = false;
     bool hasLight = false;
+    bool hasLight2D = false;
     bool hasCamera = false;
     bool hasPostFX = false;
     bool hasUI = false;
+    bool hasShadowCaster2D = false;
     glm::vec3 position;
     glm::vec3 rotation;
     glm::vec3 scale;
@@ -653,6 +680,8 @@ public:
     std::string fragmentShaderPath;
     bool useOverlay = false;
     LightComponent light;  // Only used when type is a light
+    Light2DComponent light2D;
+    ShadowCaster2DComponent shadowCaster2D;
     CameraComponent camera; // Only used when type is camera
     PostFXSettings postFx;  // Only used when type is PostFXNode
     std::vector<ScriptComponent> scripts;

@@ -10,7 +10,7 @@ struct ScriptContext {
     Engine* engine = nullptr;
     SceneObject* object = nullptr;
     ScriptComponent* script = nullptr;
-    enum class AutoSettingType { Bool, Float, Vec3, StringBuf };
+    enum class AutoSettingType { Bool, Float, Int, Vec3, StringBuf, String };
     struct AutoSettingEntry {
         AutoSettingType type;
         std::string key;
@@ -18,12 +18,18 @@ struct ScriptContext {
         size_t bufSize = 0;
         bool initialBool = false;
         float initialFloat = 0.0f;
+        int initialInt = 0;
         glm::vec3 initialVec3 = glm::vec3(0.0f);
         std::string initialString;
     };
     std::vector<AutoSettingEntry> autoSettings;
 
     // Convenience helpers for scripts
+    /// @summary Resolve the first scene object with an exact name match.
+    /// @usage Useful for cross-object links in gameplay scripts.
+    /// @howto Call once (for example in Begin) and cache the id/name you need.
+    /// @param name Scene object name to match exactly.
+    /// @returns Matching object pointer, or nullptr when not found.
     SceneObject* FindObjectByName(const std::string& name);
     SceneObject* FindObjectById(int id);
     SceneObject* ResolveObjectRef(const std::string& ref);
@@ -46,6 +52,8 @@ struct ScriptContext {
     int GetSelectedObjectId() const;
     bool IsSprintDown() const;
     bool IsJumpDown() const;
+    bool IsKeyDown(int glfwKey, ImGuiKey imguiKey = ImGuiKey_None) const;
+    bool IsKeyPressed(int glfwKey, ImGuiKey imguiKey = ImGuiKey_None) const;
     bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
                        glm::vec3* outHitPos = nullptr, bool* outHitGround = nullptr,
                        glm::vec3* outHitNormal = nullptr, int* outHitActorId = nullptr,
@@ -101,6 +109,12 @@ struct ScriptContext {
     std::string GetSpriteClipNameAt(int index) const;
     bool SetSpriteClipIndex(int index);
     bool SetSpriteClipName(const std::string& name);
+    float GetSpriteAlpha() const;
+    void SetSpriteAlpha(float alpha);
+    bool FadeSpriteAlpha(float targetAlpha, float duration, float deltaTime);
+    bool FadeSpriteToClipIndex(int clipIndex, float fadeOutDuration, float fadeInDuration, float deltaTime);
+    bool FadeSpriteToClipName(const std::string& clipName,
+                              float fadeOutDuration, float fadeInDuration, float deltaTime);
     float GetUITextScale() const;
     void SetUITextScale(float scale);
     void SetUISliderStyle(UISliderStyle style);
@@ -169,8 +183,10 @@ struct ScriptContext {
     // Auto-binding helpers: bind once per call, optionally load stored value.
     void AutoSetting(const std::string& key, bool& value);
     void AutoSetting(const std::string& key, float& value);
+    void AutoSetting(const std::string& key, int& value);
     void AutoSetting(const std::string& key, glm::vec3& value);
     void AutoSetting(const std::string& key, char* buffer, size_t bufferSize);
+    void AutoSetting(const std::string& key, std::string& value);
     void SaveAutoSettings();
     // IEnum helpers
     void StartIEnum(void(*fn)(ScriptContext&, float));

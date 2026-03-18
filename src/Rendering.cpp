@@ -2461,8 +2461,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         int availableBones = 0;
         bool wantsGpuSkinning = false;
         bool isUiCanvas3D = false;
+        bool requiresBlending = false;
         bool sortOpaque = false;
         bool unlit = false;
+        float cameraDepth = 0.0f;
         float cameraDistanceSq = 0.0f;
         uint64_t opaqueSortKey = 0;
     };
@@ -2516,20 +2518,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 item.vertPath = &skinnedVertPath;
             }
             item.isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
-            item.sortOpaque = item.material.alpha >= 0.999f &&
-                              !item.isUiCanvas3D &&
-                              obj.renderType != RenderType::Sprite &&
-                              obj.renderType != RenderType::Mirror;
+            item.requiresBlending = item.material.alpha < 0.999f || item.isUiCanvas3D;
             item.unlit = obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || item.isUiCanvas3D;
-            if (item.sortOpaque) {
-                item.opaqueSortKey = buildOpaqueSortKey(
-                    *item.vertPath,
-                    *item.fragPath,
-                    *item.materialPath,
-                    *item.albedoTexturePath,
-                    *item.overlayTexturePath,
-                    *item.normalMapPath);
-            }
+            glm::vec3 viewSpaceCenter = glm::vec3(view * glm::vec4(item.sortCenter, 1.0f));
+            item.cameraDepth = -viewSpaceCenter.z;
             glm::vec3 toCamera = item.sortCenter - camera.position;
             item.cameraDistanceSq = glm::dot(toCamera, toCamera);
             localItems.push_back(std::move(item));
@@ -2592,25 +2584,51 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         item.overlayTexturePath = &batch.overlayTexturePath;
         item.normalMapPath = &batch.normalMapPath;
         item.useOverlay = batch.useOverlay;
-        item.sortOpaque = item.material.alpha >= 0.999f;
-        if (item.sortOpaque) {
-            item.opaqueSortKey = buildOpaqueSortKey(
-                *item.vertPath,
-                *item.fragPath,
-                *item.materialPath,
-                *item.albedoTexturePath,
-                *item.overlayTexturePath,
-                *item.normalMapPath);
-        }
+        item.requiresBlending = item.material.alpha < 0.999f;
+        glm::vec3 viewSpaceCenter = glm::vec3(view * glm::vec4(item.sortCenter, 1.0f));
+        item.cameraDepth = -viewSpaceCenter.z;
         glm::vec3 toCamera = item.sortCenter - camera.position;
         item.cameraDistanceSq = glm::dot(toCamera, toCamera);
         drawItems.push_back(std::move(item));
+    }
+
+    auto classifyAlphaBehavior = [&](RenderItem& item) {
+        if (item.requiresBlending) {
+            item.sortOpaque = false;
+            return;
+        }
+
+        if (item.albedoTexturePath && !item.albedoTexturePath->empty()) {
+            if (Texture* tex = getTexture(*item.albedoTexturePath, item.material.textureFilter)) {
+                if (tex->UsesAlphaBlending()) {
+                    item.requiresBlending = true;
+                }
+            }
+        }
+
+        item.sortOpaque = !item.requiresBlending;
+        if (item.sortOpaque) {
+            item.opaqueSortKey = buildOpaqueSortKey(
+                item.vertPath ? *item.vertPath : emptyPath,
+                item.fragPath ? *item.fragPath : emptyPath,
+                item.materialPath ? *item.materialPath : emptyPath,
+                item.albedoTexturePath ? *item.albedoTexturePath : emptyPath,
+                item.overlayTexturePath ? *item.overlayTexturePath : emptyPath,
+                item.normalMapPath ? *item.normalMapPath : emptyPath);
+        }
+    };
+
+    for (RenderItem& item : drawItems) {
+        classifyAlphaBehavior(item);
     }
 
     std::stable_sort(drawItems.begin(), drawItems.end(),
                      [](const RenderItem& a, const RenderItem& b) {
                          if (a.sortOpaque != b.sortOpaque) return a.sortOpaque > b.sortOpaque;
                          if (!a.sortOpaque) {
+                             if (a.cameraDepth != b.cameraDepth) {
+                                 return a.cameraDepth > b.cameraDepth;
+                             }
                              if (a.cameraDistanceSq != b.cameraDistanceSq) {
                                  return a.cameraDistanceSq > b.cameraDistanceSq;
                              }

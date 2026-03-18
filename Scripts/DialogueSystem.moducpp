@@ -1,3 +1,4 @@
+#include "ModuCPP"
 #include "DialoguePortShared.h"
 
 #include <algorithm>
@@ -7,6 +8,207 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+using namespace ModuCPP;
+
+public class DialogueSystem : ModuBehaviour
+{
+    inspector
+    {
+        Config(DialogueConfig, config);
+        Header("DialogueSystem");
+
+        Tabs {
+            Tab("Bindings") {
+                ObjectRef("Character Name Text", config.characterNameTextRef);
+                ObjectRef("Dialogue Text", config.dialogueTextRef);
+                ObjectRef("Player", config.playerRef);
+                Enum("Language", config.currentLanguage);
+            }
+
+            Tab("Timing") {
+                Slider("Pitch Variation", config.pitchVariation, 0.0f, 2.0f);
+                Slider("Open Delay", config.openAnimationDelay, 0.0f, 10.0f);
+                Slider("Close Delay", config.closeAnimationDelay, 0.0f, 10.0f);
+                Slider("Spacing Factor", config.spacingFactor, 0.0f, 2.0f);
+                Slider("Size Multiplier", config.sizeMultiplier, 0.1f, 10.0f);
+            }
+
+            Tab("Audio") {
+                AudioClip("Character Sound", config.characterSoundClip);
+                AudioClip("Trigger Sound", config.triggerSoundClip);
+                AudioClip("Enter Sound", config.enterSoundClip);
+                AudioClip("Exit Sound", config.exitSoundClip);
+                AudioClip("Skip Sound", config.skipSoundClip);
+            }
+
+            Tab("Flags") {
+                Toggle("Player Simulated On End", config.rigidSimulated);
+                Toggle("Disable Self On End", config.disableSelfOnEnd);
+                Toggle("Auto Open On Begin", config.autoOpenOnBegin);
+                ObjectList("Items To Enable On End", config.itemsToEnable);
+                ObjectList("Items To Disable On End", config.itemsToDisable);
+            }
+
+            Tab("Lines") {
+                DialogueLines("Dialogue Lines", config.dialogueLines);
+            }
+
+            Tab("Runtime") {
+                RuntimeDialogueStatus();
+            }
+        }
+
+        AutoSave(config);
+    }
+
+    void Begin(MODU_obj, float dt)
+    {
+        (void)dt;
+        if (!ctx.object) return;
+
+        DialogueConfig config = loadConfig(ctx);
+        DialogueRuntimeState& state = g_runtimeStates[ctx.object->id];
+
+        ResetRuntimeState(ctx, state, config);
+        TryAutoOpenOnBegin(ctx, state, config);
+    }
+
+    void TickUpdate(MODU_obj, float dt)
+    {
+        if (!ctx.object) return;
+
+        DialogueConfig config = loadConfig(ctx);
+        DialogueRuntimeState& state = g_runtimeStates[ctx.object->id];
+        const float dtSafe = std::max(0.0f, dt);
+
+        ConsumeInteractionRequest(ctx, state, config);
+        TryAutoOpenOnBegin(ctx, state, config);
+        if (!state.running) return;
+
+        if (TickPendingClose(ctx, state, config, dtSafe)) return;
+
+        const bool submitPressed = ConsumeSubmitPressed(state);
+        if (TickOpenDelay(ctx, state, config, dtSafe)) return;
+
+        tickTyping(ctx, state, config, dtSafe);
+        if (submitPressed) {
+            HandleSubmitPressed(ctx, state, config);
+        }
+    }
+
+    void ResetRuntimeState(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config) {
+        state.running = false;
+        state.isTyping = false;
+        state.isTextFullyDisplayed = false;
+        state.autoOpened = false;
+        state.index = 0;
+        state.revealedCharacters = 0;
+        state.typeAccumulator = 0.0f;
+        state.holdDelay = 0.0f;
+        state.effectTimer = 0.0f;
+        state.soundCooldown = 0.0f;
+        state.openDelayRemaining = 0.0f;
+        state.closeDelayRemaining = 0.0f;
+        state.pendingClose = false;
+        state.prevSubmitDown = false;
+        const int interactionSerial = ParseInt(ctx.GetSetting(kInteractionRequestSerial, "0"), 0);
+        const bool interactionPending = ParseBool(ctx.GetSetting(kInteractionRequestPending, "0"), false);
+        state.lastInteractionRequestSerial = interactionPending ? (interactionSerial - 1) : interactionSerial;
+        state.currentCleanSentence.clear();
+        state.currentPlayerRef = config.playerRef;
+        state.activeLines.clear();
+        state.endItemsToEnable.clear();
+        state.endItemsToDisable.clear();
+        resetTextWidgets(ctx, config);
+    }
+
+    void TryAutoOpenOnBegin(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config) {
+        if (state.running || state.autoOpened) return;
+        if (!config.autoOpenOnBegin || !hasDialogueLines(config.dialogueLines)) return;
+
+        openDialogue(ctx, state, config, config.dialogueLines, config.itemsToEnable, config.itemsToDisable, config.playerRef);
+        state.autoOpened = true;
+    }
+
+    void ConsumeInteractionRequest(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config) {
+        const int interactionSerial = ParseInt(ctx.GetSetting(kInteractionRequestSerial, "0"), 0);
+        const bool interactionPending = ParseBool(ctx.GetSetting(kInteractionRequestPending, "0"), false);
+        if (interactionSerial == state.lastInteractionRequestSerial && !interactionPending) return;
+
+        state.lastInteractionRequestSerial = interactionSerial;
+        if (interactionPending) {
+            ctx.SetSetting(kInteractionRequestPending, "0");
+        }
+
+        std::vector<DialogueLine> overrideLines = DeserializeDialogueLines(ctx.GetSetting(kInteractionOverrideLines, ""));
+        std::vector<std::string> overrideEnable = DeserializeObjectRefs(ctx.GetSetting(kInteractionEndEnable, ""));
+        std::vector<std::string> overrideDisable = DeserializeObjectRefs(ctx.GetSetting(kInteractionEndDisable, ""));
+        std::string overridePlayerRef = ctx.GetSetting(kInteractionPlayerRef, "");
+
+        if (overrideLines.empty()) overrideLines = config.dialogueLines;
+        if (overrideEnable.empty()) overrideEnable = config.itemsToEnable;
+        if (overrideDisable.empty()) overrideDisable = config.itemsToDisable;
+        if (overridePlayerRef.empty()) overridePlayerRef = config.playerRef;
+
+        openDialogue(ctx, state, config, overrideLines, overrideEnable, overrideDisable, overridePlayerRef);
+    }
+
+    bool TickPendingClose(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config, float dt) {
+        if (!state.pendingClose) return false;
+
+        state.closeDelayRemaining -= dt;
+        if (state.closeDelayRemaining <= 0.0f) {
+            finalizeDialogueEnd(ctx, state, config);
+        }
+        return true;
+    }
+
+    bool ConsumeSubmitPressed(DialogueRuntimeState& state) {
+        const bool submitDown = isSubmitDown();
+        const bool submitPressed = submitDown && !state.prevSubmitDown;
+        state.prevSubmitDown = submitDown;
+        return submitPressed;
+    }
+
+    bool TickOpenDelay(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config, float dt) {
+        if (state.openDelayRemaining <= 0.0f) return false;
+
+        state.openDelayRemaining -= dt;
+        if (state.openDelayRemaining <= 0.0f) {
+            if (!config.enterSoundClip.empty()) {
+                ctx.PlayAudioOneShot(config.enterSoundClip);
+            }
+            startLine(ctx, state, config);
+        }
+        return true;
+    }
+
+    void HandleSubmitPressed(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config) {
+        if (state.isTyping) {
+            completeTyping(ctx, state, config);
+            if (!config.skipSoundClip.empty()) {
+                ctx.PlayAudioOneShot(config.skipSoundClip);
+            }
+            return;
+        }
+
+        if (!state.isTextFullyDisplayed) return;
+
+        if (state.index < static_cast<int>(state.activeLines.size()) - 1) {
+            ++state.index;
+            if (!config.enterSoundClip.empty()) {
+                ctx.PlayAudioOneShot(config.enterSoundClip);
+            }
+            startLine(ctx, state, config);
+            return;
+        }
+
+        if (!config.exitSoundClip.empty()) {
+            ctx.PlayAudioOneShot(config.exitSoundClip);
+        }
+        beginDialogueClose(ctx, state, config);
+    }
+}
 
 namespace {
 using namespace DialoguePort;
@@ -232,19 +434,100 @@ int findAnimationClipIndexByName(SceneObject& object, const std::string& desired
     return -1;
 }
 
+SceneObject* resolveDialogueTextTarget(ScriptContext& ctx, const std::string& objectRef) {
+    SceneObject* object = ResolveSceneObjectRef(ctx, objectRef);
+    if (!object) return nullptr;
+    if (HasUIComponent(*object) && object->ui.type == UIElementType::Text) {
+        return object;
+    }
+
+    std::vector<int> pendingChildIds = object->childIds;
+    int childGuard = 0;
+    while (!pendingChildIds.empty() && childGuard < 512) {
+        const int childId = pendingChildIds.back();
+        pendingChildIds.pop_back();
+        ++childGuard;
+        SceneObject* child = ctx.FindObjectById(childId);
+        if (!child) continue;
+        if (HasUIComponent(*child) && child->ui.type == UIElementType::Text) {
+            return child;
+        }
+        pendingChildIds.insert(pendingChildIds.end(), child->childIds.begin(), child->childIds.end());
+    }
+
+    int parentId = object->parentId;
+    int parentGuard = 0;
+    while (parentId >= 0 && parentGuard < 256) {
+        ++parentGuard;
+        SceneObject* parent = ctx.FindObjectById(parentId);
+        if (!parent) break;
+        if (HasUIComponent(*parent) && parent->ui.type == UIElementType::Text) {
+            return parent;
+        }
+        parentId = parent->parentId;
+    }
+
+    return nullptr;
+}
+
+bool setDialogueTextLabel(ScriptContext& ctx, const std::string& objectRef, const std::string& label) {
+    SceneObject* object = resolveDialogueTextTarget(ctx, objectRef);
+    if (!object) return false;
+    if (object->ui.label == label) return true;
+    object->ui.label = label;
+    ctx.MarkDirty();
+    return true;
+}
+
+bool setDialogueTextEffects(ScriptContext& ctx,
+                            const std::string& objectRef,
+                            TextEffectType effect,
+                            float animationSpeed,
+                            float effectIntensity) {
+    SceneObject* object = resolveDialogueTextTarget(ctx, objectRef);
+    if (!object) return false;
+
+    const int flags = static_cast<int>(effect);
+    const float speed = std::max(0.01f, animationSpeed);
+    const float intensity = std::max(0.0f, effectIntensity);
+
+    bool changed = false;
+    if (object->ui.textEffectFlags != flags) {
+        object->ui.textEffectFlags = flags;
+        changed = true;
+    }
+    if (std::abs(object->ui.textEffectSpeed - speed) > 1e-5f) {
+        object->ui.textEffectSpeed = speed;
+        changed = true;
+    }
+    if (std::abs(object->ui.textEffectIntensity - intensity) > 1e-5f) {
+        object->ui.textEffectIntensity = intensity;
+        changed = true;
+    }
+
+    if (changed) {
+        ctx.MarkDirty();
+    }
+    return changed;
+}
+
 bool playDialogueStateAnimation(ScriptContext& ctx, const std::string& clipName) {
     if (!ctx.object || !ctx.object->hasAnimation || !ctx.object->animation.enabled) return false;
     SceneObject& object = *ctx.object;
+    NormalizeAnimationClipSlots(object.animation);
     int clipIndex = findAnimationClipIndexByName(object, clipName);
     if (clipIndex < 0) return false;
 
     object.animation.activeClipIndex = clipIndex;
     object.animation.clipAssetPath = object.animation.clips[static_cast<size_t>(clipIndex)].assetPath;
-    object.animation.runtimeClipPath.clear();
-    object.animation.runtimeInitialized = false;
+    if (object.animation.clipAssetPath.empty()) return false;
+    object.animation.runtimeClipPath = object.animation.clipAssetPath;
+    object.animation.runtimeTime = 0.0f;
+    object.animation.runtimePlaying = true;
     object.animation.runtimePaused = false;
     object.animation.runtimeDirection = 1.0f;
-    return ctx.PlayAnimation(true);
+    object.animation.runtimeInitialized = true;
+    return true;
 }
 
 enum class MouthState {
@@ -268,14 +551,14 @@ void applyMouthState(ScriptContext& ctx, const DialogueLine& line, MouthState mo
 }
 
 void resetTextWidgets(ScriptContext& ctx, const DialogueConfig& config) {
-    SetUITextLabel(ctx, config.characterNameTextRef, "");
-    SetUITextLabel(ctx, config.dialogueTextRef, "");
-    SetUITextEffects(ctx, config.dialogueTextRef, TextEffectType::None, 1.0f, 0.0f);
+    setDialogueTextLabel(ctx, config.characterNameTextRef, "");
+    setDialogueTextLabel(ctx, config.dialogueTextRef, "");
+    setDialogueTextEffects(ctx, config.dialogueTextRef, TextEffectType::None, 1.0f, 0.0f);
 }
 
 void revealDialogueText(ScriptContext& ctx, const DialogueConfig& config, DialogueRuntimeState& state) {
     const size_t shown = std::min(state.revealedCharacters, state.currentCleanSentence.size());
-    SetUITextLabel(ctx, config.dialogueTextRef, state.currentCleanSentence.substr(0, shown));
+    setDialogueTextLabel(ctx, config.dialogueTextRef, state.currentCleanSentence.substr(0, shown));
 }
 
 void startLine(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueConfig& config) {
@@ -290,7 +573,7 @@ void startLine(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueCo
     SetObjectsEnabledState(ctx, line.itemsToDisable, false);
     SetObjectsEnabledState(ctx, line.itemsToEnable, true);
 
-    SetUITextLabel(ctx, config.characterNameTextRef, line.characterName);
+    setDialogueTextLabel(ctx, config.characterNameTextRef, line.characterName);
 
     state.currentCleanSentence = parseSentenceForDisplay(getSentenceForLanguage(line, config.currentLanguage));
     state.revealedCharacters = 0;
@@ -301,7 +584,7 @@ void startLine(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueCo
     state.isTextFullyDisplayed = false;
 
     revealDialogueText(ctx, config, state);
-    SetUITextEffects(ctx, config.dialogueTextRef, line.textEffect, line.animationSpeed, line.effectIntensity);
+    setDialogueTextEffects(ctx, config.dialogueTextRef, line.textEffect, line.animationSpeed, line.effectIntensity);
     applyMouthState(ctx, line, MouthState::TalkingClosed);
 }
 
@@ -482,288 +765,21 @@ void tickTyping(ScriptContext& ctx, DialogueRuntimeState& state, const DialogueC
 }
 
 void drawTextEffectEditor(TextEffectType& effect) {
-    int flags = static_cast<int>(effect);
-
-    bool wave = (flags & static_cast<int>(TextEffectType::Wave)) != 0;
-    bool shake = (flags & static_cast<int>(TextEffectType::Shake)) != 0;
-    bool bounce = (flags & static_cast<int>(TextEffectType::Bounce)) != 0;
-    bool rotate = (flags & static_cast<int>(TextEffectType::Rotate)) != 0;
-    bool fade = (flags & static_cast<int>(TextEffectType::Fade)) != 0;
-
-    if (ImGui::Checkbox("Wave", &wave)) {
-        if (wave) flags |= static_cast<int>(TextEffectType::Wave);
-        else flags &= ~static_cast<int>(TextEffectType::Wave);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Shake", &shake)) {
-        if (shake) flags |= static_cast<int>(TextEffectType::Shake);
-        else flags &= ~static_cast<int>(TextEffectType::Shake);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Bounce", &bounce)) {
-        if (bounce) flags |= static_cast<int>(TextEffectType::Bounce);
-        else flags &= ~static_cast<int>(TextEffectType::Bounce);
-    }
-
-    if (ImGui::Checkbox("Rotate", &rotate)) {
-        if (rotate) flags |= static_cast<int>(TextEffectType::Rotate);
-        else flags &= ~static_cast<int>(TextEffectType::Rotate);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Fade", &fade)) {
-        if (fade) flags |= static_cast<int>(TextEffectType::Fade);
-        else flags &= ~static_cast<int>(TextEffectType::Fade);
-    }
-
-    effect = static_cast<TextEffectType>(flags);
+    DrawTextEffectFlagsEditor(effect);
 }
 
 bool drawDialogueLineEditor(ScriptContext& ctx, std::vector<DialogueLine>& lines, int& selectedIndex) {
-    bool changed = false;
-
-    if (ImGui::Button("Add Line")) {
-        if (!lines.empty()) {
-            lines.push_back(lines.back());
-        } else {
-            lines.emplace_back();
-        }
-        selectedIndex = static_cast<int>(lines.size()) - 1;
-        changed = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Remove Line") && selectedIndex >= 0 && selectedIndex < static_cast<int>(lines.size())) {
-        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(selectedIndex));
-        if (lines.empty()) selectedIndex = -1;
-        else selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
-        changed = true;
-    }
-
-    if (lines.empty()) {
-        ImGui::TextDisabled("No dialogue lines configured.");
-        return changed;
-    }
-
-    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
-
-    ImGui::BeginChild("DialogueLinesList", ImVec2(230.0f, 220.0f), true);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        std::string label = std::to_string(i + 1) + ". " +
-            (lines[i].characterName.empty() ? std::string("<Unnamed>") : lines[i].characterName);
-        if (ImGui::Selectable(label.c_str(), selectedIndex == static_cast<int>(i))) {
-            selectedIndex = static_cast<int>(i);
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginGroup();
-    DialogueLine& line = lines[static_cast<size_t>(selectedIndex)];
-
-    changed |= DrawStdStringInput("Character Name", line.characterName, 256);
-    changed |= DrawStdStringInput("Sentence (EN)", line.sentence, 2048, 0, true, 60.0f);
-    changed |= DrawStdStringInput("Sentence (DE)", line.sentenceGerman, 2048, 0, true, 60.0f);
-    changed |= DrawStdStringInput("Sentence (JP Kana)", line.sentenceJapaneseKana, 2048, 0, true, 60.0f);
-
-    changed |= DrawAudioClipInput("Character Voice Clip", line.characterSoundClip, 512);
-    changed |= ImGui::DragFloat("Typing Speed", &line.typingSpeed, 0.001f, 0.001f, 1.0f, "%.3f");
-    changed |= ImGui::DragFloat("Animation Speed", &line.animationSpeed, 0.01f, 0.01f, 10.0f, "%.2f");
-    changed |= ImGui::DragFloat("Effect Intensity", &line.effectIntensity, 0.01f, 0.0f, 10.0f, "%.2f");
-
-    ImGui::TextUnformatted("Text Effects");
-    TextEffectType before = line.textEffect;
-    drawTextEffectEditor(line.textEffect);
-    changed |= (before != line.textEffect);
-
-    changed |= DrawObjectRefInput(ctx, "Not Talking Object", line.notTalkingObjectRef);
-    changed |= DrawObjectRefInput(ctx, "Open Mouth Object", line.openMouthObjectRef);
-    changed |= DrawObjectRefInput(ctx, "Closed Mouth Object", line.closedMouthObjectRef);
-
-    changed |= DrawObjectRefListEditor(ctx, "Line Items To Enable", line.itemsToEnable);
-    changed |= DrawObjectRefListEditor(ctx, "Line Items To Disable", line.itemsToDisable);
-
-    ImGui::EndGroup();
-    return changed;
+    return DrawDialogueLineEditor(ctx,
+                                  lines,
+                                  selectedIndex,
+                                  "Add Line",
+                                  "Remove Line",
+                                  "No dialogue lines configured.",
+                                  "DialogueLinesList");
 }
 
 void drawRuntimeStatus(const DialogueRuntimeState* state) {
-    if (!state) {
-        ImGui::TextDisabled("Runtime: idle");
-        return;
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Runtime");
-    ImGui::TextDisabled("Running: %s", state->running ? "Yes" : "No");
-    ImGui::TextDisabled("Typing: %s", state->isTyping ? "Yes" : "No");
-    ImGui::TextDisabled("Line: %d", state->index + 1);
-    ImGui::TextDisabled("Chars: %zu / %zu", state->revealedCharacters, state->currentCleanSentence.size());
+    DrawDialogueRuntimeStatus(state);
 }
 
 } // namespace
-
-extern "C" void Script_OnInspector(ScriptContext& ctx) {
-    DialogueConfig config = loadConfig(ctx);
-    bool changed = false;
-
-    ImGui::TextUnformatted("DialogueSystem (Unity Port)");
-    ImGui::Separator();
-
-    changed |= DrawObjectRefInput(ctx, "Character Name Text Ref", config.characterNameTextRef);
-    changed |= DrawObjectRefInput(ctx, "Dialogue Text Ref", config.dialogueTextRef);
-    changed |= DrawObjectRefInput(ctx, "Player Ref", config.playerRef);
-
-    changed |= DrawLanguageCombo("Language", config.currentLanguage);
-    changed |= ImGui::DragFloat("Pitch Variation", &config.pitchVariation, 0.01f, 0.0f, 2.0f, "%.2f");
-    changed |= ImGui::DragFloat("Open Animation Delay", &config.openAnimationDelay, 0.01f, 0.0f, 10.0f, "%.2f");
-    changed |= ImGui::DragFloat("Close Animation Delay", &config.closeAnimationDelay, 0.01f, 0.0f, 10.0f, "%.2f");
-    changed |= ImGui::DragFloat("Spacing Factor", &config.spacingFactor, 0.01f, 0.0f, 2.0f, "%.2f");
-    changed |= ImGui::DragFloat("Size Multiplier", &config.sizeMultiplier, 0.01f, 0.1f, 10.0f, "%.2f");
-
-    changed |= DrawAudioClipInput("Character Sound Clip", config.characterSoundClip, 512);
-    changed |= DrawAudioClipInput("Trigger Sound Clip", config.triggerSoundClip, 512);
-    changed |= DrawAudioClipInput("Enter Sound Clip", config.enterSoundClip, 512);
-    changed |= DrawAudioClipInput("Exit Sound Clip", config.exitSoundClip, 512);
-    changed |= DrawAudioClipInput("Skip Sound Clip", config.skipSoundClip, 512);
-
-    changed |= ImGui::Checkbox("Player Simulated On End", &config.rigidSimulated);
-    changed |= ImGui::Checkbox("Disable Self On End", &config.disableSelfOnEnd);
-    changed |= ImGui::Checkbox("Auto Open On Begin", &config.autoOpenOnBegin);
-
-    changed |= DrawObjectRefListEditor(ctx, "Items To Enable On End", config.itemsToEnable);
-    changed |= DrawObjectRefListEditor(ctx, "Items To Disable On End", config.itemsToDisable);
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Dialogue Lines");
-
-    const int objectId = ctx.object ? ctx.object->id : -1;
-    int& selectedLine = g_selectedLineByObject[objectId];
-    changed |= drawDialogueLineEditor(ctx, config.dialogueLines, selectedLine);
-
-    if (changed) {
-        saveConfig(ctx, config);
-    }
-
-    auto stateIt = g_runtimeStates.find(objectId);
-    drawRuntimeStatus(stateIt != g_runtimeStates.end() ? &stateIt->second : nullptr);
-}
-
-void Begin(ScriptContext& ctx, float /*deltaTime*/) {
-    if (!ctx.object) return;
-
-    DialogueConfig config = loadConfig(ctx);
-    DialogueRuntimeState& state = g_runtimeStates[ctx.object->id];
-
-    state.running = false;
-    state.isTyping = false;
-    state.isTextFullyDisplayed = false;
-    state.autoOpened = false;
-    state.index = 0;
-    state.revealedCharacters = 0;
-    state.typeAccumulator = 0.0f;
-    state.holdDelay = 0.0f;
-    state.effectTimer = 0.0f;
-    state.soundCooldown = 0.0f;
-    state.openDelayRemaining = 0.0f;
-    state.closeDelayRemaining = 0.0f;
-    state.pendingClose = false;
-    state.prevSubmitDown = false;
-    const int interactionSerial = ParseInt(ctx.GetSetting(kInteractionRequestSerial, "0"), 0);
-    const bool interactionPending = ParseBool(ctx.GetSetting(kInteractionRequestPending, "0"), false);
-    state.lastInteractionRequestSerial = interactionPending ? (interactionSerial - 1) : interactionSerial;
-    state.currentCleanSentence.clear();
-    state.currentPlayerRef = config.playerRef;
-    state.activeLines.clear();
-    state.endItemsToEnable.clear();
-    state.endItemsToDisable.clear();
-
-    resetTextWidgets(ctx, config);
-
-    if (config.autoOpenOnBegin && hasDialogueLines(config.dialogueLines)) {
-        openDialogue(ctx, state, config, config.dialogueLines, config.itemsToEnable, config.itemsToDisable, config.playerRef);
-        state.autoOpened = true;
-    }
-}
-
-void TickUpdate(ScriptContext& ctx, float deltaTime) {
-    if (!ctx.object) return;
-
-    DialogueConfig config = loadConfig(ctx);
-    DialogueRuntimeState& state = g_runtimeStates[ctx.object->id];
-
-    const int interactionSerial = ParseInt(ctx.GetSetting(kInteractionRequestSerial, "0"), 0);
-    const bool interactionPending = ParseBool(ctx.GetSetting(kInteractionRequestPending, "0"), false);
-    if (interactionSerial != state.lastInteractionRequestSerial || interactionPending) {
-        state.lastInteractionRequestSerial = interactionSerial;
-        if (interactionPending) {
-            ctx.SetSetting(kInteractionRequestPending, "0");
-        }
-
-        std::vector<DialogueLine> overrideLines = DeserializeDialogueLines(ctx.GetSetting(kInteractionOverrideLines, ""));
-        std::vector<std::string> overrideEnable = DeserializeObjectRefs(ctx.GetSetting(kInteractionEndEnable, ""));
-        std::vector<std::string> overrideDisable = DeserializeObjectRefs(ctx.GetSetting(kInteractionEndDisable, ""));
-        std::string overridePlayerRef = ctx.GetSetting(kInteractionPlayerRef, "");
-
-        if (overrideLines.empty()) overrideLines = config.dialogueLines;
-        if (overrideEnable.empty()) overrideEnable = config.itemsToEnable;
-        if (overrideDisable.empty()) overrideDisable = config.itemsToDisable;
-        if (overridePlayerRef.empty()) overridePlayerRef = config.playerRef;
-
-        openDialogue(ctx, state, config, overrideLines, overrideEnable, overrideDisable, overridePlayerRef);
-    }
-
-    if (!state.running && config.autoOpenOnBegin && !state.autoOpened && hasDialogueLines(config.dialogueLines)) {
-        openDialogue(ctx, state, config, config.dialogueLines, config.itemsToEnable, config.itemsToDisable, config.playerRef);
-        state.autoOpened = true;
-    }
-
-    if (!state.running) {
-        return;
-    }
-
-    if (state.pendingClose) {
-        state.closeDelayRemaining -= std::max(0.0f, deltaTime);
-        if (state.closeDelayRemaining <= 0.0f) {
-            finalizeDialogueEnd(ctx, state, config);
-        }
-        return;
-    }
-
-    const bool submitDown = isSubmitDown();
-    const bool submitPressed = submitDown && !state.prevSubmitDown;
-    state.prevSubmitDown = submitDown;
-
-    if (state.openDelayRemaining > 0.0f) {
-        state.openDelayRemaining -= std::max(0.0f, deltaTime);
-        if (state.openDelayRemaining <= 0.0f) {
-            if (!config.enterSoundClip.empty()) {
-                ctx.PlayAudioOneShot(config.enterSoundClip);
-            }
-            startLine(ctx, state, config);
-        }
-        return;
-    }
-
-    tickTyping(ctx, state, config, std::max(0.0f, deltaTime));
-
-    if (submitPressed) {
-        if (state.isTyping) {
-            completeTyping(ctx, state, config);
-            if (!config.skipSoundClip.empty()) {
-                ctx.PlayAudioOneShot(config.skipSoundClip);
-            }
-        } else if (state.isTextFullyDisplayed) {
-            if (state.index < static_cast<int>(state.activeLines.size()) - 1) {
-                ++state.index;
-                if (!config.enterSoundClip.empty()) {
-                    ctx.PlayAudioOneShot(config.enterSoundClip);
-                }
-                startLine(ctx, state, config);
-            } else {
-                if (!config.exitSoundClip.empty()) {
-                    ctx.PlayAudioOneShot(config.exitSoundClip);
-                }
-                beginDialogueClose(ctx, state, config);
-            }
-        }
-    }
-}

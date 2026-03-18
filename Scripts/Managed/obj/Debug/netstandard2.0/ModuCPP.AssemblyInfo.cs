@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ModuCPP")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8726572326f74c955dd466275db04574e56b21ea")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9fe31b4ca16a572ec3699d953be6f56675aeb948")]
 [assembly: System.Reflection.AssemblyProductAttribute("ModuCPP")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ModuCPP")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

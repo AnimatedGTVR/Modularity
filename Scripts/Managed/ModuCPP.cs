@@ -29,6 +29,27 @@ namespace ModuCPP {
         public static Vec3 operator *(Vec3 a, float s) => new Vec3(a.X * s, a.Y * s, a.Z * s);
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Vec2 {
+        public float X;
+        public float Y;
+
+        public Vec2(float x, float y) {
+            X = x;
+            Y = y;
+        }
+    }
+
+    public struct RaycastHit {
+        public Vec3 Position;
+        public Vec3 Normal;
+        public float Distance;
+        public int ObjectId;
+        public Vec3 ObjectVelocity;
+        public float StaticFriction;
+        public float DynamicFriction;
+    }
+
     public enum ConsoleMessageType {
         Info = 0,
         Warning = 1,
@@ -88,6 +109,66 @@ namespace ModuCPP {
         public IntPtr SetAnimationLoop;
         public IntPtr SetAnimationPlaySpeed;
         public IntPtr SetAnimationPlayOnAwake;
+        // Version 6+ additions.
+        public IntPtr IsObjectEnabled;
+        public IntPtr SetObjectEnabled;
+        public IntPtr GetLayer;
+        public IntPtr SetLayer;
+        public IntPtr HasTag;
+        public IntPtr IsInLayer;
+        public IntPtr GetTag;
+        public IntPtr SetTag;
+        public IntPtr SetPosition2D;
+        public IntPtr IsSprintDown;
+        public IntPtr IsJumpDown;
+        public IntPtr GetMoveInputWASD;
+        public IntPtr ApplyMouseLook;
+        public IntPtr HasRigidbody2D;
+        public IntPtr SetRigidbody2DVelocity;
+        public IntPtr GetRigidbody2DVelocity;
+        public IntPtr AddRigidbodyVelocity;
+        public IntPtr SetRigidbodyAngularVelocity;
+        public IntPtr GetRigidbodyAngularVelocity;
+        public IntPtr AddRigidbodyTorque;
+        public IntPtr AddRigidbodyAngularImpulse;
+        public IntPtr SetRigidbodyYaw;
+        public IntPtr SetRigidbodyRotation;
+        public IntPtr TeleportRigidbody;
+        public IntPtr RaycastClosestDetailed;
+        public IntPtr IsUIButtonPressed;
+        public IntPtr IsUIInteractable;
+        public IntPtr SetUIInteractable;
+        public IntPtr GetUISliderValue;
+        public IntPtr SetUISliderValue;
+        public IntPtr SetUISliderRange;
+        public IntPtr SetUILabel;
+        public IntPtr SetUIColor;
+        public IntPtr GetUITextScale;
+        public IntPtr SetUITextScale;
+        public IntPtr SetUISliderStyle;
+        public IntPtr SetUIButtonStyle;
+        public IntPtr SetUIStylePreset;
+        public IntPtr SetFPSCap;
+        public IntPtr GetSpriteClipCount;
+        public IntPtr GetSpriteClipIndex;
+        public IntPtr GetSpriteClipName;
+        public IntPtr GetSpriteClipNameAt;
+        public IntPtr SetSpriteClipIndex;
+        public IntPtr SetSpriteClipName;
+        public IntPtr GetSpriteAlpha;
+        public IntPtr SetSpriteAlpha;
+        public IntPtr FadeSpriteAlpha;
+        public IntPtr FadeSpriteToClipIndex;
+        public IntPtr FadeSpriteToClipName;
+        public IntPtr HasAudioSource;
+        public IntPtr PlayAudio;
+        public IntPtr StopAudio;
+        public IntPtr SetAudioLoop;
+        public IntPtr SetAudioVolume;
+        public IntPtr SetAudioClip;
+        public IntPtr PlayAudioOneShot;
+        public IntPtr MarkDirty;
+        public IntPtr EnsureCapsuleCollider;
     }
 
     internal unsafe static class Native {
@@ -139,6 +220,65 @@ namespace ModuCPP {
         public static SetAnimationLoopFn SetAnimationLoop;
         public static SetAnimationPlaySpeedFn SetAnimationPlaySpeed;
         public static SetAnimationPlayOnAwakeFn SetAnimationPlayOnAwake;
+        public static IsObjectEnabledFn IsObjectEnabled;
+        public static SetObjectEnabledFn SetObjectEnabled;
+        public static GetLayerFn GetLayer;
+        public static SetLayerFn SetLayer;
+        public static HasTagFn HasTag;
+        public static IsInLayerFn IsInLayer;
+        public static GetTagFn GetTag;
+        public static SetTagFn SetTag;
+        public static SetPosition2DFn SetPosition2D;
+        public static IsSprintDownFn IsSprintDown;
+        public static IsJumpDownFn IsJumpDown;
+        public static GetMoveInputWASDFn GetMoveInputWASD;
+        public static ApplyMouseLookFn ApplyMouseLook;
+        public static HasRigidbody2DFn HasRigidbody2D;
+        public static SetRigidbody2DVelocityFn SetRigidbody2DVelocity;
+        public static GetRigidbody2DVelocityFn GetRigidbody2DVelocity;
+        public static AddRigidbodyVelocityFn AddRigidbodyVelocity;
+        public static SetRigidbodyAngularVelocityFn SetRigidbodyAngularVelocity;
+        public static GetRigidbodyAngularVelocityFn GetRigidbodyAngularVelocity;
+        public static AddRigidbodyTorqueFn AddRigidbodyTorque;
+        public static AddRigidbodyAngularImpulseFn AddRigidbodyAngularImpulse;
+        public static SetRigidbodyYawFn SetRigidbodyYaw;
+        public static SetRigidbodyRotationFn SetRigidbodyRotation;
+        public static TeleportRigidbodyFn TeleportRigidbody;
+        public static RaycastClosestDetailedFn RaycastClosestDetailed;
+        public static IsUIButtonPressedFn IsUIButtonPressed;
+        public static IsUIInteractableFn IsUIInteractable;
+        public static SetUIInteractableFn SetUIInteractable;
+        public static GetUISliderValueFn GetUISliderValue;
+        public static SetUISliderValueFn SetUISliderValue;
+        public static SetUISliderRangeFn SetUISliderRange;
+        public static SetUILabelFn SetUILabel;
+        public static SetUIColorFn SetUIColor;
+        public static GetUITextScaleFn GetUITextScale;
+        public static SetUITextScaleFn SetUITextScale;
+        public static SetUISliderStyleFn SetUISliderStyle;
+        public static SetUIButtonStyleFn SetUIButtonStyle;
+        public static SetUIStylePresetFn SetUIStylePreset;
+        public static SetFPSCapFn SetFPSCap;
+        public static GetSpriteClipCountFn GetSpriteClipCount;
+        public static GetSpriteClipIndexFn GetSpriteClipIndex;
+        public static GetSpriteClipNameFn GetSpriteClipName;
+        public static GetSpriteClipNameAtFn GetSpriteClipNameAt;
+        public static SetSpriteClipIndexFn SetSpriteClipIndex;
+        public static SetSpriteClipNameFn SetSpriteClipName;
+        public static GetSpriteAlphaFn GetSpriteAlpha;
+        public static SetSpriteAlphaFn SetSpriteAlpha;
+        public static FadeSpriteAlphaFn FadeSpriteAlpha;
+        public static FadeSpriteToClipIndexFn FadeSpriteToClipIndex;
+        public static FadeSpriteToClipNameFn FadeSpriteToClipName;
+        public static HasAudioSourceFn HasAudioSource;
+        public static PlayAudioFn PlayAudio;
+        public static StopAudioFn StopAudio;
+        public static SetAudioLoopFn SetAudioLoop;
+        public static SetAudioVolumeFn SetAudioVolume;
+        public static SetAudioClipFn SetAudioClip;
+        public static PlayAudioOneShotFn PlayAudioOneShot;
+        public static MarkDirtyFn MarkDirty;
+        public static EnsureCapsuleColliderFn EnsureCapsuleCollider;
 
         public static void BindDelegates() {
             GetObjectId = Marshal.GetDelegateForFunctionPointer<GetObjectIdFn>(Api.GetObjectId);
@@ -254,6 +394,301 @@ namespace ModuCPP {
             } else {
                 SetAnimationPlayOnAwake = (_, _) => 0;
             }
+            if (Api.Version >= 6 && Api.IsObjectEnabled != IntPtr.Zero) {
+                IsObjectEnabled = Marshal.GetDelegateForFunctionPointer<IsObjectEnabledFn>(Api.IsObjectEnabled);
+            } else {
+                IsObjectEnabled = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.SetObjectEnabled != IntPtr.Zero) {
+                SetObjectEnabled = Marshal.GetDelegateForFunctionPointer<SetObjectEnabledFn>(Api.SetObjectEnabled);
+            } else {
+                SetObjectEnabled = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.GetLayer != IntPtr.Zero) {
+                GetLayer = Marshal.GetDelegateForFunctionPointer<GetLayerFn>(Api.GetLayer);
+            } else {
+                GetLayer = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.SetLayer != IntPtr.Zero) {
+                SetLayer = Marshal.GetDelegateForFunctionPointer<SetLayerFn>(Api.SetLayer);
+            } else {
+                SetLayer = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.HasTag != IntPtr.Zero) {
+                HasTag = Marshal.GetDelegateForFunctionPointer<HasTagFn>(Api.HasTag);
+            } else {
+                HasTag = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.IsInLayer != IntPtr.Zero) {
+                IsInLayer = Marshal.GetDelegateForFunctionPointer<IsInLayerFn>(Api.IsInLayer);
+            } else {
+                IsInLayer = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.GetTag != IntPtr.Zero) {
+                GetTag = Marshal.GetDelegateForFunctionPointer<GetTagFn>(Api.GetTag);
+            } else {
+                GetTag = (_, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetTag != IntPtr.Zero) {
+                SetTag = Marshal.GetDelegateForFunctionPointer<SetTagFn>(Api.SetTag);
+            } else {
+                SetTag = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetPosition2D != IntPtr.Zero) {
+                SetPosition2D = Marshal.GetDelegateForFunctionPointer<SetPosition2DFn>(Api.SetPosition2D);
+            } else {
+                SetPosition2D = (_, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.IsSprintDown != IntPtr.Zero) {
+                IsSprintDown = Marshal.GetDelegateForFunctionPointer<IsSprintDownFn>(Api.IsSprintDown);
+            } else {
+                IsSprintDown = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.IsJumpDown != IntPtr.Zero) {
+                IsJumpDown = Marshal.GetDelegateForFunctionPointer<IsJumpDownFn>(Api.IsJumpDown);
+            } else {
+                IsJumpDown = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.GetMoveInputWASD != IntPtr.Zero) {
+                GetMoveInputWASD = Marshal.GetDelegateForFunctionPointer<GetMoveInputWASDFn>(Api.GetMoveInputWASD);
+            } else {
+                GetMoveInputWASD = (_, _, _, _, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.ApplyMouseLook != IntPtr.Zero) {
+                ApplyMouseLook = Marshal.GetDelegateForFunctionPointer<ApplyMouseLookFn>(Api.ApplyMouseLook);
+            } else {
+                ApplyMouseLook = (_, _, _, _, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.HasRigidbody2D != IntPtr.Zero) {
+                HasRigidbody2D = Marshal.GetDelegateForFunctionPointer<HasRigidbody2DFn>(Api.HasRigidbody2D);
+            } else {
+                HasRigidbody2D = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.SetRigidbody2DVelocity != IntPtr.Zero) {
+                SetRigidbody2DVelocity = Marshal.GetDelegateForFunctionPointer<SetRigidbody2DVelocityFn>(Api.SetRigidbody2DVelocity);
+            } else {
+                SetRigidbody2DVelocity = (_, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.GetRigidbody2DVelocity != IntPtr.Zero) {
+                GetRigidbody2DVelocity = Marshal.GetDelegateForFunctionPointer<GetRigidbody2DVelocityFn>(Api.GetRigidbody2DVelocity);
+            } else {
+                GetRigidbody2DVelocity = (_, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.AddRigidbodyVelocity != IntPtr.Zero) {
+                AddRigidbodyVelocity = Marshal.GetDelegateForFunctionPointer<AddRigidbodyVelocityFn>(Api.AddRigidbodyVelocity);
+            } else {
+                AddRigidbodyVelocity = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetRigidbodyAngularVelocity != IntPtr.Zero) {
+                SetRigidbodyAngularVelocity = Marshal.GetDelegateForFunctionPointer<SetRigidbodyAngularVelocityFn>(Api.SetRigidbodyAngularVelocity);
+            } else {
+                SetRigidbodyAngularVelocity = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.GetRigidbodyAngularVelocity != IntPtr.Zero) {
+                GetRigidbodyAngularVelocity = Marshal.GetDelegateForFunctionPointer<GetRigidbodyAngularVelocityFn>(Api.GetRigidbodyAngularVelocity);
+            } else {
+                GetRigidbodyAngularVelocity = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.AddRigidbodyTorque != IntPtr.Zero) {
+                AddRigidbodyTorque = Marshal.GetDelegateForFunctionPointer<AddRigidbodyTorqueFn>(Api.AddRigidbodyTorque);
+            } else {
+                AddRigidbodyTorque = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.AddRigidbodyAngularImpulse != IntPtr.Zero) {
+                AddRigidbodyAngularImpulse = Marshal.GetDelegateForFunctionPointer<AddRigidbodyAngularImpulseFn>(Api.AddRigidbodyAngularImpulse);
+            } else {
+                AddRigidbodyAngularImpulse = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetRigidbodyYaw != IntPtr.Zero) {
+                SetRigidbodyYaw = Marshal.GetDelegateForFunctionPointer<SetRigidbodyYawFn>(Api.SetRigidbodyYaw);
+            } else {
+                SetRigidbodyYaw = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetRigidbodyRotation != IntPtr.Zero) {
+                SetRigidbodyRotation = Marshal.GetDelegateForFunctionPointer<SetRigidbodyRotationFn>(Api.SetRigidbodyRotation);
+            } else {
+                SetRigidbodyRotation = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.TeleportRigidbody != IntPtr.Zero) {
+                TeleportRigidbody = Marshal.GetDelegateForFunctionPointer<TeleportRigidbodyFn>(Api.TeleportRigidbody);
+            } else {
+                TeleportRigidbody = (_, _, _, _, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.RaycastClosestDetailed != IntPtr.Zero) {
+                RaycastClosestDetailed = Marshal.GetDelegateForFunctionPointer<RaycastClosestDetailedFn>(Api.RaycastClosestDetailed);
+            } else {
+                RaycastClosestDetailed = (_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.IsUIButtonPressed != IntPtr.Zero) {
+                IsUIButtonPressed = Marshal.GetDelegateForFunctionPointer<IsUIButtonPressedFn>(Api.IsUIButtonPressed);
+            } else {
+                IsUIButtonPressed = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.IsUIInteractable != IntPtr.Zero) {
+                IsUIInteractable = Marshal.GetDelegateForFunctionPointer<IsUIInteractableFn>(Api.IsUIInteractable);
+            } else {
+                IsUIInteractable = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.SetUIInteractable != IntPtr.Zero) {
+                SetUIInteractable = Marshal.GetDelegateForFunctionPointer<SetUIInteractableFn>(Api.SetUIInteractable);
+            } else {
+                SetUIInteractable = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.GetUISliderValue != IntPtr.Zero) {
+                GetUISliderValue = Marshal.GetDelegateForFunctionPointer<GetUISliderValueFn>(Api.GetUISliderValue);
+            } else {
+                GetUISliderValue = _ => 0f;
+            }
+            if (Api.Version >= 6 && Api.SetUISliderValue != IntPtr.Zero) {
+                SetUISliderValue = Marshal.GetDelegateForFunctionPointer<SetUISliderValueFn>(Api.SetUISliderValue);
+            } else {
+                SetUISliderValue = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUISliderRange != IntPtr.Zero) {
+                SetUISliderRange = Marshal.GetDelegateForFunctionPointer<SetUISliderRangeFn>(Api.SetUISliderRange);
+            } else {
+                SetUISliderRange = (_, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUILabel != IntPtr.Zero) {
+                SetUILabel = Marshal.GetDelegateForFunctionPointer<SetUILabelFn>(Api.SetUILabel);
+            } else {
+                SetUILabel = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUIColor != IntPtr.Zero) {
+                SetUIColor = Marshal.GetDelegateForFunctionPointer<SetUIColorFn>(Api.SetUIColor);
+            } else {
+                SetUIColor = (_, _, _, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.GetUITextScale != IntPtr.Zero) {
+                GetUITextScale = Marshal.GetDelegateForFunctionPointer<GetUITextScaleFn>(Api.GetUITextScale);
+            } else {
+                GetUITextScale = _ => 1f;
+            }
+            if (Api.Version >= 6 && Api.SetUITextScale != IntPtr.Zero) {
+                SetUITextScale = Marshal.GetDelegateForFunctionPointer<SetUITextScaleFn>(Api.SetUITextScale);
+            } else {
+                SetUITextScale = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUISliderStyle != IntPtr.Zero) {
+                SetUISliderStyle = Marshal.GetDelegateForFunctionPointer<SetUISliderStyleFn>(Api.SetUISliderStyle);
+            } else {
+                SetUISliderStyle = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUIButtonStyle != IntPtr.Zero) {
+                SetUIButtonStyle = Marshal.GetDelegateForFunctionPointer<SetUIButtonStyleFn>(Api.SetUIButtonStyle);
+            } else {
+                SetUIButtonStyle = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetUIStylePreset != IntPtr.Zero) {
+                SetUIStylePreset = Marshal.GetDelegateForFunctionPointer<SetUIStylePresetFn>(Api.SetUIStylePreset);
+            } else {
+                SetUIStylePreset = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetFPSCap != IntPtr.Zero) {
+                SetFPSCap = Marshal.GetDelegateForFunctionPointer<SetFPSCapFn>(Api.SetFPSCap);
+            } else {
+                SetFPSCap = (_, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.GetSpriteClipCount != IntPtr.Zero) {
+                GetSpriteClipCount = Marshal.GetDelegateForFunctionPointer<GetSpriteClipCountFn>(Api.GetSpriteClipCount);
+            } else {
+                GetSpriteClipCount = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.GetSpriteClipIndex != IntPtr.Zero) {
+                GetSpriteClipIndex = Marshal.GetDelegateForFunctionPointer<GetSpriteClipIndexFn>(Api.GetSpriteClipIndex);
+            } else {
+                GetSpriteClipIndex = _ => -1;
+            }
+            if (Api.Version >= 6 && Api.GetSpriteClipName != IntPtr.Zero) {
+                GetSpriteClipName = Marshal.GetDelegateForFunctionPointer<GetSpriteClipNameFn>(Api.GetSpriteClipName);
+            } else {
+                GetSpriteClipName = (_, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.GetSpriteClipNameAt != IntPtr.Zero) {
+                GetSpriteClipNameAt = Marshal.GetDelegateForFunctionPointer<GetSpriteClipNameAtFn>(Api.GetSpriteClipNameAt);
+            } else {
+                GetSpriteClipNameAt = (_, _, _, _) => { };
+            }
+            if (Api.Version >= 6 && Api.SetSpriteClipIndex != IntPtr.Zero) {
+                SetSpriteClipIndex = Marshal.GetDelegateForFunctionPointer<SetSpriteClipIndexFn>(Api.SetSpriteClipIndex);
+            } else {
+                SetSpriteClipIndex = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetSpriteClipName != IntPtr.Zero) {
+                SetSpriteClipName = Marshal.GetDelegateForFunctionPointer<SetSpriteClipNameFn>(Api.SetSpriteClipName);
+            } else {
+                SetSpriteClipName = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.GetSpriteAlpha != IntPtr.Zero) {
+                GetSpriteAlpha = Marshal.GetDelegateForFunctionPointer<GetSpriteAlphaFn>(Api.GetSpriteAlpha);
+            } else {
+                GetSpriteAlpha = _ => 1f;
+            }
+            if (Api.Version >= 6 && Api.SetSpriteAlpha != IntPtr.Zero) {
+                SetSpriteAlpha = Marshal.GetDelegateForFunctionPointer<SetSpriteAlphaFn>(Api.SetSpriteAlpha);
+            } else {
+                SetSpriteAlpha = (_, _) => { };
+            }
+            if (Api.Version >= 6 && Api.FadeSpriteAlpha != IntPtr.Zero) {
+                FadeSpriteAlpha = Marshal.GetDelegateForFunctionPointer<FadeSpriteAlphaFn>(Api.FadeSpriteAlpha);
+            } else {
+                FadeSpriteAlpha = (_, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.FadeSpriteToClipIndex != IntPtr.Zero) {
+                FadeSpriteToClipIndex = Marshal.GetDelegateForFunctionPointer<FadeSpriteToClipIndexFn>(Api.FadeSpriteToClipIndex);
+            } else {
+                FadeSpriteToClipIndex = (_, _, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.FadeSpriteToClipName != IntPtr.Zero) {
+                FadeSpriteToClipName = Marshal.GetDelegateForFunctionPointer<FadeSpriteToClipNameFn>(Api.FadeSpriteToClipName);
+            } else {
+                FadeSpriteToClipName = (_, _, _, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.HasAudioSource != IntPtr.Zero) {
+                HasAudioSource = Marshal.GetDelegateForFunctionPointer<HasAudioSourceFn>(Api.HasAudioSource);
+            } else {
+                HasAudioSource = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.PlayAudio != IntPtr.Zero) {
+                PlayAudio = Marshal.GetDelegateForFunctionPointer<PlayAudioFn>(Api.PlayAudio);
+            } else {
+                PlayAudio = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.StopAudio != IntPtr.Zero) {
+                StopAudio = Marshal.GetDelegateForFunctionPointer<StopAudioFn>(Api.StopAudio);
+            } else {
+                StopAudio = _ => 0;
+            }
+            if (Api.Version >= 6 && Api.SetAudioLoop != IntPtr.Zero) {
+                SetAudioLoop = Marshal.GetDelegateForFunctionPointer<SetAudioLoopFn>(Api.SetAudioLoop);
+            } else {
+                SetAudioLoop = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetAudioVolume != IntPtr.Zero) {
+                SetAudioVolume = Marshal.GetDelegateForFunctionPointer<SetAudioVolumeFn>(Api.SetAudioVolume);
+            } else {
+                SetAudioVolume = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.SetAudioClip != IntPtr.Zero) {
+                SetAudioClip = Marshal.GetDelegateForFunctionPointer<SetAudioClipFn>(Api.SetAudioClip);
+            } else {
+                SetAudioClip = (_, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.PlayAudioOneShot != IntPtr.Zero) {
+                PlayAudioOneShot = Marshal.GetDelegateForFunctionPointer<PlayAudioOneShotFn>(Api.PlayAudioOneShot);
+            } else {
+                PlayAudioOneShot = (_, _, _) => 0;
+            }
+            if (Api.Version >= 6 && Api.MarkDirty != IntPtr.Zero) {
+                MarkDirty = Marshal.GetDelegateForFunctionPointer<MarkDirtyFn>(Api.MarkDirty);
+            } else {
+                MarkDirty = _ => { };
+            }
+            if (Api.Version >= 6 && Api.EnsureCapsuleCollider != IntPtr.Zero) {
+                EnsureCapsuleCollider = Marshal.GetDelegateForFunctionPointer<EnsureCapsuleColliderFn>(Api.EnsureCapsuleCollider);
+            } else {
+                EnsureCapsuleCollider = (_, _, _) => 0;
+            }
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -350,6 +785,131 @@ namespace ModuCPP {
         public unsafe delegate int SetAnimationPlaySpeedFn(IntPtr ctx, float speed);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int SetAnimationPlayOnAwakeFn(IntPtr ctx, int playOnAwake);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsObjectEnabledFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetObjectEnabledFn(IntPtr ctx, int enabled);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetLayerFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetLayerFn(IntPtr ctx, int layer);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int HasTagFn(IntPtr ctx, byte* tag);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsInLayerFn(IntPtr ctx, int layer);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void GetTagFn(IntPtr ctx, byte* outBuffer, int outBufferSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetTagFn(IntPtr ctx, byte* tag);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetPosition2DFn(IntPtr ctx, float x, float y);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsSprintDownFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsJumpDownFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void GetMoveInputWASDFn(IntPtr ctx, float pitchDeg, float yawDeg, float* x, float* y, float* z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int ApplyMouseLookFn(IntPtr ctx, float* pitchDeg, float* yawDeg,
+                                                    float sensitivity, float maxDelta, float deltaTime, int requireMouseButton);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int HasRigidbody2DFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetRigidbody2DVelocityFn(IntPtr ctx, float x, float y);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetRigidbody2DVelocityFn(IntPtr ctx, float* x, float* y);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int AddRigidbodyVelocityFn(IntPtr ctx, float x, float y, float z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetRigidbodyAngularVelocityFn(IntPtr ctx, float x, float y, float z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetRigidbodyAngularVelocityFn(IntPtr ctx, float* x, float* y, float* z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int AddRigidbodyTorqueFn(IntPtr ctx, float x, float y, float z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int AddRigidbodyAngularImpulseFn(IntPtr ctx, float x, float y, float z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetRigidbodyYawFn(IntPtr ctx, float yawDegrees);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetRigidbodyRotationFn(IntPtr ctx, float x, float y, float z);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int TeleportRigidbodyFn(IntPtr ctx, float px, float py, float pz, float rx, float ry, float rz);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int RaycastClosestDetailedFn(IntPtr ctx, float ox, float oy, float oz,
+                                                            float dx, float dy, float dz, float distance,
+                                                            float* hitPosX, float* hitPosY, float* hitPosZ,
+                                                            float* hitNormalX, float* hitNormalY, float* hitNormalZ,
+                                                            float* hitDistance, int* hitObjectId,
+                                                            float* hitObjectVelX, float* hitObjectVelY, float* hitObjectVelZ,
+                                                            float* hitStaticFriction, float* hitDynamicFriction);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsUIButtonPressedFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int IsUIInteractableFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUIInteractableFn(IntPtr ctx, int interactable);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate float GetUISliderValueFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUISliderValueFn(IntPtr ctx, float value);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUISliderRangeFn(IntPtr ctx, float minValue, float maxValue);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUILabelFn(IntPtr ctx, byte* label);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUIColorFn(IntPtr ctx, float r, float g, float b, float a);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate float GetUITextScaleFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUITextScaleFn(IntPtr ctx, float scale);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUISliderStyleFn(IntPtr ctx, int style);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUIButtonStyleFn(IntPtr ctx, int style);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetUIStylePresetFn(IntPtr ctx, byte* name);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetFPSCapFn(IntPtr ctx, int enabled, float cap);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetSpriteClipCountFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int GetSpriteClipIndexFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void GetSpriteClipNameFn(IntPtr ctx, byte* outBuffer, int outBufferSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void GetSpriteClipNameAtFn(IntPtr ctx, int index, byte* outBuffer, int outBufferSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetSpriteClipIndexFn(IntPtr ctx, int index);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetSpriteClipNameFn(IntPtr ctx, byte* name);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate float GetSpriteAlphaFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetSpriteAlphaFn(IntPtr ctx, float alpha);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int FadeSpriteAlphaFn(IntPtr ctx, float targetAlpha, float duration, float deltaTime);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int FadeSpriteToClipIndexFn(IntPtr ctx, int clipIndex, float fadeOutDuration, float fadeInDuration, float deltaTime);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int FadeSpriteToClipNameFn(IntPtr ctx, byte* clipName, float fadeOutDuration, float fadeInDuration, float deltaTime);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int HasAudioSourceFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int PlayAudioFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int StopAudioFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAudioLoopFn(IntPtr ctx, int loop);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAudioVolumeFn(IntPtr ctx, float volume);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int SetAudioClipFn(IntPtr ctx, byte* path);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int PlayAudioOneShotFn(IntPtr ctx, byte* clipPath, float volumeScale);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void MarkDirtyFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate int EnsureCapsuleColliderFn(IntPtr ctx, float height, float radius);
     }
 
     public struct ModuObject {
@@ -382,6 +942,9 @@ namespace ModuCPP {
             handle = ctx;
         }
 
+        /// @summary Native object id for this script context.
+        /// @usage Use when saving object references in settings or logs.
+        /// @returns Object id, or -1 if native context is invalid.
         public int ObjectId => Native.GetObjectId(handle);
         public int SelectedObjectId => Native.GetSelectedObjectId(handle);
         public int SceneObjectCount => Native.GetSceneObjectCount(handle);
@@ -454,6 +1017,10 @@ namespace ModuCPP {
             return Native.EnsureRigidbody(handle, useGravity ? 1 : 0, kinematic ? 1 : 0) != 0;
         }
 
+        public bool EnsureCapsuleCollider(float height, float radius) {
+            return Native.EnsureCapsuleCollider(handle, height, radius) != 0;
+        }
+
         public Vec3 RigidbodyVelocity {
             get {
                 float x = 0f, y = 0f, z = 0f;
@@ -515,6 +1082,288 @@ namespace ModuCPP {
 
         public bool SetAnimationPlayOnAwake(bool playOnAwake) {
             return Native.SetAnimationPlayOnAwake(handle, playOnAwake ? 1 : 0) != 0;
+        }
+
+        public bool IsObjectEnabled {
+            get => Native.IsObjectEnabled(handle) != 0;
+            set => Native.SetObjectEnabled(handle, value ? 1 : 0);
+        }
+
+        public int Layer {
+            get => Native.GetLayer(handle);
+            set => Native.SetLayer(handle, value);
+        }
+
+        public string Tag {
+            get {
+                const int bufferSize = 256;
+                byte* buffer = stackalloc byte[bufferSize];
+                Native.GetTag(handle, buffer, bufferSize);
+                return FromUtf8(buffer);
+            }
+            set {
+                byte[] tagBytes = Encoding.UTF8.GetBytes((value ?? string.Empty) + "\0");
+                fixed (byte* tagPtr = tagBytes) {
+                    Native.SetTag(handle, tagPtr);
+                }
+            }
+        }
+
+        public bool HasTag(string tag) {
+            byte[] tagBytes = Encoding.UTF8.GetBytes((tag ?? string.Empty) + "\0");
+            fixed (byte* tagPtr = tagBytes) {
+                return Native.HasTag(handle, tagPtr) != 0;
+            }
+        }
+
+        public bool IsInLayer(int layer) {
+            return Native.IsInLayer(handle, layer) != 0;
+        }
+
+        public void SetPosition2D(Vec2 value) {
+            Native.SetPosition2D(handle, value.X, value.Y);
+        }
+
+        public bool IsSprintDown() {
+            return Native.IsSprintDown(handle) != 0;
+        }
+
+        public bool IsJumpDown() {
+            return Native.IsJumpDown(handle) != 0;
+        }
+
+        public Vec3 GetMoveInputWASD(float pitchDeg, float yawDeg) {
+            float x = 0f, y = 0f, z = 0f;
+            Native.GetMoveInputWASD(handle, pitchDeg, yawDeg, &x, &y, &z);
+            return new Vec3(x, y, z);
+        }
+
+        public bool ApplyMouseLook(ref float pitchDeg, ref float yawDeg,
+                                   float sensitivity, float maxDelta, float deltaTime,
+                                   bool requireMouseButton = false) {
+            fixed (float* pitchPtr = &pitchDeg)
+            fixed (float* yawPtr = &yawDeg) {
+                return Native.ApplyMouseLook(handle, pitchPtr, yawPtr, sensitivity, maxDelta, deltaTime, requireMouseButton ? 1 : 0) != 0;
+            }
+        }
+
+        public bool HasRigidbody2D => Native.HasRigidbody2D(handle) != 0;
+
+        public Vec2 Rigidbody2DVelocity {
+            get {
+                float x = 0f, y = 0f;
+                if (Native.GetRigidbody2DVelocity(handle, &x, &y) == 0) {
+                    return new Vec2(0f, 0f);
+                }
+                return new Vec2(x, y);
+            }
+            set {
+                Native.SetRigidbody2DVelocity(handle, value.X, value.Y);
+            }
+        }
+
+        public bool AddRigidbodyVelocity(Vec3 deltaVelocity) {
+            return Native.AddRigidbodyVelocity(handle, deltaVelocity.X, deltaVelocity.Y, deltaVelocity.Z) != 0;
+        }
+
+        public bool SetRigidbodyAngularVelocity(Vec3 velocity) {
+            return Native.SetRigidbodyAngularVelocity(handle, velocity.X, velocity.Y, velocity.Z) != 0;
+        }
+
+        public bool TryGetRigidbodyAngularVelocity(out Vec3 velocity) {
+            float x = 0f, y = 0f, z = 0f;
+            int ok = Native.GetRigidbodyAngularVelocity(handle, &x, &y, &z);
+            velocity = new Vec3(x, y, z);
+            return ok != 0;
+        }
+
+        public bool AddRigidbodyTorque(Vec3 torque) {
+            return Native.AddRigidbodyTorque(handle, torque.X, torque.Y, torque.Z) != 0;
+        }
+
+        public bool AddRigidbodyAngularImpulse(Vec3 impulse) {
+            return Native.AddRigidbodyAngularImpulse(handle, impulse.X, impulse.Y, impulse.Z) != 0;
+        }
+
+        public bool SetRigidbodyYaw(float yawDegrees) {
+            return Native.SetRigidbodyYaw(handle, yawDegrees) != 0;
+        }
+
+        public bool SetRigidbodyRotation(Vec3 rotationDegrees) {
+            return Native.SetRigidbodyRotation(handle, rotationDegrees.X, rotationDegrees.Y, rotationDegrees.Z) != 0;
+        }
+
+        public bool TeleportRigidbody(Vec3 position, Vec3 rotationDegrees) {
+            return Native.TeleportRigidbody(handle, position.X, position.Y, position.Z,
+                                            rotationDegrees.X, rotationDegrees.Y, rotationDegrees.Z) != 0;
+        }
+
+        public bool RaycastClosestDetailed(Vec3 origin, Vec3 direction, float distance, out RaycastHit hit) {
+            hit = new RaycastHit();
+            float hitPosX = 0f, hitPosY = 0f, hitPosZ = 0f;
+            float hitNormalX = 0f, hitNormalY = 0f, hitNormalZ = 0f;
+            float hitDistance = 0f;
+            int hitObjectId = -1;
+            float hitObjectVelX = 0f, hitObjectVelY = 0f, hitObjectVelZ = 0f;
+            float hitStaticFriction = 0f, hitDynamicFriction = 0f;
+
+            int ok = Native.RaycastClosestDetailed(handle, origin.X, origin.Y, origin.Z,
+                                                   direction.X, direction.Y, direction.Z, distance,
+                                                   &hitPosX, &hitPosY, &hitPosZ,
+                                                   &hitNormalX, &hitNormalY, &hitNormalZ,
+                                                   &hitDistance, &hitObjectId,
+                                                   &hitObjectVelX, &hitObjectVelY, &hitObjectVelZ,
+                                                   &hitStaticFriction, &hitDynamicFriction);
+            if (ok == 0) {
+                return false;
+            }
+
+            hit.Position = new Vec3(hitPosX, hitPosY, hitPosZ);
+            hit.Normal = new Vec3(hitNormalX, hitNormalY, hitNormalZ);
+            hit.Distance = hitDistance;
+            hit.ObjectId = hitObjectId;
+            hit.ObjectVelocity = new Vec3(hitObjectVelX, hitObjectVelY, hitObjectVelZ);
+            hit.StaticFriction = hitStaticFriction;
+            hit.DynamicFriction = hitDynamicFriction;
+            return true;
+        }
+
+        public bool IsUIButtonPressed() {
+            return Native.IsUIButtonPressed(handle) != 0;
+        }
+
+        public bool IsUIInteractable {
+            get => Native.IsUIInteractable(handle) != 0;
+            set => Native.SetUIInteractable(handle, value ? 1 : 0);
+        }
+
+        public float UISliderValue {
+            get => Native.GetUISliderValue(handle);
+            set => Native.SetUISliderValue(handle, value);
+        }
+
+        public void SetUISliderRange(float minValue, float maxValue) {
+            Native.SetUISliderRange(handle, minValue, maxValue);
+        }
+
+        public void SetUILabel(string label) {
+            byte[] labelBytes = Encoding.UTF8.GetBytes((label ?? string.Empty) + "\0");
+            fixed (byte* labelPtr = labelBytes) {
+                Native.SetUILabel(handle, labelPtr);
+            }
+        }
+
+        public void SetUIColor(float r, float g, float b, float a) {
+            Native.SetUIColor(handle, r, g, b, a);
+        }
+
+        public float UITextScale {
+            get => Native.GetUITextScale(handle);
+            set => Native.SetUITextScale(handle, value);
+        }
+
+        public void SetUISliderStyle(int style) {
+            Native.SetUISliderStyle(handle, style);
+        }
+
+        public void SetUIButtonStyle(int style) {
+            Native.SetUIButtonStyle(handle, style);
+        }
+
+        public void SetUIStylePreset(string name) {
+            byte[] nameBytes = Encoding.UTF8.GetBytes((name ?? string.Empty) + "\0");
+            fixed (byte* namePtr = nameBytes) {
+                Native.SetUIStylePreset(handle, namePtr);
+            }
+        }
+
+        public void SetFPSCap(bool enabled, float cap = 120f) {
+            Native.SetFPSCap(handle, enabled ? 1 : 0, cap);
+        }
+
+        public int SpriteClipCount => Native.GetSpriteClipCount(handle);
+
+        public int SpriteClipIndex => Native.GetSpriteClipIndex(handle);
+
+        public string GetSpriteClipName() {
+            const int bufferSize = 256;
+            byte* buffer = stackalloc byte[bufferSize];
+            Native.GetSpriteClipName(handle, buffer, bufferSize);
+            return FromUtf8(buffer);
+        }
+
+        public string GetSpriteClipNameAt(int index) {
+            const int bufferSize = 256;
+            byte* buffer = stackalloc byte[bufferSize];
+            Native.GetSpriteClipNameAt(handle, index, buffer, bufferSize);
+            return FromUtf8(buffer);
+        }
+
+        public bool SetSpriteClipIndex(int index) {
+            return Native.SetSpriteClipIndex(handle, index) != 0;
+        }
+
+        public bool SetSpriteClipName(string name) {
+            byte[] nameBytes = Encoding.UTF8.GetBytes((name ?? string.Empty) + "\0");
+            fixed (byte* namePtr = nameBytes) {
+                return Native.SetSpriteClipName(handle, namePtr) != 0;
+            }
+        }
+
+        public float SpriteAlpha {
+            get => Native.GetSpriteAlpha(handle);
+            set => Native.SetSpriteAlpha(handle, value);
+        }
+
+        public bool FadeSpriteAlpha(float targetAlpha, float duration, float deltaTime) {
+            return Native.FadeSpriteAlpha(handle, targetAlpha, duration, deltaTime) != 0;
+        }
+
+        public bool FadeSpriteToClipIndex(int clipIndex, float fadeOutDuration, float fadeInDuration, float deltaTime) {
+            return Native.FadeSpriteToClipIndex(handle, clipIndex, fadeOutDuration, fadeInDuration, deltaTime) != 0;
+        }
+
+        public bool FadeSpriteToClipName(string clipName, float fadeOutDuration, float fadeInDuration, float deltaTime) {
+            byte[] clipBytes = Encoding.UTF8.GetBytes((clipName ?? string.Empty) + "\0");
+            fixed (byte* clipPtr = clipBytes) {
+                return Native.FadeSpriteToClipName(handle, clipPtr, fadeOutDuration, fadeInDuration, deltaTime) != 0;
+            }
+        }
+
+        public bool HasAudioSource => Native.HasAudioSource(handle) != 0;
+
+        public bool PlayAudio() {
+            return Native.PlayAudio(handle) != 0;
+        }
+
+        public bool StopAudio() {
+            return Native.StopAudio(handle) != 0;
+        }
+
+        public bool SetAudioLoop(bool loop) {
+            return Native.SetAudioLoop(handle, loop ? 1 : 0) != 0;
+        }
+
+        public bool SetAudioVolume(float volume) {
+            return Native.SetAudioVolume(handle, volume) != 0;
+        }
+
+        public bool SetAudioClip(string path) {
+            byte[] pathBytes = Encoding.UTF8.GetBytes((path ?? string.Empty) + "\0");
+            fixed (byte* pathPtr = pathBytes) {
+                return Native.SetAudioClip(handle, pathPtr) != 0;
+            }
+        }
+
+        public bool PlayAudioOneShot(string clipPath = "", float volumeScale = 1.0f) {
+            byte[] pathBytes = Encoding.UTF8.GetBytes((clipPath ?? string.Empty) + "\0");
+            fixed (byte* pathPtr = pathBytes) {
+                return Native.PlayAudioOneShot(handle, pathPtr, volumeScale) != 0;
+            }
+        }
+
+        public void MarkDirty() {
+            Native.MarkDirty(handle);
         }
 
         public float GetSettingFloat(string key, float fallback = 0f) {

@@ -2526,7 +2526,6 @@ void Engine::renderProjectBrowserPanel() {
 
             if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D) {
                 ImGui::TextDisabled("2D world editing is always enabled in this project.");
-                if (ImGui::Checkbox("Show Sprite Preview Panel", &showSpritePreviewPanel)) editorSettingsChanged = true;
                 if (ImGui::Checkbox("Pixel Grid Snap", &pixelGridSnapEnabled)) editorSettingsChanged = true;
                 ImGui::BeginDisabled(!pixelGridSnapEnabled);
                 if (ImGui::DragInt("Snap Step (px)", &pixelGridSnapStep, 1.0f, 1, 64)) {
@@ -2567,8 +2566,8 @@ void Engine::renderProjectBrowserPanel() {
             }
             ImGui::BeginDisabled(gameViewportAutoFit);
             float zoomPercent = gameViewportZoom * 100.0f;
-            if (ImGui::SliderFloat("Preview Zoom", &zoomPercent, 20.0f, 400.0f, "%.0f%%")) {
-                gameViewportZoom = std::clamp(zoomPercent / 100.0f, 0.2f, 4.0f);
+            if (ImGui::SliderFloat("Preview Zoom", &zoomPercent, 100.0f, 800.0f, "%.0f%%")) {
+                gameViewportZoom = std::clamp(zoomPercent / 100.0f, 1.0f, 8.0f);
                 editorSettingsChanged = true;
             }
             ImGui::EndDisabled();
@@ -2576,6 +2575,8 @@ void Engine::renderProjectBrowserPanel() {
             if (ImGui::Checkbox("Show Game Profiler", &showGameProfiler)) editorSettingsChanged = true;
             if (ImGui::Checkbox("Canvas Guides", &showCanvasOverlay)) editorSettingsChanged = true;
             if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Viewport Hint Overlay", &showViewportHintOverlay)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("2D Light Stats Overlay", &showLight2DStatsOverlay)) editorSettingsChanged = true;
         }
 
         if (ImGui::CollapsingHeader("Renderer##ProjectRendererSection", ImGuiTreeNodeFlags_DefaultOpen)) {

@@ -19,6 +19,9 @@ enum ModuConsoleMessageType {
     MODU_CONSOLE_SUCCESS = 3
 };
 
+/// @summary Read the current script object id.
+/// @usage Use this to compare against raycast hits or stored ids in settings.
+/// @returns Object id, or -1 when the context/object is invalid.
 int Modu_GetObjectId(ModuScriptContext* ctx);
 int Modu_IsObjectEnabled(ModuScriptContext* ctx);
 void Modu_SetObjectEnabled(ModuScriptContext* ctx, int enabled);

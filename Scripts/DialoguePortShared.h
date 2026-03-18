@@ -1,8 +1,6 @@
 #pragma once
 
-#include "ScriptRuntime.h"
-#include "SceneObject.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ModuCPP"
 
 #include <algorithm>
 #include <array>
@@ -324,9 +322,45 @@ inline bool SetObjectsEnabledState(ScriptContext& ctx, const std::vector<std::st
     return changed;
 }
 
-inline bool SetUITextLabel(ScriptContext& ctx, const std::string& objectRef, const std::string& label) {
+inline SceneObject* ResolveUITextTarget(ScriptContext& ctx, const std::string& objectRef) {
     SceneObject* object = ResolveSceneObjectRef(ctx, objectRef);
-    if (!object || !HasUIComponent(*object) || object->ui.type != UIElementType::Text) return false;
+    if (!object) return nullptr;
+    if (HasUIComponent(*object) && object->ui.type == UIElementType::Text) {
+        return object;
+    }
+
+    std::vector<int> pendingChildIds = object->childIds;
+    int childGuard = 0;
+    while (!pendingChildIds.empty() && childGuard < 512) {
+        const int childId = pendingChildIds.back();
+        pendingChildIds.pop_back();
+        ++childGuard;
+        SceneObject* child = ctx.FindObjectById(childId);
+        if (!child) continue;
+        if (HasUIComponent(*child) && child->ui.type == UIElementType::Text) {
+            return child;
+        }
+        pendingChildIds.insert(pendingChildIds.end(), child->childIds.begin(), child->childIds.end());
+    }
+
+    int parentId = object->parentId;
+    int parentGuard = 0;
+    while (parentId >= 0 && parentGuard < 256) {
+        ++parentGuard;
+        SceneObject* parent = ctx.FindObjectById(parentId);
+        if (!parent) break;
+        if (HasUIComponent(*parent) && parent->ui.type == UIElementType::Text) {
+            return parent;
+        }
+        parentId = parent->parentId;
+    }
+
+    return nullptr;
+}
+
+inline bool SetUITextLabel(ScriptContext& ctx, const std::string& objectRef, const std::string& label) {
+    SceneObject* object = ResolveUITextTarget(ctx, objectRef);
+    if (!object) return false;
     if (object->ui.label == label) return false;
     object->ui.label = label;
     ctx.MarkDirty();
@@ -338,8 +372,8 @@ inline bool SetUITextEffects(ScriptContext& ctx,
                              TextEffectType effect,
                              float animationSpeed,
                              float effectIntensity) {
-    SceneObject* object = ResolveSceneObjectRef(ctx, objectRef);
-    if (!object || !HasUIComponent(*object) || object->ui.type != UIElementType::Text) return false;
+    SceneObject* object = ResolveUITextTarget(ctx, objectRef);
+    if (!object) return false;
 
     const int flags = static_cast<int>(effect);
     const float speed = std::max(0.01f, animationSpeed);
@@ -548,7 +582,127 @@ inline bool DrawLanguageCombo(const char* label, Language& language) {
     return changed;
 }
 
+inline void DrawTextEffectFlagsEditor(TextEffectType& effect) {
+    int bits = static_cast<int>(effect);
+    auto drawToggle = [&](const char* label, TextEffectType flag, bool sameLineAfter = false) {
+        bool enabled = (bits & static_cast<int>(flag)) != 0;
+        if (ImGui::Checkbox(label, &enabled)) {
+            if (enabled) bits |= static_cast<int>(flag);
+            else bits &= ~static_cast<int>(flag);
+        }
+        if (sameLineAfter) ImGui::SameLine();
+    };
+
+    drawToggle("Wave", TextEffectType::Wave, true);
+    drawToggle("Shake", TextEffectType::Shake, true);
+    drawToggle("Bounce", TextEffectType::Bounce);
+    drawToggle("Rotate", TextEffectType::Rotate, true);
+    drawToggle("Fade", TextEffectType::Fade);
+    effect = static_cast<TextEffectType>(bits);
+}
+
+inline bool DrawDialogueLineToolbar(std::vector<DialogueLine>& lines,
+                                    int& selectedIndex,
+                                    const char* addLabel,
+                                    const char* removeLabel) {
+    bool changed = false;
+    if (ImGui::Button(addLabel)) {
+        lines.push_back(lines.empty() ? DialogueLine{} : lines.back());
+        selectedIndex = static_cast<int>(lines.size()) - 1;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(removeLabel) &&
+        selectedIndex >= 0 &&
+        selectedIndex < static_cast<int>(lines.size())) {
+        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(selectedIndex));
+        selectedIndex = lines.empty()
+            ? -1
+            : std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
+        changed = true;
+    }
+    return changed;
+}
+
+inline void DrawDialogueLineList(const std::vector<DialogueLine>& lines,
+                                 int& selectedIndex,
+                                 const char* childId) {
+    ImGui::BeginChild(childId, ImVec2(230.0f, 220.0f), true);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string label = std::to_string(i + 1) + ". " +
+            (lines[i].characterName.empty() ? std::string("<Unnamed>") : lines[i].characterName);
+        if (ImGui::Selectable(label.c_str(), selectedIndex == static_cast<int>(i))) {
+            selectedIndex = static_cast<int>(i);
+        }
+    }
+    ImGui::EndChild();
+}
+
+inline bool DrawDialogueLineEditor(ScriptContext& ctx,
+                                   std::vector<DialogueLine>& lines,
+                                   int& selectedIndex,
+                                   const char* addLabel = "Add Line",
+                                   const char* removeLabel = "Remove Line",
+                                   const char* emptyText = "No dialogue lines configured.",
+                                   const char* childId = "DialogueLinesList") {
+    bool changed = DrawDialogueLineToolbar(lines, selectedIndex, addLabel, removeLabel);
+    if (lines.empty()) {
+        ImGui::TextDisabled("%s", emptyText);
+        return changed;
+    }
+
+    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
+    DrawDialogueLineList(lines, selectedIndex, childId);
+
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    DialogueLine& line = lines[static_cast<size_t>(selectedIndex)];
+
+    changed |= DrawStdStringInput("Character Name", line.characterName, 256);
+    changed |= DrawStdStringInput("Sentence (EN)", line.sentence, 2048, 0, true, 60.0f);
+    changed |= DrawStdStringInput("Sentence (DE)", line.sentenceGerman, 2048, 0, true, 60.0f);
+    changed |= DrawStdStringInput("Sentence (JP Kana)", line.sentenceJapaneseKana, 2048, 0, true, 60.0f);
+
+    changed |= DrawAudioClipInput("Character Voice Clip", line.characterSoundClip, 512);
+    changed |= ImGui::DragFloat("Typing Speed", &line.typingSpeed, 0.001f, 0.001f, 1.0f, "%.3f");
+    changed |= ImGui::DragFloat("Animation Speed", &line.animationSpeed, 0.01f, 0.01f, 10.0f, "%.2f");
+    changed |= ImGui::DragFloat("Effect Intensity", &line.effectIntensity, 0.01f, 0.0f, 10.0f, "%.2f");
+
+    ImGui::TextUnformatted("Text Effects");
+    const TextEffectType before = line.textEffect;
+    DrawTextEffectFlagsEditor(line.textEffect);
+    changed |= (before != line.textEffect);
+
+    changed |= DrawObjectRefInput(ctx, "Not Talking Object", line.notTalkingObjectRef);
+    changed |= DrawObjectRefInput(ctx, "Open Mouth Object", line.openMouthObjectRef);
+    changed |= DrawObjectRefInput(ctx, "Closed Mouth Object", line.closedMouthObjectRef);
+    changed |= DrawObjectRefListEditor(ctx, "Line Items To Enable", line.itemsToEnable);
+    changed |= DrawObjectRefListEditor(ctx, "Line Items To Disable", line.itemsToDisable);
+
+    ImGui::EndGroup();
+    return changed;
+}
+
+template <typename RuntimeStateT>
+inline void DrawDialogueRuntimeStatus(const RuntimeStateT* state) {
+    if (!state) {
+        ImGui::TextDisabled("Runtime: idle");
+        return;
+    }
+    ImGui::Separator();
+    ImGui::TextUnformatted("Runtime");
+    ImGui::TextDisabled("Running: %s", state->running ? "Yes" : "No");
+    ImGui::TextDisabled("Typing: %s", state->isTyping ? "Yes" : "No");
+    ImGui::TextDisabled("Line: %d", state->index + 1);
+    ImGui::TextDisabled("Chars: %zu / %zu",
+                        state->revealedCharacters,
+                        state->currentCleanSentence.size());
+}
+
 inline bool IsRuntimeKeyDown(int glfwKey, ImGuiKey imguiKey) {
+    if (ModuCPP::ctxPtr()) {
+        return ModuCPP::KeyDown(glfwKey);
+    }
     if (ImGui::IsKeyDown(imguiKey)) return true;
     GLFWwindow* window = glfwGetCurrentContext();
     if (!window) return false;

@@ -1,0 +1,212 @@
+#include "ModuCPP"
+#include <algorithm>
+#include <array>
+#include <random>
+#include <string>
+using namespace ModuCPP;
+
+public class TopDownMovement2D : ModuBehaviour
+{
+    public float walkSpeed = 4.0f @range(0.0f, 50.0f) @step(0.1f);
+    public float runSpeed = 7.0f @range(0.0f, 80.0f) @step(0.1f);
+    public float acceleration = 18.0f @range(0.0f, 200.0f) @step(0.1f);
+    public float drag = 8.0f @range(0.0f, 200.0f) @step(0.1f);
+    public float animationFps = 10.0f @range(1.0f, 30.0f) @step(0.1f);
+    public float runAnimationFps = 14.0f @range(1.0f, 60.0f) @step(0.1f);
+    public float movementThreshold = 0.15f @range(0.01f, 10.0f) @step(0.01f);
+    public bool useRigidbody2D = true;
+    public bool useSpriteAnimation = true;
+    private std::array<int, 4> idleClips = { 0, 0, 0, 0 };
+    private std::array<std::array<int, 4>, 4> walkClips;
+    private std::array<std::string, 6> stepSounds;
+    private FacingDirection facing = FacingDirection::Down;
+    private float animationTime = 0.0f;
+    private int lastWalkFrame = -1;
+    private bool warnedMissingRb = false;
+    private bool warnedMissingSprite = false;
+
+    inspector
+    {
+        Run(BindClipSettings());
+        Header("Top Down Movement 2D");
+        Slider(walkSpeed, 0.0f, 50.0f);
+        Slider(runSpeed, 0.0f, 80.0f);
+        Slider(acceleration, 0.0f, 200.0f);
+        Slider(drag, 0.0f, 200.0f);
+        Slider(animationFps, 1.0f, 30.0f);
+        Slider(runAnimationFps, 1.0f, 60.0f);
+        Slider(movementThreshold, 0.01f, 10.0f);
+        Toggle(useRigidbody2D);
+        Toggle(useSpriteAnimation);
+        Separator(); ClipGrid(idleClips, walkClips); Separator();
+        SoundSet("Footsteps", stepSounds);
+    }
+
+    void Begin(MODU_obj, float dt)
+    {
+        (void)dt; BindClipSettings(); ResetAnimationState();
+    }
+
+    void TickUpdate(MODU_obj, float dt)
+    {
+        if (!obj || dt <= 0.0f) return;
+        BindClipSettings();
+
+        const vec2 inputMove = input.WASDNormalized();
+        const bool isRunning = input.sprint();
+        const float speed = isRunning ? runSpeed : walkSpeed;
+        const vec2 targetVelocity = inputMove * speed;
+
+        vec2 actualVelocity = targetVelocity;
+        if (!TryMove(targetVelocity, dt, actualVelocity))
+        {
+            TickAnimation(targetVelocity, dt, isRunning); return;
+        }
+
+        const vec2 animationMotion =
+            (glm::length(inputMove) > 1e-3f) ? targetVelocity : actualVelocity;
+        TickAnimation(animationMotion, dt, isRunning);
+    }
+
+    bool TryMove(const vec2& targetVelocity, float dt, vec2& actualVelocity)
+    {
+        actualVelocity = targetVelocity;
+        if (!useRigidbody2D) {movePosition2D(ctx, targetVelocity * dt); return true;}
+        if (!EnsureRigidbody2D()) {return false;}
+        TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt, &actualVelocity);
+        return true;
+    }
+
+    void TickAnimation(const vec2& motion, float dt, bool isRunning)
+    {
+        if (!useSpriteAnimation || !obj) return;
+        if (!EnsureSpriteAnimationReady()) return;
+        if (glm::length(motion) > movementThreshold)
+        {
+            ApplyWalkingAnimation(motion, dt, isRunning); return;
+        }
+        ApplyIdleAnimation();
+    }
+
+    void ApplyWalkingAnimation(const vec2& motion, float dt, bool isRunning)
+    {
+        facing = ResolveFacing(motion, facing); animationTime += dt;
+        const float activeAnimationFps = std::max(1.0f, isRunning ? runAnimationFps : animationFps);
+        const int walkFrame = static_cast<int>(animationTime * activeAnimationFps) % 4;
+        const int clip = SelectWalkClip(walkFrame);
+        if (clip >= 0) {sprite.SetClip(clip);}
+        PlayFootstepsBetweenFrames(lastWalkFrame, walkFrame);
+        lastWalkFrame = walkFrame;
+    }
+
+    void ApplyIdleAnimation()
+    {
+        animationTime = 0.0f;
+        lastWalkFrame = -1;
+        const int idleClip = idleClips[FacingIndex(facing)];
+        if (IsValidClip(ctx, idleClip)) {sprite.SetClip(idleClip);}
+    }
+
+    void PlayFootstepsBetweenFrames(int previousFrame, int currentFrame)
+    {
+        int probe = (previousFrame >= 0) ? previousFrame : 3;
+        int stepHits = 0;
+        while (probe != currentFrame)
+        {
+            probe = (probe + 1) % 4; if (probe == 0 || probe == 2) {++stepHits;}
+        }
+        for (int i = 0; i < stepHits; ++i){PlayRandomFootstep();}
+    }
+
+    void ResetAnimationState()
+    {
+        facing = FacingDirection::Down;
+        animationTime = 0.0f;
+        lastWalkFrame = -1;
+        warnedMissingRb = false; warnedMissingSprite = false;
+    }
+
+    bool EnsureRigidbody2D()
+    {
+        if (hasRigidbody2D())
+        {
+            warnedMissingRb = false; return true;
+        }
+
+        warnOnce(ctx, warnedMissingRb,
+                 "TopDownMovement2D: There is no Rigidbody attached to the GameObject, waiting for assignment...");
+        return false;
+    }
+
+    bool EnsureSpriteAnimationReady()
+    {
+        if (sprite.HasClips())
+        {
+            warnedMissingSprite = false; return true;
+        }
+
+        warnOnce(ctx, warnedMissingSprite,
+                 "TopDownMovement2D: sprite animation needs Sprite Sheet clips on this object.");
+        return false;
+    }
+
+    void BindClipSettings()
+    {
+        ::ModuCPP::BindArray("idle", idleClips);
+        ::ModuCPP::BindArray2D("walk", walkClips);
+        ::ModuCPP::BindArray("stepSound", stepSounds);
+    }
+
+    int SelectWalkClip(int frameIndex)
+    {
+        const std::array<int, 4>& clips = walkClips[FacingIndex(facing)];
+
+        int candidate = clips[std::clamp(frameIndex, 0, 3)];
+        if (IsValidClip(ctx, candidate)) return candidate;
+
+        for (int clip : clips) {if (IsValidClip(ctx, clip)) return clip;}
+
+        candidate = idleClips[FacingIndex(facing)];
+        return IsValidClip(ctx, candidate) ? candidate : -1;
+    }
+
+    void PlayRandomFootstep()
+    {
+        if (!audio.HasSource()) return;
+        std::array<int, 6> validIndices{};
+        int count = 0;
+        for (int i = 0; i < 6; ++i) {
+            if (!stepSounds[static_cast<size_t>(i)].empty())
+            {
+                validIndices[static_cast<size_t>(count++)] = i;
+            }
+        }
+        if (count <= 0) return;
+
+        std::uniform_int_distribution<int> dist(0, count - 1);
+        const std::string& clipPath =
+            stepSounds[static_cast<size_t>(validIndices[static_cast<size_t>(dist(gRng))])];
+        audio.PlayOneShot(clipPath);
+    }
+}
+
+namespace
+{
+    enum class FacingDirection : int {Down = 0, Up = 1, Right = 2, Left = 3};
+    std::mt19937 gRng(std::random_device{}());
+    int FacingIndex(FacingDirection dir) {return static_cast<int>(dir);}
+    bool IsValidClip(const ScriptContext& ctx, int clipIndex)
+    {
+        return clipIndex >= 0 && clipIndex < ctx.GetSpriteClipCount();
+    }
+
+    FacingDirection ResolveFacing(const vec2& motion, FacingDirection fallback)
+    {
+        if (glm::dot(motion, motion) <= 1e-6f){return fallback;}
+        if (std::abs(motion.x) > std::abs(motion.y))
+        {
+            return (motion.x >= 0.0f) ? FacingDirection::Right : FacingDirection::Left;
+        }
+        return (motion.y >= 0.0f) ? FacingDirection::Up : FacingDirection::Down;
+    }
+}

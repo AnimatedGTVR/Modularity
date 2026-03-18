@@ -28,6 +28,56 @@ void ModuRuntime2DProfiler_RecordUiRuntime(double uiRuntimeMs,
                                            uint32_t visibleObjectCount);
 
 namespace {
+constexpr int kRuntimeInternalWidth = 1280;
+constexpr int kRuntimeInternalHeight = 720;
+
+ImVec2 ComputeAspectFitSize(const ImVec2& available, float aspect) {
+    const float safeWidth = std::max(1.0f, available.x);
+    const float safeHeight = std::max(1.0f, available.y);
+    float width = safeWidth;
+    float height = width / std::max(0.001f, aspect);
+    if (height > safeHeight) {
+        height = safeHeight;
+        width = height * std::max(0.001f, aspect);
+    }
+    return ImVec2(std::max(1.0f, std::floor(width)),
+                  std::max(1.0f, std::floor(height)));
+}
+
+void ApplyNearestTextureSampling(GLuint textureId) {
+    if (textureId == 0 || glfwGetCurrentContext() == nullptr) return;
+
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+}
+
+bool RuntimeUiDrawOrderLess(const SceneObject* a, const SceneObject* b) {
+    if (a == nullptr || b == nullptr) return false;
+    if (a->layer != b->layer) return a->layer < b->layer;
+
+    const int parallaxOrderA = (a->hasParallaxLayer2D && a->parallaxLayer2D.enabled)
+        ? a->parallaxLayer2D.order
+        : 0;
+    const int parallaxOrderB = (b->hasParallaxLayer2D && b->parallaxLayer2D.enabled)
+        ? b->parallaxLayer2D.order
+        : 0;
+    if (parallaxOrderA != parallaxOrderB) return parallaxOrderA < parallaxOrderB;
+
+    return false;
+}
+
+void StableSortRuntimeUiDrawList(std::vector<SceneObject*>& drawList) {
+    std::stable_sort(drawList.begin(), drawList.end(), RuntimeUiDrawOrderLess);
+}
+
 bool ProjectWorldToOverlayPoint(const glm::vec3& worldPos,
                                 const glm::mat4& view,
                                 const glm::mat4& proj,
@@ -329,11 +379,51 @@ void AddUITextWithFilter(ImDrawList* drawList,
     }
 }
 
+template <typename EnumType, size_t N>
+ObjectType MapEnumToObjectType(EnumType value, const std::array<ObjectType, N>& mapping) {
+    const size_t index = static_cast<size_t>(value);
+    if (index >= mapping.size()) {
+        return ObjectType::Empty;
+    }
+    return mapping[index];
+}
+
+static constexpr std::array<ObjectType, static_cast<size_t>(RenderType::Sprite) + 1> kRenderTypeMainObjectMap = {{
+    ObjectType::Empty,     // RenderType::None
+    ObjectType::Cube,      // RenderType::Cube
+    ObjectType::Sphere,    // RenderType::Sphere
+    ObjectType::Capsule,   // RenderType::Capsule
+    ObjectType::OBJMesh,   // RenderType::OBJMesh
+    ObjectType::Model,     // RenderType::Model
+    ObjectType::Mirror,    // RenderType::Mirror
+    ObjectType::Plane,     // RenderType::Plane
+    ObjectType::Torus,     // RenderType::Torus
+    ObjectType::Sprite     // RenderType::Sprite
+}};
+
+static constexpr std::array<ObjectType, static_cast<size_t>(UIElementType::Sprite2D) + 1> kUiTypeMainObjectMap = {{
+    ObjectType::Empty,      // UIElementType::None
+    ObjectType::Canvas,     // UIElementType::Canvas
+    ObjectType::UIImage,    // UIElementType::Image
+    ObjectType::UISlider,   // UIElementType::Slider
+    ObjectType::UIButton,   // UIElementType::Button
+    ObjectType::UIText,     // UIElementType::Text
+    ObjectType::Sprite2D    // UIElementType::Sprite2D
+}};
+
+static constexpr std::array<ObjectType, static_cast<size_t>(LightType::Area) + 1> kLightTypeMainObjectMap = {{
+    ObjectType::DirectionalLight, // LightType::Directional
+    ObjectType::PointLight,       // LightType::Point
+    ObjectType::SpotLight,        // LightType::Spot
+    ObjectType::AreaLight         // LightType::Area
+}};
+
 struct UiSceneLookupCache {
     explicit UiSceneLookupCache(const std::vector<SceneObject>& objects) {
         byId.reserve(objects.size());
         parentOffsetCache.reserve(objects.size());
         canvas3DIdCache.reserve(objects.size());
+        pseudoCanvasIdCache.reserve(objects.size());
         for (const SceneObject& obj : objects) {
             byId.emplace(obj.id, &obj);
         }
@@ -353,8 +443,12 @@ struct UiSceneLookupCache {
         glm::vec2 offset(0.0f);
         if (const SceneObject* parent = find(obj.parentId)) {
             offset = getWorldParentOffset(*parent);
-            if (parent->hasUI && parent->ui.type != UIElementType::None) {
+            if (parent->type == ObjectType::Sprite25D) {
+                offset += glm::vec2(parent->position.x, parent->position.y);
+            } else if (parent->hasUI && parent->ui.type != UIElementType::None) {
                 offset += glm::vec2(parent->ui.position.x, parent->ui.position.y);
+            } else {
+                offset += glm::vec2(parent->position.x, parent->position.y);
             }
         }
 
@@ -379,10 +473,32 @@ struct UiSceneLookupCache {
         return canvasId;
     }
 
+    int findPseudo3DCanvasId(const SceneObject& obj) {
+        auto cached = pseudoCanvasIdCache.find(obj.id);
+        if (cached != pseudoCanvasIdCache.end()) {
+            return cached->second;
+        }
+
+        int canvasId = -1;
+        if (obj.hasUI &&
+            obj.ui.type == UIElementType::Canvas &&
+            !obj.ui.renderIn3D &&
+            obj.ui.pseudo3DEnabled &&
+            obj.ui.pseudo3DUseOffscreenSurface) {
+            canvasId = obj.id;
+        } else if (const SceneObject* parent = find(obj.parentId)) {
+            canvasId = findPseudo3DCanvasId(*parent);
+        }
+
+        pseudoCanvasIdCache.emplace(obj.id, canvasId);
+        return canvasId;
+    }
+
 private:
     std::unordered_map<int, const SceneObject*> byId;
     std::unordered_map<int, glm::vec2> parentOffsetCache;
     std::unordered_map<int, int> canvas3DIdCache;
+    std::unordered_map<int, int> pseudoCanvasIdCache;
 };
 
 class SpriteTextureResolver {
@@ -738,6 +854,150 @@ bool DrawNineSliceSprite(BatchedSpriteEmitter& spriteBatch,
     }
 
     return true;
+}
+
+glm::vec2 ResolvePseudo3DLayoutSize(const SceneObject& canvas) {
+    const glm::vec2 fallback(std::max(1.0f, canvas.ui.size.x), std::max(1.0f, canvas.ui.size.y));
+    if (canvas.ui.pseudo3DPanelSize.x > 0.0f && canvas.ui.pseudo3DPanelSize.y > 0.0f) {
+        return glm::vec2(std::max(1.0f, canvas.ui.pseudo3DPanelSize.x),
+                         std::max(1.0f, canvas.ui.pseudo3DPanelSize.y));
+    }
+    return fallback;
+}
+
+float Cross2D(const ImVec2& a, const ImVec2& b) {
+    return a.x * b.y - a.y * b.x;
+}
+
+bool PointInTriangleBarycentric(const ImVec2& p,
+                                const ImVec2& a,
+                                const ImVec2& b,
+                                const ImVec2& c,
+                                float& wa,
+                                float& wb,
+                                float& wc) {
+    const ImVec2 v0 = ImVec2(b.x - a.x, b.y - a.y);
+    const ImVec2 v1 = ImVec2(c.x - a.x, c.y - a.y);
+    const ImVec2 v2 = ImVec2(p.x - a.x, p.y - a.y);
+    const float denom = Cross2D(v0, v1);
+    if (std::abs(denom) <= 1e-6f) {
+        return false;
+    }
+    wb = Cross2D(v2, v1) / denom;
+    wc = Cross2D(v0, v2) / denom;
+    wa = 1.0f - wb - wc;
+    const float eps = -1e-4f;
+    return wa >= eps && wb >= eps && wc >= eps;
+}
+
+bool MapPointToPseudo3DQuadUV(const std::array<ImVec2, 4>& corners,
+                              const ImVec2& point,
+                              ImVec2& outUv) {
+    float w0 = 0.0f;
+    float w1 = 0.0f;
+    float w2 = 0.0f;
+    if (PointInTriangleBarycentric(point, corners[0], corners[1], corners[2], w0, w1, w2)) {
+        const ImVec2 uv0(0.0f, 1.0f);
+        const ImVec2 uv1(1.0f, 1.0f);
+        const ImVec2 uv2(1.0f, 0.0f);
+        outUv = ImVec2(
+            uv0.x * w0 + uv1.x * w1 + uv2.x * w2,
+            uv0.y * w0 + uv1.y * w1 + uv2.y * w2);
+        return true;
+    }
+
+    if (PointInTriangleBarycentric(point, corners[0], corners[2], corners[3], w0, w1, w2)) {
+        const ImVec2 uv0(0.0f, 1.0f);
+        const ImVec2 uv2(1.0f, 0.0f);
+        const ImVec2 uv3(0.0f, 0.0f);
+        outUv = ImVec2(
+            uv0.x * w0 + uv2.x * w1 + uv3.x * w2,
+            uv0.y * w0 + uv2.y * w1 + uv3.y * w2);
+        return true;
+    }
+
+    return false;
+}
+
+std::array<ImVec2, 4> BuildPseudo3DPanelCorners(const ImVec2& panelMin,
+                                                const ImVec2& panelMax,
+                                                const UIElementComponent& ui,
+                                                float distanceScale,
+                                                float perspectiveDistanceFactor) {
+    const ImVec2 baseSize(std::max(1.0f, panelMax.x - panelMin.x),
+                          std::max(1.0f, panelMax.y - panelMin.y));
+    const ImVec2 pivotNorm(std::clamp(ui.pseudo3DPivot.x, 0.0f, 1.0f),
+                           std::clamp(ui.pseudo3DPivot.y, 0.0f, 1.0f));
+    const ImVec2 pivot(panelMin.x + baseSize.x * pivotNorm.x,
+                       panelMin.y + baseSize.y * pivotNorm.y);
+    const ImVec2 scaledSize(baseSize.x * std::max(0.01f, distanceScale),
+                            baseSize.y * std::max(0.01f, distanceScale));
+    const ImVec2 scaledMin(pivot.x - scaledSize.x * pivotNorm.x,
+                           pivot.y - scaledSize.y * pivotNorm.y);
+    const ImVec2 scaledMax(scaledMin.x + scaledSize.x, scaledMin.y + scaledSize.y);
+
+    std::array<ImVec2, 4> corners = {
+        ImVec2(scaledMin.x, scaledMin.y),
+        ImVec2(scaledMax.x, scaledMin.y),
+        ImVec2(scaledMax.x, scaledMax.y),
+        ImVec2(scaledMin.x, scaledMax.y)
+    };
+
+    const float perspective = ui.pseudo3DPerspectiveIntensity * perspectiveDistanceFactor;
+    const float skew = ui.pseudo3DSkewAmount;
+    const float curvature = ui.pseudo3DCurvatureAmount;
+    const float offsetScale = std::max(0.01f, distanceScale);
+    const float halfW = scaledSize.x * 0.5f;
+    const float halfH = scaledSize.y * 0.5f;
+
+    corners[0].x += perspective * halfW;
+    corners[1].x -= perspective * halfW;
+    corners[2].x += perspective * halfW;
+    corners[3].x -= perspective * halfW;
+
+    corners[0].x += skew * halfH;
+    corners[1].x += skew * halfH;
+    corners[2].x -= skew * halfH;
+    corners[3].x -= skew * halfH;
+
+    corners[0].y -= curvature * halfH;
+    corners[1].y -= curvature * halfH;
+    corners[2].y += curvature * halfH;
+    corners[3].y += curvature * halfH;
+
+    corners[0].x += ui.pseudo3DTopLeftOffset.x * offsetScale;
+    corners[0].y += ui.pseudo3DTopLeftOffset.y * offsetScale;
+    corners[1].x += ui.pseudo3DTopRightOffset.x * offsetScale;
+    corners[1].y += ui.pseudo3DTopRightOffset.y * offsetScale;
+    corners[2].x += ui.pseudo3DBottomRightOffset.x * offsetScale;
+    corners[2].y += ui.pseudo3DBottomRightOffset.y * offsetScale;
+    corners[3].x += ui.pseudo3DBottomLeftOffset.x * offsetScale;
+    corners[3].y += ui.pseudo3DBottomLeftOffset.y * offsetScale;
+    return corners;
+}
+
+void ResolvePseudo3DDistanceState(const UIElementComponent& ui,
+                                  float distance,
+                                  float& outScale,
+                                  float& outPerspectiveFactor,
+                                  bool& outAllowInteraction) {
+    outScale = 1.0f;
+    outPerspectiveFactor = 1.0f;
+    outAllowInteraction = ui.pseudo3DAllowInteraction;
+
+    if (ui.pseudo3DDistanceScalingEnabled) {
+        const float minDist = std::max(0.01f, ui.pseudo3DMinDistance);
+        const float maxDist = std::max(minDist + 0.01f, ui.pseudo3DMaxDistance);
+        const float t = std::clamp((distance - minDist) / (maxDist - minDist), 0.0f, 1.0f);
+        outScale = 1.0f - t * 0.65f;
+        if (ui.pseudo3DAdjustPerspectiveWithDistance) {
+            outPerspectiveFactor = 1.0f - t;
+        }
+    }
+
+    if (ui.pseudo3DInteractionDistance > 0.0f && distance > ui.pseudo3DInteractionDistance) {
+        outAllowInteraction = false;
+    }
 }
 }
 
@@ -1567,6 +1827,9 @@ void Engine::renderGameViewportWindow() {
     if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= (int)kGameResolutions.size()) {
         gameViewportResolutionIndex = 0;
     }
+    gameViewportZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
+
+    static constexpr int kGameViewportPreviewSlot = 5001;
 
     SceneObject* playerCam = nullptr;
     for (auto& obj : sceneObjects) {
@@ -1639,8 +1902,8 @@ void Engine::renderGameViewportWindow() {
         ImGui::SameLine();
         float zoomPercent = gameViewportZoom * 100.0f;
         ImGui::SetNextItemWidth(140.0f);
-        if (ImGui::SliderFloat("Zoom", &zoomPercent, 10.0f, 800.0f, "%.0f%%", ImGuiSliderFlags_Logarithmic)) {
-            gameViewportZoom = zoomPercent / 100.0f;
+        if (ImGui::SliderFloat("Zoom", &zoomPercent, 100.0f, 800.0f, "%.0f%%", ImGuiSliderFlags_Logarithmic)) {
+            gameViewportZoom = std::clamp(zoomPercent / 100.0f, 1.0f, 8.0f);
         }
     }
 
@@ -1657,6 +1920,8 @@ void Engine::renderGameViewportWindow() {
         renderWidth = kGameResolutions[gameViewportResolutionIndex].width;
         renderHeight = kGameResolutions[gameViewportResolutionIndex].height;
     }
+    gameViewportLastRenderWidth = std::max(1, renderWidth);
+    gameViewportLastRenderHeight = std::max(1, renderHeight);
     float frameScale = 1.0f;
     if (!kGameResolutions[gameViewportResolutionIndex].useWindow) {
         if (gameViewportAutoFit) {
@@ -1763,7 +2028,8 @@ void Engine::renderGameViewportWindow() {
                 playerCam->camera.fov,
                 playerCam->camera.nearClip,
                 playerCam->camera.farClip,
-                playerCam->camera.applyPostFX
+                playerCam->camera.applyPostFX,
+                kGameViewportPreviewSlot
             );
             texId = (ImTextureID)(intptr_t)tex;
         } else if (vulkanRenderer) {
@@ -1778,12 +2044,7 @@ void Engine::renderGameViewportWindow() {
         float offsetY = std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
         ImGui::SetCursorPos(ImVec2(cursorPos.x + offsetX, cursorPos.y + offsetY));
 
-        float effectiveOutputZoom = std::clamp(gameViewportZoom, 0.1f, 8.0f);
-        ImVec2 zoomedImageSize(
-            std::max(1.0f, imageSize.x * effectiveOutputZoom),
-            std::max(1.0f, imageSize.y * effectiveOutputZoom));
-        ImVec2 zoomedOffset((imageSize.x - zoomedImageSize.x) * 0.5f,
-                            (imageSize.y - zoomedImageSize.y) * 0.5f);
+        float effectiveOutputZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
 
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
@@ -1799,16 +2060,10 @@ void Engine::renderGameViewportWindow() {
         bool imageHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         if (imageHovered) {
             ImGuiIO& io = ImGui::GetIO();
-            const bool ctrlHeld = io.KeyCtrl || io.KeySuper;
-            if (ctrlHeld && io.MouseWheel != 0.0f) {
+            if (io.MouseWheel != 0.0f) {
                 const float factor = std::pow(1.12f, io.MouseWheel);
-                gameViewportZoom = std::clamp(gameViewportZoom * factor, 0.1f, 8.0f);
-                effectiveOutputZoom = std::clamp(gameViewportZoom, 0.1f, 8.0f);
-                zoomedImageSize = ImVec2(
-                    std::max(1.0f, imageSize.x * effectiveOutputZoom),
-                    std::max(1.0f, imageSize.y * effectiveOutputZoom));
-                zoomedOffset = ImVec2((imageSize.x - zoomedImageSize.x) * 0.5f,
-                                      (imageSize.y - zoomedImageSize.y) * 0.5f);
+                gameViewportZoom = std::clamp(gameViewportZoom * factor, 1.0f, 8.0f);
+                effectiveOutputZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
             }
         }
 
@@ -1819,28 +2074,40 @@ void Engine::renderGameViewportWindow() {
                     GLint previousTexture = 0;
                     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
                     glBindTexture(GL_TEXTURE_2D, tex);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
                 }
             }
 
-            ImVec2 uvMin(0.0f, rendererInitialized ? 1.0f : 0.0f);
-            ImVec2 uvMax(1.0f, rendererInitialized ? 0.0f : 1.0f);
-            ImVec2 drawMin(imageMin.x + zoomedOffset.x, imageMin.y + zoomedOffset.y);
-            ImVec2 drawMax(drawMin.x + zoomedImageSize.x, drawMin.y + zoomedImageSize.y);
+            const ImVec2 uvFullMin(0.0f, rendererInitialized ? 1.0f : 0.0f);
+            const ImVec2 uvFullMax(1.0f, rendererInitialized ? 0.0f : 1.0f);
 
-            drawList->PushClipRect(imageMin, imageMax, true);
-            drawList->AddImage(texId, drawMin, drawMax, uvMin, uvMax);
-            drawList->PopClipRect();
+            // True output zoom: keep destination fixed, sample a centered crop from the
+            // final rendered texture where source size = 1/zoom.
+            const float sourceSizeNorm = std::clamp(1.0f / effectiveOutputZoom, 0.0f, 1.0f);
+            const float sourceMinNorm = (1.0f - sourceSizeNorm) * 0.5f;
+            const float sourceMaxNorm = sourceMinNorm + sourceSizeNorm;
+            auto remapNormToUv = [&](float uNorm, float vNorm) {
+                return ImVec2(
+                    uvFullMin.x + (uvFullMax.x - uvFullMin.x) * uNorm,
+                    uvFullMin.y + (uvFullMax.y - uvFullMin.y) * vNorm);
+            };
+            const ImVec2 uvMin = remapNormToUv(sourceMinNorm, sourceMinNorm);
+            const ImVec2 uvMax = remapNormToUv(sourceMaxNorm, sourceMaxNorm);
+
+            drawList->AddImage(texId, imageMin, imageMax, uvMin, uvMax);
         } else {
-            drawList->AddRectFilled(ImVec2(imageMin.x + zoomedOffset.x, imageMin.y + zoomedOffset.y),
-                                    ImVec2(imageMin.x + zoomedOffset.x + zoomedImageSize.x,
-                                           imageMin.y + zoomedOffset.y + zoomedImageSize.y),
+            drawList->AddRectFilled(imageMin,
+                                    imageMax,
                                     IM_COL32(32, 36, 48, 255));
         }
-        float uiScaleX = (renderWidth > 0) ? (zoomedImageSize.x / (float)renderWidth) : 1.0f;
-        float uiScaleY = (renderHeight > 0) ? (zoomedImageSize.y / (float)renderHeight) : 1.0f;
+        float uiScaleX = (renderWidth > 0) ? (imageSize.x / (float)renderWidth) : 1.0f;
+        float uiScaleY = (renderHeight > 0) ? (imageSize.y / (float)renderHeight) : 1.0f;
         if (showGameViewportToolbar && showCanvasOverlay) {
             ImVec2 pad(8.0f, 8.0f);
             ImVec2 tl(imageMin.x + pad.x, imageMin.y + pad.y);
@@ -1896,6 +2163,9 @@ void Engine::renderGameViewportWindow() {
         auto find3DCanvasId = [&](const SceneObject& target) -> int {
             return uiSceneLookup.find3DCanvasId(target);
         };
+        auto findPseudo3DCanvasId = [&](const SceneObject& target) -> int {
+            return uiSceneLookup.findPseudo3DCanvasId(target);
+        };
         auto isUiOn3DCanvas = [&](const SceneObject& target) {
             return find3DCanvasId(target) >= 0;
         };
@@ -1906,11 +2176,11 @@ void Engine::renderGameViewportWindow() {
         auto isUIType = [&](const SceneObject& target) {
             if (!target.hasUI || target.ui.type == UIElementType::None) return false;
             int canvasId = find3DCanvasId(target);
-            return (canvasId < 0) || (canvasId == editCanvas3DId);
+            if (!((canvasId < 0) || (canvasId == editCanvas3DId))) {
+                return false;
+            }
+            return findPseudo3DCanvasId(target) < 0;
         };
-        ImDrawList* overlayDrawList = nullptr;
-        int overlayVtxStart = 0;
-        int overlayCmdStart = 0;
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
         ImGui::BeginChild("GameUIOverlay",
@@ -1923,11 +2193,9 @@ void Engine::renderGameViewportWindow() {
                           ImGuiWindowFlags_NoScrollWithMouse |
                           ImGuiWindowFlags_NoSavedSettings |
                           ImGuiWindowFlags_NoBackground);
-        overlayDrawList = ImGui::GetWindowDrawList();
-        if (overlayDrawList) {
-            overlayVtxStart = overlayDrawList->VtxBuffer.Size;
-            overlayCmdStart = overlayDrawList->CmdBuffer.Size;
-        }
+        ImDrawList* compositedDrawList = ImGui::GetWindowDrawList();
+        const int compositedDrawVtxStart = compositedDrawList ? compositedDrawList->VtxBuffer.Size : 0;
+        const int compositedDrawCmdStart = compositedDrawList ? compositedDrawList->CmdBuffer.Size : 0;
 
         auto anchorToPivot = [](UIAnchor anchor, const ImVec2& size) {
             switch (anchor) {
@@ -1989,10 +2257,10 @@ void Engine::renderGameViewportWindow() {
         ImVec2 overlayPos = ImGui::GetWindowPos();
         ImVec2 overlaySize = ImGui::GetWindowSize();
         bool allowEditorUi = false;
-        bool useWorldUi = playerCam && playerCam->camera.use2D;
+        bool useWorldUi = project2DPipeline || (playerCam && playerCam->camera.use2D);
         UIWorldCamera2D uiWorldCameraBackup = uiWorldCamera;
         bool restoreUiWorldCamera = false;
-        if (playerCam && playerCam->camera.use2D) {
+        if (playerCam && useWorldUi) {
             useWorldUi = true;
             restoreUiWorldCamera = true;
             uiWorldCamera.position = glm::vec2(playerCam->position.x, playerCam->position.y);
@@ -2006,7 +2274,7 @@ void Engine::renderGameViewportWindow() {
         glm::mat4 projectedUiView(1.0f);
         glm::mat4 projectedUiProj(1.0f);
         bool hasProjectedUiCamera = false;
-        if (playerCam && !playerCam->camera.use2D) {
+        if (playerCam && !useWorldUi) {
             projectedUiView = projectedUiCamera.getViewMatrix();
             projectedUiProj = glm::perspective(glm::radians(playerCam->camera.fov),
                                                std::max(0.1f, imageSize.x / std::max(1.0f, imageSize.y)),
@@ -2030,8 +2298,12 @@ void Engine::renderGameViewportWindow() {
                     [&](const SceneObject& o) { return o.id == current->parentId; });
                 if (pit == sceneObjects.end()) break;
                 current = &(*pit);
-                if (current->hasUI && current->ui.type != UIElementType::None) {
+                if (current->type == ObjectType::Sprite25D) {
+                    offset += glm::vec2(current->position.x, current->position.y);
+                } else if (current->hasUI && current->ui.type != UIElementType::None) {
                     offset += glm::vec2(current->ui.position.x, current->ui.position.y);
+                } else {
+                    offset += glm::vec2(current->position.x, current->position.y);
                 }
             }
             return offset;
@@ -2109,14 +2381,6 @@ void Engine::renderGameViewportWindow() {
                 }
             }
         }
-        if (playerCam && playerCam->camera.use2D && allowEditorUi && uiWorldCameraActive) {
-            playerCam->position.x = uiWorldCamera.position.x;
-            playerCam->position.y = uiWorldCamera.position.y;
-            playerCam->camera.pixelsPerUnit = uiWorldCamera.zoom;
-            syncLocalTransform(*playerCam);
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
-
         auto brighten = [](const ImVec4& c, float k) {
             return ImVec4(std::clamp(c.x * k, 0.0f, 1.0f),
                           std::clamp(c.y * k, 0.0f, 1.0f),
@@ -2139,6 +2403,7 @@ void Engine::renderGameViewportWindow() {
             }
             return current;
         };
+        SpriteTextureResolver spriteTextureResolver(rendererInitialized ? &renderer : nullptr);
 
         std::vector<SceneObject*> uiDrawList;
         uiDrawList.reserve(sceneObjects.size());
@@ -2147,12 +2412,7 @@ void Engine::renderGameViewportWindow() {
             uiDrawList.push_back(&obj);
         }
         if (useWorldUi) {
-            std::stable_sort(uiDrawList.begin(), uiDrawList.end(),
-                             [](const SceneObject* a, const SceneObject* b) {
-                                 int orderA = (a->hasParallaxLayer2D && a->parallaxLayer2D.enabled) ? a->parallaxLayer2D.order : 0;
-                                 int orderB = (b->hasParallaxLayer2D && b->parallaxLayer2D.enabled) ? b->parallaxLayer2D.order : 0;
-                                 return orderA < orderB;
-                             });
+            StableSortRuntimeUiDrawList(uiDrawList);
         }
         glm::vec2 worldViewMin = useWorldUi
             ? uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, imageSize.y))
@@ -2201,6 +2461,300 @@ void Engine::renderGameViewportWindow() {
             outMax = maskMax;
             return (outMax.x > outMin.x) && (outMax.y > outMin.y);
         };
+
+        std::unordered_set<int> light2DRenderedObjectIds;
+        bool renderedLight2DComposite = false;
+        Light2DDebugStats light2DStats;
+        int activeLight2DCount = 0;
+        int litSprite2DCount = 0;
+        int litWorldImageCount = 0;
+        bool lightBufferHadContent = false;
+        std::unordered_map<int, std::string> light2DRoutingReasons;
+        light2DRoutingReasons.reserve(uiDrawList.size());
+        if (rendererInitialized) {
+            Light2DRenderRequest lightRequest;
+            lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
+            lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
+            lightRequest.clearColor = glm::vec4(0.0f);
+            lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.blendStyles = light2DBlendStyles;
+            auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
+                if (!flicker.enabled || flicker.amount <= 0.0001f) {
+                    return 1.0f;
+                }
+                const float time = static_cast<float>(glfwGetTime());
+                const float base = std::sin(time * std::max(0.01f, flicker.speed) + flicker.seed);
+                const float jitter = std::sin(time * std::max(0.01f, flicker.speed * 2.173f) + flicker.seed * 1.913f);
+                const float noise = 0.5f + 0.35f * base + 0.15f * jitter;
+                return glm::mix(1.0f, std::max(0.0f, noise), std::clamp(flicker.amount, 0.0f, 1.0f));
+            };
+
+            int spriteDrawOrder = 0;
+            for (SceneObject* objPtr : uiDrawList) {
+                SceneObject& obj = *objPtr;
+                if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) {
+                    continue;
+                }
+                if (obj.ui.nineSliceEnabled) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    continue;
+                }
+                if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    continue;
+                }
+
+                const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
+                const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+
+                ImVec2 rectMin, rectMax;
+                if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    continue;
+                }
+                if (!repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
+                    light2DRoutingReasons[obj.id] = "Skipped Light2D: object is outside the visible 2D world overlay.";
+                    continue;
+                }
+
+                Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
+                if (!spriteTex || spriteTex->GetID() == 0) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    continue;
+                }
+
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
+                const float angle = glm::radians(obj.ui.rotation);
+                const float c = std::cos(angle);
+                const float s = std::sin(angle);
+                ImVec2 maskMin, maskMax;
+                const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
+                auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
+                    if (rectOutsideOverlay(quadMin, quadMax)) {
+                        return false;
+                    }
+                    if (hasMaskRect) {
+                        const bool maskClipsSprite =
+                            quadMin.x < maskMin.x || quadMax.x > maskMax.x ||
+                            quadMin.y < maskMin.y || quadMax.y > maskMax.y;
+                        if (maskClipsSprite) {
+                            return false;
+                        }
+                    }
+
+                    Light2DScreenSprite sprite;
+                    sprite.objectId = obj.id;
+                    sprite.layer = obj.layer;
+                    sprite.drawOrder = spriteDrawOrder++;
+                    sprite.textureId = spriteTex->GetID();
+                    sprite.tint = obj.ui.color;
+                    sprite.receiveLighting = obj.ui.receiveLighting2D;
+                    sprite.unlit = obj.ui.unlitLighting2D;
+                    sprite.emissiveIntensity = obj.ui.emissiveLighting2D;
+
+                    const glm::vec2 center(
+                        ((quadMin.x + quadMax.x) * 0.5f) - overlayPos.x,
+                        ((quadMin.y + quadMax.y) * 0.5f) - overlayPos.y);
+                    const glm::vec2 half(
+                        std::max(0.5f, (quadMax.x - quadMin.x) * 0.5f),
+                        std::max(0.5f, (quadMax.y - quadMin.y) * 0.5f));
+                    auto rotatePoint = [&](float x, float y) {
+                        return glm::vec2(center.x + x * c - y * s, center.y + x * s + y * c);
+                    };
+                    sprite.positions[0] = rotatePoint(-half.x, -half.y);
+                    sprite.positions[1] = rotatePoint(half.x, -half.y);
+                    sprite.positions[2] = rotatePoint(half.x, half.y);
+                    sprite.positions[3] = rotatePoint(-half.x, half.y);
+                    sprite.uvs[0] = glm::vec2(uvQuad[0].x, uvQuad[0].y);
+                    sprite.uvs[1] = glm::vec2(uvQuad[1].x, uvQuad[1].y);
+                    sprite.uvs[2] = glm::vec2(uvQuad[2].x, uvQuad[2].y);
+                    sprite.uvs[3] = glm::vec2(uvQuad[3].x, uvQuad[3].y);
+                    lightRequest.sprites.push_back(sprite);
+                    return true;
+                };
+
+                bool addedAnySprite = false;
+                if (repeatX || repeatY) {
+                    glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
+                    glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
+                    float stepX = spriteSizeWorld.x + spacing.x;
+                    float stepY = spriteSizeWorld.y + spacing.y;
+                    ImVec2 pivotOffset(spriteSizeWorld.x * 0.5f, spriteSizeWorld.y * 0.5f);
+                    switch (obj.ui.anchor) {
+                        case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
+                        case UIAnchor::TopRight: pivotOffset = ImVec2(spriteSizeWorld.x, 0.0f); break;
+                        case UIAnchor::BottomLeft: pivotOffset = ImVec2(0.0f, spriteSizeWorld.y); break;
+                        case UIAnchor::BottomRight: pivotOffset = ImVec2(spriteSizeWorld.x, spriteSizeWorld.y); break;
+                        default: break;
+                    }
+                    glm::vec2 parentOffset = getWorldParentOffset(obj);
+                    glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
+                    glm::vec2 baseWorldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
+                    int startX = repeatX ? static_cast<int>(std::floor((worldViewMin.x - baseWorldMin.x) / stepX)) - 1 : 0;
+                    int endX = repeatX ? static_cast<int>(std::ceil((worldViewMax.x - baseWorldMin.x) / stepX)) + 1 : 0;
+                    int startY = repeatY ? static_cast<int>(std::floor((worldViewMin.y - baseWorldMin.y) / stepY)) - 1 : 0;
+                    int endY = repeatY ? static_cast<int>(std::ceil((worldViewMax.y - baseWorldMin.y) / stepY)) + 1 : 0;
+                    for (int ix = startX; ix <= endX; ++ix) {
+                        for (int iy = startY; iy <= endY; ++iy) {
+                            float dx = repeatX ? static_cast<float>(ix) * stepX : 0.0f;
+                            float dy = repeatY ? static_cast<float>(iy) * stepY : 0.0f;
+                            glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
+                            ImVec2 s0 = worldToScreen(tileMin);
+                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                            ImVec2 tileRectMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
+                            ImVec2 tileRectMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+                            addedAnySprite = appendSpriteQuad(tileRectMin, tileRectMax) || addedAnySprite;
+                        }
+                    }
+                } else {
+                    addedAnySprite = appendSpriteQuad(rectMin, rectMax);
+                }
+
+                if (!addedAnySprite) {
+                    light2DRoutingReasons[obj.id] = hasMaskRect
+                        ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                    continue;
+                }
+
+                light2DRenderedObjectIds.insert(obj.id);
+                if (obj.ui.type == UIElementType::Sprite2D) {
+                    if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                        ++litSprite2DCount;
+                    }
+                } else if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    ++litWorldImageCount;
+                }
+                if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                        ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
+                        : "Lit path: routed through the Light2D compositor.";
+                } else if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                } else {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                }
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D || !obj.light2D.enabled) {
+                    continue;
+                }
+                ++activeLight2DCount;
+
+                if (obj.light2D.type == Light2DType::Global) {
+                    lightRequest.baseAmbient += glm::vec3(obj.light2D.color) * obj.light2D.intensity;
+                    continue;
+                }
+
+                Light2DScreenLight light;
+                light.objectId = obj.id;
+                light.enabled = obj.light2D.enabled;
+                light.type = obj.light2D.type;
+                light.blendStyle = obj.light2D.blendStyle;
+                light.lightOrder = obj.light2D.lightOrder;
+                light.overlapOperation = obj.light2D.overlapOperation;
+                light.targetAllLayers = obj.light2D.targetAllLayers;
+                light.targetLayerMask = obj.light2D.targetLayerMask;
+                light.color = obj.light2D.color;
+                light.intensity = obj.light2D.intensity * computeFlickerMultiplier(obj.light2D.flicker);
+                light.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.innerRadius = obj.light2D.innerRadius * uiWorldCamera.zoom;
+                light.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.falloffStrength = obj.light2D.falloffStrength;
+                light.innerSpotAngle = obj.light2D.innerSpotAngle;
+                light.outerSpotAngle = obj.light2D.outerSpotAngle;
+                light.shadowStrength = obj.light2D.shadowStrength;
+                light.volumetricEnabled = obj.light2D.volumetricEnabled;
+                light.castsShadows = obj.light2D.castsShadows;
+                light.rotationRad = glm::radians(obj.rotation.z);
+                light.cookieScale = obj.light2D.cookieScale;
+                light.cookieRotationRad = glm::radians(obj.light2D.cookieRotation);
+                light.freeformFeatherPx = obj.light2D.freeformFeather * uiWorldCamera.zoom;
+                light.freeformEdgeFalloff = obj.light2D.freeformEdgeFalloff;
+                if (!obj.light2D.cookieTexturePath.empty()) {
+                    if (Texture* cookieTexture = renderer.getTexture(obj.light2D.cookieTexturePath, MaterialProperties::TextureFilter::Bilinear)) {
+                        light.cookieTextureId = cookieTexture->GetID();
+                    }
+                }
+
+                ImVec2 lightPos = worldToScreen(glm::vec2(obj.position.x, obj.position.y));
+                light.position = glm::vec2(lightPos.x - overlayPos.x, lightPos.y - overlayPos.y);
+
+                if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
+                    light.polygon.reserve(obj.light2D.shapePoints.size());
+                    for (const glm::vec2& point : obj.light2D.shapePoints) {
+                        ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                        light.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                    }
+                    if (!light.polygon.empty()) {
+                        glm::vec2 boundsMin(FLT_MAX);
+                        glm::vec2 boundsMax(-FLT_MAX);
+                        for (const glm::vec2& point : light.polygon) {
+                            boundsMin.x = std::min(boundsMin.x, point.x);
+                            boundsMin.y = std::min(boundsMin.y, point.y);
+                            boundsMax.x = std::max(boundsMax.x, point.x);
+                            boundsMax.y = std::max(boundsMax.y, point.y);
+                        }
+                        light.boundsMin = boundsMin;
+                        light.boundsMax = boundsMax;
+                    }
+                } else {
+                    const float extent = std::max(light.radius, light.outerRadius);
+                    light.boundsMin = light.position - glm::vec2(extent);
+                    light.boundsMax = light.position + glm::vec2(extent);
+                }
+
+                lightRequest.lights.push_back(light);
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D || !obj.shadowCaster2D.enabled) {
+                    continue;
+                }
+
+                Light2DScreenShadowCaster caster;
+                caster.objectId = obj.id;
+                caster.enabled = obj.shadowCaster2D.enabled;
+                caster.targetAllLayers = obj.shadowCaster2D.targetAllLayers;
+                caster.targetLayerMask = obj.shadowCaster2D.targetLayerMask;
+                caster.shadowStrength = obj.shadowCaster2D.shadowStrength;
+                caster.polygon.reserve(obj.shadowCaster2D.points.size());
+                for (const glm::vec2& point : obj.shadowCaster2D.points) {
+                    ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                    caster.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                }
+                if (caster.polygon.size() >= 3) {
+                    lightRequest.shadowCasters.push_back(std::move(caster));
+                }
+            }
+
+            const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+                unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
+                if (lightTexture != 0) {
+                    ImGui::GetWindowDrawList()->AddImage(
+                        (ImTextureID)(intptr_t)lightTexture,
+                        overlayPos,
+                        ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y),
+                        ImVec2(0.0f, 1.0f),
+                        ImVec2(1.0f, 0.0f));
+                    renderedLight2DComposite = true;
+                    light2DStats = lighting2DRenderer.getLastStats();
+                } else {
+                    for (int objectId : light2DRenderedObjectIds) {
+                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                    }
+                    light2DRenderedObjectIds.clear();
+                }
+            } else {
+                for (int objectId : light2DRenderedObjectIds) {
+                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                }
+                light2DRenderedObjectIds.clear();
+            }
+        }
 
         for (SceneObject* objPtr : uiDrawList) {
             SceneObject& obj = *objPtr;
@@ -2275,6 +2829,14 @@ void Engine::renderGameViewportWindow() {
                 animState.initialized = true;
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
+                if (light2DRenderedObjectIds.find(obj.id) != light2DRenderedObjectIds.end()) {
+                    if (pushedCanvasMask) {
+                        ImGui::PopClipRect();
+                    }
+                    ImGui::PopID();
+                    if (styleApplied) ImGui::GetStyle() = savedStyle;
+                    continue;
+                }
                 Texture* spriteTex = nullptr;
                 unsigned int texId = 0;
                 if (rendererInitialized && !obj.albedoTexturePath.empty()) {
@@ -2394,22 +2956,47 @@ void Engine::renderGameViewportWindow() {
                 }
             } else if (obj.ui.type == UIElementType::Slider) {
                 spriteBatch.flush();
-                ImGui::SetCursorPos(localMin);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+                if (uiWidgetInteractive) {
+                    ImGui::SetCursorPos(localMin);
+                }
                 if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
-                    ImGui::PushItemWidth(drawSize.x);
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
-                    ImGui::PushStyleColor(ImGuiCol_SliderGrab, brighten(tint, 0.9f));
-                    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-                    if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, obj.ui.sliderMin, obj.ui.sliderMax)) {
-                        projectManager.currentProject.hasUnsavedChanges = true;
+                    float minValue = obj.ui.sliderMin;
+                    float maxValue = obj.ui.sliderMax;
+                    float range = (maxValue - minValue);
+                    if (range <= 1e-6f) range = 1.0f;
+                    if (uiWidgetInteractive) {
+                        ImGui::PushItemWidth(drawSize.x);
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
+                        ImGui::PushStyleColor(ImGuiCol_SliderGrab, brighten(tint, 0.9f));
+                        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
+                        if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, minValue, maxValue)) {
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                        }
+                        ImGui::PopStyleColor(5);
+                        ImGui::PopItemWidth();
+                    } else {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 bg = ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        float t = (obj.ui.sliderValue - minValue) / range;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        float rounding = 6.0f;
+                        ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+                        dl->AddRectFilled(drawMin, drawMax, bg, rounding);
+                        if (fillMax.x > drawMin.x) {
+                            dl->AddRectFilled(drawMin, fillMax, fill, rounding);
+                        }
+                        dl->AddRect(drawMin, drawMax, border, rounding);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
                     }
-                    ImGui::PopStyleColor(5);
-                    ImGui::EndDisabled();
-                    ImGui::PopItemWidth();
                 } else {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImU32 bg = ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
@@ -2419,9 +3006,11 @@ void Engine::renderGameViewportWindow() {
                     float maxValue = obj.ui.sliderMax;
                     float range = (maxValue - minValue);
                     if (range <= 1e-6f) range = 1.0f;
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    ImGui::InvisibleButton("##UISlider", drawSize);
-                    bool held = obj.ui.interactable && ImGui::IsItemActive();
+                    bool held = false;
+                    if (uiWidgetInteractive) {
+                        ImGui::InvisibleButton("##UISlider", drawSize);
+                        held = ImGui::IsItemActive();
+                    }
                     if (held && ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
                         float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
                         mouseT = std::clamp(mouseT, 0.0f, 1.0f);
@@ -2431,7 +3020,6 @@ void Engine::renderGameViewportWindow() {
                             projectManager.currentProject.hasUnsavedChanges = true;
                         }
                     }
-                    ImGui::EndDisabled();
 
                     animateValue(animState.sliderValue, obj.ui.sliderValue, held);
                     float displayValue = (uiAnimationMode == UIAnimationMode::Off) ? obj.ui.sliderValue : animState.sliderValue;
@@ -2468,27 +3056,42 @@ void Engine::renderGameViewportWindow() {
                 }
             } else if (obj.ui.type == UIElementType::Button) {
                 spriteBatch.flush();
-                ImGui::SetCursorPos(localMin);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 obj.ui.buttonPressed = false;
+                const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+                if (uiWidgetInteractive) {
+                    ImGui::SetCursorPos(localMin);
+                }
                 if (obj.ui.buttonStyle == UIButtonStyle::ImGui) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, tint);
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
-                    ImGui::EndDisabled();
-                    ImGui::PopStyleColor(3);
+                    if (uiWidgetInteractive) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, tint);
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
+                        obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
+                        ImGui::PopStyleColor(3);
+                    } else {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        dl->AddRectFilled(drawMin, drawMax, fill, 6.0f);
+                        dl->AddRect(drawMin, drawMax, border, 6.0f);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
+                    }
                 } else if (obj.ui.buttonStyle == UIButtonStyle::Outline) {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImU32 border = ImGui::GetColorU32(tint);
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    if (ImGui::InvisibleButton("##UIButton", drawSize)) {
-                        obj.ui.buttonPressed = obj.ui.interactable;
+                    bool hovered = false;
+                    bool active = false;
+                    if (uiWidgetInteractive) {
+                        if (ImGui::InvisibleButton("##UIButton", drawSize)) {
+                            obj.ui.buttonPressed = true;
+                        }
+                        hovered = ImGui::IsItemHovered();
+                        active = ImGui::IsItemActive();
                     }
-                    bool hovered = ImGui::IsItemHovered();
-                    bool active = ImGui::IsItemActive();
-                    ImGui::EndDisabled();
                     float hoverT = animateValue(animState.hover, hovered ? 1.0f : 0.0f, false);
                     float activeT = animateValue(animState.active, active ? 1.0f : 0.0f, false);
                     if (hoverT > 0.001f) {
@@ -2540,6 +3143,218 @@ void Engine::renderGameViewportWindow() {
             if (styleApplied) ImGui::GetStyle() = savedStyle;
         }
         spriteBatch.flush();
+        if (useWorldUi) {
+            light2DCompositorRanLastFrame = renderedLight2DComposite;
+            light2DLightBufferHadContentLastFrame = lightBufferHadContent;
+            light2DActiveCountLastFrame = activeLight2DCount;
+            light2DLitSprite2DCountLastFrame = litSprite2DCount;
+            light2DLitWorldImageCountLastFrame = litWorldImageCount;
+            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+        }
+
+        bool pseudoPanelInteracting = false;
+        struct PseudoPanelDrawEntry {
+            int canvasId = -1;
+            unsigned int textureId = 0;
+            ImVec2 layoutSize = ImVec2(1.0f, 1.0f);
+            std::array<ImVec2, 4> corners;
+            int depthSort = 0;
+            bool allowInteraction = false;
+        };
+        std::vector<PseudoPanelDrawEntry> pseudoPanels;
+        pseudoPanels.reserve(sceneObjects.size());
+
+        auto resolvePseudoAnchorScreen = [&](const SceneObject& canvas, ImVec2& outScreen, float& outDistance) -> bool {
+            outDistance = 1.0f;
+            if (canvas.ui.pseudo3DAnchorTargetId < 0) {
+                return false;
+            }
+            const SceneObject* anchorObj = uiSceneLookup.find(canvas.ui.pseudo3DAnchorTargetId);
+            if (!anchorObj) {
+                return false;
+            }
+
+            if (useWorldUi) {
+                outScreen = worldToScreen(glm::vec2(anchorObj->position.x, anchorObj->position.y));
+                outDistance = glm::length(
+                    glm::vec2(uiWorldCamera.position.x - anchorObj->position.x,
+                              uiWorldCamera.position.y - anchorObj->position.y));
+                return true;
+            }
+
+            if (hasProjectedUiCamera &&
+                ProjectWorldToOverlayPoint(anchorObj->position,
+                                           projectedUiView,
+                                           projectedUiProj,
+                                           overlayPos,
+                                           overlaySize,
+                                           outScreen)) {
+                outDistance = glm::length(projectedUiCamera.position - anchorObj->position);
+                return true;
+            }
+
+            return false;
+        };
+        auto resolvePseudoCanvasRect = [&](const SceneObject& canvas,
+                                           const glm::vec2& layoutSizePx,
+                                           ImVec2& outMin,
+                                           ImVec2& outMax) -> bool {
+            std::vector<const SceneObject*> chain;
+            chain.reserve(8);
+            const SceneObject* current = &canvas;
+            while (current) {
+                if (current->hasUI && current->ui.type != UIElementType::None) {
+                    const int canvas3DId = find3DCanvasId(*current);
+                    if (canvas3DId < 0 || current->id == canvas.id) {
+                        chain.push_back(current);
+                    }
+                }
+                if (current->parentId < 0) break;
+                current = uiSceneLookup.find(current->parentId);
+                if (!current) break;
+            }
+            if (chain.empty()) {
+                return false;
+            }
+            std::reverse(chain.begin(), chain.end());
+
+            ImVec2 regionMin = overlayPos;
+            ImVec2 regionMax = ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
+            for (const SceneObject* node : chain) {
+                ImVec2 size(1.0f, 1.0f);
+                if (node->id == canvas.id) {
+                    size = ImVec2(std::max(1.0f, layoutSizePx.x * uiScaleX),
+                                  std::max(1.0f, layoutSizePx.y * uiScaleY));
+                } else {
+                    const glm::vec2 nodeSize = getSpriteDisplaySize(*node);
+                    size = ImVec2(std::max(1.0f, nodeSize.x * uiScaleX),
+                                  std::max(1.0f, nodeSize.y * uiScaleY));
+                }
+                const ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
+                const ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX,
+                                   anchorPoint.y + node->ui.position.y * uiScaleY);
+                const ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
+                regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
+                regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
+            }
+            outMin = regionMin;
+            outMax = regionMax;
+            return true;
+        };
+
+        for (auto& canvas : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(canvas) ||
+                !canvas.hasUI ||
+                canvas.ui.type != UIElementType::Canvas ||
+                canvas.ui.renderIn3D ||
+                !canvas.ui.pseudo3DEnabled ||
+                !canvas.ui.pseudo3DUseOffscreenSurface) {
+                continue;
+            }
+
+            const glm::vec2 layoutSizePx = ResolvePseudo3DLayoutSize(canvas);
+            ImVec2 rectMin;
+            ImVec2 rectMax;
+            if (!resolvePseudoCanvasRect(canvas, layoutSizePx, rectMin, rectMax)) {
+                continue;
+            }
+            const int targetWidth = std::clamp(
+                (canvas.ui.renderTargetSize.x > 0) ? canvas.ui.renderTargetSize.x : static_cast<int>(layoutSizePx.x),
+                16,
+                4096);
+            const int targetHeight = std::clamp(
+                (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y : static_cast<int>(layoutSizePx.y),
+                16,
+                4096);
+            Renderer::UiTargetInfo target = renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
+            if (target.texture == 0) {
+                continue;
+            }
+
+            float distance = 1.0f;
+            ImVec2 anchorScreen(0.0f, 0.0f);
+            const bool anchored = resolvePseudoAnchorScreen(canvas, anchorScreen, distance);
+            if (!anchored) {
+                if (useWorldUi) {
+                    distance = glm::length(
+                        glm::vec2(uiWorldCamera.position.x - canvas.position.x,
+                                  uiWorldCamera.position.y - canvas.position.y));
+                } else if (hasProjectedUiCamera) {
+                    distance = glm::length(projectedUiCamera.position - canvas.position);
+                }
+            }
+
+            if (anchored) {
+                const ImVec2 center((rectMin.x + rectMax.x) * 0.5f, (rectMin.y + rectMax.y) * 0.5f);
+                const ImVec2 shift(anchorScreen.x - center.x, anchorScreen.y - center.y);
+                rectMin = ImVec2(rectMin.x + shift.x, rectMin.y + shift.y);
+                rectMax = ImVec2(rectMax.x + shift.x, rectMax.y + shift.y);
+            }
+
+            float distanceScale = 1.0f;
+            float perspectiveFactor = 1.0f;
+            bool allowInteraction = false;
+            ResolvePseudo3DDistanceState(canvas.ui, distance, distanceScale, perspectiveFactor, allowInteraction);
+
+            PseudoPanelDrawEntry entry;
+            entry.canvasId = canvas.id;
+            entry.textureId = target.texture;
+            entry.layoutSize = ImVec2(layoutSizePx.x, layoutSizePx.y);
+            entry.corners = BuildPseudo3DPanelCorners(rectMin, rectMax, canvas.ui, distanceScale, perspectiveFactor);
+            entry.depthSort = canvas.ui.pseudo3DDepthSort;
+            entry.allowInteraction = allowInteraction;
+            pseudoPanels.push_back(entry);
+        }
+
+        if (!pseudoPanels.empty()) {
+            std::stable_sort(pseudoPanels.begin(), pseudoPanels.end(),
+                             [](const PseudoPanelDrawEntry& a, const PseudoPanelDrawEntry& b) {
+                                 if (a.depthSort != b.depthSort) return a.depthSort < b.depthSort;
+                                 return a.canvasId < b.canvasId;
+                             });
+
+            ImDrawList* panelDrawList = ImGui::GetWindowDrawList();
+            for (const PseudoPanelDrawEntry& panel : pseudoPanels) {
+                panelDrawList->AddImageQuad(
+                    (ImTextureID)(intptr_t)panel.textureId,
+                    panel.corners[0], panel.corners[1], panel.corners[2], panel.corners[3],
+                    ImVec2(0.0f, 1.0f), ImVec2(1.0f, 1.0f), ImVec2(1.0f, 0.0f), ImVec2(0.0f, 0.0f),
+                    IM_COL32_WHITE);
+            }
+
+            if (imageHovered && !uiWorldCameraActive) {
+                const ImVec2 mousePos = ImGui::GetIO().MousePos;
+                bool inputAssigned = false;
+                for (auto it = pseudoPanels.rbegin(); it != pseudoPanels.rend(); ++it) {
+                    ImVec2 uv(0.0f, 0.0f);
+                    if (!MapPointToPseudo3DQuadUV(it->corners, mousePos, uv)) {
+                        continue;
+                    }
+
+                    pseudoPanelInteracting = pseudoPanelInteracting ||
+                        ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                        std::abs(ImGui::GetIO().MouseWheel) > 0.0f;
+                    if (!it->allowInteraction || inputAssigned) {
+                        continue;
+                    }
+
+                    UiCanvas3DInput& input = uiCanvas3DInputs[it->canvasId];
+                    const float u = std::clamp(uv.x, 0.0f, 1.0f);
+                    const float v = std::clamp(uv.y, 0.0f, 1.0f);
+                    input.mousePos = ImVec2(
+                        u * std::max(1.0f, it->layoutSize.x),
+                        (1.0f - v) * std::max(1.0f, it->layoutSize.y));
+                    input.mouseDown[0] = ImGui::GetIO().MouseDown[0];
+                    input.mouseDown[1] = ImGui::GetIO().MouseDown[1];
+                    input.mouseDown[2] = ImGui::GetIO().MouseDown[2];
+                    input.mouseWheel = ImGui::GetIO().MouseWheel;
+                    input.hasInput = true;
+                    input.hitT = -1000.0f - static_cast<float>(it->depthSort);
+                    inputAssigned = true;
+                }
+            }
+        }
 
         bool gizmoUsed = false;
         if (allowEditorUi && !isPlaying) {
@@ -2816,38 +3631,42 @@ void Engine::renderGameViewportWindow() {
             gameUiGizmoHistoryCaptured = false;
         }
 
-        uiInteracting = ImGui::IsAnyItemActive() || gizmoUsed || uiWorldCameraActive;
+        uiInteracting = ImGui::IsAnyItemActive() || gizmoUsed || uiWorldCameraActive || pseudoPanelInteracting;
 
         ImGui::EndChild();
-        if (overlayDrawList && std::abs(effectiveOutputZoom - 1.0f) > 1e-4f) {
+        if (std::abs(effectiveOutputZoom - 1.0f) > 1e-4f) {
             ImVec2 zoomCenter(imageMin.x + imageSize.x * 0.5f, imageMin.y + imageSize.y * 0.5f);
             auto scalePoint = [&](const ImVec2& p) {
                 return ImVec2(
                     zoomCenter.x + (p.x - zoomCenter.x) * effectiveOutputZoom,
                     zoomCenter.y + (p.y - zoomCenter.y) * effectiveOutputZoom);
             };
+            auto scaleDrawListRange = [&](ImDrawList* target, int vtxStart, int cmdStart) {
+                if (!target) return;
+                const int safeVtxStart = std::clamp(vtxStart, 0, target->VtxBuffer.Size);
+                for (int i = safeVtxStart; i < target->VtxBuffer.Size; ++i) {
+                    ImDrawVert& v = target->VtxBuffer[i];
+                    v.pos = scalePoint(v.pos);
+                }
 
-            const int vtxStart = std::clamp(overlayVtxStart, 0, overlayDrawList->VtxBuffer.Size);
-            for (int i = vtxStart; i < overlayDrawList->VtxBuffer.Size; ++i) {
-                ImDrawVert& v = overlayDrawList->VtxBuffer[i];
-                v.pos = scalePoint(v.pos);
-            }
+                const int safeCmdStart = std::clamp(cmdStart, 0, target->CmdBuffer.Size);
+                for (int i = safeCmdStart; i < target->CmdBuffer.Size; ++i) {
+                    ImDrawCmd& cmd = target->CmdBuffer[i];
+                    ImVec2 clipMin = scalePoint(ImVec2(cmd.ClipRect.x, cmd.ClipRect.y));
+                    ImVec2 clipMax = scalePoint(ImVec2(cmd.ClipRect.z, cmd.ClipRect.w));
+                    float minX = std::min(clipMin.x, clipMax.x);
+                    float minY = std::min(clipMin.y, clipMax.y);
+                    float maxX = std::max(clipMin.x, clipMax.x);
+                    float maxY = std::max(clipMin.y, clipMax.y);
+                    minX = std::max(minX, imageMin.x);
+                    minY = std::max(minY, imageMin.y);
+                    maxX = std::min(maxX, imageMax.x);
+                    maxY = std::min(maxY, imageMax.y);
+                    cmd.ClipRect = ImVec4(minX, minY, maxX, maxY);
+                }
+            };
 
-            const int cmdStart = std::clamp(overlayCmdStart, 0, overlayDrawList->CmdBuffer.Size);
-            for (int i = cmdStart; i < overlayDrawList->CmdBuffer.Size; ++i) {
-                ImDrawCmd& cmd = overlayDrawList->CmdBuffer[i];
-                ImVec2 clipMin = scalePoint(ImVec2(cmd.ClipRect.x, cmd.ClipRect.y));
-                ImVec2 clipMax = scalePoint(ImVec2(cmd.ClipRect.z, cmd.ClipRect.w));
-                float minX = std::min(clipMin.x, clipMax.x);
-                float minY = std::min(clipMin.y, clipMax.y);
-                float maxX = std::max(clipMin.x, clipMax.x);
-                float maxY = std::max(clipMin.y, clipMax.y);
-                minX = std::max(minX, imageMin.x);
-                minY = std::max(minY, imageMin.y);
-                maxX = std::min(maxX, imageMax.x);
-                maxY = std::min(maxY, imageMax.y);
-                cmd.ClipRect = ImVec4(minX, minY, maxX, maxY);
-            }
+            scaleDrawListRange(compositedDrawList, compositedDrawVtxStart, compositedDrawCmdStart);
         }
         ImGui::PopStyleVar();
         bool clicked = imageHovered && isPlaying && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !uiInteracting;
@@ -2871,28 +3690,19 @@ void Engine::renderGameViewportWindow() {
     ImGui::End();
 
     // Keep dock drawer collapse/expand responsive when Game Viewport is the active tab.
-    updateDockDrawerAnimations();
+    // Skip while workspace transitions are in-flight to avoid split-node thrashing.
+    if (!(pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil)) {
+        updateDockDrawerAnimations();
+    }
 }
 #pragma endregion
 
 #pragma region Play Controls Bar
 void Engine::renderPlayControlsBar() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    ImVec2 buttonPadding(10.0f, 4.0f);
-    const char* playLabel = isPlaying ? "Stop" : "Play";
-    const char* pauseLabel = isPaused ? "Resume" : "Pause";
-    const char* specLabel = specMode ? "Spec On" : "Spec Mode";
-    auto brighten = [](ImVec4 color, float scale) {
-        return ImVec4(
-            std::min(1.0f, color.x * scale),
-            std::min(1.0f, color.y * scale),
-            std::min(1.0f, color.z * scale),
-            color.w
-        );
-    };
-    ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_Button);
-    ImVec4 accentHover = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-    ImVec4 accentActive = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    const char* playTooltip = isPlaying ? "Stop Play Mode" : "Play Mode";
+    const char* specTooltip = specMode ? "Disable Spec Mode" : "Spec Mode";
+    const char* pauseTooltip = isPaused ? "Resume" : "Pause";
+    const bool hasVulkanSceneTexture = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
     float animSpeed = 0.0f;
     if (uiAnimationMode == UIAnimationMode::Fluid) {
         animSpeed = 8.0f;
@@ -2902,74 +3712,137 @@ void Engine::renderPlayControlsBar() {
     float animStep = (uiAnimationMode == UIAnimationMode::Off) ? 1.0f
         : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
 
-    auto buttonWidth = [&](const char* label) {
-        ImVec2 textSize = ImGui::CalcTextSize(label);
-        return textSize.x + buttonPadding.x * 2.0f + style.FrameBorderSize * 2.0f;
+    struct ToolbarIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
     };
 
-    float playWidth = buttonWidth(playLabel);
-    float pauseWidth = buttonWidth(pauseLabel);
-    float specWidth = buttonWidth(specLabel);
-    float spacing = style.ItemSpacing.x;
-    float totalWidth = playWidth + pauseWidth + specWidth + spacing * 2.0f;
+    auto resolveToolbarIcon = [&](const char* iconPath) -> ToolbarIcon {
+        if (!iconPath || !*iconPath) {
+            return {};
+        }
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+                icon && icon->GetID()) {
+                return { static_cast<ImTextureID>(icon->GetID()), true };
+            }
+            return {};
+        }
+        if (hasVulkanSceneTexture && vulkanRenderer) {
+            ImTextureID vkIcon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (vkIcon != static_cast<ImTextureID>(0)) {
+                return { vkIcon, false };
+            }
+        }
+        return {};
+    };
 
-    // Center the controls inside the dockspace menu bar.
-    float regionMinX = ImGui::GetWindowContentRegionMin().x;
-    float regionMaxX = ImGui::GetWindowContentRegionMax().x;
-    float regionWidth = regionMaxX - regionMinX;
-    float startX = (regionWidth - totalWidth) * 0.5f + regionMinX;
+    const float buttonSide = std::max(24.0f, ImGui::GetFrameHeight());
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float totalWidth = buttonSide * 3.0f + spacing * 2.0f;
+
+    const float regionMinX = ImGui::GetWindowContentRegionMin().x;
+    const float regionMaxX = ImGui::GetWindowContentRegionMax().x;
+    float startX = regionMaxX - totalWidth;
     if (startX < regionMinX) startX = regionMinX;
 
     ImVec2 cursor = ImGui::GetCursorPos();
     ImGui::SetCursorPos(ImVec2(startX, cursor.y));
 
-    auto animatedButton = [&](const char* label, const ImVec2& baseSize) -> bool {
-        ImGuiID id = ImGui::GetID(label);
-        UIAnimationState& st = editorUiAnimationStates[id];
-        float scale = 1.0f + st.hover * 0.08f + st.active * 0.14f;
-        ImVec2 size(baseSize.x * scale, baseSize.y * scale);
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        bool pressed = ImGui::InvisibleButton(label, size);
+    auto iconButton = [&](const char* id,
+                          const char* iconPathColored,
+                          const char* iconPathGray,
+                          const char* fallbackText,
+                          const char* tooltip,
+                          bool toggled) -> bool {
+        const ImVec2 slotSize(buttonSide, buttonSide);
+        const ImVec2 slotPos = ImGui::GetCursorScreenPos();
+        bool pressed = ImGui::InvisibleButton(id, slotSize);
         bool hovered = ImGui::IsItemHovered();
         bool active = ImGui::IsItemActive();
+        ImGuiID buttonId = ImGui::GetID(id);
+        UIAnimationState& st = editorUiAnimationStates[buttonId];
         if (uiAnimationMode == UIAnimationMode::Off) {
             st.hover = hovered ? 1.0f : 0.0f;
             st.active = active ? 1.0f : 0.0f;
         } else {
-            float hoverTarget = hovered ? 1.0f : 0.0f;
-            float activeTarget = active ? 1.0f : 0.0f;
+            const float hoverTarget = hovered ? 1.0f : 0.0f;
+            const float activeTarget = active ? 1.0f : 0.0f;
             st.hover += (hoverTarget - st.hover) * animStep;
             st.active += (activeTarget - st.active) * animStep;
         }
-        ImVec4 col = accent;
-        if (active) col = accentActive;
-        else if (hovered) col = accentHover;
+
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 max(pos.x + size.x, pos.y + size.y);
-        dl->AddRectFilled(pos, max, ImGui::GetColorU32(col), 6.0f);
-        ImVec2 textSize = ImGui::CalcTextSize(label);
-        ImVec2 textPos(pos.x + (size.x - textSize.x) * 0.5f,
-                       pos.y + (size.y - textSize.y) * 0.5f);
-        dl->AddText(textPos, ImGui::GetColorU32(ImGui::GetStyleColorVec4(ImGuiCol_Text)), label);
+        const ImVec2 slotMax(slotPos.x + slotSize.x, slotPos.y + slotSize.y);
+        const float zoom = 1.0f + st.hover * 0.08f + st.active * 0.14f;
+        const float drawSide = slotSize.x * zoom;
+        const ImVec2 iconCenter(slotPos.x + slotSize.x * 0.5f, slotPos.y + slotSize.y * 0.5f);
+        const ImVec2 iconMin(iconCenter.x - drawSide * 0.5f, iconCenter.y - drawSide * 0.5f);
+        const ImVec2 iconMax(iconCenter.x + drawSide * 0.5f, iconCenter.y + drawSide * 0.5f);
+
+        const char* iconPath = toggled ? iconPathColored : iconPathGray;
+        ToolbarIcon icon = resolveToolbarIcon(iconPath);
+        int alpha = toggled ? 255 : 192;
+        if (hovered && !toggled) alpha = 218;
+        if (active && !toggled) alpha = 236;
+        const ImU32 iconTint = IM_COL32(255, 255, 255, alpha);
+
+        const float highlightStrength = std::max(st.hover, st.active);
+        if (highlightStrength > 0.01f) {
+            const int a = static_cast<int>(24.0f + 68.0f * highlightStrength);
+            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, a), 6.0f, 0, 1.0f);
+        }
+        if (toggled) {
+            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, 146), 6.0f, 0, 1.2f);
+        }
+
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            // Inset UVs slightly to avoid transparent-edge bleed artifacts between icons.
+            const float uvInset = 1.0f / 32.0f;
+            const ImVec2 uvMin = icon.flipY ? ImVec2(uvInset, 1.0f - uvInset) : ImVec2(uvInset, uvInset);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f - uvInset, uvInset) : ImVec2(1.0f - uvInset, 1.0f - uvInset);
+            dl->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax, iconTint);
+        } else {
+            ImVec2 textSize = ImGui::CalcTextSize(fallbackText);
+            ImVec2 textPos(iconCenter.x - textSize.x * 0.5f,
+                           iconCenter.y - textSize.y * 0.5f);
+            dl->AddText(textPos, iconTint, fallbackText);
+        }
+        if (hovered && tooltip && *tooltip) {
+            ImGui::SetTooltip("%s", tooltip);
+        }
         return pressed;
     };
 
-    ImVec2 basePlay(playWidth, ImGui::GetFrameHeight());
-    ImVec2 basePause(pauseWidth, ImGui::GetFrameHeight());
-    ImVec2 baseSpec(specWidth, ImGui::GetFrameHeight());
-
-    bool playPressed = animatedButton(playLabel, basePlay);
+    bool playPressed = iconButton(
+        "##PlayModeToolbarButton",
+        "Resources/Engine-Root/Editor/Play Button.png",
+        "Resources/Engine-Root/Editor/Play Button Gray.png",
+        "P",
+        playTooltip,
+        isPlaying);
     ImGui::SameLine(0.0f, spacing);
-    bool pausePressed = animatedButton(pauseLabel, basePause);
+    bool specPressed = iconButton(
+        "##SpecModeToolbarButton",
+        "Resources/Engine-Root/Editor/Spec Mode Button.png",
+        "Resources/Engine-Root/Editor/Spec Mode Button Gray.png",
+        "S",
+        specTooltip,
+        specMode);
     ImGui::SameLine(0.0f, spacing);
-    bool specPressed = animatedButton(specLabel, baseSpec);
+    bool pausePressed = iconButton(
+        "##PauseToolbarButton",
+        "Resources/Engine-Root/Editor/Pause Button.png",
+        "Resources/Engine-Root/Editor/Pause Button Gray.png",
+        "||",
+        pauseTooltip,
+        isPaused);
 
     if (playPressed) {
         bool newState = !isPlaying;
         if (newState) {
             // Reset script module state so Begin/static script state is fresh each play session.
-            scriptRuntime.unloadAll();
-            managedRuntime.unloadAll();
+            resetScriptRuntimeStateForReload(false);
             capturePlayModeSnapshot();
             for (SceneObject& obj : sceneObjects) {
                 if (!obj.hasAnimation) continue;
@@ -3001,8 +3874,7 @@ void Engine::renderPlayControlsBar() {
             physics.onPlayStop();
             audio.onPlayStop();
             restorePlayModeSnapshot();
-            scriptRuntime.unloadAll();
-            managedRuntime.unloadAll();
+            resetScriptRuntimeStateForReload(false);
             isPaused = false;
             if (specMode && (physics.isReady() || physics.init())) {
                 physics.onPlayStart(sceneObjects);
@@ -3677,11 +4549,6 @@ void Engine::renderMainMenuBar() {
             if (prevPixelSpriteEditor != showPixelSpriteEditorWindow) {
                 saveEditorUserSettings();
             }
-            bool prevSpritePreview = showSpritePreviewPanel;
-            ImGui::MenuItem("Sprite Preview", nullptr, &showSpritePreviewPanel);
-            if (prevSpritePreview != showSpritePreviewPanel) {
-                saveEditorUserSettings();
-            }
             ImGui::MenuItem("View Output", nullptr, &showViewOutput);
             ImGui::Separator();
             if (isProject2DPipeline()) {
@@ -3796,32 +4663,110 @@ void Engine::renderMainMenuBar() {
         ImGui::Separator();
         ImGui::TextColored(subtle, "Workspace");
         ImGui::SameLine();
-        auto drawWorkspaceButton = [&](const char* label, WorkspaceMode mode) {
-            bool selected = (currentWorkspace == mode);
-            ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_Button);
-            ImVec4 hover = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-            ImVec4 active = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
-            if (selected) {
-                base = ImVec4(accent.x * 0.9f, accent.y * 0.9f, accent.z * 0.9f, 1.0f);
-                hover = ImVec4(accent.x, accent.y, accent.z, 1.0f);
-                active = ImVec4(accent.x, accent.y, accent.z, 1.0f);
-            }
-            ImGui::PushStyleColor(ImGuiCol_Button, base);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
-            if (ImGui::Button(label)) {
-                if (currentWorkspace != mode) {
-                    saveWorkspaceLayout(currentWorkspace);
-                }
-                applyWorkspacePreset(mode, true);
-                saveEditorUserSettings();
-            }
-            ImGui::PopStyleColor(3);
-            ImGui::SameLine();
+        struct WorkspaceTabConfig {
+            WorkspaceMode mode;
+            const char* label;
         };
-        drawWorkspaceButton("Default", WorkspaceMode::Default);
-        drawWorkspaceButton("Animation", WorkspaceMode::Animation);
-        drawWorkspaceButton("Scripting", WorkspaceMode::Scripting);
+        const WorkspaceTabConfig workspaceTabs[] = {
+            { WorkspaceMode::Default, "Default" },
+            { WorkspaceMode::Animation, "Animation" },
+            { WorkspaceMode::Scripting, "Scripting" }
+        };
+        auto workspaceToIndex = [](WorkspaceMode mode) {
+            switch (mode) {
+                case WorkspaceMode::Default: return 0;
+                case WorkspaceMode::Animation: return 1;
+                case WorkspaceMode::Scripting: return 2;
+            }
+            return 0;
+        };
+        auto visibleWorkspaceCount = [&]() {
+            int count = 0;
+            for (bool visible : workspaceTabVisible) {
+                if (visible) {
+                    ++count;
+                }
+            }
+            return count;
+        };
+
+        bool workspaceVisibilityChanged = false;
+        bool workspaceSelectionChanged = false;
+        WorkspaceMode targetWorkspace = currentWorkspace;
+        const double now = glfwGetTime();
+        const bool workspaceTransitionActive =
+            pendingWorkspaceReload || workspaceLayoutDirty || now < workspaceLayoutStabilizeUntil;
+        const bool workspaceSwitchLocked = now < workspaceSwitchLockUntil;
+        if (ImGui::BeginTabBar("##WorkspaceTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs)) {
+            int canCloseCount = visibleWorkspaceCount();
+            for (const WorkspaceTabConfig& tab : workspaceTabs) {
+                const int idx = workspaceToIndex(tab.mode);
+                if (!workspaceTabVisible[idx]) {
+                    continue;
+                }
+
+                bool open = true;
+                if (ImGui::BeginTabItem(tab.label, &open)) {
+                    const bool shouldSwitchWorkspace =
+                        !workspaceTransitionActive &&
+                        !workspaceSwitchLocked &&
+                        (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemActivated()) &&
+                        currentWorkspace != tab.mode;
+                    if (shouldSwitchWorkspace) {
+                        targetWorkspace = tab.mode;
+                        workspaceSelectionChanged = true;
+                    }
+                    ImGui::EndTabItem();
+                }
+
+                if (!open) {
+                    if (canCloseCount > 1) {
+                        workspaceTabVisible[idx] = false;
+                        workspaceVisibilityChanged = true;
+                        --canCloseCount;
+                        if (targetWorkspace == tab.mode) {
+                            for (const WorkspaceTabConfig& fallback : workspaceTabs) {
+                                if (workspaceTabVisible[workspaceToIndex(fallback.mode)]) {
+                                    targetWorkspace = fallback.mode;
+                                    workspaceSelectionChanged = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        workspaceTabVisible[idx] = true;
+                    }
+                }
+            }
+            ImGui::EndTabBar();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+##WorkspaceTabsAdd")) {
+            ImGui::OpenPopup("WorkspaceTabsAddPopup");
+        }
+        if (ImGui::BeginPopup("WorkspaceTabsAddPopup")) {
+            for (const WorkspaceTabConfig& tab : workspaceTabs) {
+                const int idx = workspaceToIndex(tab.mode);
+                if (workspaceTabVisible[idx]) {
+                    continue;
+                }
+                if (ImGui::MenuItem(tab.label)) {
+                    workspaceTabVisible[idx] = true;
+                    workspaceVisibilityChanged = true;
+                }
+            }
+            ImGui::EndPopup();
+        }
+        if (workspaceSelectionChanged && currentWorkspace != targetWorkspace) {
+            saveWorkspaceLayout(currentWorkspace);
+            applyWorkspacePreset(targetWorkspace, true);
+            workspaceSwitchLockUntil = glfwGetTime() + 0.22;
+        }
+        if (workspaceVisibilityChanged || workspaceSelectionChanged) {
+            saveEditorUserSettings();
+        }
+
+        ImGui::SameLine();
         ImGui::TextColored(subtle, "Project");
         ImGui::SameLine();
         std::string projectLabel = projectManager.currentProject.name.empty() ?
@@ -3975,6 +4920,19 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             break;
     }
 
+    if (rebuildLayout) {
+        // Explicit workspace switches should rebuild from the preset instead of
+        // reloading stale persisted dock data that can fight the new layout.
+        pendingWorkspaceIniPath.clear();
+        pendingWorkspaceReload = false;
+        buildWorkspaceLayout(mode);
+        if (workspaceLayoutDirty) {
+            pendingWorkspaceReload = true;
+        }
+        workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
+        return;
+    }
+
     auto layoutFileIsUsable = [](const fs::path& layoutPath) {
         std::ifstream in(layoutPath);
         if (!in.is_open()) return false;
@@ -4002,13 +4960,6 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
     if (!layoutPath.empty() && fs::exists(layoutPath) && layoutFileIsUsable(layoutPath)) {
         pendingWorkspaceIniPath = layoutPath;
         pendingWorkspaceReload = true;
-        workspaceLayoutDirty = false;
-        workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
-        return;
-    }
-
-    if (rebuildLayout) {
-        buildWorkspaceLayout(mode);
         workspaceLayoutDirty = false;
         workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
         return;
@@ -4060,10 +5011,8 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
-        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
         ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
-        ImGui::DockBuilderDockWindow("Sprite Timeline", dockBottom);
         ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
@@ -4076,12 +5025,10 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
-        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Animation", dockBottom);
         ImGui::DockBuilderDockWindow("AI Pathfinding", dockBottom);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
         ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
-        ImGui::DockBuilderDockWindow("Sprite Timeline", dockBottom);
         ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
     } else {
@@ -4094,10 +5041,8 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Scripting", dockRight);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
-        ImGui::DockBuilderDockWindow("Sprite Preview", dockRight);
         ImGui::DockBuilderDockWindow("Project Settings", dockRight);
         ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
-        ImGui::DockBuilderDockWindow("Sprite Timeline", dockMain);
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     }
@@ -4147,14 +5092,24 @@ void Engine::renderViewport() {
 
     bool mouseOverViewportImage = false;
     bool blockSelection = false;
+    ImVec2 viewportImageMin(0.0f, 0.0f);
+    ImVec2 viewportImageMax(0.0f, 0.0f);
+    bool hasViewportImageRect = false;
     const bool project2DPipeline = isProject2DPipeline();
     const bool worldUiEditing = is2DWorldEditingEnabled();
-    const bool workspaceLayoutTransitionActive =
-        pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil;
     const bool hasVulkanSceneTexture = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
-    int activeGameResolutionWidth = std::max(1, viewportWidth);
-    int activeGameResolutionHeight = std::max(1, viewportHeight);
+    int activeGameResolutionWidth = 0;
+    int activeGameResolutionHeight = 0;
     switch (gameViewportResolutionIndex) {
+        case 0:
+            if (gameViewportLastRenderWidth > 0 && gameViewportLastRenderHeight > 0) {
+                activeGameResolutionWidth = gameViewportLastRenderWidth;
+                activeGameResolutionHeight = gameViewportLastRenderHeight;
+            } else {
+                activeGameResolutionWidth = std::max(1, viewportWidth);
+                activeGameResolutionHeight = std::max(1, viewportHeight);
+            }
+            break;
         case 1:
             activeGameResolutionWidth = 1920;
             activeGameResolutionHeight = 1080;
@@ -4172,7 +5127,30 @@ void Engine::renderViewport() {
             activeGameResolutionHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
             break;
         default:
+            activeGameResolutionWidth = std::max(1, viewportWidth);
+            activeGameResolutionHeight = std::max(1, viewportHeight);
             break;
+    }
+    int worldUiReferenceResolutionWidth = activeGameResolutionWidth;
+    int worldUiReferenceResolutionHeight = activeGameResolutionHeight;
+    if (worldUiEditing) {
+        int bestArea = 0;
+        for (const auto& obj : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(obj)) {
+                continue;
+            }
+            if (!(obj.hasUI && obj.ui.type == UIElementType::Canvas) || obj.ui.renderIn3D) {
+                continue;
+            }
+            const int canvasWidth = std::clamp(static_cast<int>(std::round(std::max(1.0f, obj.ui.size.x))), 1, 8192);
+            const int canvasHeight = std::clamp(static_cast<int>(std::round(std::max(1.0f, obj.ui.size.y))), 1, 8192);
+            const int area = canvasWidth * canvasHeight;
+            if (area > bestArea) {
+                bestArea = area;
+                worldUiReferenceResolutionWidth = canvasWidth;
+                worldUiReferenceResolutionHeight = canvasHeight;
+            }
+        }
     }
     const float activeGameResolutionAspect = static_cast<float>(activeGameResolutionWidth) /
         std::max(1.0f, static_cast<float>(activeGameResolutionHeight));
@@ -4187,6 +5165,9 @@ void Engine::renderViewport() {
         ImGui::Dummy(drawSize);
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
+        viewportImageMin = imageMin;
+        viewportImageMax = imageMax;
+        hasViewportImageRect = true;
         mouseOverViewportImage = ImGui::IsItemHovered();
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -4264,6 +5245,9 @@ void Engine::renderViewport() {
 
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
+        viewportImageMin = imageMin;
+        viewportImageMax = imageMax;
+        hasViewportImageRect = true;
         mouseOverViewportImage = ImGui::IsItemHovered();
         ImDrawList* viewportDrawList = ImGui::GetWindowDrawList();
 
@@ -4552,7 +5536,10 @@ void Engine::renderViewport() {
         BatchedSpriteEmitter spriteBatch(viewportDrawList);
         spriteBatch.reserve(sceneObjects.size());
         for (auto& obj : sceneObjects) {
-            if (!IsObjectEnabledInHierarchy(obj) || obj.type != ObjectType::Sprite25D || !obj.hasUI || obj.ui.type != UIElementType::Sprite2D) {
+            if (!IsObjectEnabledInHierarchy(obj) || obj.type != ObjectType::Sprite25D || !obj.hasUI) {
+                continue;
+            }
+            if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) {
                 continue;
             }
             ImVec2 rectMin, rectMax;
@@ -4802,8 +5789,8 @@ void Engine::renderViewport() {
             dl->PopClipRect();
         }
 
-        if (showCanvasOverlay && activeGameResolutionWidth > 0 && activeGameResolutionHeight > 0) {
-            ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (showCanvasOverlay && worldUiReferenceResolutionWidth > 0 && worldUiReferenceResolutionHeight > 0) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
             ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
             if (showViewportToolbar && toolbarRectMin.y > overlayPos.y) {
                 overlayMax.y = std::min(overlayMax.y, toolbarRectMin.y - 2.0f);
@@ -4811,11 +5798,11 @@ void Engine::renderViewport() {
             dl->PushClipRect(overlayPos, overlayMax, true);
 
             const float fitScale = std::max(0.01f, std::min(
-                overlaySize.x / static_cast<float>(activeGameResolutionWidth),
-                overlaySize.y / static_cast<float>(activeGameResolutionHeight)));
+                overlaySize.x / static_cast<float>(worldUiReferenceResolutionWidth),
+                overlaySize.y / static_cast<float>(worldUiReferenceResolutionHeight)));
             const ImVec2 frameSize(
-                static_cast<float>(activeGameResolutionWidth) * fitScale,
-                static_cast<float>(activeGameResolutionHeight) * fitScale);
+                static_cast<float>(worldUiReferenceResolutionWidth) * fitScale,
+                static_cast<float>(worldUiReferenceResolutionHeight) * fitScale);
             const ImVec2 frameMin(
                 overlayPos.x + (overlaySize.x - frameSize.x) * 0.5f,
                 overlayPos.y + (overlaySize.y - frameSize.y) * 0.5f);
@@ -4823,7 +5810,7 @@ void Engine::renderViewport() {
             dl->AddRect(frameMin, frameMax, IM_COL32(84, 176, 255, 220), 4.0f, 0, 2.0f);
 
             char label[80];
-            std::snprintf(label, sizeof(label), "Resolution %dx%d", activeGameResolutionWidth, activeGameResolutionHeight);
+            std::snprintf(label, sizeof(label), "Resolution %dx%d", worldUiReferenceResolutionWidth, worldUiReferenceResolutionHeight);
             ImVec2 labelSize = ImGui::CalcTextSize(label);
             ImVec2 labelPad(6.0f, 3.0f);
             ImVec2 labelMin(frameMin.x + 8.0f, frameMin.y + 8.0f);
@@ -4837,7 +5824,7 @@ void Engine::renderViewport() {
         }
 
         if (showSceneGizmos && gizmoShowCameraOverlays) {
-            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
             ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
             if (showViewportToolbar && toolbarRectMin.y > overlayPos.y) {
                 overlayMax.y = std::min(overlayMax.y, toolbarRectMin.y - 2.0f);
@@ -4851,8 +5838,10 @@ void Engine::renderViewport() {
 
                 const float alpha = camObj.enabled ? 1.0f : 0.35f;
                 const float pixelsPerUnit = std::max(1.0f, camObj.camera.pixelsPerUnit);
-                const float halfWidth = static_cast<float>(activeGameResolutionWidth) / (2.0f * pixelsPerUnit);
-                const float halfHeight = static_cast<float>(activeGameResolutionHeight) / (2.0f * pixelsPerUnit);
+                const int cameraResolutionWidth = activeGameResolutionWidth;
+                const int cameraResolutionHeight = activeGameResolutionHeight;
+                const float halfWidth = static_cast<float>(cameraResolutionWidth) / (2.0f * pixelsPerUnit);
+                const float halfHeight = static_cast<float>(cameraResolutionHeight) / (2.0f * pixelsPerUnit);
 
                 glm::quat q = glm::quat(glm::radians(camObj.rotation));
                 glm::mat3 rot = glm::mat3_cast(q);
@@ -4895,8 +5884,8 @@ void Engine::renderViewport() {
                 if (gizmoShowCameraFrustumLabels) {
                     char label[96];
                     std::snprintf(label, sizeof(label), "2D %dx%d | %.2fx%.2f",
-                                  activeGameResolutionWidth,
-                                  activeGameResolutionHeight,
+                                  cameraResolutionWidth,
+                                  cameraResolutionHeight,
                                   halfWidth * 2.0f,
                                   halfHeight * 2.0f);
                     ImVec2 textSize = ImGui::CalcTextSize(label);
@@ -4942,12 +5931,7 @@ void Engine::renderViewport() {
                 (obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.order != 0);
         }
         if (worldUiEditing && needsParallaxSort && uiDrawList.size() > 1) {
-            std::stable_sort(uiDrawList.begin(), uiDrawList.end(),
-                             [](const SceneObject* a, const SceneObject* b) {
-                                 int orderA = (a->hasParallaxLayer2D && a->parallaxLayer2D.enabled) ? a->parallaxLayer2D.order : 0;
-                                 int orderB = (b->hasParallaxLayer2D && b->parallaxLayer2D.enabled) ? b->parallaxLayer2D.order : 0;
-                                 return orderA < orderB;
-                             });
+            StableSortRuntimeUiDrawList(uiDrawList);
         }
 
         glm::vec2 worldViewMin = uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y));
@@ -4996,6 +5980,300 @@ void Engine::renderViewport() {
             outMax = maskMax;
             return (outMax.x > outMin.x) && (outMax.y > outMin.y);
         };
+
+        std::unordered_set<int> light2DRenderedObjectIds;
+        bool renderedLight2DComposite = false;
+        Light2DDebugStats light2DStats;
+        int activeLight2DCount = 0;
+        int litSprite2DCount = 0;
+        int litWorldImageCount = 0;
+        bool lightBufferHadContent = false;
+        std::unordered_map<int, std::string> light2DRoutingReasons;
+        light2DRoutingReasons.reserve(uiDrawList.size());
+        if (rendererInitialized) {
+            Light2DRenderRequest lightRequest;
+            lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
+            lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
+            lightRequest.clearColor = glm::vec4(0.0f);
+            lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.blendStyles = light2DBlendStyles;
+            auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
+                if (!flicker.enabled || flicker.amount <= 0.0001f) {
+                    return 1.0f;
+                }
+                const float time = static_cast<float>(glfwGetTime());
+                const float base = std::sin(time * std::max(0.01f, flicker.speed) + flicker.seed);
+                const float jitter = std::sin(time * std::max(0.01f, flicker.speed * 2.173f) + flicker.seed * 1.913f);
+                const float noise = 0.5f + 0.35f * base + 0.15f * jitter;
+                return glm::mix(1.0f, std::max(0.0f, noise), std::clamp(flicker.amount, 0.0f, 1.0f));
+            };
+
+            int spriteDrawOrder = 0;
+            for (SceneObject* objPtr : uiDrawList) {
+                SceneObject& obj = *objPtr;
+                if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) {
+                    continue;
+                }
+                if (obj.ui.nineSliceEnabled) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    continue;
+                }
+                if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    continue;
+                }
+
+                const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
+                const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+
+                ImVec2 rectMin, rectMax;
+                if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    continue;
+                }
+                if (!repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
+                    light2DRoutingReasons[obj.id] = "Skipped Light2D: object is outside the visible 2D world overlay.";
+                    continue;
+                }
+
+                Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
+                if (!spriteTex || spriteTex->GetID() == 0) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    continue;
+                }
+
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
+                const float angle = glm::radians(obj.ui.rotation);
+                const float c = std::cos(angle);
+                const float s = std::sin(angle);
+                ImVec2 maskMin, maskMax;
+                const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
+                auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
+                    if (rectOutsideOverlay(quadMin, quadMax)) {
+                        return false;
+                    }
+                    if (hasMaskRect) {
+                        const bool maskClipsSprite =
+                            quadMin.x < maskMin.x || quadMax.x > maskMax.x ||
+                            quadMin.y < maskMin.y || quadMax.y > maskMax.y;
+                        if (maskClipsSprite) {
+                            return false;
+                        }
+                    }
+
+                    Light2DScreenSprite sprite;
+                    sprite.objectId = obj.id;
+                    sprite.layer = obj.layer;
+                    sprite.drawOrder = spriteDrawOrder++;
+                    sprite.textureId = spriteTex->GetID();
+                    sprite.tint = obj.ui.color;
+                    sprite.receiveLighting = obj.ui.receiveLighting2D;
+                    sprite.unlit = obj.ui.unlitLighting2D;
+                    sprite.emissiveIntensity = obj.ui.emissiveLighting2D;
+
+                    const glm::vec2 center(
+                        ((quadMin.x + quadMax.x) * 0.5f) - overlayPos.x,
+                        ((quadMin.y + quadMax.y) * 0.5f) - overlayPos.y);
+                    const glm::vec2 half(
+                        std::max(0.5f, (quadMax.x - quadMin.x) * 0.5f),
+                        std::max(0.5f, (quadMax.y - quadMin.y) * 0.5f));
+                    auto rotatePoint = [&](float x, float y) {
+                        return glm::vec2(center.x + x * c - y * s, center.y + x * s + y * c);
+                    };
+                    sprite.positions[0] = rotatePoint(-half.x, -half.y);
+                    sprite.positions[1] = rotatePoint(half.x, -half.y);
+                    sprite.positions[2] = rotatePoint(half.x, half.y);
+                    sprite.positions[3] = rotatePoint(-half.x, half.y);
+                    sprite.uvs[0] = glm::vec2(uvQuad[0].x, uvQuad[0].y);
+                    sprite.uvs[1] = glm::vec2(uvQuad[1].x, uvQuad[1].y);
+                    sprite.uvs[2] = glm::vec2(uvQuad[2].x, uvQuad[2].y);
+                    sprite.uvs[3] = glm::vec2(uvQuad[3].x, uvQuad[3].y);
+                    lightRequest.sprites.push_back(sprite);
+                    return true;
+                };
+
+                bool addedAnySprite = false;
+                if (repeatX || repeatY) {
+                    glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
+                    glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
+                    float stepX = spriteSizeWorld.x + spacing.x;
+                    float stepY = spriteSizeWorld.y + spacing.y;
+                    ImVec2 pivotOffset(spriteSizeWorld.x * 0.5f, spriteSizeWorld.y * 0.5f);
+                    switch (obj.ui.anchor) {
+                        case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
+                        case UIAnchor::TopRight: pivotOffset = ImVec2(spriteSizeWorld.x, 0.0f); break;
+                        case UIAnchor::BottomLeft: pivotOffset = ImVec2(0.0f, spriteSizeWorld.y); break;
+                        case UIAnchor::BottomRight: pivotOffset = ImVec2(spriteSizeWorld.x, spriteSizeWorld.y); break;
+                        default: break;
+                    }
+                    glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
+                    glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
+                    glm::vec2 baseWorldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
+                    int startX = repeatX ? static_cast<int>(std::floor((worldViewMin.x - baseWorldMin.x) / stepX)) - 1 : 0;
+                    int endX = repeatX ? static_cast<int>(std::ceil((worldViewMax.x - baseWorldMin.x) / stepX)) + 1 : 0;
+                    int startY = repeatY ? static_cast<int>(std::floor((worldViewMin.y - baseWorldMin.y) / stepY)) - 1 : 0;
+                    int endY = repeatY ? static_cast<int>(std::ceil((worldViewMax.y - baseWorldMin.y) / stepY)) + 1 : 0;
+                    for (int ix = startX; ix <= endX; ++ix) {
+                        for (int iy = startY; iy <= endY; ++iy) {
+                            float dx = repeatX ? static_cast<float>(ix) * stepX : 0.0f;
+                            float dy = repeatY ? static_cast<float>(iy) * stepY : 0.0f;
+                            glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
+                            ImVec2 s0 = worldToScreen(tileMin);
+                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                            ImVec2 tileRectMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
+                            ImVec2 tileRectMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+                            addedAnySprite = appendSpriteQuad(tileRectMin, tileRectMax) || addedAnySprite;
+                        }
+                    }
+                } else {
+                    addedAnySprite = appendSpriteQuad(rectMin, rectMax);
+                }
+
+                if (!addedAnySprite) {
+                    light2DRoutingReasons[obj.id] = hasMaskRect
+                        ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                    continue;
+                }
+
+                light2DRenderedObjectIds.insert(obj.id);
+                if (obj.ui.type == UIElementType::Sprite2D) {
+                    if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                        ++litSprite2DCount;
+                    }
+                } else if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    ++litWorldImageCount;
+                }
+                if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                        ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
+                        : "Lit path: routed through the Light2D compositor.";
+                } else if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                } else {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                }
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D || !obj.light2D.enabled) {
+                    continue;
+                }
+                ++activeLight2DCount;
+
+                if (obj.light2D.type == Light2DType::Global) {
+                    lightRequest.baseAmbient += glm::vec3(obj.light2D.color) * obj.light2D.intensity;
+                    continue;
+                }
+
+                Light2DScreenLight light;
+                light.objectId = obj.id;
+                light.enabled = obj.light2D.enabled;
+                light.type = obj.light2D.type;
+                light.blendStyle = obj.light2D.blendStyle;
+                light.lightOrder = obj.light2D.lightOrder;
+                light.overlapOperation = obj.light2D.overlapOperation;
+                light.targetAllLayers = obj.light2D.targetAllLayers;
+                light.targetLayerMask = obj.light2D.targetLayerMask;
+                light.color = obj.light2D.color;
+                light.intensity = obj.light2D.intensity * computeFlickerMultiplier(obj.light2D.flicker);
+                light.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.innerRadius = obj.light2D.innerRadius * uiWorldCamera.zoom;
+                light.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.falloffStrength = obj.light2D.falloffStrength;
+                light.innerSpotAngle = obj.light2D.innerSpotAngle;
+                light.outerSpotAngle = obj.light2D.outerSpotAngle;
+                light.shadowStrength = obj.light2D.shadowStrength;
+                light.volumetricEnabled = obj.light2D.volumetricEnabled;
+                light.castsShadows = obj.light2D.castsShadows;
+                light.rotationRad = glm::radians(obj.rotation.z);
+                light.cookieScale = obj.light2D.cookieScale;
+                light.cookieRotationRad = glm::radians(obj.light2D.cookieRotation);
+                light.freeformFeatherPx = obj.light2D.freeformFeather * uiWorldCamera.zoom;
+                light.freeformEdgeFalloff = obj.light2D.freeformEdgeFalloff;
+                if (!obj.light2D.cookieTexturePath.empty()) {
+                    if (Texture* cookieTexture = renderer.getTexture(obj.light2D.cookieTexturePath, MaterialProperties::TextureFilter::Bilinear)) {
+                        light.cookieTextureId = cookieTexture->GetID();
+                    }
+                }
+
+                ImVec2 lightPos = worldToScreen(glm::vec2(obj.position.x, obj.position.y));
+                light.position = glm::vec2(lightPos.x - overlayPos.x, lightPos.y - overlayPos.y);
+
+                if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
+                    light.polygon.reserve(obj.light2D.shapePoints.size());
+                    for (const glm::vec2& point : obj.light2D.shapePoints) {
+                        ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                        light.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                    }
+                    if (!light.polygon.empty()) {
+                        glm::vec2 boundsMin(FLT_MAX);
+                        glm::vec2 boundsMax(-FLT_MAX);
+                        for (const glm::vec2& point : light.polygon) {
+                            boundsMin.x = std::min(boundsMin.x, point.x);
+                            boundsMin.y = std::min(boundsMin.y, point.y);
+                            boundsMax.x = std::max(boundsMax.x, point.x);
+                            boundsMax.y = std::max(boundsMax.y, point.y);
+                        }
+                        light.boundsMin = boundsMin;
+                        light.boundsMax = boundsMax;
+                    }
+                } else {
+                    const float extent = std::max(light.radius, light.outerRadius);
+                    light.boundsMin = light.position - glm::vec2(extent);
+                    light.boundsMax = light.position + glm::vec2(extent);
+                }
+
+                lightRequest.lights.push_back(light);
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D || !obj.shadowCaster2D.enabled) {
+                    continue;
+                }
+
+                Light2DScreenShadowCaster caster;
+                caster.objectId = obj.id;
+                caster.enabled = obj.shadowCaster2D.enabled;
+                caster.targetAllLayers = obj.shadowCaster2D.targetAllLayers;
+                caster.targetLayerMask = obj.shadowCaster2D.targetLayerMask;
+                caster.shadowStrength = obj.shadowCaster2D.shadowStrength;
+                caster.polygon.reserve(obj.shadowCaster2D.points.size());
+                for (const glm::vec2& point : obj.shadowCaster2D.points) {
+                    ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                    caster.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                }
+                if (caster.polygon.size() >= 3) {
+                    lightRequest.shadowCasters.push_back(std::move(caster));
+                }
+            }
+
+            const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+                unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
+                if (lightTexture != 0) {
+                    ImGui::GetWindowDrawList()->AddImage(
+                        (ImTextureID)(intptr_t)lightTexture,
+                        overlayPos,
+                        ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y),
+                        ImVec2(0.0f, 1.0f),
+                        ImVec2(1.0f, 0.0f));
+                    renderedLight2DComposite = true;
+                    light2DStats = lighting2DRenderer.getLastStats();
+                } else {
+                    for (int objectId : light2DRenderedObjectIds) {
+                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                    }
+                    light2DRenderedObjectIds.clear();
+                }
+            } else {
+                for (int objectId : light2DRenderedObjectIds) {
+                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                }
+                light2DRenderedObjectIds.clear();
+            }
+        }
 
         for (SceneObject* objPtr : uiDrawList) {
             SceneObject& obj = *objPtr;
@@ -5069,6 +6347,14 @@ void Engine::renderViewport() {
                 animState.initialized = true;
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
+                if (light2DRenderedObjectIds.find(obj.id) != light2DRenderedObjectIds.end()) {
+                    if (pushedCanvasMask) {
+                        ImGui::PopClipRect();
+                    }
+                    ImGui::PopID();
+                    if (styleApplied) ImGui::GetStyle() = savedStyle;
+                    continue;
+                }
                 Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
                 unsigned int texId = (spriteTex != nullptr) ? spriteTex->GetID() : 0;
                 std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
@@ -5191,22 +6477,47 @@ void Engine::renderViewport() {
                 }
             } else if (obj.ui.type == UIElementType::Slider) {
                 spriteBatch.flush();
-                ImGui::SetCursorPos(localMin);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+                const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+                if (uiWidgetInteractive) {
+                    ImGui::SetCursorPos(localMin);
+                }
                 if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
-                    ImGui::PushItemWidth(drawSize.x);
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
-                    ImGui::PushStyleColor(ImGuiCol_SliderGrab, brighten(tint, 0.9f));
-                    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-                    if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, obj.ui.sliderMin, obj.ui.sliderMax)) {
-                        projectManager.currentProject.hasUnsavedChanges = true;
+                    float minValue = obj.ui.sliderMin;
+                    float maxValue = obj.ui.sliderMax;
+                    float range = (maxValue - minValue);
+                    if (range <= 1e-6f) range = 1.0f;
+                    if (uiWidgetInteractive) {
+                        ImGui::PushItemWidth(drawSize.x);
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
+                        ImGui::PushStyleColor(ImGuiCol_SliderGrab, brighten(tint, 0.9f));
+                        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
+                        if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, minValue, maxValue)) {
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                        }
+                        ImGui::PopStyleColor(5);
+                        ImGui::PopItemWidth();
+                    } else {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 bg = ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        float t = (obj.ui.sliderValue - minValue) / range;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        float rounding = 6.0f;
+                        ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+                        dl->AddRectFilled(drawMin, drawMax, bg, rounding);
+                        if (fillMax.x > drawMin.x) {
+                            dl->AddRectFilled(drawMin, fillMax, fill, rounding);
+                        }
+                        dl->AddRect(drawMin, drawMax, border, rounding);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
                     }
-                    ImGui::PopStyleColor(5);
-                    ImGui::EndDisabled();
-                    ImGui::PopItemWidth();
                 } else {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImU32 bg = ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
@@ -5216,9 +6527,11 @@ void Engine::renderViewport() {
                     float maxValue = obj.ui.sliderMax;
                     float range = (maxValue - minValue);
                     if (range <= 1e-6f) range = 1.0f;
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    ImGui::InvisibleButton("##UISlider", drawSize);
-                    bool held = obj.ui.interactable && !uiWorldCameraActive && ImGui::IsItemActive();
+                    bool held = false;
+                    if (uiWidgetInteractive) {
+                        ImGui::InvisibleButton("##UISlider", drawSize);
+                        held = ImGui::IsItemActive();
+                    }
                     if (held && ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
                         float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
                         mouseT = std::clamp(mouseT, 0.0f, 1.0f);
@@ -5228,7 +6541,6 @@ void Engine::renderViewport() {
                             projectManager.currentProject.hasUnsavedChanges = true;
                         }
                     }
-                    ImGui::EndDisabled();
 
                     animateValue(animState.sliderValue, obj.ui.sliderValue, held);
                     float displayValue = (uiAnimationMode == UIAnimationMode::Off) ? obj.ui.sliderValue : animState.sliderValue;
@@ -5265,27 +6577,42 @@ void Engine::renderViewport() {
                 }
             } else if (obj.ui.type == UIElementType::Button) {
                 spriteBatch.flush();
-                ImGui::SetCursorPos(localMin);
                 ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
                 obj.ui.buttonPressed = false;
+                const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+                if (uiWidgetInteractive) {
+                    ImGui::SetCursorPos(localMin);
+                }
                 if (obj.ui.buttonStyle == UIButtonStyle::ImGui) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, tint);
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
-                    ImGui::EndDisabled();
-                    ImGui::PopStyleColor(3);
+                    if (uiWidgetInteractive) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, tint);
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
+                        obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
+                        ImGui::PopStyleColor(3);
+                    } else {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        ImU32 fill = ImGui::GetColorU32(tint);
+                        ImU32 border = ImGui::GetColorU32(brighten(tint, 0.85f));
+                        dl->AddRectFilled(drawMin, drawMax, fill, 6.0f);
+                        dl->AddRect(drawMin, drawMax, border, 6.0f);
+                        ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+                        ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                                       drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+                        dl->AddText(textPos, IM_COL32(240, 240, 245, 220), obj.ui.label.c_str());
+                    }
                 } else if (obj.ui.buttonStyle == UIButtonStyle::Outline) {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImU32 border = ImGui::GetColorU32(tint);
-                    ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-                    if (ImGui::InvisibleButton("##UIButton", drawSize)) {
-                        obj.ui.buttonPressed = obj.ui.interactable && !uiWorldCameraActive;
+                    bool hovered = false;
+                    bool active = false;
+                    if (uiWidgetInteractive) {
+                        if (ImGui::InvisibleButton("##UIButton", drawSize)) {
+                            obj.ui.buttonPressed = true;
+                        }
+                        hovered = ImGui::IsItemHovered();
+                        active = ImGui::IsItemActive();
                     }
-                    bool hovered = ImGui::IsItemHovered();
-                    bool active = ImGui::IsItemActive();
-                    ImGui::EndDisabled();
                     float hoverT = animateValue(animState.hover, hovered ? 1.0f : 0.0f, false);
                     float activeT = animateValue(animState.active, active ? 1.0f : 0.0f, false);
                     if (hoverT > 0.001f) {
@@ -5336,41 +6663,266 @@ void Engine::renderViewport() {
             if (styleApplied) ImGui::GetStyle() = savedStyle;
         }
         spriteBatch.flush();
+        if (worldUiEditing) {
+            light2DCompositorRanLastFrame = renderedLight2DComposite;
+            light2DLightBufferHadContentLastFrame = lightBufferHadContent;
+            light2DActiveCountLastFrame = activeLight2DCount;
+            light2DLitSprite2DCountLastFrame = litSprite2DCount;
+            light2DLitWorldImageCountLastFrame = litWorldImageCount;
+            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+        }
+        if (renderedLight2DComposite && showLight2DStatsOverlay) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            char lightStatsLabel[160];
+            std::snprintf(lightStatsLabel,
+                          sizeof(lightStatsLabel),
+                          "2D Lights %d  Sprites %d  Cost %.2f ms",
+                          light2DStats.visibleLights,
+                          light2DStats.visibleSprites,
+                          light2DStats.cpuBuildMs);
+            dl->AddText(ImVec2(overlayPos.x + 12.0f, overlayPos.y + 10.0f),
+                        IM_COL32(255, 232, 170, 235),
+                        lightStatsLabel);
+        }
 
-        auto drawSelectedCollider2DWorldOutline = [&]() {
-            SceneObject* selected = getSelectedObject();
-            if (!selected || !IsObjectEnabledInHierarchy(*selected)) return;
-            if (!(selected->hasCollider2D && selected->collider2D.enabled)) return;
-            if (!isUIType(*selected) || selected->ui.type == UIElementType::Canvas) return;
+        bool light2DHandleUsed = false;
+        if (showSceneGizmos &&
+            (gizmoShowLight2DBounds || gizmoShowLight2DShapes || gizmoShowShadowCaster2DBounds)) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            for (const SceneObject& target : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(target)) {
+                    continue;
+                }
 
+                if (target.hasLight2D && target.light2D.enabled) {
+                    const glm::vec2 lightWorld(target.position.x, target.position.y);
+                    const ImVec2 center = worldToScreen(lightWorld);
+                    const float outerRadiusPx = std::max(target.light2D.radius, target.light2D.outerRadius) * uiWorldCamera.zoom;
+                    const float innerRadiusPx = target.light2D.innerRadius * uiWorldCamera.zoom;
+                    const bool selectedLight = (selectedObjectId == target.id) ||
+                        (std::find(selectedObjectIds.begin(), selectedObjectIds.end(), target.id) != selectedObjectIds.end());
+
+                    if (gizmoShowLight2DBounds &&
+                        (target.light2D.type == Light2DType::Point || target.light2D.type == Light2DType::Spot)) {
+                        const ImU32 outerColor = selectedLight
+                            ? IM_COL32(255, 238, 120, 255)
+                            : IM_COL32(214, 208, 84, 180);
+                        dl->AddCircle(center, std::max(2.0f, outerRadiusPx), outerColor, 64, 1.5f);
+                        if (innerRadiusPx > 1.0f) {
+                            dl->AddCircle(center, innerRadiusPx, IM_COL32(255, 255, 255, 85), 48, 1.0f);
+                        }
+                        if (target.light2D.type == Light2DType::Spot) {
+                            const float dir = glm::radians(target.rotation.z);
+                            const float outerHalf = glm::radians(target.light2D.outerSpotAngle) * 0.5f;
+                            const glm::vec2 rayA(std::cos(dir - outerHalf), std::sin(dir - outerHalf));
+                            const glm::vec2 rayB(std::cos(dir + outerHalf), std::sin(dir + outerHalf));
+                            dl->AddLine(center,
+                                        ImVec2(center.x + rayA.x * outerRadiusPx, center.y - rayA.y * outerRadiusPx),
+                                        outerColor, 1.5f);
+                            dl->AddLine(center,
+                                        ImVec2(center.x + rayB.x * outerRadiusPx, center.y - rayB.y * outerRadiusPx),
+                                        outerColor, 1.5f);
+                        }
+                    }
+
+                    if (gizmoShowLight2DShapes &&
+                        (target.light2D.type == Light2DType::Freeform || target.light2D.type == Light2DType::Sprite) &&
+                        target.light2D.shapePoints.size() >= 2) {
+                        const ImU32 edgeColor = selectedLight
+                            ? IM_COL32(255, 244, 150, 255)
+                            : IM_COL32(248, 198, 96, 190);
+                        std::vector<ImVec2> screenPoints;
+                        screenPoints.reserve(target.light2D.shapePoints.size());
+                        for (const glm::vec2& point : target.light2D.shapePoints) {
+                            screenPoints.push_back(worldToScreen(lightWorld + point));
+                        }
+                        for (size_t i = 0; i < screenPoints.size(); ++i) {
+                            const ImVec2 a = screenPoints[i];
+                            const ImVec2 b = screenPoints[(i + 1) % screenPoints.size()];
+                            dl->AddLine(a, b, edgeColor, 1.8f);
+                        }
+                    }
+                }
+
+                if (gizmoShowShadowCaster2DBounds &&
+                    target.hasShadowCaster2D &&
+                    target.shadowCaster2D.enabled &&
+                    target.shadowCaster2D.points.size() >= 2) {
+                    const glm::vec2 casterWorld(target.position.x, target.position.y);
+                    const bool selectedCaster = (selectedObjectId == target.id) ||
+                        (std::find(selectedObjectIds.begin(), selectedObjectIds.end(), target.id) != selectedObjectIds.end());
+                    const ImU32 edgeColor = selectedCaster
+                        ? IM_COL32(120, 220, 255, 255)
+                        : IM_COL32(88, 160, 220, 190);
+                    std::vector<ImVec2> screenPoints;
+                    screenPoints.reserve(target.shadowCaster2D.points.size());
+                    for (const glm::vec2& point : target.shadowCaster2D.points) {
+                        screenPoints.push_back(worldToScreen(casterWorld + point));
+                    }
+                    for (size_t i = 0; i < screenPoints.size(); ++i) {
+                        const ImVec2 a = screenPoints[i];
+                        const ImVec2 b = screenPoints[(i + 1) % screenPoints.size()];
+                        dl->AddLine(a, b, edgeColor, 1.6f);
+                    }
+                }
+            }
+        }
+
+        if (worldUiEditing && light2DShapeEditMode && light2DShapeEditingObjectId >= 0) {
+            SceneObject* editObject = findObjectById(light2DShapeEditingObjectId);
+            if (editObject && IsObjectEnabledInHierarchy(*editObject)) {
+                std::vector<glm::vec2>* editPoints = nullptr;
+                bool editingLight = false;
+                if (editObject->hasLight2D &&
+                    (editObject->light2D.type == Light2DType::Freeform || editObject->light2D.type == Light2DType::Sprite)) {
+                    editPoints = &editObject->light2D.shapePoints;
+                    editingLight = true;
+                } else if (editObject->hasShadowCaster2D) {
+                    editPoints = &editObject->shadowCaster2D.points;
+                }
+
+                if (editPoints && editPoints->size() >= 2) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const glm::vec2 origin(editObject->position.x, editObject->position.y);
+                    std::vector<ImVec2> handlePoints;
+                    handlePoints.reserve(editPoints->size());
+                    for (const glm::vec2& point : *editPoints) {
+                        handlePoints.push_back(worldToScreen(origin + point));
+                    }
+
+                    for (size_t i = 0; i < handlePoints.size(); ++i) {
+                        dl->AddLine(handlePoints[i],
+                                    handlePoints[(i + 1) % handlePoints.size()],
+                                    editingLight ? IM_COL32(255, 248, 170, 255) : IM_COL32(128, 232, 255, 255),
+                                    2.0f);
+                    }
+
+                    int hoveredPoint = -1;
+                    float hoveredDistanceSq = 81.0f;
+                    const ImVec2 mouse = ImGui::GetIO().MousePos;
+                    for (size_t i = 0; i < handlePoints.size(); ++i) {
+                        const float dx = mouse.x - handlePoints[i].x;
+                        const float dy = mouse.y - handlePoints[i].y;
+                        const float distanceSq = dx * dx + dy * dy;
+                        if (distanceSq < hoveredDistanceSq) {
+                            hoveredDistanceSq = distanceSq;
+                            hoveredPoint = static_cast<int>(i);
+                        }
+                    }
+
+                    for (size_t i = 0; i < handlePoints.size(); ++i) {
+                        const bool activePoint = (light2DShapeEditingPointIndex == static_cast<int>(i));
+                        const bool hotPoint = (hoveredPoint == static_cast<int>(i));
+                        const ImU32 pointColor = activePoint
+                            ? IM_COL32(255, 214, 86, 255)
+                            : (hotPoint ? IM_COL32(255, 255, 255, 255) : IM_COL32(235, 235, 235, 220));
+                        dl->AddCircleFilled(handlePoints[i], activePoint ? 6.5f : 5.0f, pointColor, 18);
+                        dl->AddCircle(handlePoints[i], activePoint ? 6.5f : 5.0f, IM_COL32(20, 20, 20, 220), 18, 1.0f);
+                    }
+
+                    if (uiWorldHover && !uiWorldCameraActive && !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()) {
+                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            light2DHandleUsed = (hoveredPoint >= 0);
+                            if (hoveredPoint >= 0) {
+                                if (ImGui::GetIO().KeyAlt && editPoints->size() > 3) {
+                                    editPoints->erase(editPoints->begin() + hoveredPoint);
+                                    light2DShapeEditingPointIndex = -1;
+                                    if (editingLight) {
+                                        lighting2DRenderer.clearPolygonCache(editObject->id);
+                                    }
+                                    projectManager.currentProject.hasUnsavedChanges = true;
+                                } else {
+                                    light2DShapeEditingPointIndex = hoveredPoint;
+                                }
+                            } else if (ImGui::GetIO().KeyCtrl && editPoints->size() >= 2) {
+                                int insertAfter = -1;
+                                float bestSegmentDistanceSq = 144.0f;
+                                for (size_t i = 0; i < handlePoints.size(); ++i) {
+                                    const ImVec2 a = handlePoints[i];
+                                    const ImVec2 b = handlePoints[(i + 1) % handlePoints.size()];
+                                    const ImVec2 ab(b.x - a.x, b.y - a.y);
+                                    const float denom = ab.x * ab.x + ab.y * ab.y;
+                                    if (denom <= 0.0001f) {
+                                        continue;
+                                    }
+                                    const float t = std::clamp(((mouse.x - a.x) * ab.x + (mouse.y - a.y) * ab.y) / denom, 0.0f, 1.0f);
+                                    const ImVec2 closest(a.x + ab.x * t, a.y + ab.y * t);
+                                    const float dx = mouse.x - closest.x;
+                                    const float dy = mouse.y - closest.y;
+                                    const float distanceSq = dx * dx + dy * dy;
+                                    if (distanceSq < bestSegmentDistanceSq) {
+                                        bestSegmentDistanceSq = distanceSq;
+                                        insertAfter = static_cast<int>(i);
+                                    }
+                                }
+                                if (insertAfter >= 0) {
+                                    const glm::vec2 worldMouse = screenToWorld(mouse);
+                                    editPoints->insert(editPoints->begin() + insertAfter + 1, worldMouse - origin);
+                                    light2DShapeEditingPointIndex = insertAfter + 1;
+                                    if (editingLight) {
+                                        lighting2DRenderer.clearPolygonCache(editObject->id);
+                                    }
+                                    projectManager.currentProject.hasUnsavedChanges = true;
+                                    light2DHandleUsed = true;
+                                }
+                            }
+                        }
+
+                        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                            light2DShapeEditingPointIndex >= 0 &&
+                            light2DShapeEditingPointIndex < static_cast<int>(editPoints->size())) {
+                            const glm::vec2 worldMouse = screenToWorld(mouse);
+                            (*editPoints)[static_cast<size_t>(light2DShapeEditingPointIndex)] = worldMouse - origin;
+                            if (editingLight) {
+                                lighting2DRenderer.clearPolygonCache(editObject->id);
+                            }
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                            light2DHandleUsed = true;
+                        }
+                        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                            light2DShapeEditingPointIndex = -1;
+                        }
+                    }
+                }
+            } else {
+                light2DShapeEditMode = false;
+                light2DShapeEditingObjectId = -1;
+                light2DShapeEditingPointIndex = -1;
+            }
+        }
+
+        auto drawCollider2DWorldOutline = [&](const SceneObject& target, ImU32 outlineColor, float thickness) {
+            if (!IsObjectEnabledInHierarchy(target)) return;
+            if (!(target.hasCollider2D && target.collider2D.enabled)) return;
+            if (!isUIType(target) || target.ui.type == UIElementType::Canvas) return;
             std::vector<glm::vec2> localPoints;
-            if (selected->collider2D.type == Collider2DType::Box) {
-                glm::vec2 half = selected->collider2D.boxSize * 0.5f;
+            if (target.collider2D.type == Collider2DType::Box) {
+                glm::vec2 half = target.collider2D.boxSize * 0.5f;
                 localPoints = {
-                    glm::vec2(-half.x, -half.y) + selected->collider2D.offset,
-                    glm::vec2( half.x, -half.y) + selected->collider2D.offset,
-                    glm::vec2( half.x,  half.y) + selected->collider2D.offset,
-                    glm::vec2(-half.x,  half.y) + selected->collider2D.offset
+                    glm::vec2(-half.x, -half.y) + target.collider2D.offset,
+                    glm::vec2( half.x, -half.y) + target.collider2D.offset,
+                    glm::vec2( half.x,  half.y) + target.collider2D.offset,
+                    glm::vec2(-half.x,  half.y) + target.collider2D.offset
                 };
             } else {
-                localPoints = selected->collider2D.points;
-                if (localPoints.empty() && selected->collider2D.type == Collider2DType::Edge) {
-                    float half = selected->collider2D.boxSize.x * 0.5f;
+                localPoints = target.collider2D.points;
+                if (localPoints.empty() && target.collider2D.type == Collider2DType::Edge) {
+                    float half = target.collider2D.boxSize.x * 0.5f;
                     localPoints = {
                         glm::vec2(-half, 0.0f),
                         glm::vec2(half, 0.0f)
                     };
                 }
                 for (glm::vec2& point : localPoints) {
-                    point += selected->collider2D.offset;
+                    point += target.collider2D.offset;
                 }
             }
 
             if (localPoints.size() < 2) return;
 
-            glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(*selected);
-            glm::vec2 pivotWorld = parentOffset + glm::vec2(selected->ui.position.x, selected->ui.position.y) + parallaxOffset(*selected);
-            float angle = glm::radians(selected->ui.rotation);
+            glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(target);
+            glm::vec2 pivotWorld = parentOffset + glm::vec2(target.ui.position.x, target.ui.position.y) + parallaxOffset(target);
+            float angle = glm::radians(target.ui.rotation);
             float c = std::cos(angle);
             float s = std::sin(angle);
             auto rotatePoint2D = [c, s](const glm::vec2& p) {
@@ -5384,21 +6936,59 @@ void Engine::renderViewport() {
             }
 
             ImDrawList* dl = ImGui::GetWindowDrawList();
-            const ImU32 outlineColor = ImGui::GetColorU32(ImVec4(0.24f, 0.95f, 1.0f, 0.95f));
-            const float thickness = 2.2f;
             for (size_t i = 1; i < screenPoints.size(); ++i) {
                 dl->AddLine(screenPoints[i - 1], screenPoints[i], outlineColor, thickness);
             }
-            if (selected->collider2D.type == Collider2DType::Box ||
-                selected->collider2D.type == Collider2DType::Polygon ||
-                selected->collider2D.closed) {
+            if (target.collider2D.type == Collider2DType::Box ||
+                target.collider2D.type == Collider2DType::Polygon ||
+                target.collider2D.closed) {
                 dl->AddLine(screenPoints.back(), screenPoints.front(), outlineColor, thickness);
             }
         };
-        drawSelectedCollider2DWorldOutline();
+        auto drawSelectedCollider2DWorldOutlines = [&]() {
+            std::vector<int> roots = selectedObjectIds;
+            if (roots.empty() && selectedObjectId >= 0) {
+                roots.push_back(selectedObjectId);
+            }
+            if (roots.empty()) {
+                return;
+            }
+
+            std::unordered_set<int> rootSet(roots.begin(), roots.end());
+            std::unordered_set<int> visited;
+            std::vector<int> stack = roots;
+            while (!stack.empty()) {
+                const int id = stack.back();
+                stack.pop_back();
+                if (!visited.insert(id).second) {
+                    continue;
+                }
+
+                SceneObject* node = findObjectById(id);
+                if (!node || !IsObjectEnabledInHierarchy(*node)) {
+                    continue;
+                }
+
+                if (node->hasCollider2D && node->collider2D.enabled) {
+                    const bool isDirectSelected = rootSet.find(id) != rootSet.end();
+                    const ImU32 color = isDirectSelected
+                        ? ImGui::GetColorU32(ImVec4(0.24f, 0.95f, 1.0f, 0.95f))
+                        : ImGui::GetColorU32(ImVec4(0.38f, 1.0f, 0.78f, 0.85f));
+                    const float thickness = isDirectSelected ? 2.2f : 1.8f;
+                    drawCollider2DWorldOutline(*node, color, thickness);
+                }
+
+                for (int childId : node->childIds) {
+                    if (childId >= 0) {
+                        stack.push_back(childId);
+                    }
+                }
+            }
+        };
+        drawSelectedCollider2DWorldOutlines();
 
         bool gizmoUsed = false;
-        if (worldUiEditing && uiWorldHover && !uiWorldCameraActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        if (worldUiEditing && uiWorldHover && !uiWorldCameraActive && !light2DHandleUsed && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
             !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()) {
             ImVec2 mouse = ImGui::GetIO().MousePos;
             bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
@@ -5425,7 +7015,7 @@ void Engine::renderViewport() {
         }
 
         SceneObject* selected = getSelectedObject();
-        if (worldUiEditing && selected && isUIType(*selected) && selected->ui.type != UIElementType::Canvas) {
+        if (worldUiEditing && selected && isUIType(*selected)) {
             auto anchorToPivotUI = [](UIAnchor anchor, const ImVec2& size) {
                 switch (anchor) {
                     case UIAnchor::TopLeft: return ImVec2(0.0f, 0.0f);
@@ -5460,7 +7050,7 @@ void Engine::renderViewport() {
             for (int id : candidateIds) {
                 SceneObject* candidate = findObjectById(id);
                 if (!candidate || !IsObjectEnabledInHierarchy(*candidate)) continue;
-                if (!isUIType(*candidate) || candidate->ui.type == UIElementType::Canvas) continue;
+                if (!isUIType(*candidate)) continue;
                 ImVec2 candidateMin, candidateMax;
                 if (!resolveUiRectCached(*candidate, candidateMin, candidateMax)) continue;
                 gizmoTargets.push_back(id);
@@ -8537,36 +10127,24 @@ void Engine::renderViewport() {
 
         auto resolveMainObjectType = [](const SceneObject& obj) -> ObjectType {
             if (obj.hasRenderer) {
-                switch (obj.renderType) {
-                    case RenderType::Cube: return ObjectType::Cube;
-                    case RenderType::Sphere: return ObjectType::Sphere;
-                    case RenderType::Capsule: return ObjectType::Capsule;
-                    case RenderType::OBJMesh: return ObjectType::OBJMesh;
-                    case RenderType::Model: return ObjectType::Model;
-                    case RenderType::Mirror: return ObjectType::Mirror;
-                    case RenderType::Plane: return ObjectType::Plane;
-                    case RenderType::Torus: return ObjectType::Torus;
-                    case RenderType::Sprite: return ObjectType::Sprite;
-                    case RenderType::None: break;
+                const ObjectType mappedType = MapEnumToObjectType(obj.renderType, kRenderTypeMainObjectMap);
+                if (mappedType != ObjectType::Empty) {
+                    return mappedType;
                 }
             }
             if (obj.hasUI) {
-                switch (obj.ui.type) {
-                    case UIElementType::Canvas: return ObjectType::Canvas;
-                    case UIElementType::Image: return ObjectType::UIImage;
-                    case UIElementType::Slider: return ObjectType::UISlider;
-                    case UIElementType::Button: return ObjectType::UIButton;
-                    case UIElementType::Text: return ObjectType::UIText;
-                    case UIElementType::Sprite2D: return obj.type == ObjectType::Sprite25D ? ObjectType::Sprite25D : ObjectType::Sprite2D;
-                    case UIElementType::None: break;
+                ObjectType mappedType = MapEnumToObjectType(obj.ui.type, kUiTypeMainObjectMap);
+                if (mappedType == ObjectType::Sprite2D && obj.type == ObjectType::Sprite25D) {
+                    mappedType = ObjectType::Sprite25D;
+                }
+                if (mappedType != ObjectType::Empty) {
+                    return mappedType;
                 }
             }
             if (obj.hasLight) {
-                switch (obj.light.type) {
-                    case LightType::Directional: return ObjectType::DirectionalLight;
-                    case LightType::Point: return ObjectType::PointLight;
-                    case LightType::Spot: return ObjectType::SpotLight;
-                    case LightType::Area: return ObjectType::AreaLight;
+                const ObjectType mappedType = MapEnumToObjectType(obj.light.type, kLightTypeMainObjectMap);
+                if (mappedType != ObjectType::Empty) {
+                    return mappedType;
                 }
             }
             if (obj.hasCamera) return ObjectType::Camera;
@@ -8800,7 +10378,7 @@ void Engine::renderViewport() {
                 drawSelectionColliderBounds(node, ImGui::GetColorU32(ImVec4(0.24f, 0.95f, 1.0f, 0.95f)), 2.4f);
             }
         }
-        if (collisionWireframe) {
+        if (collisionWireframe && !worldUiEditing) {
             std::unordered_set<int> rootSet(colliderPreviewRoots.begin(), colliderPreviewRoots.end());
             std::unordered_set<int> visited;
             std::vector<int> stack = colliderPreviewRoots;
@@ -9193,6 +10771,14 @@ void Engine::renderViewport() {
             ImGui::EndDisabled();
 
             ImGui::Separator();
+            if (ImGui::Checkbox("Viewport Hint Overlay", &showViewportHintOverlay)) {
+                toolbarEditorSettingsChanged = true;
+            }
+            if (ImGui::Checkbox("2D Light Stats Overlay", &showLight2DStatsOverlay)) {
+                toolbarEditorSettingsChanged = true;
+            }
+
+            ImGui::Separator();
             if (ImGui::SliderFloat("Gizmo Icon Size", &sceneGizmoIconScale, 0.4f, 3.0f, "%.2fx")) {
                 toolbarEditorSettingsChanged = true;
             }
@@ -9204,6 +10790,8 @@ void Engine::renderViewport() {
                 gizmoShowCameraFrustumLabels = true;
                 gizmoShowLightOverlays = true;
                 gizmoShowLightIntensityLabels = true;
+                showViewportHintOverlay = true;
+                showLight2DStatsOverlay = true;
                 sceneGizmoIconScale = 1.0f;
                 sceneGizmoOverlayScale = 1.0f;
                 toolbarEditorSettingsChanged = true;
@@ -9762,26 +11350,31 @@ void Engine::renderViewport() {
         }
     }
 
-    // Overlay hint
-    ImGui::SetCursorPos(ImVec2(10, 30));
-    if (worldUiEditing) {
-        ImGui::TextColored(
-            ImVec4(1, 1, 1, 0.35f),
-            "MMB/Space+LMB: Pan | Wheel: Zoom | LMB: Select | Gizmo: Move/Rotate/Scale"
-        );
-    } else {
-        ImGui::TextColored(
-            ImVec4(1, 1, 1, 0.3f),
-            "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move | ESC: Release | F11: Fullscreen"
-        );
-    }
+    // Draw viewport hint/status on the foreground layer so it always stays above scene sprites/gizmos.
+    if (hasViewportImageRect && showViewportHintOverlay) {
+        ImDrawList* fg = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
+        fg->PushClipRect(viewportImageMin, viewportImageMax, true);
+        const char* hintText = worldUiEditing
+            ? "MMB/Space+LMB: Pan | Wheel: Zoom | LMB: Select | Gizmo: Move/Rotate/Scale"
+            : "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move | ESC: Release | F11: Fullscreen";
+        const ImU32 hintShadow = IM_COL32(0, 0, 0, 180);
+        const ImU32 hintColor = worldUiEditing
+            ? IM_COL32(228, 236, 246, 196)
+            : IM_COL32(228, 236, 246, 172);
+        ImVec2 hintPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 10.0f);
+        fg->AddText(ImVec2(hintPos.x + 1.0f, hintPos.y + 1.0f), hintShadow, hintText);
+        fg->AddText(hintPos, hintColor, hintText);
 
-    if (cursorLocked) {
-        ImGui::SetCursorPos(ImVec2(10, 50));
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Freelook Active");
-    } else if (viewportController.isViewportFocused()) {
-        ImGui::SetCursorPos(ImVec2(10, 50));
-        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Viewport Focused");
+        if (cursorLocked) {
+            ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 30.0f);
+            fg->AddText(ImVec2(statusPos.x + 1.0f, statusPos.y + 1.0f), hintShadow, "Freelook Active");
+            fg->AddText(statusPos, IM_COL32(120, 255, 120, 255), "Freelook Active");
+        } else if (viewportController.isViewportFocused()) {
+            ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 30.0f);
+            fg->AddText(ImVec2(statusPos.x + 1.0f, statusPos.y + 1.0f), hintShadow, "Viewport Focused");
+            fg->AddText(statusPos, IM_COL32(180, 226, 255, 255), "Viewport Focused");
+        }
+        fg->PopClipRect();
     }
 
     bool windowFocused = ImGui::IsWindowFocused();
@@ -9789,183 +11382,10 @@ void Engine::renderViewport() {
 
     ImGui::End();
 
-    if (showSpritePreviewPanel && !workspaceLayoutTransitionActive) {
-        bool previewOpen = showSpritePreviewPanel;
-        if (ImGui::Begin("Sprite Preview", &previewOpen)) {
-            if (!rendererInitialized) {
-                ImGui::TextDisabled("Sprite Preview uses OpenGL textures.");
-                ImGui::TextDisabled("Switch to OpenGL renderer mode to use this panel.");
-            } else {
-                SceneObject* selected = getSelectedObject();
-                bool validSprite = selected && selected->hasUI &&
-                    (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D);
-                if (!validSprite) {
-                    ImGui::TextDisabled("Select an Image or Sprite2D to preview.");
-                } else {
-                    static float spritePreviewZoom = 1.0f;
-                    Texture* previewTex = nullptr;
-                    if (!selected->albedoTexturePath.empty()) {
-                        previewTex = renderer.getTexture(selected->albedoTexturePath, MaterialProperties::TextureFilter::Point);
-                    }
-                    if (!previewTex || !previewTex->GetID()) {
-                        ImGui::TextDisabled("Assign a texture to preview this sprite.");
-                    } else {
-                        std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(*selected);
-                        float availW = std::max(80.0f, ImGui::GetContentRegionAvail().x);
-                        ImGui::SliderFloat("Zoom", &spritePreviewZoom, 0.25f, 16.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
-                        float maxPreviewW = std::min(availW, 340.0f * spritePreviewZoom);
-                        float texW = static_cast<float>(std::max(1, previewTex->GetWidth()));
-                        float texH = static_cast<float>(std::max(1, previewTex->GetHeight()));
-                        float frameW = texW;
-                        float frameH = texH;
-                        if (selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty()) {
-                            const glm::ivec4 frame = selected->ui.spriteCustomFrames[
-                                std::clamp(selected->ui.spriteSheetFrame, 0, static_cast<int>(selected->ui.spriteCustomFrames.size()) - 1)];
-                            frameW = static_cast<float>(std::max(1, frame.z));
-                            frameH = static_cast<float>(std::max(1, frame.w));
-                        } else if (selected->ui.spriteSheetEnabled) {
-                            frameW = texW / static_cast<float>(std::max(1, selected->ui.spriteSheetColumns));
-                            frameH = texH / static_cast<float>(std::max(1, selected->ui.spriteSheetRows));
-                        }
-                        float aspect = frameH > 0.0f ? (frameW / frameH) : 1.0f;
-                        ImVec2 previewSize(maxPreviewW, std::max(40.0f, maxPreviewW / std::max(0.1f, aspect)));
-                        ImGui::Image((ImTextureID)(intptr_t)previewTex->GetID(), previewSize, uvQuad[0], uvQuad[2]);
-                        const bool usingCustomClips = selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty();
-                        int frameCount = usingCustomClips
-                            ? static_cast<int>(selected->ui.spriteCustomFrames.size())
-                            : std::max(1, std::max(1, selected->ui.spriteSheetColumns) * std::max(1, selected->ui.spriteSheetRows));
-                        ImGui::Separator();
-                        ImGui::Text("Object: %s", selected->name.c_str());
-                        ImGui::Text("Texture: %d x %d", previewTex->GetWidth(), previewTex->GetHeight());
-                        if (selected->ui.spriteSheetEnabled) {
-                            if (usingCustomClips) {
-                                ImGui::Text("Clip: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
-                                ImGui::Text("Clips: %d cropped sprites", frameCount);
-                            } else {
-                                ImGui::Text("Frame: %d / %d", std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1), frameCount - 1);
-                                ImGui::Text("Grid: %d x %d  |  %.1f FPS",
-                                            std::max(1, selected->ui.spriteSheetColumns),
-                                            std::max(1, selected->ui.spriteSheetRows),
-                                            std::max(1.0f, selected->ui.spriteSheetFps));
-                            }
-                        } else {
-                            ImGui::TextDisabled("Sprite sheet disabled (showing full texture).");
-                        }
-                    }
-                }
-            }
-        }
-        ImGui::End();
-        showSpritePreviewPanel = previewOpen;
-    }
-
-    if (worldUiEditing && !workspaceLayoutTransitionActive) {
-        if (ImGui::Begin("Sprite Timeline")) {
-            SceneObject* selected = getSelectedObject();
-            bool validSprite = selected && selected->hasUI &&
-                (selected->ui.type == UIElementType::Image || selected->ui.type == UIElementType::Sprite2D) &&
-                selected->ui.spriteSheetEnabled &&
-                !(selected->ui.spriteCustomFramesEnabled && !selected->ui.spriteCustomFrames.empty());
-            if (!validSprite) {
-                spriteTimelinePreviewPlaying = false;
-                spriteTimelineTargetId = -1;
-                ImGui::TextDisabled("Select a grid-based sprite sheet to animate.");
-            } else {
-                int columns = std::max(1, selected->ui.spriteSheetColumns);
-                int rows = std::max(1, selected->ui.spriteSheetRows);
-                int frameCount = std::max(1, columns * rows);
-                selected->ui.spriteSheetFrame = std::clamp(selected->ui.spriteSheetFrame, 0, frameCount - 1);
-                if (spriteTimelineTargetId != selected->id) {
-                    spriteTimelineTargetId = selected->id;
-                    spriteTimelinePreviewPlaying = false;
-                    spriteTimelineLastTick = ImGui::GetTime();
-                }
-
-                double now = ImGui::GetTime();
-                if (spriteTimelinePreviewPlaying) {
-                    double step = 1.0 / std::max(1.0f, selected->ui.spriteSheetFps);
-                    int advance = (step > 0.0) ? static_cast<int>((now - spriteTimelineLastTick) / step) : 0;
-                    if (advance > 0) {
-                        int nextFrame = selected->ui.spriteSheetFrame + advance;
-                        if (selected->ui.spriteSheetLoop) {
-                            nextFrame %= frameCount;
-                        } else if (nextFrame >= frameCount) {
-                            nextFrame = frameCount - 1;
-                            spriteTimelinePreviewPlaying = false;
-                        }
-                        selected->ui.spriteSheetFrame = std::clamp(nextFrame, 0, frameCount - 1);
-                        spriteTimelineLastTick += static_cast<double>(advance) * step;
-                    }
-                } else {
-                    spriteTimelineLastTick = now;
-                }
-
-                if (ImGui::Button(spriteTimelinePreviewPlaying ? "Pause" : "Play")) {
-                    spriteTimelinePreviewPlaying = !spriteTimelinePreviewPlaying;
-                    spriteTimelineLastTick = ImGui::GetTime();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Stop")) {
-                    spriteTimelinePreviewPlaying = false;
-                    selected->ui.spriteSheetFrame = 0;
-                }
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(140.0f);
-                if (ImGui::DragFloat("FPS", &selected->ui.spriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f")) {
-                    selected->ui.spriteSheetFps = std::clamp(selected->ui.spriteSheetFps, 1.0f, 120.0f);
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Loop", &selected->ui.spriteSheetLoop)) {
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                }
-
-                int frame = selected->ui.spriteSheetFrame;
-                if (ImGui::SliderInt("Frame", &frame, 0, frameCount - 1)) {
-                    selected->ui.spriteSheetFrame = std::clamp(frame, 0, frameCount - 1);
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                }
-
-                const float stripHeight = 18.0f;
-                ImVec2 stripStart = ImGui::GetCursorScreenPos();
-                float stripWidth = std::max(180.0f, ImGui::GetContentRegionAvail().x);
-                ImGui::InvisibleButton("##SpriteFrameStrip", ImVec2(stripWidth, stripHeight));
-                bool stripHover = ImGui::IsItemHovered();
-                if ((stripHover && ImGui::IsMouseDown(ImGuiMouseButton_Left)) || ImGui::IsItemActivated()) {
-                    float t = (ImGui::GetIO().MousePos.x - stripStart.x) / std::max(1.0f, stripWidth);
-                    t = std::clamp(t, 0.0f, 0.9999f);
-                    int pickedFrame = std::clamp(static_cast<int>(t * frameCount), 0, frameCount - 1);
-                    if (pickedFrame != selected->ui.spriteSheetFrame) {
-                        selected->ui.spriteSheetFrame = pickedFrame;
-                        projectManager.currentProject.hasUnsavedChanges = true;
-                    }
-                }
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImU32 stripBg = IM_COL32(46, 52, 66, 210);
-                ImU32 stripEdge = IM_COL32(190, 198, 216, 70);
-                ImU32 stripFill = IM_COL32(136, 186, 255, 220);
-                ImU32 stripTick = IM_COL32(220, 230, 255, 70);
-                ImVec2 stripEnd(stripStart.x + stripWidth, stripStart.y + stripHeight);
-                dl->AddRectFilled(stripStart, stripEnd, stripBg, 5.0f);
-                dl->AddRect(stripStart, stripEnd, stripEdge, 5.0f);
-                float filled = stripWidth * (static_cast<float>(selected->ui.spriteSheetFrame + 1) / static_cast<float>(frameCount));
-                dl->AddRectFilled(stripStart, ImVec2(stripStart.x + filled, stripEnd.y), stripFill, 5.0f);
-                int tickCount = std::min(frameCount, 96);
-                for (int i = 1; i < tickCount; ++i) {
-                    float x = stripStart.x + (stripWidth * static_cast<float>(i) / static_cast<float>(tickCount));
-                    dl->AddLine(ImVec2(x, stripStart.y + 2.0f), ImVec2(x, stripEnd.y - 2.0f), stripTick, 1.0f);
-                }
-                ImGui::TextDisabled("Frame %d / %d", selected->ui.spriteSheetFrame, frameCount - 1);
-            }
-        }
-        ImGui::End();
-    } else {
-        spriteTimelinePreviewPlaying = false;
-        spriteTimelineTargetId = -1;
-    }
-
     // Run dock drawer interactions after docked windows are submitted so tab hit-rects are current.
-    updateDockDrawerAnimations();
+    if (!(pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil)) {
+        updateDockDrawerAnimations();
+    }
 }
 #pragma endregion
 
@@ -10013,21 +11433,38 @@ void Engine::renderUiCanvas3DTargets() {
         return found;
     };
 
+    auto isOffscreenCanvas = [](const SceneObject& canvas) {
+        return canvas.enabled &&
+               canvas.hasUI &&
+               canvas.ui.type == UIElementType::Canvas &&
+               (canvas.ui.renderIn3D || (canvas.ui.pseudo3DEnabled && canvas.ui.pseudo3DUseOffscreenSurface));
+    };
+
     std::unordered_set<int> activeCanvasIds;
     for (auto& canvas : sceneObjects) {
-        if (!canvas.enabled || !canvas.hasUI || canvas.ui.type != UIElementType::Canvas || !canvas.ui.renderIn3D) continue;
+        if (!isOffscreenCanvas(canvas)) continue;
         activeCanvasIds.insert(canvas.id);
 
-        canvas.hasRenderer = true;
-        canvas.renderType = RenderType::Sprite;
-        canvas.material.textureMix = 1.0f;
+        if (canvas.ui.renderIn3D) {
+            canvas.hasRenderer = true;
+            canvas.renderType = RenderType::Sprite;
+            canvas.material.textureMix = 1.0f;
+        } else if (canvas.hasRenderer && canvas.renderType == RenderType::Sprite) {
+            canvas.hasRenderer = false;
+            canvas.renderType = RenderType::None;
+        }
+        if (canvas.ui.pseudo3DEnabled && !canvas.ui.renderIn3D) {
+            canvas.faceCamera = false;
+        }
 
-        int targetWidth = (canvas.ui.renderTargetSize.x > 0) ? canvas.ui.renderTargetSize.x : static_cast<int>(canvas.ui.size.x);
-        int targetHeight = (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y : static_cast<int>(canvas.ui.size.y);
+        const glm::vec2 pseudoLayout = ResolvePseudo3DLayoutSize(canvas);
+        const bool pseudoCanvas = !canvas.ui.renderIn3D && canvas.ui.pseudo3DEnabled;
+        const float layoutWidth = pseudoCanvas ? pseudoLayout.x : std::max(1.0f, canvas.ui.size.x);
+        const float layoutHeight = pseudoCanvas ? pseudoLayout.y : std::max(1.0f, canvas.ui.size.y);
+        int targetWidth = (canvas.ui.renderTargetSize.x > 0) ? canvas.ui.renderTargetSize.x : static_cast<int>(layoutWidth);
+        int targetHeight = (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y : static_cast<int>(layoutHeight);
         targetWidth = std::clamp(targetWidth, 16, 4096);
         targetHeight = std::clamp(targetHeight, 16, 4096);
-        float layoutWidth = std::max(1.0f, canvas.ui.size.x);
-        float layoutHeight = std::max(1.0f, canvas.ui.size.y);
 
         Renderer::UiTargetInfo target = renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
         if (target.fbo == 0 || target.texture == 0) continue;
@@ -10037,7 +11474,16 @@ void Engine::renderUiCanvas3DTargets() {
             ctxEntry.context = ImGui::CreateContext();
             ImGui::SetCurrentContext(ctxEntry.context);
             ImGuiIO& io = ImGui::GetIO();
-            io.Fonts->AddFontDefault();
+            std::string fontReport;
+            ImFont* canvasFont = loadModularityUiFont(io, 15.5f, &fontReport);
+            if (canvasFont) {
+                io.FontDefault = canvasFont;
+            } else {
+                io.Fonts->AddFontDefault();
+                if (!fontReport.empty()) {
+                    std::cerr << "[WARN] UI canvas font load failed: " << fontReport << std::endl;
+                }
+            }
             ImGui_ImplOpenGL3_Init("#version 330");
             ImGui_ImplOpenGL3_CreateDeviceObjects();
             ctxEntry.backendReady = true;
@@ -10503,6 +11949,9 @@ void Engine::renderPlayerViewport() {
     const auto runtimeUiStart = std::chrono::steady_clock::now();
     double runtimeSpriteBatchBuildMs = 0.0;
     uint32_t runtimeVisibleObjectCount = 0;
+    int runtimeRenderWidth = kRuntimeInternalWidth;
+    int runtimeRenderHeight = kRuntimeInternalHeight;
+    getRuntimeInternalResolution(runtimeRenderWidth, runtimeRenderHeight);
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
@@ -10520,21 +11969,29 @@ void Engine::renderPlayerViewport() {
     ImGui::PopStyleVar();
 
     bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-    ImVec2 imageSize = ImGui::GetContentRegionAvail();
-    if (imageSize.x > 0 && imageSize.y > 0) {
-        viewportWidth = static_cast<int>(imageSize.x);
-        viewportHeight = static_cast<int>(imageSize.y);
-        if (rendererInitialized) {
-            renderer.resize(viewportWidth, viewportHeight);
-        }
-    }
+    const ImVec2 availableSize = ImGui::GetContentRegionAvail();
+    const ImVec2 imageSize = ComputeAspectFitSize(availableSize, getRuntimeInternalAspect());
+    const ImVec2 cursorStart = ImGui::GetCursorPos();
+    const float imageOffsetX = std::max(0.0f, (availableSize.x - imageSize.x) * 0.5f);
+    const float imageOffsetY = std::max(0.0f, (availableSize.y - imageSize.y) * 0.5f);
+    ImGui::SetCursorPos(ImVec2(cursorStart.x + imageOffsetX, cursorStart.y + imageOffsetY));
 
     if (rendererInitialized) {
         unsigned int tex = renderer.getViewportTexture();
-        ImGui::Image((void*)(intptr_t)tex, imageSize, ImVec2(0, 1), ImVec2(1, 0));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+        ImGui::InvisibleButton("PlayerViewportFrame", imageSize);
+        ImGui::PopStyleColor(3);
         ImVec2 imageMin = ImGui::GetItemRectMin();
         ImVec2 imageMax = ImGui::GetItemRectMax();
-        bool imageHovered = ImGui::IsItemHovered();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(imageMin, imageMax, IM_COL32(12, 14, 20, 255), 0.0f);
+        ApplyNearestTextureSampling(tex);
+        if (tex != 0) {
+            drawList->AddImage((void*)(intptr_t)tex, imageMin, imageMax, ImVec2(0, 1), ImVec2(1, 0));
+        }
+        bool imageHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         bool showingStartupSplash = false;
 
         if (playerMode && buildSettings.splashEnabled && buildSettings.splashDurationSeconds > 0.0f) {
@@ -10625,9 +12082,8 @@ void Engine::renderPlayerViewport() {
         }
         updateUiCanvas3DInput(camera, runtimeFov, runtimeNear, runtimeFar);
 
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        float uiScaleX = (viewportWidth > 0) ? (imageSize.x / (float)viewportWidth) : 1.0f;
-        float uiScaleY = (viewportHeight > 0) ? (imageSize.y / (float)viewportHeight) : 1.0f;
+        float uiScaleX = imageSize.x / static_cast<float>(std::max(1, runtimeRenderWidth));
+        float uiScaleY = imageSize.y / static_cast<float>(std::max(1, runtimeRenderHeight));
 
         if (showCanvasOverlay) {
             ImVec2 pad(8.0f, 8.0f);
@@ -10641,6 +12097,9 @@ void Engine::renderPlayerViewport() {
         auto find3DCanvasId = [&](const SceneObject& target) -> int {
             return uiSceneLookup.find3DCanvasId(target);
         };
+        auto findPseudo3DCanvasId = [&](const SceneObject& target) -> int {
+            return uiSceneLookup.findPseudo3DCanvasId(target);
+        };
         auto isUiOn3DCanvas = [&](const SceneObject& target) {
             return find3DCanvasId(target) >= 0;
         };
@@ -10651,7 +12110,10 @@ void Engine::renderPlayerViewport() {
         auto isUIType = [&](const SceneObject& target) {
             if (!target.hasUI || target.ui.type == UIElementType::None) return false;
             int canvasId = find3DCanvasId(target);
-            return (canvasId < 0) || (canvasId == editCanvas3DId);
+            if (!((canvasId < 0) || (canvasId == editCanvas3DId))) {
+                return false;
+            }
+            return findPseudo3DCanvasId(target) < 0;
         };
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
@@ -10720,6 +12182,7 @@ void Engine::renderPlayerViewport() {
 
         ImVec2 overlayPos = ImGui::GetWindowPos();
         ImVec2 overlaySize = ImGui::GetWindowSize();
+        const bool project2DPipeline = isProject2DPipeline();
         bool useWorldUi = false;
         SpriteTextureResolver spriteTextureResolver(rendererInitialized ? &renderer : nullptr);
         if (playerMode) {
@@ -10732,8 +12195,8 @@ void Engine::renderPlayerViewport() {
                     break;
                 }
             }
-            useWorldUi = runtimeCam && runtimeCam->camera.use2D;
-            if (runtimeCam && runtimeCam->camera.use2D) {
+            useWorldUi = project2DPipeline || (runtimeCam && runtimeCam->camera.use2D);
+            if (runtimeCam && useWorldUi) {
                 uiWorldCamera.position = glm::vec2(runtimeCam->position.x, runtimeCam->position.y);
                 uiWorldCamera.zoom = std::max(1.0f, runtimeCam->camera.pixelsPerUnit);
             }
@@ -10742,22 +12205,51 @@ void Engine::renderPlayerViewport() {
         if (useWorldUi) {
             uiWorldCamera.viewportSize = glm::vec2(overlaySize.x, overlaySize.y);
         }
-        glm::mat4 projectedUiView = camera.getViewMatrix();
-        glm::mat4 projectedUiProj = glm::perspective(glm::radians(runtimeFov),
-                                                     std::max(0.1f, overlaySize.x / std::max(1.0f, overlaySize.y)),
-                                                     runtimeNear,
-                                                     runtimeFar);
+        Camera projectedUiCamera = camera;
+        if (playerMode) {
+            for (const auto& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
+                if (obj.camera.type == SceneCameraType::Player) {
+                    projectedUiCamera = makeCameraFromObject(obj);
+                    break;
+                }
+            }
+        }
+        glm::mat4 projectedUiView = projectedUiCamera.getViewMatrix();
+        glm::mat4 projectedUiProj = projectedUiCamera.orthographic
+            ? glm::ortho(
+                -overlaySize.x / (2.0f * std::max(1.0f, projectedUiCamera.pixelsPerUnit)),
+                 overlaySize.x / (2.0f * std::max(1.0f, projectedUiCamera.pixelsPerUnit)),
+                -overlaySize.y / (2.0f * std::max(1.0f, projectedUiCamera.pixelsPerUnit)),
+                 overlaySize.y / (2.0f * std::max(1.0f, projectedUiCamera.pixelsPerUnit)),
+                 runtimeNear,
+                 runtimeFar)
+            : glm::perspective(glm::radians(runtimeFov),
+                               std::max(0.1f, overlaySize.x / std::max(1.0f, overlaySize.y)),
+                               runtimeNear,
+                               runtimeFar);
         bool hasProjectedUiCamera = true;
         auto worldToScreen = [&](const glm::vec2& world) {
             glm::vec2 local = uiWorldCamera.WorldToScreen(world);
             return ImVec2(overlayPos.x + local.x, overlayPos.y + local.y);
         };
+        auto parallaxOffset = [&](const SceneObject& obj) {
+            if (!obj.hasParallaxLayer2D || !obj.parallaxLayer2D.enabled) return glm::vec2(0.0f);
+            const float factor = std::clamp(obj.parallaxLayer2D.factor, 0.0f, 1.0f);
+            return uiWorldCamera.position * (1.0f - factor);
+        };
+        glm::vec2 worldViewMin = useWorldUi
+            ? uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y))
+            : glm::vec2(0.0f);
+        glm::vec2 worldViewMax = useWorldUi
+            ? uiWorldCamera.ScreenToWorld(glm::vec2(overlaySize.x, 0.0f))
+            : glm::vec2(0.0f);
         auto resolveUIRectWorld = [&](const SceneObject& obj, ImVec2& outMin, ImVec2& outMax) {
             if (obj.type == ObjectType::Sprite25D && hasProjectedUiCamera) {
                 return ResolveProjectedSprite25DRect(obj, projectedUiView, projectedUiProj, overlayPos, overlaySize, outMin, outMax);
             }
             glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
-            glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y);
+            glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
             glm::vec2 sizeWorld = getSpriteDisplaySize(obj);
             ImVec2 pivotOffset = anchorToPivot(obj.ui.anchor, ImVec2(sizeWorld.x, sizeWorld.y));
             glm::vec2 worldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
@@ -10793,9 +12285,18 @@ void Engine::renderPlayerViewport() {
             }
             return current;
         };
+        std::vector<SceneObject*> uiDrawList;
+        uiDrawList.reserve(sceneObjects.size());
+        for (auto& obj : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(obj) || !isUIType(obj)) continue;
+            uiDrawList.push_back(&obj);
+        }
+        if (uiDrawList.size() > 1) {
+            StableSortRuntimeUiDrawList(uiDrawList);
+        }
         const auto spriteBatchBuildStart = std::chrono::steady_clock::now();
         BatchedSpriteEmitter spriteBatch(ImGui::GetWindowDrawList());
-        spriteBatch.reserve(sceneObjects.size());
+        spriteBatch.reserve(uiDrawList.size());
         struct CachedMaskRect {
             bool resolved = false;
             bool hasMask = false;
@@ -10862,8 +12363,290 @@ void Engine::renderPlayerViewport() {
             return true;
         };
 
-        for (auto& obj : sceneObjects) {
-            if (!IsObjectEnabledInHierarchy(obj) || !isUIType(obj)) continue;
+        std::unordered_set<int> light2DRenderedObjectIds;
+        bool renderedLight2DComposite = false;
+        int activeLight2DCount = 0;
+        int litSprite2DCount = 0;
+        int litWorldImageCount = 0;
+        bool lightBufferHadContent = false;
+        std::unordered_map<int, std::string> light2DRoutingReasons;
+        light2DRoutingReasons.reserve(uiDrawList.size());
+        if (useWorldUi && rendererInitialized) {
+            Light2DRenderRequest lightRequest;
+            lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
+            lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
+            lightRequest.clearColor = glm::vec4(0.0f);
+            lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.blendStyles = light2DBlendStyles;
+            auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
+                if (!flicker.enabled || flicker.amount <= 0.0001f) {
+                    return 1.0f;
+                }
+                const float time = static_cast<float>(glfwGetTime());
+                const float base = std::sin(time * std::max(0.01f, flicker.speed) + flicker.seed);
+                const float jitter = std::sin(time * std::max(0.01f, flicker.speed * 2.173f) + flicker.seed * 1.913f);
+                const float noise = 0.5f + 0.35f * base + 0.15f * jitter;
+                return glm::mix(1.0f, std::max(0.0f, noise), std::clamp(flicker.amount, 0.0f, 1.0f));
+            };
+
+            int drawOrder = 0;
+            for (SceneObject* objPtr : uiDrawList) {
+                SceneObject& obj = *objPtr;
+                if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) continue;
+                if (obj.ui.nineSliceEnabled) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    continue;
+                }
+                if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    continue;
+                }
+                const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
+                const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+
+                ImVec2 rectMin, rectMax;
+                if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    continue;
+                }
+
+                Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
+                if (!spriteTex || spriteTex->GetID() == 0) {
+                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    continue;
+                }
+
+                std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
+                const float angle = glm::radians(obj.ui.rotation);
+                const float c = std::cos(angle);
+                const float s = std::sin(angle);
+                ImVec2 maskMin, maskMax;
+                const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
+                auto quadOutsideOverlay = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
+                    return quadMax.x < overlayPos.x || quadMin.x > overlayPos.x + overlaySize.x ||
+                           quadMax.y < overlayPos.y || quadMin.y > overlayPos.y + overlaySize.y;
+                };
+                auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
+                    if (quadOutsideOverlay(quadMin, quadMax)) {
+                        return false;
+                    }
+                    if (hasMaskRect) {
+                        const bool maskClipsSprite =
+                            quadMin.x < maskMin.x || quadMax.x > maskMax.x ||
+                            quadMin.y < maskMin.y || quadMax.y > maskMax.y;
+                        if (maskClipsSprite) {
+                            return false;
+                        }
+                    }
+
+                    Light2DScreenSprite sprite;
+                    sprite.objectId = obj.id;
+                    sprite.layer = obj.layer;
+                    sprite.drawOrder = drawOrder++;
+                    sprite.textureId = spriteTex->GetID();
+                    sprite.tint = obj.ui.color;
+                    sprite.receiveLighting = obj.ui.receiveLighting2D;
+                    sprite.unlit = obj.ui.unlitLighting2D;
+                    sprite.emissiveIntensity = obj.ui.emissiveLighting2D;
+
+                    const glm::vec2 center(
+                        ((quadMin.x + quadMax.x) * 0.5f) - overlayPos.x,
+                        ((quadMin.y + quadMax.y) * 0.5f) - overlayPos.y);
+                    const glm::vec2 half(
+                        std::max(0.5f, (quadMax.x - quadMin.x) * 0.5f),
+                        std::max(0.5f, (quadMax.y - quadMin.y) * 0.5f));
+                    auto rotatePoint = [&](float x, float y) {
+                        return glm::vec2(center.x + x * c - y * s, center.y + x * s + y * c);
+                    };
+                    sprite.positions[0] = rotatePoint(-half.x, -half.y);
+                    sprite.positions[1] = rotatePoint(half.x, -half.y);
+                    sprite.positions[2] = rotatePoint(half.x, half.y);
+                    sprite.positions[3] = rotatePoint(-half.x, half.y);
+                    sprite.uvs[0] = glm::vec2(uvQuad[0].x, uvQuad[0].y);
+                    sprite.uvs[1] = glm::vec2(uvQuad[1].x, uvQuad[1].y);
+                    sprite.uvs[2] = glm::vec2(uvQuad[2].x, uvQuad[2].y);
+                    sprite.uvs[3] = glm::vec2(uvQuad[3].x, uvQuad[3].y);
+                    lightRequest.sprites.push_back(sprite);
+                    return true;
+                };
+
+                bool addedAnySprite = false;
+                if (repeatX || repeatY) {
+                    glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
+                    glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
+                    float stepX = spriteSizeWorld.x + spacing.x;
+                    float stepY = spriteSizeWorld.y + spacing.y;
+                    ImVec2 pivotOffset = anchorToPivot(obj.ui.anchor, ImVec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                    glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
+                    glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
+                    glm::vec2 baseWorldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
+                    int startX = repeatX ? static_cast<int>(std::floor((worldViewMin.x - baseWorldMin.x) / stepX)) - 1 : 0;
+                    int endX = repeatX ? static_cast<int>(std::ceil((worldViewMax.x - baseWorldMin.x) / stepX)) + 1 : 0;
+                    int startY = repeatY ? static_cast<int>(std::floor((worldViewMin.y - baseWorldMin.y) / stepY)) - 1 : 0;
+                    int endY = repeatY ? static_cast<int>(std::ceil((worldViewMax.y - baseWorldMin.y) / stepY)) + 1 : 0;
+                    for (int ix = startX; ix <= endX; ++ix) {
+                        for (int iy = startY; iy <= endY; ++iy) {
+                            float dx = repeatX ? static_cast<float>(ix) * stepX : 0.0f;
+                            float dy = repeatY ? static_cast<float>(iy) * stepY : 0.0f;
+                            glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
+                            ImVec2 s0 = worldToScreen(tileMin);
+                            ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                            ImVec2 tileRectMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
+                            ImVec2 tileRectMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+                            addedAnySprite = appendSpriteQuad(tileRectMin, tileRectMax) || addedAnySprite;
+                        }
+                    }
+                } else {
+                    addedAnySprite = appendSpriteQuad(rectMin, rectMax);
+                }
+
+                if (!addedAnySprite) {
+                    light2DRoutingReasons[obj.id] = hasMaskRect
+                        ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                    continue;
+                }
+
+                light2DRenderedObjectIds.insert(obj.id);
+                if (obj.ui.type == UIElementType::Sprite2D) {
+                    if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                        ++litSprite2DCount;
+                    }
+                } else if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    ++litWorldImageCount;
+                }
+                if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                        ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
+                        : "Lit path: routed through the Light2D compositor.";
+                } else if (obj.ui.unlitLighting2D) {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                } else {
+                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                }
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D || !obj.light2D.enabled) {
+                    continue;
+                }
+                ++activeLight2DCount;
+
+                if (obj.light2D.type == Light2DType::Global) {
+                    lightRequest.baseAmbient += glm::vec3(obj.light2D.color) * obj.light2D.intensity;
+                    continue;
+                }
+
+                Light2DScreenLight light;
+                light.objectId = obj.id;
+                light.enabled = obj.light2D.enabled;
+                light.type = obj.light2D.type;
+                light.blendStyle = obj.light2D.blendStyle;
+                light.lightOrder = obj.light2D.lightOrder;
+                light.overlapOperation = obj.light2D.overlapOperation;
+                light.targetAllLayers = obj.light2D.targetAllLayers;
+                light.targetLayerMask = obj.light2D.targetLayerMask;
+                light.color = obj.light2D.color;
+                light.intensity = obj.light2D.intensity * computeFlickerMultiplier(obj.light2D.flicker);
+                light.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.innerRadius = obj.light2D.innerRadius * uiWorldCamera.zoom;
+                light.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
+                light.falloffStrength = obj.light2D.falloffStrength;
+                light.innerSpotAngle = obj.light2D.innerSpotAngle;
+                light.outerSpotAngle = obj.light2D.outerSpotAngle;
+                light.shadowStrength = obj.light2D.shadowStrength;
+                light.volumetricEnabled = obj.light2D.volumetricEnabled;
+                light.castsShadows = obj.light2D.castsShadows;
+                light.rotationRad = glm::radians(obj.rotation.z);
+                light.cookieScale = obj.light2D.cookieScale;
+                light.cookieRotationRad = glm::radians(obj.light2D.cookieRotation);
+                light.freeformFeatherPx = obj.light2D.freeformFeather * uiWorldCamera.zoom;
+                light.freeformEdgeFalloff = obj.light2D.freeformEdgeFalloff;
+                if (!obj.light2D.cookieTexturePath.empty()) {
+                    if (Texture* cookieTexture = renderer.getTexture(obj.light2D.cookieTexturePath, MaterialProperties::TextureFilter::Bilinear)) {
+                        light.cookieTextureId = cookieTexture->GetID();
+                    }
+                }
+
+                ImVec2 lightPos = worldToScreen(glm::vec2(obj.position.x, obj.position.y));
+                light.position = glm::vec2(lightPos.x - overlayPos.x, lightPos.y - overlayPos.y);
+
+                if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
+                    light.polygon.reserve(obj.light2D.shapePoints.size());
+                    for (const glm::vec2& point : obj.light2D.shapePoints) {
+                        ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                        light.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                    }
+                    if (!light.polygon.empty()) {
+                        glm::vec2 boundsMin(FLT_MAX);
+                        glm::vec2 boundsMax(-FLT_MAX);
+                        for (const glm::vec2& point : light.polygon) {
+                            boundsMin.x = std::min(boundsMin.x, point.x);
+                            boundsMin.y = std::min(boundsMin.y, point.y);
+                            boundsMax.x = std::max(boundsMax.x, point.x);
+                            boundsMax.y = std::max(boundsMax.y, point.y);
+                        }
+                        light.boundsMin = boundsMin;
+                        light.boundsMax = boundsMax;
+                    }
+                } else {
+                    const float extent = std::max(light.radius, light.outerRadius);
+                    light.boundsMin = light.position - glm::vec2(extent);
+                    light.boundsMax = light.position + glm::vec2(extent);
+                }
+
+                lightRequest.lights.push_back(light);
+            }
+
+            for (const SceneObject& obj : sceneObjects) {
+                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D || !obj.shadowCaster2D.enabled) {
+                    continue;
+                }
+
+                Light2DScreenShadowCaster caster;
+                caster.objectId = obj.id;
+                caster.enabled = obj.shadowCaster2D.enabled;
+                caster.targetAllLayers = obj.shadowCaster2D.targetAllLayers;
+                caster.targetLayerMask = obj.shadowCaster2D.targetLayerMask;
+                caster.shadowStrength = obj.shadowCaster2D.shadowStrength;
+                caster.polygon.reserve(obj.shadowCaster2D.points.size());
+                for (const glm::vec2& point : obj.shadowCaster2D.points) {
+                    ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+                    caster.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
+                }
+                if (caster.polygon.size() >= 3) {
+                    lightRequest.shadowCasters.push_back(std::move(caster));
+                }
+            }
+
+            const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+                unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
+                if (lightTexture != 0) {
+                    ImGui::GetWindowDrawList()->AddImage(
+                        (ImTextureID)(intptr_t)lightTexture,
+                        overlayPos,
+                        ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y),
+                        ImVec2(0.0f, 1.0f),
+                        ImVec2(1.0f, 0.0f));
+                    renderedLight2DComposite = true;
+                } else {
+                    for (int objectId : light2DRenderedObjectIds) {
+                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                    }
+                    light2DRenderedObjectIds.clear();
+                }
+            } else {
+                for (int objectId : light2DRenderedObjectIds) {
+                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                }
+                light2DRenderedObjectIds.clear();
+            }
+        }
+
+        for (SceneObject* objPtr : uiDrawList) {
+            SceneObject& obj = *objPtr;
             ImVec2 rectMin, rectMax;
             if (useWorldUi || obj.type == ObjectType::Sprite25D) {
                 if (!resolveUIRectWorld(obj, rectMin, rectMax)) continue;
@@ -10937,6 +12720,14 @@ void Engine::renderPlayerViewport() {
                 animState.initialized = true;
             }
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
+                if (light2DRenderedObjectIds.find(obj.id) != light2DRenderedObjectIds.end()) {
+                    if (pushedCanvasMask) {
+                        ImGui::PopClipRect();
+                    }
+                    ImGui::PopID();
+                    if (styleApplied) ImGui::GetStyle() = savedStyle;
+                    continue;
+                }
                 Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
                 unsigned int texId = (spriteTex != nullptr) ? spriteTex->GetID() : 0;
                 std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
@@ -11156,10 +12947,218 @@ void Engine::renderPlayerViewport() {
             if (styleApplied) ImGui::GetStyle() = savedStyle;
         }
         spriteBatch.flush();
+        if (useWorldUi) {
+            light2DCompositorRanLastFrame = renderedLight2DComposite;
+            light2DLightBufferHadContentLastFrame = lightBufferHadContent;
+            light2DActiveCountLastFrame = activeLight2DCount;
+            light2DLitSprite2DCountLastFrame = litSprite2DCount;
+            light2DLitWorldImageCountLastFrame = litWorldImageCount;
+            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+        }
+
+        bool pseudoPanelInteracting = false;
+        struct PseudoPanelDrawEntry {
+            int canvasId = -1;
+            unsigned int textureId = 0;
+            ImVec2 layoutSize = ImVec2(1.0f, 1.0f);
+            std::array<ImVec2, 4> corners;
+            int depthSort = 0;
+            bool allowInteraction = false;
+        };
+        std::vector<PseudoPanelDrawEntry> pseudoPanels;
+        pseudoPanels.reserve(sceneObjects.size());
+
+        auto resolvePseudoAnchorScreen = [&](const SceneObject& canvas, ImVec2& outScreen, float& outDistance) -> bool {
+            outDistance = 1.0f;
+            if (canvas.ui.pseudo3DAnchorTargetId < 0) {
+                return false;
+            }
+            const SceneObject* anchorObj = uiSceneLookup.find(canvas.ui.pseudo3DAnchorTargetId);
+            if (!anchorObj) {
+                return false;
+            }
+            if (useWorldUi) {
+                outScreen = worldToScreen(glm::vec2(anchorObj->position.x, anchorObj->position.y));
+                outDistance = glm::length(
+                    glm::vec2(uiWorldCamera.position.x - anchorObj->position.x,
+                              uiWorldCamera.position.y - anchorObj->position.y));
+                return true;
+            }
+            if (ProjectWorldToOverlayPoint(anchorObj->position,
+                                           projectedUiView,
+                                           projectedUiProj,
+                                           overlayPos,
+                                           overlaySize,
+                                           outScreen)) {
+                outDistance = glm::length(camera.position - anchorObj->position);
+                return true;
+            }
+            return false;
+        };
+        auto resolvePseudoCanvasRect = [&](const SceneObject& canvas,
+                                           const glm::vec2& layoutSizePx,
+                                           ImVec2& outMin,
+                                           ImVec2& outMax) -> bool {
+            std::vector<const SceneObject*> chain;
+            chain.reserve(8);
+            const SceneObject* current = &canvas;
+            while (current) {
+                if (current->hasUI && current->ui.type != UIElementType::None) {
+                    const int canvas3DId = find3DCanvasId(*current);
+                    if (canvas3DId < 0 || current->id == canvas.id) {
+                        chain.push_back(current);
+                    }
+                }
+                if (current->parentId < 0) break;
+                current = uiSceneLookup.find(current->parentId);
+                if (!current) break;
+            }
+            if (chain.empty()) {
+                return false;
+            }
+            std::reverse(chain.begin(), chain.end());
+
+            ImVec2 regionMin = overlayPos;
+            ImVec2 regionMax = ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
+            for (const SceneObject* node : chain) {
+                ImVec2 size(1.0f, 1.0f);
+                if (node->id == canvas.id) {
+                    size = ImVec2(std::max(1.0f, layoutSizePx.x * uiScaleX),
+                                  std::max(1.0f, layoutSizePx.y * uiScaleY));
+                } else {
+                    const glm::vec2 nodeSize = getSpriteDisplaySize(*node);
+                    size = ImVec2(std::max(1.0f, nodeSize.x * uiScaleX),
+                                  std::max(1.0f, nodeSize.y * uiScaleY));
+                }
+                const ImVec2 anchorPoint = anchorToPoint(node->ui.anchor, regionMin, regionMax);
+                const ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX,
+                                   anchorPoint.y + node->ui.position.y * uiScaleY);
+                const ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
+                regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
+                regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
+            }
+            outMin = regionMin;
+            outMax = regionMax;
+            return true;
+        };
+
+        for (auto& canvas : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(canvas) ||
+                !canvas.hasUI ||
+                canvas.ui.type != UIElementType::Canvas ||
+                canvas.ui.renderIn3D ||
+                !canvas.ui.pseudo3DEnabled ||
+                !canvas.ui.pseudo3DUseOffscreenSurface) {
+                continue;
+            }
+
+            const glm::vec2 layoutSizePx = ResolvePseudo3DLayoutSize(canvas);
+            ImVec2 rectMin;
+            ImVec2 rectMax;
+            if (!resolvePseudoCanvasRect(canvas, layoutSizePx, rectMin, rectMax)) {
+                continue;
+            }
+            const int targetWidth = std::clamp(
+                (canvas.ui.renderTargetSize.x > 0) ? canvas.ui.renderTargetSize.x : static_cast<int>(layoutSizePx.x),
+                16,
+                4096);
+            const int targetHeight = std::clamp(
+                (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y : static_cast<int>(layoutSizePx.y),
+                16,
+                4096);
+            Renderer::UiTargetInfo target = renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
+            if (target.texture == 0) {
+                continue;
+            }
+
+            float distance = 1.0f;
+            ImVec2 anchorScreen(0.0f, 0.0f);
+            const bool anchored = resolvePseudoAnchorScreen(canvas, anchorScreen, distance);
+            if (!anchored) {
+                if (useWorldUi) {
+                    distance = glm::length(
+                        glm::vec2(uiWorldCamera.position.x - canvas.position.x,
+                                  uiWorldCamera.position.y - canvas.position.y));
+                } else {
+                    distance = glm::length(camera.position - canvas.position);
+                }
+            }
+
+            if (anchored) {
+                const ImVec2 center((rectMin.x + rectMax.x) * 0.5f, (rectMin.y + rectMax.y) * 0.5f);
+                const ImVec2 shift(anchorScreen.x - center.x, anchorScreen.y - center.y);
+                rectMin = ImVec2(rectMin.x + shift.x, rectMin.y + shift.y);
+                rectMax = ImVec2(rectMax.x + shift.x, rectMax.y + shift.y);
+            }
+
+            float distanceScale = 1.0f;
+            float perspectiveFactor = 1.0f;
+            bool allowInteraction = false;
+            ResolvePseudo3DDistanceState(canvas.ui, distance, distanceScale, perspectiveFactor, allowInteraction);
+
+            PseudoPanelDrawEntry entry;
+            entry.canvasId = canvas.id;
+            entry.textureId = target.texture;
+            entry.layoutSize = ImVec2(layoutSizePx.x, layoutSizePx.y);
+            entry.corners = BuildPseudo3DPanelCorners(rectMin, rectMax, canvas.ui, distanceScale, perspectiveFactor);
+            entry.depthSort = canvas.ui.pseudo3DDepthSort;
+            entry.allowInteraction = allowInteraction;
+            pseudoPanels.push_back(entry);
+        }
+
+        if (!pseudoPanels.empty()) {
+            std::stable_sort(pseudoPanels.begin(), pseudoPanels.end(),
+                             [](const PseudoPanelDrawEntry& a, const PseudoPanelDrawEntry& b) {
+                                 if (a.depthSort != b.depthSort) return a.depthSort < b.depthSort;
+                                 return a.canvasId < b.canvasId;
+                             });
+
+            ImDrawList* panelDrawList = ImGui::GetWindowDrawList();
+            for (const PseudoPanelDrawEntry& panel : pseudoPanels) {
+                panelDrawList->AddImageQuad(
+                    (ImTextureID)(intptr_t)panel.textureId,
+                    panel.corners[0], panel.corners[1], panel.corners[2], panel.corners[3],
+                    ImVec2(0.0f, 1.0f), ImVec2(1.0f, 1.0f), ImVec2(1.0f, 0.0f), ImVec2(0.0f, 0.0f),
+                    IM_COL32_WHITE);
+            }
+
+            if (imageHovered && !uiWorldCameraActive) {
+                const ImVec2 mousePos = ImGui::GetIO().MousePos;
+                bool inputAssigned = false;
+                for (auto it = pseudoPanels.rbegin(); it != pseudoPanels.rend(); ++it) {
+                    ImVec2 uv(0.0f, 0.0f);
+                    if (!MapPointToPseudo3DQuadUV(it->corners, mousePos, uv)) {
+                        continue;
+                    }
+
+                    pseudoPanelInteracting = pseudoPanelInteracting ||
+                        ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                        std::abs(ImGui::GetIO().MouseWheel) > 0.0f;
+                    if (!it->allowInteraction || inputAssigned) {
+                        continue;
+                    }
+
+                    UiCanvas3DInput& input = uiCanvas3DInputs[it->canvasId];
+                    const float u = std::clamp(uv.x, 0.0f, 1.0f);
+                    const float v = std::clamp(uv.y, 0.0f, 1.0f);
+                    input.mousePos = ImVec2(
+                        u * std::max(1.0f, it->layoutSize.x),
+                        (1.0f - v) * std::max(1.0f, it->layoutSize.y));
+                    input.mouseDown[0] = ImGui::GetIO().MouseDown[0];
+                    input.mouseDown[1] = ImGui::GetIO().MouseDown[1];
+                    input.mouseDown[2] = ImGui::GetIO().MouseDown[2];
+                    input.mouseWheel = ImGui::GetIO().MouseWheel;
+                    input.hasInput = true;
+                    input.hitT = -1000.0f - static_cast<float>(it->depthSort);
+                    inputAssigned = true;
+                }
+            }
+        }
         runtimeSpriteBatchBuildMs +=
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - spriteBatchBuildStart).count();
 
-        uiInteracting = ImGui::IsAnyItemActive() || uiWorldCameraActive;
+        uiInteracting = ImGui::IsAnyItemActive() || uiWorldCameraActive || pseudoPanelInteracting;
         ImGui::EndChild();
         ImGui::PopStyleVar();
 

@@ -80,6 +80,7 @@ public:
 
 // Apply the modern dark theme to ImGui
 void applyModernTheme();
+ImFont* loadModularityUiFont(ImGuiIO& io, float fontSize, std::string* outReport = nullptr);
 void applyEditorLayoutPreset(ImGuiStyle& style);
 void applyPixelStyle(ImGuiStyle& style);
 void applySuperRoundStyle(ImGuiStyle& style);

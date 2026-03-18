@@ -341,9 +341,6 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Resources
             $<TARGET_FILE_DIR:ModularityPlayer>/Resources
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/Template-Projects
-            $<TARGET_FILE_DIR:ModularityPlayer>/Template-Projects
     )
 endif()
 

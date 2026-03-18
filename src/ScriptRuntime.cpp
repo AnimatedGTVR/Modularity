@@ -130,6 +130,55 @@ glm::vec2 getScriptMouseDelta(const ScriptContext* ctx) {
     cache.delta = computed;
     return computed;
 }
+
+std::string makeRuntimeStateKey(const ScriptContext& ctx, const char* suffix) {
+    std::string key = makeScriptInstanceKey(ctx);
+    if (key.empty()) {
+        if (ctx.object) {
+            key = "obj:" + std::to_string(ctx.object->id);
+        } else {
+            key = "ctx:" + std::to_string(reinterpret_cast<uintptr_t>(&ctx));
+        }
+    }
+    if (suffix && *suffix) {
+        key += "|";
+        key += suffix;
+    }
+    return key;
+}
+
+struct SpriteAlphaFadeState {
+    float startAlpha = 1.0f;
+    float targetAlpha = 1.0f;
+    float duration = 0.0f;
+    float elapsed = 0.0f;
+};
+
+enum class SpriteClipFadePhase {
+    FadingOut = 0,
+    FadingIn = 1
+};
+
+struct SpriteClipFadeState {
+    int targetClipIndex = -1;
+    float fadeOutDuration = 0.0f;
+    float fadeInDuration = 0.0f;
+    float baseAlpha = 1.0f;
+    float phaseStartAlpha = 1.0f;
+    float elapsed = 0.0f;
+    SpriteClipFadePhase phase = SpriteClipFadePhase::FadingOut;
+};
+
+std::unordered_map<std::string, SpriteAlphaFadeState> gSpriteAlphaFadeStates;
+std::unordered_map<std::string, SpriteClipFadeState> gSpriteClipFadeStates;
+
+struct KeyPressedState {
+    bool previousDown = false;
+    int frame = -1;
+    bool pressed = false;
+};
+
+std::unordered_map<std::string, KeyPressedState> gKeyPressedStates;
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -315,6 +364,26 @@ bool ScriptContext::IsSprintDown() const {
 
 bool ScriptContext::IsJumpDown() const {
     return isMoveKeyDown(this, ImGuiKey_Space, GLFW_KEY_SPACE);
+}
+
+bool ScriptContext::IsKeyDown(int glfwKey, ImGuiKey imguiKey) const {
+    if (imguiKey != ImGuiKey_None && ImGui::IsKeyDown(imguiKey)) return true;
+    if (engine && engine->isRuntimeKeyDown(glfwKey)) return true;
+    return isGlfwKeyDownFallback(glfwKey);
+}
+
+bool ScriptContext::IsKeyPressed(int glfwKey, ImGuiKey imguiKey) const {
+    const std::string suffix = "keyPressed:" + std::to_string(glfwKey);
+    std::string key = makeRuntimeStateKey(*this, suffix.c_str());
+    KeyPressedState& state = gKeyPressedStates[key];
+    const int frame = ImGui::GetFrameCount();
+    if (state.frame != frame) {
+        const bool downNow = IsKeyDown(glfwKey, imguiKey);
+        state.pressed = downNow && !state.previousDown;
+        state.previousDown = downNow;
+        state.frame = frame;
+    }
+    return state.pressed;
 }
 
 bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
@@ -664,6 +733,162 @@ bool ScriptContext::SetSpriteClipName(const std::string& name) {
             : ("Clip " + std::to_string(i));
         if (clipName == target) {
             return SetSpriteClipIndex(static_cast<int>(i));
+        }
+    }
+    return false;
+}
+
+float ScriptContext::GetSpriteAlpha() const {
+    if (!object || !object->hasUI) return 1.0f;
+    return std::clamp(object->ui.color.a, 0.0f, 1.0f);
+}
+
+void ScriptContext::SetSpriteAlpha(float alpha) {
+    if (!object || !object->hasUI) return;
+    float clamped = std::clamp(alpha, 0.0f, 1.0f);
+    if (std::abs(object->ui.color.a - clamped) < 1e-6f) return;
+    object->ui.color.a = clamped;
+    MarkDirty();
+}
+
+bool ScriptContext::FadeSpriteAlpha(float targetAlpha, float duration, float deltaTime) {
+    if (!object || !object->hasUI) return false;
+    std::string key = makeRuntimeStateKey(*this, "sprite_alpha_fade");
+    targetAlpha = std::clamp(targetAlpha, 0.0f, 1.0f);
+    duration = std::max(0.0f, duration);
+    float currentAlpha = GetSpriteAlpha();
+
+    if (duration <= 1e-5f) {
+        SetSpriteAlpha(targetAlpha);
+        gSpriteAlphaFadeStates.erase(key);
+        return true;
+    }
+
+    auto it = gSpriteAlphaFadeStates.find(key);
+    bool restart = (it == gSpriteAlphaFadeStates.end());
+    if (!restart) {
+        const SpriteAlphaFadeState& state = it->second;
+        if (std::abs(state.targetAlpha - targetAlpha) > 1e-4f ||
+            std::abs(state.duration - duration) > 1e-4f) {
+            restart = true;
+        }
+    }
+
+    if (restart) {
+        SpriteAlphaFadeState state;
+        state.startAlpha = currentAlpha;
+        state.targetAlpha = targetAlpha;
+        state.duration = duration;
+        state.elapsed = 0.0f;
+        it = gSpriteAlphaFadeStates.insert_or_assign(key, state).first;
+    }
+
+    SpriteAlphaFadeState& state = it->second;
+    state.elapsed = std::min(state.duration, state.elapsed + std::max(0.0f, deltaTime));
+    float t = (state.duration <= 1e-5f) ? 1.0f : std::clamp(state.elapsed / state.duration, 0.0f, 1.0f);
+    SetSpriteAlpha(glm::mix(state.startAlpha, state.targetAlpha, t));
+    if (t >= 1.0f - 1e-6f) {
+        gSpriteAlphaFadeStates.erase(it);
+        return true;
+    }
+    return false;
+}
+
+bool ScriptContext::FadeSpriteToClipIndex(int clipIndex, float fadeOutDuration, float fadeInDuration, float deltaTime) {
+    if (!object || !object->hasUI) return false;
+    const int clipCount = GetSpriteClipCount();
+    if (clipCount <= 0 || clipIndex < 0 || clipIndex >= clipCount) return false;
+
+    std::string key = makeRuntimeStateKey(*this, "sprite_clip_fade");
+    auto it = gSpriteClipFadeStates.find(key);
+
+    if (it == gSpriteClipFadeStates.end() && GetSpriteClipIndex() == clipIndex) {
+        return true;
+    }
+
+    fadeOutDuration = std::max(0.0f, fadeOutDuration);
+    fadeInDuration = std::max(0.0f, fadeInDuration);
+    float currentAlpha = GetSpriteAlpha();
+
+    bool restart = (it == gSpriteClipFadeStates.end());
+    if (!restart) {
+        const SpriteClipFadeState& state = it->second;
+        if (state.targetClipIndex != clipIndex ||
+            std::abs(state.fadeOutDuration - fadeOutDuration) > 1e-4f ||
+            std::abs(state.fadeInDuration - fadeInDuration) > 1e-4f) {
+            restart = true;
+        }
+    }
+
+    if (restart) {
+        gSpriteAlphaFadeStates.erase(makeRuntimeStateKey(*this, "sprite_alpha_fade"));
+        SpriteClipFadeState state;
+        state.targetClipIndex = clipIndex;
+        state.fadeOutDuration = fadeOutDuration;
+        state.fadeInDuration = fadeInDuration;
+        state.baseAlpha = std::clamp(currentAlpha, 0.0f, 1.0f);
+        state.phaseStartAlpha = currentAlpha;
+        state.elapsed = 0.0f;
+        if (fadeOutDuration <= 1e-5f) {
+            if (!SetSpriteClipIndex(clipIndex)) {
+                return false;
+            }
+            if (fadeInDuration <= 1e-5f) {
+                return true;
+            }
+            state.phase = SpriteClipFadePhase::FadingIn;
+            state.phaseStartAlpha = 0.0f;
+            SetSpriteAlpha(0.0f);
+        } else {
+            state.phase = SpriteClipFadePhase::FadingOut;
+        }
+        it = gSpriteClipFadeStates.insert_or_assign(key, state).first;
+    }
+
+    SpriteClipFadeState& state = it->second;
+    float dt = std::max(0.0f, deltaTime);
+    if (state.phase == SpriteClipFadePhase::FadingOut) {
+        state.elapsed = std::min(state.fadeOutDuration, state.elapsed + dt);
+        float t = (state.fadeOutDuration <= 1e-5f) ? 1.0f : std::clamp(state.elapsed / state.fadeOutDuration, 0.0f, 1.0f);
+        SetSpriteAlpha(glm::mix(state.phaseStartAlpha, 0.0f, t));
+        if (t >= 1.0f - 1e-6f) {
+            if (!SetSpriteClipIndex(state.targetClipIndex)) {
+                gSpriteClipFadeStates.erase(it);
+                return false;
+            }
+            if (state.fadeInDuration <= 1e-5f) {
+                SetSpriteAlpha(state.baseAlpha);
+                gSpriteClipFadeStates.erase(it);
+                return true;
+            }
+            state.phase = SpriteClipFadePhase::FadingIn;
+            state.phaseStartAlpha = 0.0f;
+            state.elapsed = 0.0f;
+        }
+    }
+
+    if (state.phase == SpriteClipFadePhase::FadingIn) {
+        state.elapsed = std::min(state.fadeInDuration, state.elapsed + dt);
+        float t = (state.fadeInDuration <= 1e-5f) ? 1.0f : std::clamp(state.elapsed / state.fadeInDuration, 0.0f, 1.0f);
+        SetSpriteAlpha(glm::mix(state.phaseStartAlpha, state.baseAlpha, t));
+        if (t >= 1.0f - 1e-6f) {
+            SetSpriteAlpha(state.baseAlpha);
+            gSpriteClipFadeStates.erase(it);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ScriptContext::FadeSpriteToClipName(const std::string& clipName,
+                                         float fadeOutDuration, float fadeInDuration, float deltaTime) {
+    std::string target = trimString(clipName);
+    if (target.empty()) return false;
+    const int clipCount = GetSpriteClipCount();
+    for (int i = 0; i < clipCount; ++i) {
+        if (GetSpriteClipNameAt(i) == target) {
+            return FadeSpriteToClipIndex(i, fadeOutDuration, fadeInDuration, deltaTime);
         }
     }
     return false;
@@ -1093,6 +1318,36 @@ void ScriptContext::AutoSetting(const std::string& key, float& value) {
     autoSettings.push_back(entry);
 }
 
+void ScriptContext::AutoSetting(const std::string& key, int& value) {
+    if (!script) return;
+    if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
+        [&](const AutoSettingEntry& e){ return e.key == key; })) return;
+
+    static std::unordered_map<std::string, int> defaults;
+    std::string scriptId = makeScriptInstanceKey(*this);
+    std::string id = scriptId + "|" + key;
+    int defaultVal = value;
+    auto itDef = defaults.find(id);
+    if (itDef != defaults.end()) {
+        defaultVal = itDef->second;
+    } else {
+        defaults[id] = defaultVal;
+    }
+
+    const std::string raw = GetSetting(key, std::to_string(defaultVal));
+    try {
+        value = std::stoi(raw);
+    } catch (...) {
+        value = defaultVal;
+    }
+    AutoSettingEntry entry;
+    entry.type = AutoSettingType::Int;
+    entry.key = key;
+    entry.ptr = &value;
+    entry.initialInt = value;
+    autoSettings.push_back(entry);
+}
+
 void ScriptContext::AutoSetting(const std::string& key, glm::vec3& value) {
     if (!script) return;
     if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
@@ -1144,6 +1399,31 @@ void ScriptContext::AutoSetting(const std::string& key, char* buffer, size_t buf
     autoSettings.push_back(entry);
 }
 
+void ScriptContext::AutoSetting(const std::string& key, std::string& value) {
+    if (!script) return;
+    if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
+        [&](const AutoSettingEntry& e){ return e.key == key; })) return;
+
+    static std::unordered_map<std::string, std::string> defaults;
+    std::string scriptId = makeScriptInstanceKey(*this);
+    std::string id = scriptId + "|" + key;
+    std::string defaultVal = value;
+    auto itDef = defaults.find(id);
+    if (itDef != defaults.end()) {
+        defaultVal = itDef->second;
+    } else {
+        defaults[id] = defaultVal;
+    }
+
+    value = GetSetting(key, defaultVal);
+    AutoSettingEntry entry;
+    entry.type = AutoSettingType::String;
+    entry.key = key;
+    entry.ptr = &value;
+    entry.initialString = value;
+    autoSettings.push_back(entry);
+}
+
 void ScriptContext::SaveAutoSettings() {
     if (!script) return;
     bool changed = false;
@@ -1162,6 +1442,12 @@ void ScriptContext::SaveAutoSettings() {
                 newVal = std::to_string(cur);
                 break;
             }
+            case AutoSettingType::Int: {
+                int cur = *static_cast<int*>(e.ptr);
+                if (cur == e.initialInt) continue;
+                newVal = std::to_string(cur);
+                break;
+            }
             case AutoSettingType::Vec3: {
                 glm::vec3 cur = *static_cast<glm::vec3*>(e.ptr);
                 if (glm::all(glm::epsilonEqual(cur, e.initialVec3, 1e-6f))) continue;
@@ -1173,6 +1459,12 @@ void ScriptContext::SaveAutoSettings() {
                 if (cur && e.initialString == cur) continue;
                 newVal = cur ? cur : "";
                 if (!cur || newVal == e.initialString) continue;
+                break;
+            }
+            case AutoSettingType::String: {
+                const std::string& cur = *static_cast<const std::string*>(e.ptr);
+                if (cur == e.initialString) continue;
+                newVal = cur;
                 break;
             }
         }
@@ -1344,6 +1636,10 @@ void ScriptRuntime::unloadAll() {
 #endif
     }
     loaded.clear();
+    gSpriteAlphaFadeStates.clear();
+    gSpriteClipFadeStates.clear();
+    gKeyPressedStates.clear();
+    lastError.clear();
 }
 
 bool ScriptRuntime::hasEditorWindow(const fs::path& binaryPath) {

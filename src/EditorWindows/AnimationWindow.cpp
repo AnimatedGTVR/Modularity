@@ -210,7 +210,6 @@ struct AnimationEditorState {
     bool recordWasEnabled = false;
     bool frameSnapEnabled = true;
     float frameSnapThresholdPx = 3.0f;
-    float sharedScrollY = 0.0f;
 
     float curveValueScale = 60.0f;
     float curveValueOffset = 0.0f;
@@ -1059,7 +1058,6 @@ static void InitializeClipState(AnimationEditorState& state) {
     state.isPlaying = false;
     state.loopPlayback = true;
     state.leftPaneWidth = 300.0f;
-    state.sharedScrollY = 0.0f;
     state.curveValueScale = 60.0f;
     state.curveValueOffset = 0.0f;
     state.activeTab = AnimationTab::Dopesheet;
@@ -1085,7 +1083,6 @@ static void ResetClipData(AnimationEditorState& state) {
     state.selection.rangeAnchor.reset();
     state.focusedTrack.reset();
     state.tree = BuildBindingTreeFromClip(state.clip);
-    state.sharedScrollY = 0.0f;
     state.currentTime = 0.0f;
     state.timeline.timeOffset = 0.0f;
     state.recordLastValues.clear();
@@ -1557,7 +1554,6 @@ static void DrawLeftPane(AnimationEditorState& state,
                          float splitterPadding,
                          bool& consumedWheel) {
     ImGui::BeginChild("AnimBindingTreePane", ImVec2(state.leftPaneWidth - splitterPadding, height), true);
-    ImGui::SetScrollY(state.sharedScrollY);
 
     const ImVec2 base = ImGui::GetCursorScreenPos();
     const float width = ImGui::GetContentRegionAvail().x;
@@ -1616,8 +1612,6 @@ static void DrawLeftPane(AnimationEditorState& state,
     if (ImGui::IsWindowHovered() && std::abs(ImGui::GetIO().MouseWheel) > 0.0f) {
         consumedWheel = true;
     }
-
-    state.sharedScrollY = ImGui::GetScrollY();
     ImGui::EndChild();
 }
 
@@ -1744,7 +1738,6 @@ static void DrawDopesheet(AnimationEditorState& state,
 
     ImGui::BeginChild("AnimDopesheetPane", ImVec2(0.0f, height), true,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
-    ImGui::SetScrollY(state.sharedScrollY);
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const float width = ImMax(ImGui::GetContentRegionAvail().x, 100.0f);
@@ -2009,7 +2002,6 @@ static void DrawDopesheet(AnimationEditorState& state,
         ImGui::EndPopup();
     }
 
-    state.sharedScrollY = ImGui::GetScrollY();
     ImGui::EndChild();
 }
 
@@ -2024,12 +2016,10 @@ static void DrawCurves(AnimationEditorState& state,
 
     ImGui::BeginChild("AnimCurvesPane", ImVec2(0.0f, height), true,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
-    ImGui::SetScrollY(state.sharedScrollY);
 
     const std::vector<TrackHandle> group = BuildCurveTrackGroup(state.clip, state.focusedTrack);
     if (group.empty()) {
         ImGui::TextDisabled("Select a track in the left pane to edit curves.");
-        state.sharedScrollY = ImGui::GetScrollY();
         ImGui::EndChild();
         return;
     }
@@ -2370,7 +2360,6 @@ static void DrawCurves(AnimationEditorState& state,
         ImGui::EndPopup();
     }
 
-    state.sharedScrollY = ImGui::GetScrollY();
     ImGui::EndChild();
 }
 
@@ -2719,7 +2708,10 @@ void Engine::renderAnimationWindow() {
     const float splitterWidth = 6.0f;
     bool consumedWheel = false;
 
-    ImGui::BeginChild("AnimationMainArea", ImVec2(0.0f, mainHeight), false);
+    ImGui::BeginChild("AnimationMainArea",
+                      ImVec2(0.0f, mainHeight),
+                      false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     const float minLeftWidth = 180.0f;
     const float minRightWidth = 220.0f;
@@ -2744,7 +2736,10 @@ void Engine::renderAnimationWindow() {
     ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0.0f, 0.0f);
-    ImGui::BeginChild("AnimationTimelineArea", ImVec2(0.0f, 0.0f), false);
+    ImGui::BeginChild("AnimationTimelineArea",
+                      ImVec2(0.0f, 0.0f),
+                      false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     if (ImGui::BeginTabBar("AnimationTabs")) {
         if (ImGui::BeginTabItem("Dopesheet")) {

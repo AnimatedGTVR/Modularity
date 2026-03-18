@@ -108,6 +108,8 @@ namespace {
         if (!obj.scripts.empty()) return IM_COL32(255, 175, 90, 235);
         if (obj.hasCamera) return IM_COL32(110, 175, 235, 220);
         if (obj.hasLight) return IM_COL32(255, 200, 90, 220);
+        if (obj.hasLight2D) return IM_COL32(255, 228, 108, 230);
+        if (obj.hasShadowCaster2D) return IM_COL32(120, 150, 190, 230);
         if (obj.hasPostFX) return IM_COL32(200, 140, 230, 220);
         if (obj.hasUI) return IM_COL32(160, 210, 255, 220);
         if (obj.hasRenderer) {
@@ -168,6 +170,20 @@ namespace {
                 case LightType::Spot: target.type = ObjectType::SpotLight; break;
                 case LightType::Area: target.type = ObjectType::AreaLight; break;
             }
+            return;
+        }
+        if (target.hasLight2D) {
+            switch (target.light2D.type) {
+                case Light2DType::Point: target.type = ObjectType::Light2D; break;
+                case Light2DType::Spot: target.type = ObjectType::Light2D; break;
+                case Light2DType::Freeform: target.type = ObjectType::Light2D; break;
+                case Light2DType::Sprite: target.type = ObjectType::Light2D; break;
+                case Light2DType::Global: target.type = ObjectType::Light2D; break;
+            }
+            return;
+        }
+        if (target.hasShadowCaster2D) {
+            target.type = ObjectType::ShadowCaster2D;
             return;
         }
         if (target.hasCamera) {
@@ -834,6 +850,36 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Point Light"))       addObject(ObjectType::PointLight, "Point Light");
                 if (ImGui::MenuItem("Spot Light"))        addObject(ObjectType::SpotLight, "Spot Light");
                 if (ImGui::MenuItem("Area Light"))        addObject(ObjectType::AreaLight, "Area Light");
+                ImGui::Separator();
+                if (ImGui::MenuItem("2D Point Light"))    addObject(ObjectType::Light2D, "2D Point Light");
+                if (ImGui::MenuItem("2D Spot Light")) {
+                    addObject(ObjectType::Light2D, "2D Spot Light");
+                    if (!sceneObjects.empty()) {
+                        sceneObjects.back().light2D.type = Light2DType::Spot;
+                    }
+                }
+                if (ImGui::MenuItem("2D Freeform Light")) {
+                    addObject(ObjectType::Light2D, "2D Freeform Light");
+                    if (!sceneObjects.empty()) {
+                        sceneObjects.back().light2D.type = Light2DType::Freeform;
+                        sceneObjects.back().light2D.shapePoints = {
+                            glm::vec2(-2.0f, -1.5f),
+                            glm::vec2(2.0f, -1.5f),
+                            glm::vec2(2.5f, 1.0f),
+                            glm::vec2(0.0f, 2.5f),
+                            glm::vec2(-2.5f, 1.0f)
+                        };
+                    }
+                }
+                if (ImGui::MenuItem("2D Global Light")) {
+                    addObject(ObjectType::Light2D, "2D Global Light");
+                    if (!sceneObjects.empty()) {
+                        sceneObjects.back().light2D.type = Light2DType::Global;
+                        sceneObjects.back().light2D.intensity = 0.35f;
+                        sceneObjects.back().light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+                    }
+                }
+                if (ImGui::MenuItem("2D Shadow Caster")) addObject(ObjectType::ShadowCaster2D, "2D Shadow Caster");
                 ImGui::EndMenu();
             }
 
@@ -2053,6 +2099,8 @@ void Engine::renderInspectorPanel() {
     const bool sharedPostFX = allSelected([](const SceneObject& candidate) { return candidate.hasPostFX; });
     const bool sharedRenderer = allSelected([](const SceneObject& candidate) { return candidate.hasRenderer; });
     const bool sharedLight = allSelected([](const SceneObject& candidate) { return candidate.hasLight; });
+    const bool sharedLight2D = allSelected([](const SceneObject& candidate) { return candidate.hasLight2D; });
+    const bool sharedShadowCaster2D = allSelected([](const SceneObject& candidate) { return candidate.hasShadowCaster2D; });
 
     auto scriptSignature = [](const ScriptComponent& script) {
         return std::to_string(static_cast<int>(script.language)) + "|" + script.path + "|" + script.managedType;
@@ -2114,6 +2162,8 @@ void Engine::renderInspectorPanel() {
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasPostFX; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasRenderer; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasLight; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasLight2D; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasShadowCaster2D; }) ||
         !sharedScriptsLayout
     );
 
@@ -2146,6 +2196,8 @@ void Engine::renderInspectorPanel() {
     bool postFxSectionChanged = false;
     bool rendererSectionChanged = false;
     bool lightSectionChanged = false;
+    bool light2DSectionChanged = false;
+    bool shadowCaster2DSectionChanged = false;
 
     auto objectHeader = drawComponentHeader("Object Info", "ObjectInfo", nullptr, true, std::function<void()>{});
     if (objectHeader.open) {
@@ -2202,6 +2254,16 @@ void Engine::renderInspectorPanel() {
                 case LightType::Spot: typeLabel = "Spot Light"; break;
                 case LightType::Area: typeLabel = "Area Light"; break;
             }
+        } else if (obj.hasLight2D) {
+            switch (obj.light2D.type) {
+                case Light2DType::Point: typeLabel = "2D Point Light"; break;
+                case Light2DType::Spot: typeLabel = "2D Spot Light"; break;
+                case Light2DType::Freeform: typeLabel = "2D Freeform Light"; break;
+                case Light2DType::Sprite: typeLabel = "2D Sprite Light"; break;
+                case Light2DType::Global: typeLabel = "2D Global Light"; break;
+            }
+        } else if (obj.hasShadowCaster2D) {
+            typeLabel = "2D Shadow Caster";
         } else if (obj.hasCamera) {
             typeLabel = "Camera";
         } else if (obj.hasPostFX) {
@@ -2355,6 +2417,87 @@ void Engine::renderInspectorPanel() {
                         changed = true;
                     }
                     ImGui::TextDisabled("Canvas renders on a 3D quad; use object scale for world size.");
+                } else {
+                    if (ImGui::Checkbox("Pseudo 3D Enabled", &obj.ui.pseudo3DEnabled)) {
+                        changed = true;
+                    }
+                    if (obj.ui.pseudo3DEnabled) {
+                        if (ImGui::Checkbox("Use Offscreen Surface", &obj.ui.pseudo3DUseOffscreenSurface)) {
+                            changed = true;
+                        }
+
+                        if (ImGui::DragFloat2("Pseudo Panel Size", &obj.ui.pseudo3DPanelSize.x, 1.0f, 0.0f, 4096.0f)) {
+                            obj.ui.pseudo3DPanelSize.x = std::max(0.0f, obj.ui.pseudo3DPanelSize.x);
+                            obj.ui.pseudo3DPanelSize.y = std::max(0.0f, obj.ui.pseudo3DPanelSize.y);
+                            changed = true;
+                        }
+                        int pseudoRt[2] = { obj.ui.renderTargetSize.x, obj.ui.renderTargetSize.y };
+                        if (ImGui::DragInt2("Pseudo RT (px)", pseudoRt, 1.0f, 16, 4096)) {
+                            obj.ui.renderTargetSize.x = std::max(16, pseudoRt[0]);
+                            obj.ui.renderTargetSize.y = std::max(16, pseudoRt[1]);
+                            changed = true;
+                        }
+
+                        if (ImGui::DragFloat2("Top Left Offset", &obj.ui.pseudo3DTopLeftOffset.x, 0.25f, -4096.0f, 4096.0f)) changed = true;
+                        if (ImGui::DragFloat2("Top Right Offset", &obj.ui.pseudo3DTopRightOffset.x, 0.25f, -4096.0f, 4096.0f)) changed = true;
+                        if (ImGui::DragFloat2("Bottom Right Offset", &obj.ui.pseudo3DBottomRightOffset.x, 0.25f, -4096.0f, 4096.0f)) changed = true;
+                        if (ImGui::DragFloat2("Bottom Left Offset", &obj.ui.pseudo3DBottomLeftOffset.x, 0.25f, -4096.0f, 4096.0f)) changed = true;
+
+                        if (ImGui::SliderFloat2("Pseudo Pivot", &obj.ui.pseudo3DPivot.x, 0.0f, 1.0f, "%.2f")) {
+                            obj.ui.pseudo3DPivot.x = std::clamp(obj.ui.pseudo3DPivot.x, 0.0f, 1.0f);
+                            obj.ui.pseudo3DPivot.y = std::clamp(obj.ui.pseudo3DPivot.y, 0.0f, 1.0f);
+                            changed = true;
+                        }
+
+                        if (ImGui::DragFloat("Perspective Intensity", &obj.ui.pseudo3DPerspectiveIntensity, 0.01f, -2.0f, 2.0f, "%.2f")) changed = true;
+                        if (ImGui::DragFloat("Skew Amount", &obj.ui.pseudo3DSkewAmount, 0.01f, -2.0f, 2.0f, "%.2f")) changed = true;
+                        if (ImGui::DragFloat("Curvature Amount", &obj.ui.pseudo3DCurvatureAmount, 0.01f, -2.0f, 2.0f, "%.2f")) changed = true;
+
+                        std::string anchorLabel = "None";
+                        if (obj.ui.pseudo3DAnchorTargetId >= 0) {
+                            if (const SceneObject* anchorObj = findObjectById(obj.ui.pseudo3DAnchorTargetId)) {
+                                anchorLabel = anchorObj->name + " (" + std::to_string(anchorObj->id) + ")";
+                            }
+                        }
+                        if (ImGui::BeginCombo("Anchor Target", anchorLabel.c_str())) {
+                            if (ImGui::Selectable("None", obj.ui.pseudo3DAnchorTargetId < 0)) {
+                                obj.ui.pseudo3DAnchorTargetId = -1;
+                                changed = true;
+                            }
+                            for (const auto& candidate : sceneObjects) {
+                                if (candidate.id == obj.id) continue;
+                                const std::string label = candidate.name + " (" + std::to_string(candidate.id) + ")";
+                                const bool selected = (candidate.id == obj.ui.pseudo3DAnchorTargetId);
+                                if (ImGui::Selectable(label.c_str(), selected)) {
+                                    obj.ui.pseudo3DAnchorTargetId = candidate.id;
+                                    changed = true;
+                                }
+                                if (selected) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        if (ImGui::Checkbox("Distance Scaling Enabled", &obj.ui.pseudo3DDistanceScalingEnabled)) changed = true;
+                        if (obj.ui.pseudo3DDistanceScalingEnabled) {
+                            if (ImGui::DragFloat("Min Distance", &obj.ui.pseudo3DMinDistance, 0.05f, 0.01f, 10000.0f, "%.2f")) {
+                                obj.ui.pseudo3DMinDistance = std::max(0.01f, obj.ui.pseudo3DMinDistance);
+                                changed = true;
+                            }
+                            if (ImGui::DragFloat("Max Distance", &obj.ui.pseudo3DMaxDistance, 0.05f, 0.02f, 10000.0f, "%.2f")) {
+                                obj.ui.pseudo3DMaxDistance = std::max(obj.ui.pseudo3DMinDistance + 0.01f, obj.ui.pseudo3DMaxDistance);
+                                changed = true;
+                            }
+                            if (ImGui::Checkbox("Perspective Scales With Distance", &obj.ui.pseudo3DAdjustPerspectiveWithDistance)) changed = true;
+                        }
+
+                        if (ImGui::DragFloat("Interaction Distance", &obj.ui.pseudo3DInteractionDistance, 0.05f, 0.0f, 10000.0f, "%.2f")) {
+                            obj.ui.pseudo3DInteractionDistance = std::max(0.0f, obj.ui.pseudo3DInteractionDistance);
+                            changed = true;
+                        }
+                        ImGui::TextDisabled("Interaction Distance = 0 disables distance gating.");
+                        if (ImGui::DragInt("Depth Sort / Draw Order", &obj.ui.pseudo3DDepthSort, 1.0f, -2048, 2048)) changed = true;
+                        if (ImGui::Checkbox("Allow Interaction", &obj.ui.pseudo3DAllowInteraction)) changed = true;
+                    }
                 }
             }
 
@@ -2641,6 +2784,29 @@ void Engine::renderInspectorPanel() {
                         changed = true;
                     }
                     ImGui::EndDisabled();
+                }
+
+                if (ImGui::CollapsingHeader("2D Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (ImGui::Checkbox("Receive Lighting", &obj.ui.receiveLighting2D)) {
+                        changed = true;
+                    }
+                    if (ImGui::Checkbox("Force Unlit", &obj.ui.unlitLighting2D)) {
+                        changed = true;
+                    }
+                    if (ImGui::SliderFloat("Emissive", &obj.ui.emissiveLighting2D, 0.0f, 8.0f, "%.2f")) {
+                        changed = true;
+                    }
+                    ImGui::TextDisabled("Nine-slice and masked sprites fall back to the legacy 2D draw path.");
+                    const auto routingIt = light2DObjectRoutingReasonsLastFrame.find(obj.id);
+                    if (routingIt != light2DObjectRoutingReasonsLastFrame.end()) {
+                        ImGui::SeparatorText("Runtime Debug");
+                        ImGui::Text("Compositor Ran: %s", light2DCompositorRanLastFrame ? "Yes" : "No");
+                        ImGui::Text("Light Buffer: %s", light2DLightBufferHadContentLastFrame ? "Non-empty" : "Empty");
+                        ImGui::Text("Active Lights: %d", light2DActiveCountLastFrame);
+                        ImGui::Text("Lit Sprite2D: %d", light2DLitSprite2DCountLastFrame);
+                        ImGui::Text("Lit UI Images: %d", light2DLitWorldImageCountLastFrame);
+                        ImGui::TextWrapped("%s", routingIt->second.c_str());
+                    }
                 }
             }
 
@@ -4804,6 +4970,393 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
+    if (obj.hasLight2D && sharedLight2D) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.62f, 0.54f, 0.18f, 1.0f));
+        bool changed = false;
+        bool removeLight2D = false;
+        auto header = drawComponentHeader("Light 2D", "Light2D", &obj.light2D.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removeLight2D = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            ImGui::PushID("Light2D");
+            ImGui::Indent(10.0f);
+
+            auto drawLayerMaskEditor = [&](const char* label, bool& targetAllLayers, uint32_t& targetLayerMask) {
+                if (ImGui::Checkbox(label, &targetAllLayers)) {
+                    changed = true;
+                }
+                if (!targetAllLayers && ImGui::TreeNode("Target Layers")) {
+                    for (int layerIndex = 0; layerIndex < 32; ++layerIndex) {
+                        bool enabledLayer = Light2DLayerMaskContains(targetLayerMask, layerIndex);
+                        ImGui::PushID(layerIndex);
+                        if (ImGui::Checkbox(std::to_string(layerIndex).c_str(), &enabledLayer)) {
+                            if (enabledLayer) {
+                                targetLayerMask |= Light2DLayerBit(layerIndex);
+                            } else {
+                                targetLayerMask &= ~Light2DLayerBit(layerIndex);
+                            }
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                        if ((layerIndex % 4) != 3) {
+                            ImGui::SameLine();
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            };
+
+            int currentType = static_cast<int>(obj.light2D.type);
+            const char* typeLabels[] = { "Point", "Spot", "Freeform", "Sprite", "Global" };
+            if (ImGui::Combo("Type", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
+                obj.light2D.type = static_cast<Light2DType>(std::clamp(currentType, 0, 4));
+                if (obj.light2D.type == Light2DType::Freeform && obj.light2D.shapePoints.size() < 3) {
+                    obj.light2D.shapePoints = {
+                        glm::vec2(-2.0f, -1.5f),
+                        glm::vec2(2.0f, -1.5f),
+                        glm::vec2(2.5f, 1.0f),
+                        glm::vec2(0.0f, 2.5f),
+                        glm::vec2(-2.5f, 1.0f)
+                    };
+                }
+                lighting2DRenderer.clearPolygonCache(obj.id);
+                UpdateLegacyTypeFromComponents(obj);
+                changed = true;
+            }
+
+            if (ImGui::ColorEdit4("Color", &obj.light2D.color.x)) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Intensity", &obj.light2D.intensity, 0.0f, 16.0f, "%.2f")) {
+                changed = true;
+            }
+            if (obj.light2D.type != Light2DType::Global) {
+                if (ImGui::DragFloat("Radius", &obj.light2D.radius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
+                    obj.light2D.radius = std::max(0.0f, obj.light2D.radius);
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Inner Radius", &obj.light2D.innerRadius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
+                    obj.light2D.innerRadius = std::max(0.0f, obj.light2D.innerRadius);
+                    obj.light2D.outerRadius = std::max(obj.light2D.outerRadius, obj.light2D.innerRadius);
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Outer Radius", &obj.light2D.outerRadius, 0.05f, obj.light2D.innerRadius, 4096.0f, "%.2f")) {
+                    obj.light2D.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius);
+                    obj.light2D.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius);
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Falloff Strength", &obj.light2D.falloffStrength, 0.01f, 8.0f, "%.2f")) {
+                    changed = true;
+                }
+            }
+
+            if (obj.light2D.type == Light2DType::Spot) {
+                if (ImGui::SliderFloat("Inner Spot Angle", &obj.light2D.innerSpotAngle, 0.0f, 360.0f, "%.1f")) {
+                    obj.light2D.outerSpotAngle = std::max(obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle);
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Outer Spot Angle", &obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle, 360.0f, "%.1f")) {
+                    changed = true;
+                }
+            }
+
+            int blendStyle = std::clamp(obj.light2D.blendStyle, 0, static_cast<int>(light2DBlendStyles.size()) - 1);
+            const char* currentBlend = light2DBlendStyles[static_cast<size_t>(blendStyle)].name.c_str();
+            if (ImGui::BeginCombo("Blend Style", currentBlend)) {
+                for (int i = 0; i < static_cast<int>(light2DBlendStyles.size()); ++i) {
+                    bool selected = (i == blendStyle);
+                    if (ImGui::Selectable(light2DBlendStyles[static_cast<size_t>(i)].name.c_str(), selected)) {
+                        obj.light2D.blendStyle = i;
+                        changed = true;
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            const char* overlapLabels[] = { "Additive", "Max", "Alpha Blend" };
+            int overlapMode = static_cast<int>(obj.light2D.overlapOperation);
+            if (ImGui::Combo("Overlap", &overlapMode, overlapLabels, IM_ARRAYSIZE(overlapLabels))) {
+                obj.light2D.overlapOperation = static_cast<Light2DOverlapOperation>(std::clamp(overlapMode, 0, 2));
+                changed = true;
+            }
+            if (ImGui::DragInt("Light Order", &obj.light2D.lightOrder, 1.0f, -4096, 4096)) {
+                changed = true;
+            }
+
+            drawLayerMaskEditor("Target All Layers", obj.light2D.targetAllLayers, obj.light2D.targetLayerMask);
+
+            if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Cast Shadows", &obj.light2D.castsShadows)) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Shadow Strength", &obj.light2D.shadowStrength, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Volumetric")) {
+                if (ImGui::Checkbox("Enabled", &obj.light2D.volumetricEnabled)) {
+                    changed = true;
+                }
+                ImGui::TextDisabled("Volumetric accumulation is scaffolded for a later pass.");
+            }
+
+            if (ImGui::CollapsingHeader("Normal Maps")) {
+                const char* normalQualityLabels[] = { "Disabled", "Fast", "Accurate" };
+                int quality = static_cast<int>(obj.light2D.normalMapQuality);
+                if (ImGui::Combo("Quality", &quality, normalQualityLabels, IM_ARRAYSIZE(normalQualityLabels))) {
+                    obj.light2D.normalMapQuality = static_cast<Light2DNormalMapQuality>(std::clamp(quality, 0, 2));
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Distance", &obj.light2D.normalMapDistance, 0.05f, 0.0f, 64.0f, "%.2f")) {
+                    obj.light2D.normalMapDistance = std::max(0.0f, obj.light2D.normalMapDistance);
+                    changed = true;
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Distance Attenuation")) {
+                if (ImGui::Checkbox("Use Distance Exponent", &obj.light2D.useDistanceExponent)) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Distance Exponent", &obj.light2D.distanceExponent, 0.1f, 8.0f, "%.2f")) {
+                    changed = true;
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Cookie")) {
+                char cookieBuffer[512] = {};
+                std::snprintf(cookieBuffer, sizeof(cookieBuffer), "%s", obj.light2D.cookieTexturePath.c_str());
+                if (ImGui::InputText("Texture", cookieBuffer, sizeof(cookieBuffer))) {
+                    obj.light2D.cookieTexturePath = cookieBuffer;
+                    changed = true;
+                }
+                if (ImGui::DragFloat2("Scale", &obj.light2D.cookieScale.x, 0.01f, 0.01f, 16.0f, "%.2f")) {
+                    obj.light2D.cookieScale.x = std::max(0.01f, obj.light2D.cookieScale.x);
+                    obj.light2D.cookieScale.y = std::max(0.01f, obj.light2D.cookieScale.y);
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Rotation", &obj.light2D.cookieRotation, 0.5f, -360.0f, 360.0f, "%.1f")) {
+                    changed = true;
+                }
+            }
+
+            if (ImGui::CollapsingHeader("Flicker")) {
+                if (ImGui::Checkbox("Enabled", &obj.light2D.flicker.enabled)) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Speed", &obj.light2D.flicker.speed, 0.01f, 64.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Amount", &obj.light2D.flicker.amount, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::DragFloat("Seed", &obj.light2D.flicker.seed, 0.05f, -1000.0f, 1000.0f, "%.2f")) {
+                    changed = true;
+                }
+            }
+
+            if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
+                if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (ImGui::Button(light2DShapeEditMode && light2DShapeEditingObjectId == obj.id
+                            ? "Stop Shape Edit"
+                            : "Edit Shape")) {
+                        if (light2DShapeEditMode && light2DShapeEditingObjectId == obj.id) {
+                            light2DShapeEditMode = false;
+                            light2DShapeEditingObjectId = -1;
+                            light2DShapeEditingPointIndex = -1;
+                        } else {
+                            light2DShapeEditMode = true;
+                            light2DShapeEditingObjectId = obj.id;
+                            light2DShapeEditingPointIndex = -1;
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Add Point")) {
+                        if (obj.light2D.shapePoints.empty()) {
+                            obj.light2D.shapePoints = {
+                                glm::vec2(-1.5f, -1.0f),
+                                glm::vec2(1.5f, -1.0f),
+                                glm::vec2(0.0f, 1.5f)
+                            };
+                        } else {
+                            obj.light2D.shapePoints.push_back(obj.light2D.shapePoints.back() + glm::vec2(0.5f, 0.5f));
+                        }
+                        lighting2DRenderer.clearPolygonCache(obj.id);
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(obj.light2D.shapePoints.size() <= 3);
+                    if (ImGui::Button("Remove Last")) {
+                        obj.light2D.shapePoints.pop_back();
+                        light2DShapeEditingPointIndex = std::min(light2DShapeEditingPointIndex,
+                            static_cast<int>(obj.light2D.shapePoints.size()) - 1);
+                        lighting2DRenderer.clearPolygonCache(obj.id);
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+
+                    if (ImGui::SliderFloat("Feather", &obj.light2D.freeformFeather, 0.0f, 4.0f, "%.2f")) {
+                        changed = true;
+                    }
+                    if (ImGui::SliderFloat("Edge Falloff", &obj.light2D.freeformEdgeFalloff, 0.1f, 8.0f, "%.2f")) {
+                        changed = true;
+                    }
+
+                    const Light2DPolygonCache& cache = lighting2DRenderer.updatePolygonCache(obj.id, obj.light2D);
+                    if (cache.valid) {
+                        ImGui::TextDisabled("Points: %d  Triangles: %d",
+                                            static_cast<int>(obj.light2D.shapePoints.size()),
+                                            static_cast<int>(cache.indices.size() / 3));
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.5f, 1.0f), "%s",
+                                           cache.error.empty() ? "Invalid light shape." : cache.error.c_str());
+                    }
+                }
+            }
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        if (removeLight2D) {
+            obj.hasLight2D = false;
+            if (light2DShapeEditingObjectId == obj.id) {
+                light2DShapeEditMode = false;
+                light2DShapeEditingObjectId = -1;
+                light2DShapeEditingPointIndex = -1;
+            }
+            lighting2DRenderer.clearPolygonCache(obj.id);
+            UpdateLegacyTypeFromComponents(obj);
+            changed = true;
+        }
+        if (changed) {
+            light2DSectionChanged = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (obj.hasShadowCaster2D && sharedShadowCaster2D) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.26f, 0.36f, 0.48f, 1.0f));
+        bool changed = false;
+        bool removeShadowCaster2D = false;
+        auto header = drawComponentHeader("Shadow Caster 2D", "ShadowCaster2D", &obj.shadowCaster2D.enabled, true, [&]() {
+            if (ImGui::MenuItem("Remove")) {
+                removeShadowCaster2D = true;
+            }
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            ImGui::PushID("ShadowCaster2D");
+            ImGui::Indent(10.0f);
+
+            if (ImGui::Checkbox("Self Shadow", &obj.shadowCaster2D.castsSelfShadow)) {
+                changed = true;
+            }
+            if (ImGui::SliderFloat("Strength", &obj.shadowCaster2D.shadowStrength, 0.0f, 1.0f, "%.2f")) {
+                changed = true;
+            }
+            if (ImGui::Checkbox("Target All Layers", &obj.shadowCaster2D.targetAllLayers)) {
+                changed = true;
+            }
+            if (!obj.shadowCaster2D.targetAllLayers && ImGui::TreeNode("Target Layers")) {
+                for (int layerIndex = 0; layerIndex < 32; ++layerIndex) {
+                    bool enabledLayer = Light2DLayerMaskContains(obj.shadowCaster2D.targetLayerMask, layerIndex);
+                    ImGui::PushID(layerIndex);
+                    if (ImGui::Checkbox(std::to_string(layerIndex).c_str(), &enabledLayer)) {
+                        if (enabledLayer) {
+                            obj.shadowCaster2D.targetLayerMask |= Light2DLayerBit(layerIndex);
+                        } else {
+                            obj.shadowCaster2D.targetLayerMask &= ~Light2DLayerBit(layerIndex);
+                        }
+                        changed = true;
+                    }
+                    ImGui::PopID();
+                    if ((layerIndex % 4) != 3) {
+                        ImGui::SameLine();
+                    }
+                }
+                ImGui::TreePop();
+            }
+
+            if (ImGui::Button(light2DShapeEditMode && light2DShapeEditingObjectId == obj.id
+                    ? "Stop Shape Edit"
+                    : "Edit Shape")) {
+                if (light2DShapeEditMode && light2DShapeEditingObjectId == obj.id) {
+                    light2DShapeEditMode = false;
+                    light2DShapeEditingObjectId = -1;
+                    light2DShapeEditingPointIndex = -1;
+                } else {
+                    light2DShapeEditMode = true;
+                    light2DShapeEditingObjectId = obj.id;
+                    light2DShapeEditingPointIndex = -1;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Point##ShadowCaster2D")) {
+                if (obj.shadowCaster2D.points.empty()) {
+                    obj.shadowCaster2D.points = {
+                        glm::vec2(-1.0f, -1.0f),
+                        glm::vec2(1.0f, -1.0f),
+                        glm::vec2(1.0f, 1.0f),
+                        glm::vec2(-1.0f, 1.0f)
+                    };
+                } else {
+                    obj.shadowCaster2D.points.push_back(obj.shadowCaster2D.points.back() + glm::vec2(0.4f, 0.4f));
+                }
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(obj.shadowCaster2D.points.size() <= 3);
+            if (ImGui::Button("Remove Last##ShadowCaster2D")) {
+                obj.shadowCaster2D.points.pop_back();
+                light2DShapeEditingPointIndex = std::min(light2DShapeEditingPointIndex,
+                    static_cast<int>(obj.shadowCaster2D.points.size()) - 1);
+                changed = true;
+            }
+            ImGui::EndDisabled();
+
+            std::string shadowError;
+            if (Light2DValidatePolygon(obj.shadowCaster2D.points, &shadowError)) {
+                std::vector<unsigned int> triangles;
+                Light2DTriangulatePolygon(obj.shadowCaster2D.points, triangles, nullptr);
+                ImGui::TextDisabled("Points: %d  Triangles: %d",
+                                    static_cast<int>(obj.shadowCaster2D.points.size()),
+                                    static_cast<int>(triangles.size() / 3));
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.5f, 1.0f), "%s",
+                                   shadowError.empty() ? "Invalid shadow caster shape." : shadowError.c_str());
+            }
+
+            ImGui::Unindent(10.0f);
+            ImGui::PopID();
+        }
+        if (removeShadowCaster2D) {
+            obj.hasShadowCaster2D = false;
+            if (light2DShapeEditingObjectId == obj.id) {
+                light2DShapeEditMode = false;
+                light2DShapeEditingObjectId = -1;
+                light2DShapeEditingPointIndex = -1;
+            }
+            UpdateLegacyTypeFromComponents(obj);
+            changed = true;
+        }
+        if (changed) {
+            shadowCaster2DSectionChanged = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
     bool scriptsChanged = false;
     int scriptToRemove = -1;
     auto isNativeScriptLanguage = [](ScriptLanguage language) {
@@ -4819,7 +5372,7 @@ void Engine::renderInspectorPanel() {
         std::string ext = path.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx";
+        return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".moducpp";
     };
 
     for (size_t i = 0; i < obj.scripts.size(); ++i) {
@@ -5315,6 +5868,63 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
+        addEntry("Lights/2D Point", !obj.hasLight2D, [&]() {
+            obj.hasLight2D = true;
+            obj.light2D = Light2DComponent{};
+            obj.light2D.type = Light2DType::Point;
+            obj.light2D.radius = 5.0f;
+            obj.light2D.outerRadius = 5.0f;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Lights/2D Spot", !obj.hasLight2D, [&]() {
+            obj.hasLight2D = true;
+            obj.light2D = Light2DComponent{};
+            obj.light2D.type = Light2DType::Spot;
+            obj.light2D.radius = 7.0f;
+            obj.light2D.outerRadius = 7.0f;
+            obj.light2D.innerSpotAngle = 22.0f;
+            obj.light2D.outerSpotAngle = 48.0f;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Lights/2D Freeform", !obj.hasLight2D, [&]() {
+            obj.hasLight2D = true;
+            obj.light2D = Light2DComponent{};
+            obj.light2D.type = Light2DType::Freeform;
+            obj.light2D.shapePoints = {
+                glm::vec2(-2.0f, -1.5f),
+                glm::vec2(2.0f, -1.5f),
+                glm::vec2(2.5f, 1.0f),
+                glm::vec2(0.0f, 2.5f),
+                glm::vec2(-2.5f, 1.0f)
+            };
+            obj.light2D.radius = 4.0f;
+            obj.light2D.outerRadius = 4.0f;
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Lights/2D Global", !obj.hasLight2D, [&]() {
+            obj.hasLight2D = true;
+            obj.light2D = Light2DComponent{};
+            obj.light2D.type = Light2DType::Global;
+            obj.light2D.intensity = 0.35f;
+            obj.light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
+        addEntry("Lights/2D Shadow Caster", !obj.hasShadowCaster2D, [&]() {
+            obj.hasShadowCaster2D = true;
+            obj.shadowCaster2D = ShadowCaster2DComponent{};
+            obj.shadowCaster2D.points = {
+                glm::vec2(-1.0f, -1.0f),
+                glm::vec2(1.0f, -1.0f),
+                glm::vec2(1.0f, 1.0f),
+                glm::vec2(-1.0f, 1.0f)
+            };
+            UpdateLegacyTypeFromComponents(obj);
+            componentChanged = true;
+        });
         addEntry("Renderer/Cube", true, [&]() {
             obj.hasRenderer = true;
             obj.renderType = RenderType::Cube;
@@ -5460,7 +6070,7 @@ void Engine::renderInspectorPanel() {
                     std::string ext = it->path().extension().string();
                     std::transform(ext.begin(), ext.end(), ext.begin(),
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                    if (ext == ".cpp" || ext == ".c" || ext == ".cs") {
+                    if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".cs") {
                         cachedScriptSources.push_back(it->path());
                     }
                 }
@@ -5830,6 +6440,21 @@ void Engine::renderInspectorPanel() {
             forEachSecondarySelected([&](SceneObject& target) {
                 target.hasLight = obj.hasLight;
                 target.light = obj.light;
+            });
+            propagated = true;
+        }
+        if (light2DSectionChanged && sharedLight2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasLight2D = obj.hasLight2D;
+                target.light2D = obj.light2D;
+                lighting2DRenderer.clearPolygonCache(target.id);
+            });
+            propagated = true;
+        }
+        if (shadowCaster2DSectionChanged && sharedShadowCaster2D) {
+            forEachSecondarySelected([&](SceneObject& target) {
+                target.hasShadowCaster2D = obj.hasShadowCaster2D;
+                target.shadowCaster2D = obj.shadowCaster2D;
             });
             propagated = true;
         }

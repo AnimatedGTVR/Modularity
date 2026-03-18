@@ -5,6 +5,105 @@
 #include <unordered_map>
 #include <vector>
 
+public class MainMenuController : ModuBehaviour {
+    inspector {
+        Config(MenuConfig, config);
+        Header("Main Menu Controller");
+
+        Tabs {
+            Tab("Layout") {
+                Enum("Menu Orientation", config.orientation);
+                ObjectRef("Heart Object", config.heartRef);
+                ObjectList("Menu Item Refs", config.menuItemRefs);
+                Slider("Offset", config.offset, -500.0f, 500.0f);
+            }
+
+            Tab("Timing") {
+                Slider("Move Speed", config.moveSpeed, 0.0f, 5.0f);
+                Slider("Input Delay", config.inputDelay, 0.0f, 2.0f);
+                Slider("Initial Delay", config.initialDelay, 0.0f, 5.0f);
+            }
+
+            Tab("Audio") {
+                ObjectRef("Move Sound Source", config.moveSoundRef);
+                ObjectRef("Select Sound Source", config.selectSoundRef);
+            }
+
+            Tab("Actions") {
+                MenuActions("Menu Actions", config.menuItemRefs, config.actions);
+            }
+
+            Tab("Runtime") {
+                RuntimeMenuStatus();
+            }
+        }
+
+        AutoSave(config);
+    }
+
+    void Begin(MODU_obj, float dt) {
+        (void)dt;
+        MODU_SCRIPT(ctx);
+        if (!ctx.object) return;
+        MenuConfig config = loadConfig(ctx);
+        MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
+        state.currentIndex = 0;
+        state.nextInputTime = 0.0f;
+        state.startupDelayRemaining = config.initialDelay;
+        state.elapsed = 0.0f;
+        state.initialized = false;
+        updateHeartPosition(ctx, config, state, 1.0f);
+        state.initialized = true;
+    }
+
+    void TickUpdate(MODU_obj, float dt) {
+        MODU_SCRIPT(ctx);
+        if (!ctx.object || dt <= 0.0f) return;
+
+        MenuConfig config = loadConfig(ctx);
+        normalizeActionCount(config);
+
+        MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
+        if (!state.initialized) {
+            state.currentIndex = 0;
+            state.nextInputTime = 0.0f;
+            state.startupDelayRemaining = config.initialDelay;
+            state.elapsed = 0.0f;
+            state.initialized = true;
+        }
+
+        const int itemCount = static_cast<int>(config.menuItemRefs.size());
+        if (itemCount <= 0) {
+            updateHeartPosition(ctx, config, state, dt);
+            return;
+        }
+
+        state.currentIndex = std::clamp(state.currentIndex, 0, itemCount - 1);
+        state.elapsed += dt;
+        state.startupDelayRemaining = std::max(0.0f, state.startupDelayRemaining - dt);
+        const bool canMove = state.startupDelayRemaining <= 0.0f;
+
+        if (canMove && state.elapsed >= state.nextInputTime) {
+            const int direction = getDirectionInput(config.orientation);
+            if (direction != 0) {
+                state.currentIndex += direction;
+                if (state.currentIndex < 0) state.currentIndex = itemCount - 1;
+                if (state.currentIndex >= itemCount) state.currentIndex = 0;
+                state.nextInputTime = state.elapsed + std::max(0.0f, config.inputDelay);
+                playSoundFromRef(ctx, config.moveSoundRef);
+            }
+
+            if (isSubmitPressed()) {
+                executeAction(ctx, config, state.currentIndex);
+                playSoundFromRef(ctx, config.selectSoundRef);
+                state.nextInputTime = state.elapsed + std::max(0.0f, config.inputDelay);
+            }
+        }
+
+        updateHeartPosition(ctx, config, state, dt);
+    }
+}
+
 namespace {
 using namespace DialoguePort;
 
@@ -139,28 +238,52 @@ void saveConfig(ScriptContext& ctx, MenuConfig& config) {
 void playSoundFromRef(ScriptContext& ctx, const std::string& objectRef) {
     SceneObject* source = ResolveSceneObjectRef(ctx, objectRef);
     if (!source || !source->hasAudioSource || source->audioSource.clipPath.empty()) return;
+    SceneObject* originalObject = ctx.object;
+    ctx.object = source;
     ctx.PlayAudioOneShot(source->audioSource.clipPath);
+    ctx.object = originalObject;
+}
+
+bool getAnyGamepadState(GLFWgamepadstate& outState) {
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
+        if (!glfwJoystickPresent(jid) || !glfwJoystickIsGamepad(jid)) continue;
+        if (glfwGetGamepadState(jid, &outState) == GLFW_TRUE) {
+            return true;
+        }
+    }
+    return false;
 }
 
 int getDirectionInput(MenuOrientation orientation) {
+    GLFWgamepadstate gamepadState{};
+    const bool hasGamepad = getAnyGamepadState(gamepadState);
+
     if (orientation == MenuOrientation::Vertical) {
         if (IsRuntimeKeyDown(GLFW_KEY_DOWN, ImGuiKey_DownArrow) ||
-            IsRuntimeKeyDown(GLFW_KEY_S, ImGuiKey_S)) {
+            IsRuntimeKeyDown(GLFW_KEY_S, ImGuiKey_S) ||
+            (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS ||
+                            gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] > 0.5f))) {
             return 1;
         }
         if (IsRuntimeKeyDown(GLFW_KEY_UP, ImGuiKey_UpArrow) ||
-            IsRuntimeKeyDown(GLFW_KEY_W, ImGuiKey_W)) {
+            IsRuntimeKeyDown(GLFW_KEY_W, ImGuiKey_W) ||
+            (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS ||
+                            gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] < -0.5f))) {
             return -1;
         }
         return 0;
     }
 
     if (IsRuntimeKeyDown(GLFW_KEY_RIGHT, ImGuiKey_RightArrow) ||
-        IsRuntimeKeyDown(GLFW_KEY_D, ImGuiKey_D)) {
+        IsRuntimeKeyDown(GLFW_KEY_D, ImGuiKey_D) ||
+        (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS ||
+                        gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X] > 0.5f))) {
         return 1;
     }
     if (IsRuntimeKeyDown(GLFW_KEY_LEFT, ImGuiKey_LeftArrow) ||
-        IsRuntimeKeyDown(GLFW_KEY_A, ImGuiKey_A)) {
+        IsRuntimeKeyDown(GLFW_KEY_A, ImGuiKey_A) ||
+        (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS ||
+                        gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X] < -0.5f))) {
         return -1;
     }
     return 0;
@@ -168,12 +291,67 @@ int getDirectionInput(MenuOrientation orientation) {
 
 bool isSubmitPressed() {
     return IsRuntimeKeyDown(GLFW_KEY_ENTER, ImGuiKey_Enter) ||
-           IsRuntimeKeyDown(GLFW_KEY_KP_ENTER, ImGuiKey_KeypadEnter);
+           IsRuntimeKeyDown(GLFW_KEY_KP_ENTER, ImGuiKey_KeypadEnter) ||
+           []() {
+               GLFWgamepadstate gamepadState{};
+               return getAnyGamepadState(gamepadState) &&
+                      (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS ||
+                       gamepadState.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS);
+           }();
 }
 
 SceneObject* resolveMenuItem(ScriptContext& ctx, const MenuConfig& config, int index) {
     if (index < 0 || index >= static_cast<int>(config.menuItemRefs.size())) return nullptr;
     return ResolveSceneObjectRef(ctx, config.menuItemRefs[static_cast<size_t>(index)]);
+}
+
+bool drawMenuActionsEditor(ScriptContext& ctx,
+                           const std::vector<std::string>& menuItemRefs,
+                           std::vector<MenuAction>& actions,
+                           int& selectedIndex) {
+    bool changed = false;
+
+    if (actions.size() != menuItemRefs.size()) {
+        actions.resize(menuItemRefs.size());
+        changed = true;
+    }
+
+    if (menuItemRefs.empty()) {
+        selectedIndex = -1;
+        ImGui::TextDisabled("Add menu item references to configure actions.");
+        return changed;
+    }
+
+    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(menuItemRefs.size()) - 1);
+
+    std::string preview = std::to_string(selectedIndex + 1);
+    if (SceneObject* item = ResolveSceneObjectRef(ctx, menuItemRefs[static_cast<size_t>(selectedIndex)])) {
+        preview += ". " + item->name;
+    }
+
+    if (ImGui::BeginCombo("Edit Action", preview.c_str())) {
+        for (int i = 0; i < static_cast<int>(menuItemRefs.size()); ++i) {
+            std::string label = std::to_string(i + 1);
+            if (SceneObject* item = ResolveSceneObjectRef(ctx, menuItemRefs[static_cast<size_t>(i)])) {
+                label += ". " + item->name;
+            }
+            const bool isSelected = (selectedIndex == i);
+            if (ImGui::Selectable(label.c_str(), isSelected)) {
+                selectedIndex = i;
+            }
+            if (isSelected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    if (selectedIndex < 0 || selectedIndex >= static_cast<int>(actions.size())) {
+        return changed;
+    }
+
+    MenuAction& action = actions[static_cast<size_t>(selectedIndex)];
+    changed |= DrawObjectRefListEditor(ctx, "Enable Objects", action.enableRefs);
+    changed |= DrawObjectRefListEditor(ctx, "Disable Objects", action.disableRefs);
+    return changed;
 }
 
 void updateHeartPosition(ScriptContext& ctx,
@@ -222,120 +400,21 @@ void executeAction(ScriptContext& ctx, const MenuConfig& config, int index) {
     SetObjectsEnabledState(ctx, action.enableRefs, true);
 }
 
-} // namespace
-
-extern "C" void Script_OnInspector(ScriptContext& ctx) {
-    MenuConfig config = loadConfig(ctx);
-    bool changed = false;
-
-    const char* orientationLabels[] = { "Vertical", "Horizontal" };
-    int orientation = static_cast<int>(config.orientation);
-    if (ImGui::Combo("Menu Orientation", &orientation, orientationLabels, IM_ARRAYSIZE(orientationLabels))) {
-        config.orientation = static_cast<MenuOrientation>(std::clamp(orientation, 0, 1));
-        changed = true;
-    }
-
-    changed |= DrawObjectRefInput(ctx, "Heart Object", config.heartRef);
-    changed |= DrawObjectRefInput(ctx, "Move Sound Source", config.moveSoundRef);
-    changed |= DrawObjectRefInput(ctx, "Select Sound Source", config.selectSoundRef);
-    changed |= DrawObjectRefListEditor(ctx, "Menu Item Refs", config.menuItemRefs);
-
-    changed |= ImGui::DragFloat("Move Speed (s)", &config.moveSpeed, 0.01f, 0.0f, 5.0f, "%.2f");
-    config.moveSpeed = std::max(0.0f, config.moveSpeed);
-    changed |= ImGui::DragFloat("Offset", &config.offset, 0.5f, -500.0f, 500.0f, "%.1f");
-    changed |= ImGui::DragFloat("Input Delay", &config.inputDelay, 0.01f, 0.0f, 2.0f, "%.2f");
-    config.inputDelay = std::max(0.0f, config.inputDelay);
-    changed |= ImGui::DragFloat("Initial Delay", &config.initialDelay, 0.01f, 0.0f, 5.0f, "%.2f");
-    config.initialDelay = std::max(0.0f, config.initialDelay);
-
-    normalizeActionCount(config);
-    if (!config.menuItemRefs.empty()) {
-        int& selected = g_selectedActionByObject[ctx.object ? ctx.object->id : -1];
-        selected = std::clamp(selected, 0, static_cast<int>(config.menuItemRefs.size()) - 1);
-        if (ImGui::BeginCombo("Edit Action", std::to_string(selected + 1).c_str())) {
-            for (int i = 0; i < static_cast<int>(config.menuItemRefs.size()); ++i) {
-                std::string label = std::to_string(i + 1);
-                if (SceneObject* item = resolveMenuItem(ctx, config, i)) {
-                    label += ". " + item->name;
-                }
-                bool isSelected = (selected == i);
-                if (ImGui::Selectable(label.c_str(), isSelected)) {
-                    selected = i;
-                }
-                if (isSelected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-
-        if (selected >= 0 && selected < static_cast<int>(config.actions.size())) {
-            MenuAction& action = config.actions[static_cast<size_t>(selected)];
-            changed |= DrawObjectRefListEditor(ctx, "Enable Objects", action.enableRefs);
-            changed |= DrawObjectRefListEditor(ctx, "Disable Objects", action.disableRefs);
-        }
-    } else {
-        ImGui::TextDisabled("Add menu item references to configure actions.");
-    }
-
-    if (changed) {
-        saveConfig(ctx, config);
-    }
-}
-
-void Begin(ScriptContext& ctx, float /*deltaTime*/) {
-    if (!ctx.object) return;
-    MenuConfig config = loadConfig(ctx);
-    MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
-    state.currentIndex = 0;
-    state.nextInputTime = 0.0f;
-    state.startupDelayRemaining = config.initialDelay;
-    state.elapsed = 0.0f;
-    state.initialized = false;
-    updateHeartPosition(ctx, config, state, 1.0f);
-    state.initialized = true;
-}
-
-void TickUpdate(ScriptContext& ctx, float deltaTime) {
-    if (!ctx.object || deltaTime <= 0.0f) return;
-
-    MenuConfig config = loadConfig(ctx);
-    normalizeActionCount(config);
-
-    MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
-    if (!state.initialized) {
-        state.currentIndex = 0;
-        state.nextInputTime = 0.0f;
-        state.startupDelayRemaining = config.initialDelay;
-        state.elapsed = 0.0f;
-        state.initialized = true;
-    }
-
-    const int itemCount = static_cast<int>(config.menuItemRefs.size());
-    if (itemCount <= 0) {
-        updateHeartPosition(ctx, config, state, deltaTime);
+void drawRuntimeStatus(const MenuConfig& config, const MenuRuntimeState* runtimeState) {
+    ImGui::Separator();
+    ImGui::TextUnformatted("Runtime");
+    ImGui::TextDisabled("Menu Items: %zu", config.menuItemRefs.size());
+    ImGui::TextDisabled("Actions: %zu", config.actions.size());
+    if (!runtimeState) {
+        ImGui::TextDisabled("State: idle");
         return;
     }
 
-    state.currentIndex = std::clamp(state.currentIndex, 0, itemCount - 1);
-    state.elapsed += deltaTime;
-    state.startupDelayRemaining = std::max(0.0f, state.startupDelayRemaining - deltaTime);
-    const bool canMove = state.startupDelayRemaining <= 0.0f;
-
-    if (canMove && state.elapsed >= state.nextInputTime) {
-        const int direction = getDirectionInput(config.orientation);
-        if (direction != 0) {
-            state.currentIndex += direction;
-            if (state.currentIndex < 0) state.currentIndex = itemCount - 1;
-            if (state.currentIndex >= itemCount) state.currentIndex = 0;
-            state.nextInputTime = state.elapsed + std::max(0.0f, config.inputDelay);
-            playSoundFromRef(ctx, config.moveSoundRef);
-        }
-
-        if (isSubmitPressed()) {
-            executeAction(ctx, config, state.currentIndex);
-            playSoundFromRef(ctx, config.selectSoundRef);
-            state.nextInputTime = state.elapsed + std::max(0.0f, config.inputDelay);
-        }
-    }
-
-    updateHeartPosition(ctx, config, state, deltaTime);
+    ImGui::TextDisabled("Current Index: %d", runtimeState->currentIndex + 1);
+    ImGui::TextDisabled("Initialized: %s", runtimeState->initialized ? "Yes" : "No");
+    ImGui::TextDisabled("Startup Delay Remaining: %.2f", runtimeState->startupDelayRemaining);
+    ImGui::TextDisabled("Next Input Time: %.2f", runtimeState->nextInputTime);
+    ImGui::TextDisabled("Elapsed: %.2f", runtimeState->elapsed);
 }
+
+} // namespace

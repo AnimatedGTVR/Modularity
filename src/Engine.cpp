@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "CrashReporter.h"
 #include "ModelLoader.h"
+#include "RuntimeContent.h"
 #include <iostream>
 #include <fstream>
 #include <functional>
@@ -22,6 +23,9 @@
 
 #pragma region Material File IO Helpers
 namespace {
+constexpr int kRuntimeInternalWidth = 1280;
+constexpr int kRuntimeInternalHeight = 720;
+
 struct MaterialFileData {
     MaterialProperties props;
     std::string albedo;
@@ -451,9 +455,11 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
     obj.hasRenderer = false;
     obj.renderType = RenderType::None;
     obj.hasLight = false;
+    obj.hasLight2D = false;
     obj.hasCamera = false;
     obj.hasPostFX = false;
     obj.hasUI = false;
+    obj.hasShadowCaster2D = false;
     obj.ui.type = UIElementType::None;
 
     switch (preset) {
@@ -506,6 +512,22 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             obj.ui.label = "2.5D Object";
             obj.ui.size = glm::vec2(128.0f, 128.0f);
             obj.scale = glm::vec3(1.0f);
+            break;
+        case ObjectType::Light2D:
+            obj.hasLight2D = true;
+            obj.light2D.type = Light2DType::Point;
+            obj.light2D.outerRadius = 5.0f;
+            obj.light2D.radius = 5.0f;
+            obj.light2D.intensity = 1.2f;
+            break;
+        case ObjectType::ShadowCaster2D:
+            obj.hasShadowCaster2D = true;
+            obj.shadowCaster2D.points = {
+                glm::vec2(-0.5f, -0.5f),
+                glm::vec2(0.5f, -0.5f),
+                glm::vec2(0.5f, 0.5f),
+                glm::vec2(-0.5f, 0.5f)
+            };
             break;
         case ObjectType::DirectionalLight:
             obj.hasLight = true;
@@ -1587,6 +1609,24 @@ void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std:
             return;
         }
     }
+
+    fs::path runtimeBundle = exportRoot / "content.modbundle";
+    if (fs::exists(runtimeBundle)) {
+        fs::remove(runtimeBundle, ec);
+        if (ec) {
+            error = "Failed to remove existing runtime bundle.";
+            return;
+        }
+    }
+
+    fs::path runtimeStage = exportRoot / "_runtime_stage";
+    if (fs::exists(runtimeStage)) {
+        fs::remove_all(runtimeStage, ec);
+        if (ec) {
+            error = "Failed to remove existing runtime staging directory.";
+            return;
+        }
+    }
 }
 
 void cleanEditorExecutable(const fs::path& buildRoot) {
@@ -1599,6 +1639,362 @@ void cleanEditorExecutable(const fs::path& buildRoot) {
     if (fs::exists(editorExe)) {
         fs::remove(editorExe, ec);
     }
+}
+
+std::string RuntimeHashHex(uint64_t value) {
+    std::ostringstream out;
+    out << std::hex << std::setw(16) << std::setfill('0') << value;
+    return out.str();
+}
+
+uint64_t RuntimePathHash(const std::string& value) {
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : value) {
+        hash ^= static_cast<uint64_t>(c);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+bool RuntimePathInsideRoot(const fs::path& path, const fs::path& root) {
+    std::error_code ec;
+    fs::path normalizedPath = fs::weakly_canonical(path, ec);
+    if (ec) normalizedPath = fs::absolute(path, ec);
+    if (ec) normalizedPath = path.lexically_normal();
+
+    ec.clear();
+    fs::path normalizedRoot = fs::weakly_canonical(root, ec);
+    if (ec) normalizedRoot = fs::absolute(root, ec);
+    if (ec) normalizedRoot = root.lexically_normal();
+
+    auto pathIt = normalizedPath.begin();
+    auto rootIt = normalizedRoot.begin();
+    for (; rootIt != normalizedRoot.end(); ++rootIt, ++pathIt) {
+        if (pathIt == normalizedPath.end() || *pathIt != *rootIt) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fs::path ResolveRuntimeSourcePath(const std::string& value, const fs::path& projectRoot) {
+    if (value.empty()) return {};
+
+    std::error_code ec;
+    fs::path input(value);
+    if (input.is_absolute()) {
+        fs::path absolute = fs::absolute(input, ec);
+        if (ec) absolute = input;
+        return absolute.lexically_normal();
+    }
+
+    fs::path candidate = projectRoot / input;
+    fs::path absolute = fs::absolute(candidate, ec);
+    if (ec) absolute = candidate;
+    return absolute.lexically_normal();
+}
+
+bool EnsureDirectoryForFile(const fs::path& filePath, std::string& error) {
+    std::error_code ec;
+    const fs::path parent = filePath.parent_path();
+    if (!parent.empty()) {
+        fs::create_directories(parent, ec);
+        if (ec) {
+            error = "Failed to create directory: " + parent.string();
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CopyFileIntoRuntimeRoot(const fs::path& sourcePath,
+                             const fs::path& runtimeRoot,
+                             const fs::path& relativePath,
+                             std::string& error) {
+    if (sourcePath.empty() || relativePath.empty()) {
+        error = "Runtime copy received an empty path.";
+        return false;
+    }
+
+    const fs::path destination = runtimeRoot / relativePath;
+    if (!EnsureDirectoryForFile(destination, error)) {
+        return false;
+    }
+
+    std::error_code ec;
+    fs::copy_file(sourcePath, destination, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        error = "Failed to copy runtime file '" + sourcePath.string() +
+                "' to '" + destination.string() + "'.";
+        return false;
+    }
+    return true;
+}
+
+bool CopyDirectoryIntoRuntimeRoot(const fs::path& sourceDir,
+                                  const fs::path& runtimeRoot,
+                                  const fs::path& relativeDir,
+                                  std::string& error) {
+    if (sourceDir.empty() || relativeDir.empty()) {
+        error = "Runtime directory copy received an empty path.";
+        return false;
+    }
+
+    std::error_code ec;
+    if (!fs::exists(sourceDir, ec)) {
+        error = "Runtime directory source does not exist: " + sourceDir.string();
+        return false;
+    }
+    const fs::path destination = runtimeRoot / relativeDir;
+    fs::create_directories(destination, ec);
+    if (ec) {
+        error = "Failed to create runtime directory: " + destination.string();
+        return false;
+    }
+
+    for (auto it = fs::recursive_directory_iterator(sourceDir, ec);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (ec) {
+            error = "Failed while scanning runtime directory: " + sourceDir.string();
+            return false;
+        }
+        const fs::path entryPath = it->path();
+        const fs::path rel = fs::relative(entryPath, sourceDir, ec);
+        if (ec) {
+            error = "Failed to relativize runtime directory entry: " + entryPath.string();
+            return false;
+        }
+        const fs::path targetPath = destination / rel;
+        if (it->is_directory()) {
+            fs::create_directories(targetPath, ec);
+            if (ec) {
+                error = "Failed to create runtime directory: " + targetPath.string();
+                return false;
+            }
+            continue;
+        }
+        if (!it->is_regular_file()) continue;
+        if (!EnsureDirectoryForFile(targetPath, error)) {
+            return false;
+        }
+        fs::copy_file(entryPath, targetPath, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Failed to copy runtime directory file: " + entryPath.string();
+            return false;
+        }
+    }
+    return true;
+}
+
+class RuntimeExportStager {
+public:
+    RuntimeExportStager(fs::path projectRootPath, fs::path runtimeRootPath)
+        : projectRoot(std::move(projectRootPath)),
+          runtimeRoot(std::move(runtimeRootPath)) {}
+
+    bool stageFileReference(std::string& value,
+                            const std::string& externalCategory,
+                            std::string& error) {
+        if (value.empty()) return true;
+        const fs::path sourcePath = ResolveRuntimeSourcePath(value, projectRoot);
+        std::error_code ec;
+        if (sourcePath.empty() || !fs::exists(sourcePath, ec) || ec) {
+            error = "Missing runtime asset: " + value;
+            return false;
+        }
+
+        const std::string sourceKey = sourcePath.lexically_normal().string();
+        auto cacheIt = stagedFileRefs.find(sourceKey);
+        if (cacheIt != stagedFileRefs.end()) {
+            value = cacheIt->second;
+            return true;
+        }
+
+        fs::path relativePath;
+        if (RuntimePathInsideRoot(sourcePath, projectRoot)) {
+            relativePath = fs::relative(sourcePath, projectRoot, ec);
+            if (ec || relativePath.empty()) {
+                error = "Failed to resolve runtime asset path relative to project: " + sourcePath.string();
+                return false;
+            }
+        } else {
+            const std::string hashedName = sourcePath.stem().string() + "_" +
+                                           RuntimeHashHex(RuntimePathHash(sourceKey)) +
+                                           sourcePath.extension().string();
+            relativePath = fs::path("Assets") / "RuntimeImported" / externalCategory / hashedName;
+        }
+
+        if (!CopyFileIntoRuntimeRoot(sourcePath, runtimeRoot, relativePath, error)) {
+            return false;
+        }
+
+        const std::string remapped = relativePath.generic_string();
+        stagedFileRefs[sourceKey] = remapped;
+        value = remapped;
+        return true;
+    }
+
+    bool stageDirectoryBackedReference(std::string& value,
+                                       const std::string& externalCategory,
+                                       std::string& error) {
+        if (value.empty()) return true;
+        const fs::path sourcePath = ResolveRuntimeSourcePath(value, projectRoot);
+        std::error_code ec;
+        if (sourcePath.empty() || !fs::exists(sourcePath, ec) || ec) {
+            error = "Missing runtime directory-backed asset: " + value;
+            return false;
+        }
+
+        const fs::path sourceDir = sourcePath.parent_path();
+        const std::string sourceKey = sourceDir.lexically_normal().string();
+        auto dirIt = stagedDirectoryRoots.find(sourceKey);
+        fs::path relativeDir;
+        if (dirIt != stagedDirectoryRoots.end()) {
+            relativeDir = dirIt->second;
+        } else if (RuntimePathInsideRoot(sourceDir, projectRoot)) {
+            relativeDir = fs::relative(sourceDir, projectRoot, ec);
+            if (ec || relativeDir.empty()) {
+                error = "Failed to resolve runtime directory relative path: " + sourceDir.string();
+                return false;
+            }
+            if (!CopyDirectoryIntoRuntimeRoot(sourceDir, runtimeRoot, relativeDir, error)) {
+                return false;
+            }
+            stagedDirectoryRoots[sourceKey] = relativeDir;
+        } else {
+            const std::string dirName = sourceDir.filename().empty()
+                ? "dir"
+                : sourceDir.filename().string();
+            relativeDir = fs::path("Assets") / "RuntimeImported" / externalCategory /
+                          (dirName + "_" + RuntimeHashHex(RuntimePathHash(sourceKey)));
+            if (!CopyDirectoryIntoRuntimeRoot(sourceDir, runtimeRoot, relativeDir, error)) {
+                return false;
+            }
+            stagedDirectoryRoots[sourceKey] = relativeDir;
+        }
+
+        value = (relativeDir / sourcePath.filename()).generic_string();
+        return true;
+    }
+
+private:
+    fs::path projectRoot;
+    fs::path runtimeRoot;
+    std::unordered_map<std::string, std::string> stagedFileRefs;
+    std::unordered_map<std::string, fs::path> stagedDirectoryRoots;
+};
+
+bool RemapSceneObjectForRuntime(SceneObject& obj,
+                                RuntimeExportStager& stager,
+                                std::string& error) {
+    if (!stager.stageFileReference(obj.materialPath, "Materials", error)) return false;
+    if (!stager.stageFileReference(obj.albedoTexturePath, "Textures", error)) return false;
+    if (!stager.stageFileReference(obj.overlayTexturePath, "Textures", error)) return false;
+    if (!stager.stageFileReference(obj.normalMapPath, "Textures", error)) return false;
+    if (!stager.stageFileReference(obj.vertexShaderPath, "Shaders", error)) return false;
+    if (!stager.stageFileReference(obj.fragmentShaderPath, "Shaders", error)) return false;
+    if (!stager.stageDirectoryBackedReference(obj.meshPath, "Models", error)) return false;
+    if (obj.hasAudioSource && !stager.stageFileReference(obj.audioSource.clipPath, "Audio", error)) return false;
+    if (obj.hasLight2D && !stager.stageFileReference(obj.light2D.cookieTexturePath, "Textures", error)) return false;
+    if (obj.hasAnimation) {
+        if (!stager.stageFileReference(obj.animation.clipAssetPath, "Animations", error)) return false;
+        for (auto& clip : obj.animation.clips) {
+            if (!stager.stageFileReference(clip.assetPath, "Animations", error)) return false;
+        }
+    }
+    for (std::string& materialRef : obj.additionalMaterialPaths) {
+        if (!stager.stageFileReference(materialRef, "Materials", error)) return false;
+    }
+    return true;
+}
+
+bool StageRuntimeScene(const fs::path& sourceScenePath,
+                       const std::string& sceneName,
+                       RuntimeExportStager& stager,
+                       const fs::path& runtimeRoot,
+                       std::string& error) {
+    std::vector<SceneObject> sceneObjects;
+    int nextId = 0;
+    int sceneVersion = 20;
+    float timeOfDay = -1.0f;
+    if (!SceneSerializer::loadSceneDeferred(sourceScenePath, sceneObjects, nextId, sceneVersion, &timeOfDay)) {
+        error = "Failed to load scene for runtime export: " + sourceScenePath.string();
+        return false;
+    }
+
+    for (SceneObject& obj : sceneObjects) {
+        if (!RemapSceneObjectForRuntime(obj, stager, error)) {
+            error = "Scene '" + sceneName + "': " + error;
+            return false;
+        }
+    }
+
+    const fs::path runtimeScenePath = runtimeRoot / "Assets" / "Scenes" / (sceneName + ".scene");
+    if (!EnsureDirectoryForFile(runtimeScenePath, error)) {
+        return false;
+    }
+    if (!SceneSerializer::saveScene(runtimeScenePath, sceneObjects, nextId, timeOfDay < 0.0f ? 0.5f : timeOfDay)) {
+        error = "Failed to save staged runtime scene: " + runtimeScenePath.string();
+        return false;
+    }
+    return true;
+}
+
+bool CopyRuntimeResourcesSubset(const fs::path& sourceRoot,
+                                const fs::path& runtimeRoot,
+                                std::string& error) {
+    const fs::path resourcesRoot = sourceRoot / "Resources";
+    if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Shaders", runtimeRoot, fs::path("Resources") / "Shaders", error)) {
+        return false;
+    }
+    if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Textures", runtimeRoot, fs::path("Resources") / "Textures", error)) {
+        return false;
+    }
+    if (fs::exists(resourcesRoot / "Fonts")) {
+        if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Fonts", runtimeRoot, fs::path("Resources") / "Fonts", error)) {
+            return false;
+        }
+    }
+
+    const fs::path logoPath = resourcesRoot / "Engine-Root" / "Modu-Logo.png";
+    if (fs::exists(logoPath)) {
+        if (!CopyFileIntoRuntimeRoot(logoPath, runtimeRoot, fs::path("Resources") / "Engine-Root" / "Modu-Logo.png", error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<RuntimeBundleEntry> CollectRuntimeBundleEntries(const fs::path& runtimeRoot) {
+    std::vector<RuntimeBundleEntry> entries;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(runtimeRoot, ec);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (ec || !it->is_regular_file()) continue;
+        const fs::path sourcePath = it->path();
+        const fs::path archivePath = fs::relative(sourcePath, runtimeRoot, ec);
+        if (ec || archivePath.empty()) continue;
+        entries.push_back({sourcePath, archivePath});
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const RuntimeBundleEntry& a, const RuntimeBundleEntry& b) {
+                  return a.archivePath.generic_string() < b.archivePath.generic_string();
+              });
+    return entries;
+}
+
+fs::path BuildRuntimeCacheRoot(const fs::path& appDataPath,
+                               const fs::path& bundlePath) {
+    std::error_code ec;
+    const uint64_t fileSize = fs::exists(bundlePath, ec) ? fs::file_size(bundlePath, ec) : 0ull;
+    ec.clear();
+    const auto writeTime = fs::exists(bundlePath, ec) ? fs::last_write_time(bundlePath, ec) : fs::file_time_type{};
+    const auto timeTicks = static_cast<uint64_t>(writeTime.time_since_epoch().count());
+    const std::string seed = bundlePath.lexically_normal().string() + "|" +
+                             std::to_string(fileSize) + "|" +
+                             std::to_string(timeTicks);
+    const std::string cacheId = RuntimeHashHex(RuntimePathHash(seed));
+    return appDataPath / "RuntimeCache" / cacheId;
 }
 } // namespace
 #pragma endregion
@@ -2009,6 +2405,39 @@ float Engine::getSceneTimeOfDay() {
     return sceneTimeOfDay;
 }
 
+void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
+    switch (gameViewportResolutionIndex) {
+        case 1:
+            outWidth = 1920;
+            outHeight = 1080;
+            break;
+        case 2:
+            outWidth = 1280;
+            outHeight = 720;
+            break;
+        case 3:
+            outWidth = 2560;
+            outHeight = 1440;
+            break;
+        case 4:
+            outWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
+            outHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
+            break;
+        case 0:
+        default:
+            outWidth = kRuntimeInternalWidth;
+            outHeight = kRuntimeInternalHeight;
+            break;
+    }
+}
+
+float Engine::getRuntimeInternalAspect() const {
+    int width = kRuntimeInternalWidth;
+    int height = kRuntimeInternalHeight;
+    getRuntimeInternalResolution(width, height);
+    return static_cast<float>(width) / static_cast<float>(std::max(1, height));
+}
+
 void Engine::onWindowResized(int width, int height) {
     if (width <= 0 || height <= 0) return;
     viewportWidth = width;
@@ -2078,6 +2507,37 @@ bool Engine::init() {
     };
     glfwSetDropCallback(editorWindow, drop_cb);
 
+    loadAutoStartConfig();
+#ifdef MODULARITY_PLAYER
+    playerMode = true;
+    autoStartPlayerMode = true;
+#endif
+    if (autoStartRequested && !autoStartBundlePath.empty()) {
+        const fs::path bundlePath = fs::path(autoStartBundlePath);
+        const fs::path runtimeCacheRoot = BuildRuntimeCacheRoot(projectManager.appDataPath, bundlePath);
+        std::string bundleError;
+        if (!ExtractRuntimeContentBundle(bundlePath, runtimeCacheRoot, bundleError)) {
+            addConsoleMessage("Failed to extract packaged runtime content: " + bundleError,
+                              ConsoleMessageType::Error);
+            autoStartRequested = false;
+            showLauncher = true;
+        } else {
+            std::error_code cwdEc;
+            fs::current_path(runtimeCacheRoot, cwdEc);
+            if (cwdEc) {
+                addConsoleMessage("Failed to switch runtime content root: " + cwdEc.message(),
+                                  ConsoleMessageType::Error);
+                autoStartRequested = false;
+                showLauncher = true;
+            } else {
+                fs::path projectPath = autoStartProjectPath.empty()
+                    ? (runtimeCacheRoot / "project.modu")
+                    : (runtimeCacheRoot / fs::path(autoStartProjectPath));
+                autoStartProjectPath = projectPath.lexically_normal().string();
+            }
+        }
+    }
+
     std::cerr << "[DEBUG] Setting up ImGui..." << std::endl;
     setupImGui();
     std::cerr << "[DEBUG] ImGui setup complete" << std::endl;
@@ -2095,11 +2555,6 @@ bool Engine::init() {
     }
     
     logToConsole("Engine initialized - Waiting for project selection");
-    loadAutoStartConfig();
-#ifdef MODULARITY_PLAYER
-    playerMode = true;
-    autoStartPlayerMode = true;
-#endif
     if (autoStartRequested && !autoStartProjectPath.empty()) {
         startProjectLoad(autoStartProjectPath);
     }
@@ -2427,9 +2882,11 @@ void Engine::run() {
         }
         audio.update(sceneObjects, listenerCamera, audioShouldPlay);
 
-        updateCompileJob();
-        updateAutoCompileScripts();
-        processAutoCompileQueue();
+        if (!playerMode) {
+            updateCompileJob();
+            updateAutoCompileScripts();
+            processAutoCompileQueue();
+        }
         pollExportBuild();
 
         if (playerMode && !showLauncher) {
@@ -2437,8 +2894,11 @@ void Engine::run() {
             int displayH = 0;
             glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
             if (displayW > 0 && displayH > 0) {
-                viewportWidth = displayW;
-                viewportHeight = displayH;
+                int runtimeRenderWidth = kRuntimeInternalWidth;
+                int runtimeRenderHeight = kRuntimeInternalHeight;
+                getRuntimeInternalResolution(runtimeRenderWidth, runtimeRenderHeight);
+                viewportWidth = runtimeRenderWidth;
+                viewportHeight = runtimeRenderHeight;
                 if (rendererInitialized) {
                     renderer.resize(viewportWidth, viewportHeight);
                 } else if (vulkanRendererInitialized && vulkanRenderer) {
@@ -2452,6 +2912,9 @@ void Engine::run() {
             if (runtime2DProfileThisFrame) {
                 renderSubmissionStart = Runtime2DClock::now();
             }
+            int runtimeRenderWidth = kRuntimeInternalWidth;
+            int runtimeRenderHeight = kRuntimeInternalHeight;
+            getRuntimeInternalResolution(runtimeRenderWidth, runtimeRenderHeight);
             glm::mat4 view = camera.getViewMatrix();
             float renderFov = buildSettings.editorCameraFov;
             float renderNear = buildSettings.editorCameraNear;
@@ -2464,10 +2927,9 @@ void Engine::run() {
                     renderFar = std::max(renderNear + 0.01f, runtimeCam->camera.farClip);
                 }
             }
-            float aspect = static_cast<float>(viewportWidth) / static_cast<float>(viewportHeight);
-            if (aspect <= 0.0f) aspect = 1.0f;
             glm::mat4 proj = glm::perspective(glm::radians(renderFov),
-                                              aspect,
+                                              static_cast<float>(runtimeRenderWidth) /
+                                                  static_cast<float>(std::max(1, runtimeRenderHeight)),
                                               renderNear,
                                               renderFar);
 
@@ -3606,7 +4068,10 @@ void Engine::updateAutoCompileScripts() {
                  it != fs::recursive_directory_iterator(); ++it) {
                 if (it->is_directory()) continue;
                 std::string ext = it->path().extension().string();
-                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") {
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" ||
+                    ext == ".moducpp") {
                     addSourceTo(scriptAutoCompileDiscoveredSources, it->path());
                 }
             }
@@ -5419,13 +5884,6 @@ void Engine::finalizeDeferredSceneLoad() {
     projectManager.currentProject.saveProjectFile();
     clearSelection();
 
-    bool hasAnyLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
-        return o.hasLight;
-    });
-    if (!hasAnyLight) {
-        addObject(ObjectType::DirectionalLight, "Directional Light");
-    }
-
     recordState("sceneLoaded");
     addConsoleMessage("Loaded scene: " + sceneLoadSceneName, ConsoleMessageType::Success);
     if (sceneLoadTimeOfDay >= 0.0f) {
@@ -5514,11 +5972,13 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
         : projectManager.currentProject.projectPath;
-    fileBrowser.setProjectRoot(contentRoot);
-    fileBrowser.currentPath = contentRoot;
-    loadEditorUserSettings();
+    if (!playerMode) {
+        fileBrowser.setProjectRoot(contentRoot);
+        fileBrowser.currentPath = contentRoot;
+        loadEditorUserSettings();
+    }
     applyProjectPipelineDefaults(false);
-    fileBrowser.needsRefresh = true;
+    fileBrowser.needsRefresh = !playerMode;
     scriptEditorWindowsDirty = true;
     scriptEditorWindows.clear();
     scriptLastAutoCompileTime.clear();
@@ -5587,6 +6047,7 @@ void Engine::syncPlayerCamera() {
 void Engine::loadAutoStartConfig() {
     autoStartRequested = false;
     autoStartPlayerMode = false;
+    autoStartBundlePath.clear();
     autoStartProjectPath.clear();
     autoStartSceneName.clear();
 
@@ -5627,6 +6088,8 @@ void Engine::loadAutoStartConfig() {
         sawKey = true;
         if (key == "project") {
             autoStartProjectPath = value;
+        } else if (key == "bundle") {
+            autoStartBundlePath = value;
         } else if (key == "scene") {
             autoStartSceneName = value;
         } else if (key == "mode") {
@@ -5642,10 +6105,22 @@ void Engine::loadAutoStartConfig() {
 
     if (!autoStartProjectPath.empty()) {
         fs::path path = autoStartProjectPath;
-        if (path.is_relative()) {
+        if (path.is_relative() && autoStartBundlePath.empty()) {
             path = fs::current_path() / path;
         }
         autoStartProjectPath = path.lexically_normal().string();
+        autoStartRequested = true;
+        if (!modeSpecified) {
+            autoStartPlayerMode = true;
+        }
+    }
+
+    if (!autoStartBundlePath.empty()) {
+        fs::path bundlePath = autoStartBundlePath;
+        if (bundlePath.is_relative()) {
+            bundlePath = fs::current_path() / bundlePath;
+        }
+        autoStartBundlePath = bundlePath.lexically_normal().string();
         autoStartRequested = true;
         if (!modeSpecified) {
             autoStartPlayerMode = true;
@@ -5791,6 +6266,9 @@ bool Engine::addSceneToBuildSettings(const std::string& sceneName, bool enabled)
 
 void Engine::loadBuildSettings() {
     resetBuildSettings();
+    gameViewportResolutionIndex = 0;
+    gameViewportCustomWidth = 1920;
+    gameViewportCustomHeight = 1080;
     if (!projectManager.currentProject.isLoaded) return;
 
     fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
@@ -5877,6 +6355,12 @@ void Engine::loadBuildSettings() {
             buildSettings.editorCameraNear = std::max(0.01f, std::stof(line.substr(17)));
         } else if (line.rfind("editorCameraFar=", 0) == 0) {
             buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 1.0f, std::stof(line.substr(16)));
+        } else if (line.rfind("gameViewportResolutionIndex=", 0) == 0) {
+            gameViewportResolutionIndex = std::clamp(std::atoi(line.substr(28).c_str()), 0, 4);
+        } else if (line.rfind("gameViewportCustomWidth=", 0) == 0) {
+            gameViewportCustomWidth = std::clamp(std::atoi(line.substr(24).c_str()), 64, 8192);
+        } else if (line.rfind("gameViewportCustomHeight=", 0) == 0) {
+            gameViewportCustomHeight = std::clamp(std::atoi(line.substr(25).c_str()), 64, 8192);
         } else if (line.rfind("scene=", 0) == 0) {
             std::string value = line.substr(6);
             trim(value);
@@ -5953,6 +6437,9 @@ void Engine::saveBuildSettings() {
     file << "editorCameraFov=" << buildSettings.editorCameraFov << "\n";
     file << "editorCameraNear=" << buildSettings.editorCameraNear << "\n";
     file << "editorCameraFar=" << buildSettings.editorCameraFar << "\n";
+    file << "gameViewportResolutionIndex=" << std::clamp(gameViewportResolutionIndex, 0, 4) << "\n";
+    file << "gameViewportCustomWidth=" << std::clamp(gameViewportCustomWidth, 64, 8192) << "\n";
+    file << "gameViewportCustomHeight=" << std::clamp(gameViewportCustomHeight, 64, 8192) << "\n";
     for (const auto& scene : buildSettings.scenes) {
         file << "scene=" << scene.name << "," << (scene.enabled ? "1" : "0") << "\n";
     }
@@ -6033,10 +6520,23 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     exportCancelRequested = false;
 
     fs::path projectRoot = projectManager.currentProject.projectPath;
-    bool usesNewLayout = projectManager.currentProject.usesNewLayout;
     fs::path scenesPath = projectManager.currentProject.scenesPath;
     fs::path scriptsPath = projectManager.currentProject.scriptsPath;
     fs::path scriptsConfigPath = resolveScriptsConfigPath(projectManager.currentProject);
+    std::vector<std::string> runtimeSceneNames;
+    {
+        std::unordered_set<std::string> seenScenes;
+        for (const auto& scene : buildSettings.scenes) {
+            if (!scene.enabled || scene.name.empty()) continue;
+            if (seenScenes.insert(scene.name).second) {
+                runtimeSceneNames.push_back(scene.name);
+            }
+        }
+        if (!startScene.empty() && seenScenes.insert(startScene).second) {
+            runtimeSceneNames.push_back(startScene);
+        }
+    }
+    std::string exportSplashImagePath = buildSettings.splashImagePath;
     std::vector<fs::path> assignedNativeScriptSources;
     {
         std::unordered_set<std::string> seenSources;
@@ -6055,8 +6555,9 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     bool packageStandaloneArchive = buildSettings.packageStandaloneArchive;
 
     auto future = std::async(std::launch::async,
-        [this, normalizedOut, exportRoot, archivePath, sourceRoot, projectRoot, startScene, usesNewLayout,
-         scenesPath, scriptsPath, scriptsConfigPath, assignedNativeScriptSources,
+        [this, normalizedOut, exportRoot, archivePath, sourceRoot, projectRoot, startScene,
+         scenesPath, scriptsPath, scriptsConfigPath, runtimeSceneNames, exportSplashImagePath,
+         assignedNativeScriptSources,
          packageStandaloneArchive, executableStem, executableFileName, packageStem]() {
         ExportJobResult result;
         result.outputDir = exportRoot;
@@ -6179,24 +6680,30 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             return result;
         }
 
-        std::string copyError;
-        if (!copyDirectoryRecursive(sourceRoot / "Resources", exportRoot / "Resources", copyError)) {
-            result.message = copyError;
+        fs::path runtimeStageRoot = exportRoot / "_runtime_stage";
+        fs::create_directories(runtimeStageRoot, ec);
+        if (ec) {
+            result.message = "Failed to create runtime staging directory.";
             return result;
         }
-        if (!copyDirectoryRecursive(sourceRoot / "Template-Projects", exportRoot / "Template-Projects", copyError)) {
+
+        std::string copyError;
+        RuntimeExportStager runtimeStager(projectRoot, runtimeStageRoot);
+
+        setStatus(0.74f, "Staging runtime resources...");
+        if (!CopyRuntimeResourcesSubset(sourceRoot, runtimeStageRoot, copyError)) {
             result.message = copyError;
             return result;
         }
 
         setStatus(0.78f, "Collecting precompiled packages...");
-        if (!copyPrecompiledPackages(buildRoot, exportRoot / "Packages" / "ThirdParty", copyError)) {
+        if (!copyPrecompiledPackages(buildRoot, runtimeStageRoot / "Packages" / "ThirdParty", copyError)) {
             result.message = copyError;
             return result;
         }
 
         setStatus(0.82f, "Collecting engine cache...");
-        if (!copyPrecompiledEnginePackages(buildRoot, exportRoot / "Packages" / "Engine", copyError)) {
+        if (!copyPrecompiledEnginePackages(buildRoot, runtimeStageRoot / "Packages" / "Engine", copyError)) {
             result.message = copyError;
             return result;
         }
@@ -6209,7 +6716,8 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                     std::string ext = sourcePath.extension().string();
                     std::transform(ext.begin(), ext.end(), ext.begin(),
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".c++";
+                    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" ||
+                           ext == ".c++" || ext == ".moducpp";
                 };
 
                 packageManager.applyToBuildConfig(scriptConfig);
@@ -6362,30 +6870,108 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             }
         }
 
-        setStatus(0.85f, "Copying project...");
-        fs::path projectOut = exportRoot / "Project";
-        if (fs::exists(projectRoot / "Assets")) {
-            if (!copyDirectoryRecursive(projectRoot / "Assets", projectOut / "Assets", copyError)) {
+        setStatus(0.85f, "Staging runtime project...");
+        if (!CopyFileIntoRuntimeRoot(projectRoot / "project.modu", runtimeStageRoot, "project.modu", copyError)) {
+            result.message = copyError;
+            return result;
+        }
+
+        if (!runtimeSceneNames.empty()) {
+            const float sceneCount = static_cast<float>(runtimeSceneNames.size());
+            for (size_t i = 0; i < runtimeSceneNames.size(); ++i) {
+                if (exportCancelRequested.load()) {
+                    result.message = "Export cancelled.";
+                    result.success = false;
+                    return result;
+                }
+
+                const std::string& sceneName = runtimeSceneNames[i];
+                const fs::path sourceScenePath = scenesPath / (sceneName + ".scene");
+                const float progressBase = 0.86f;
+                const float progressRange = 0.04f;
+                const float progress = progressBase +
+                    (progressRange * static_cast<float>(i) / std::max(1.0f, sceneCount));
+                setStatus(progress, "Serializing runtime scene: " + sceneName + "...");
+                if (!StageRuntimeScene(sourceScenePath, sceneName, runtimeStager, runtimeStageRoot, copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+        }
+
+        std::string stagedSplashPath = exportSplashImagePath;
+        if (!stagedSplashPath.empty()) {
+            if (!runtimeStager.stageFileReference(stagedSplashPath, "Splash", copyError)) {
                 result.message = copyError;
                 return result;
             }
         }
-        if (!usesNewLayout) {
-            if (fs::exists(scenesPath)) {
-                if (!copyDirectoryRecursive(scenesPath, projectOut / "Scenes", copyError)) {
+
+        {
+            const fs::path buildSettingsSource = projectRoot / "build.modu";
+            if (fs::exists(buildSettingsSource)) {
+                std::ifstream in(buildSettingsSource);
+                if (!in.is_open()) {
+                    result.message = "Failed to read build.modu for runtime export.";
+                    return result;
+                }
+
+                std::vector<std::string> lines;
+                std::string line;
+                bool replacedSplash = false;
+                while (std::getline(in, line)) {
+                    if (line.rfind("splashImage=", 0) == 0) {
+                        lines.push_back("splashImage=" + stagedSplashPath);
+                        replacedSplash = true;
+                    } else {
+                        lines.push_back(line);
+                    }
+                }
+                if (!replacedSplash && !stagedSplashPath.empty()) {
+                    lines.push_back("splashImage=" + stagedSplashPath);
+                }
+
+                const fs::path buildSettingsDest = runtimeStageRoot / "build.modu";
+                if (!EnsureDirectoryForFile(buildSettingsDest, copyError)) {
                     result.message = copyError;
                     return result;
                 }
-            }
-            if (fs::exists(scriptsPath)) {
-                if (!copyDirectoryRecursive(scriptsPath, projectOut / "Scripts", copyError)) {
-                    result.message = copyError;
+                std::ofstream out(buildSettingsDest, std::ios::trunc);
+                if (!out.is_open()) {
+                    result.message = "Failed to write staged build.modu.";
                     return result;
                 }
+                for (const std::string& entry : lines) {
+                    out << entry << "\n";
+                }
+                out.close();
             }
         }
+
+        std::vector<fs::path> projectFiles = {
+            projectRoot / "scripts.modu",
+            projectRoot / "Scripts.modu",
+            projectRoot / "packages.modu"
+        };
+        if (!scriptsConfigPath.empty()) {
+            projectFiles.push_back(scriptsConfigPath);
+        }
+        std::unordered_set<std::string> seenProjectFiles;
+        for (const auto& src : projectFiles) {
+            std::error_code srcAbsEc;
+            fs::path srcAbs = fs::absolute(src, srcAbsEc);
+            if (srcAbsEc) srcAbs = src;
+            std::string srcKey = srcAbs.lexically_normal().string();
+            if (!seenProjectFiles.insert(srcKey).second) continue;
+            if (!fs::exists(src)) continue;
+            if (!CopyFileIntoRuntimeRoot(src, runtimeStageRoot, src.filename(), copyError)) {
+                result.message = copyError;
+                return result;
+            }
+        }
+
         fs::path compiledScriptsSrc;
-        fs::path compiledScriptsDst;
+        fs::path compiledScriptsDstRelative;
         {
             ScriptBuildConfig scriptConfig;
             std::string configError;
@@ -6405,73 +6991,73 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                         }
                     }
                     if (!hasDotDot) {
-                        compiledScriptsDst = projectOut / relOutDir;
+                        compiledScriptsDstRelative = relOutDir;
                     }
                 }
-                if (compiledScriptsDst.empty()) {
-                    compiledScriptsDst = projectOut / "Library" / "CompiledScripts";
+                if (compiledScriptsDstRelative.empty()) {
+                    compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
                 }
             }
         }
         if (compiledScriptsSrc.empty()) {
             compiledScriptsSrc = projectRoot / "Library" / "CompiledScripts";
-            compiledScriptsDst = projectOut / "Library" / "CompiledScripts";
+            compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
         }
         if (fs::exists(compiledScriptsSrc)) {
-            if (!copyDirectoryRecursive(compiledScriptsSrc, compiledScriptsDst, copyError)) {
+            if (!CopyDirectoryIntoRuntimeRoot(compiledScriptsSrc, runtimeStageRoot, compiledScriptsDstRelative, copyError)) {
                 result.message = copyError;
                 return result;
             }
         }
         if (fs::exists(projectRoot / "Library" / "InstalledPackages")) {
-            if (!copyDirectoryRecursive(projectRoot / "Library" / "InstalledPackages",
-                                        projectOut / "Library" / "InstalledPackages", copyError)) {
+            if (!CopyDirectoryIntoRuntimeRoot(projectRoot / "Library" / "InstalledPackages",
+                                              runtimeStageRoot,
+                                              fs::path("Library") / "InstalledPackages",
+                                              copyError)) {
                 result.message = copyError;
                 return result;
             }
         }
 
-        std::vector<fs::path> projectFiles = {
-            projectRoot / "project.modu",
-            projectRoot / "build.modu",
-            projectRoot / "scripts.modu",
-            projectRoot / "Scripts.modu",
-            projectRoot / "packages.modu"
-        };
-        if (!scriptsConfigPath.empty()) {
-            projectFiles.push_back(scriptsConfigPath);
-        }
-        std::unordered_set<std::string> seenProjectFiles;
-        for (const auto& src : projectFiles) {
-            std::error_code srcAbsEc;
-            fs::path srcAbs = fs::absolute(src, srcAbsEc);
-            if (srcAbsEc) srcAbs = src;
-            std::string srcKey = srcAbs.lexically_normal().string();
-            if (!seenProjectFiles.insert(srcKey).second) continue;
-            if (!fs::exists(src)) continue;
-            fs::path dst = projectOut / src.filename();
-            fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
-            if (ec) {
-                result.message = "Failed to copy project file: " + src.filename().string();
-                return result;
+        {
+            const fs::path managedProject = projectRoot / "Scripts" / "Managed" / "ModuCPP.csproj";
+            if (fs::exists(managedProject)) {
+                if (!CopyFileIntoRuntimeRoot(managedProject,
+                                             runtimeStageRoot,
+                                             fs::path("Scripts") / "Managed" / "ModuCPP.csproj",
+                                             copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+
+                const fs::path managedOutputDir = managedOutputPathFromProject(managedProject).parent_path();
+                if (fs::exists(managedOutputDir)) {
+                    if (!CopyDirectoryIntoRuntimeRoot(managedOutputDir,
+                                                      runtimeStageRoot,
+                                                      fs::path("Scripts") / "Managed" / "bin" / "Debug" / "netstandard2.0",
+                                                      copyError)) {
+                        result.message = copyError;
+                        return result;
+                    }
+                }
             }
         }
 
-        if (!startScene.empty()) {
-            fs::path srcScene = scenesPath / (startScene + ".scene");
-            fs::path dstScene = usesNewLayout
-                ? (projectOut / "Assets" / "Scenes" / (startScene + ".scene"))
-                : (projectOut / "Scenes" / (startScene + ".scene"));
-            if (fs::exists(srcScene)) {
-                fs::create_directories(dstScene.parent_path(), ec);
-                if (!ec) {
-                    fs::copy_file(srcScene, dstScene, fs::copy_options::overwrite_existing, ec);
-                }
-                if (ec) {
-                    result.message = "Failed to copy scene: " + srcScene.filename().string();
-                    return result;
-                }
-            }
+        setStatus(0.92f, "Packing runtime content...");
+        std::vector<RuntimeBundleEntry> bundleEntries = CollectRuntimeBundleEntries(runtimeStageRoot);
+        if (bundleEntries.empty()) {
+            result.message = "Runtime bundle staging produced no files.";
+            return result;
+        }
+        if (!WriteRuntimeContentBundle(exportRoot / "content.modbundle", bundleEntries, copyError)) {
+            result.message = copyError;
+            return result;
+        }
+
+        fs::remove_all(runtimeStageRoot, ec);
+        if (ec) {
+            result.message = "Failed to clean runtime staging directory.";
+            return result;
         }
 
         fs::path autoStartPath = exportRoot / "autostart.modu";
@@ -6480,7 +7066,8 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             result.message = "Failed to write autostart.modu.";
             return result;
         }
-        autoStart << "project=Project/project.modu\n";
+        autoStart << "bundle=content.modbundle\n";
+        autoStart << "project=project.modu\n";
         if (!startScene.empty()) {
             autoStart << "scene=" << startScene << "\n";
         }
@@ -6490,7 +7077,8 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         fs::path buildAutoStartPath = buildRoot / "autostart.modu";
         std::ofstream buildAutoStart(buildAutoStartPath);
         if (buildAutoStart.is_open()) {
-            buildAutoStart << "project=" << (exportRoot / "Project" / "project.modu").string() << "\n";
+            buildAutoStart << "bundle=" << (exportRoot / "content.modbundle").string() << "\n";
+            buildAutoStart << "project=project.modu\n";
             if (!startScene.empty()) {
                 buildAutoStart << "scene=" << startScene << "\n";
             }
@@ -6794,12 +7382,6 @@ void Engine::loadScene(const std::string& sceneName) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
         clearSelection();
-        bool hasAnyLight = std::any_of(sceneObjects.begin(), sceneObjects.end(), [](const SceneObject& o) {
-            return o.hasLight;
-        });
-        if (!hasAnyLight) {
-            addObject(ObjectType::DirectionalLight, "Directional Light");
-        }
         recordState("sceneLoaded");
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
         if (loadedTimeOfDay >= 0.0f) {
@@ -6829,7 +7411,6 @@ void Engine::createNewScene(const std::string& sceneName) {
     applySceneTimeOfDay(0.5f);
 
     addObject(ObjectType::Cube, "Cube");
-    addObject(ObjectType::DirectionalLight, "Directional Light");
     saveCurrentScene();
     recordState("newScene");
 
@@ -6872,9 +7453,11 @@ void Engine::duplicateSelected() {
         newObj.hasRenderer = it->hasRenderer;
         newObj.renderType = it->renderType;
         newObj.hasLight = it->hasLight;
+        newObj.hasLight2D = it->hasLight2D;
         newObj.hasCamera = it->hasCamera;
         newObj.hasPostFX = it->hasPostFX;
         newObj.hasUI = it->hasUI;
+        newObj.hasShadowCaster2D = it->hasShadowCaster2D;
         newObj.meshPath = it->meshPath;
         newObj.meshId = it->meshId;
         newObj.meshSourceIndex = it->meshSourceIndex;
@@ -6887,6 +7470,8 @@ void Engine::duplicateSelected() {
         newObj.fragmentShaderPath = it->fragmentShaderPath;
         newObj.useOverlay = it->useOverlay;
         newObj.light = it->light;
+        newObj.light2D = it->light2D;
+        newObj.shadowCaster2D = it->shadowCaster2D;
         newObj.camera = it->camera;
         newObj.postFx = it->postFx;
         newObj.hasRigidbody = it->hasRigidbody;
@@ -7785,6 +8370,26 @@ bool Engine::setAnimationPlayOnAwakeFromScript(int id, bool playOnAwake) {
 #pragma endregion
 
 #pragma region Script Compilation + Editor Tabs
+void Engine::resetScriptRuntimeStateForReload(bool clearBinaryPaths) {
+    scriptRuntime.unloadAll();
+    managedRuntime.unloadAll();
+
+    for (SceneObject& obj : sceneObjects) {
+        for (ScriptComponent& sc : obj.scripts) {
+            sc.activeIEnums.clear();
+            sc.lastBinaryVerified = false;
+            if (clearBinaryPaths) {
+                sc.lastBinaryPath.clear();
+            }
+        }
+    }
+
+    nativeScriptMissingLogged.clear();
+    nativeScriptLoadErrorLogged.clear();
+    markRuntimeScriptBindingsDirty();
+    scriptEditorWindowsDirty = true;
+}
+
 void Engine::compileScriptFile(const fs::path& scriptPath) {
     if (!projectManager.currentProject.isLoaded) {
         addConsoleMessage("No project is loaded", ConsoleMessageType::Warning);
@@ -8017,14 +8622,11 @@ void Engine::updateCompileJob() {
             if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
             if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
         } else {
-            if (result.isManaged) {
-                managedRuntime.unloadAll();
-            } else {
-                scriptRuntime.unloadAll();
-            }
+            // Ensure every runtime/script instance is rebuilt against freshly compiled binaries.
+            resetScriptRuntimeStateForReload(true);
 
             lastCompileSuccess = true;
-            lastCompileStatus = result.isManaged ? "Reloading ModuCPP" : "Reloading ModuCore";
+            lastCompileStatus = "Reloading scripts";
             lastCompileLog = result.compileLog + result.linkLog;
             if (audio.isReady()) {
                 audio.playPreview("Resources/Sounds/Success Script.mp3", 0.95f, false);
@@ -8450,6 +9052,10 @@ void Engine::autosaveWorkspaceLayout() {
         return;
     }
 
+    if (glfwGetTime() < workspaceLayoutStabilizeUntil) {
+        return;
+    }
+
     if (workspaceLayoutAutoRepairPending &&
         mainDockspaceId != 0 &&
         ImGui::DockBuilderGetNode(mainDockspaceId) != nullptr) {
@@ -8491,10 +9097,6 @@ void Engine::autosaveWorkspaceLayout() {
             }
             workspaceLayoutAutoRepairPending = false;
         }
-    }
-
-    if (glfwGetTime() < workspaceLayoutStabilizeUntil) {
-        return;
     }
 
     if (context->SettingsDirtyTimer > 0.0f) {
@@ -8573,6 +9175,7 @@ void Engine::loadEditorUserSettings() {
     };
 
     fileBrowserFavorites.clear();
+    workspaceTabVisible = { true, true, true };
     std::vector<ImVec4> loadedColors(ImGuiCol_COUNT);
     std::vector<bool> hasColor(ImGuiCol_COUNT, false);
     static std::unordered_map<std::string, int> colorIndex;
@@ -8615,6 +9218,12 @@ void Engine::loadEditorUserSettings() {
             } else {
                 currentWorkspace = WorkspaceMode::Default;
             }
+        } else if (key == "workspaceTab.Default") {
+            workspaceTabVisible[0] = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "workspaceTab.Animation") {
+            workspaceTabVisible[1] = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "workspaceTab.Scripting") {
+            workspaceTabVisible[2] = (value == "1" || value == "true" || value == "yes");
         } else if (key == "fileBrowserIconScale") {
             try {
                 fileBrowserIconScale = std::stof(value);
@@ -8651,6 +9260,16 @@ void Engine::loadEditorUserSettings() {
             gizmoShowLightOverlays = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowLightIntensityLabels") {
             gizmoShowLightIntensityLabels = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showViewportHintOverlay") {
+            showViewportHintOverlay = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showLight2DStatsOverlay") {
+            showLight2DStatsOverlay = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowLight2DBounds") {
+            gizmoShowLight2DBounds = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowLight2DShapes") {
+            gizmoShowLight2DShapes = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "gizmoShowShadowCaster2DBounds") {
+            gizmoShowShadowCaster2DBounds = (value == "1" || value == "true" || value == "yes");
         } else if (key == "sceneGizmoIconScale") {
             try { sceneGizmoIconScale = std::stof(value); } catch (...) {}
         } else if (key == "sceneGizmoOverlayScale") {
@@ -8661,8 +9280,6 @@ void Engine::loadEditorUserSettings() {
             showCanvasOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showUIWorldGrid") {
             showUIWorldGrid = (value == "1" || value == "true" || value == "yes");
-        } else if (key == "showSpritePreviewPanel") {
-            showSpritePreviewPanel = (value == "1" || value == "true" || value == "yes");
         } else if (key == "pixelGridSnapEnabled") {
             pixelGridSnapEnabled = (value == "1" || value == "true" || value == "yes");
         } else if (key == "pixelGridSnapStep") {
@@ -8694,7 +9311,7 @@ void Engine::loadEditorUserSettings() {
         } else if (key == "gameViewportAutoFit") {
             gameViewportAutoFit = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gameViewportZoom") {
-            try { gameViewportZoom = std::clamp(std::stof(value), 0.1f, 8.0f); } catch (...) {}
+            try { gameViewportZoom = std::clamp(std::stof(value), 1.0f, 8.0f); } catch (...) {}
         } else if (key == "scriptAutoCompileInterval") {
             try { scriptAutoCompileInterval = std::clamp(std::stod(value), 0.1, 10.0); } catch (...) {}
         } else if (key == "scriptAutoCompileOnSave") {
@@ -8746,9 +9363,30 @@ void Engine::loadEditorUserSettings() {
     fpsCap = std::max(1.0f, fpsCap);
     gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
     gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
-    gameViewportZoom = std::clamp(gameViewportZoom, 0.1f, 8.0f);
+    gameViewportZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
+
+    if (!workspaceTabVisible[0] && !workspaceTabVisible[1] && !workspaceTabVisible[2]) {
+        workspaceTabVisible[0] = true;
+    }
+    auto workspaceToIndex = [](WorkspaceMode mode) {
+        switch (mode) {
+            case WorkspaceMode::Default: return 0;
+            case WorkspaceMode::Animation: return 1;
+            case WorkspaceMode::Scripting: return 2;
+        }
+        return 0;
+    };
+    if (!workspaceTabVisible[workspaceToIndex(currentWorkspace)]) {
+        if (workspaceTabVisible[0]) {
+            currentWorkspace = WorkspaceMode::Default;
+        } else if (workspaceTabVisible[1]) {
+            currentWorkspace = WorkspaceMode::Animation;
+        } else {
+            currentWorkspace = WorkspaceMode::Scripting;
+        }
+    }
 
     applyUIStylePresetByName(uiStylePresetName);
     ImGuiStyle& style = ImGui::GetStyle();
@@ -8800,6 +9438,9 @@ void Engine::saveEditorUserSettings() const {
         workspaceName = "Scripting";
     }
     file << "workspace=" << workspaceName << "\n";
+    file << "workspaceTab.Default=" << (workspaceTabVisible[0] ? "1" : "0") << "\n";
+    file << "workspaceTab.Animation=" << (workspaceTabVisible[1] ? "1" : "0") << "\n";
+    file << "workspaceTab.Scripting=" << (workspaceTabVisible[2] ? "1" : "0") << "\n";
     file << "fileBrowserIconScale=" << fileBrowserIconScale << "\n";
     file << "fileBrowserViewMode=" << (fileBrowser.viewMode == FileBrowserViewMode::List ? "List" : "Grid") << "\n";
     file << "fileBrowserSidebarWidth=" << fileBrowserSidebarWidth << "\n";
@@ -8813,12 +9454,16 @@ void Engine::saveEditorUserSettings() const {
     file << "gizmoShowCameraFrustumLabels=" << (gizmoShowCameraFrustumLabels ? "1" : "0") << "\n";
     file << "gizmoShowLightOverlays=" << (gizmoShowLightOverlays ? "1" : "0") << "\n";
     file << "gizmoShowLightIntensityLabels=" << (gizmoShowLightIntensityLabels ? "1" : "0") << "\n";
+    file << "showViewportHintOverlay=" << (showViewportHintOverlay ? "1" : "0") << "\n";
+    file << "showLight2DStatsOverlay=" << (showLight2DStatsOverlay ? "1" : "0") << "\n";
+    file << "gizmoShowLight2DBounds=" << (gizmoShowLight2DBounds ? "1" : "0") << "\n";
+    file << "gizmoShowLight2DShapes=" << (gizmoShowLight2DShapes ? "1" : "0") << "\n";
+    file << "gizmoShowShadowCaster2DBounds=" << (gizmoShowShadowCaster2DBounds ? "1" : "0") << "\n";
     file << "sceneGizmoIconScale=" << std::clamp(sceneGizmoIconScale, 0.4f, 3.0f) << "\n";
     file << "sceneGizmoOverlayScale=" << std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f) << "\n";
     file << "showSceneGrid3D=" << (showSceneGrid3D ? "1" : "0") << "\n";
     file << "showCanvasOverlay=" << (showCanvasOverlay ? "1" : "0") << "\n";
     file << "showUIWorldGrid=" << (showUIWorldGrid ? "1" : "0") << "\n";
-    file << "showSpritePreviewPanel=" << (showSpritePreviewPanel ? "1" : "0") << "\n";
     file << "pixelGridSnapEnabled=" << (pixelGridSnapEnabled ? "1" : "0") << "\n";
     file << "pixelGridSnapStep=" << std::clamp(pixelGridSnapStep, 1, 64) << "\n";
     file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";

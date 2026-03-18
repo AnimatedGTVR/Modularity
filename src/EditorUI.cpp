@@ -1,13 +1,19 @@
 #include "EditorUI.h"
 #include <chrono>
+#include <cstring>
+#include <sstream>
 #include <unordered_map>
 
 namespace {
 constexpr float kEditorBottomStatusReserveHeight = 24.0f;
+constexpr float kModularityUiFontSizeBase = 18.0f;
+constexpr float kModularityUiFontSizeOffset = -2.5f;
 
 struct TouchSwipeWindowState {
-    ImVec2 virtualScroll = ImVec2(0.0f, 0.0f);
-    ImVec2 velocity = ImVec2(0.0f, 0.0f);
+    ImVec2 targetScroll = ImVec2(0.0f, 0.0f);
+    ImVec2 currentScroll = ImVec2(0.0f, 0.0f);
+    ImVec2 inputVelocity = ImVec2(0.0f, 0.0f);
+    ImVec2 smoothVelocity = ImVec2(0.0f, 0.0f);
     bool initialized = false;
     bool touchedThisFrame = false;
     bool isDragging = false;
@@ -81,6 +87,44 @@ bool isTouchScrollableWindow(const ImGuiWindow* window) {
     return hasScrollableAxis(window, 0) || hasScrollableAxis(window, 1);
 }
 
+bool windowNameContains(const ImGuiWindow* window, const char* token) {
+    return window && window->Name && token && std::strstr(window->Name, token) != nullptr;
+}
+
+bool isConsoleRelatedWindow(const ImGuiWindow* window) {
+    if (!window) {
+        return false;
+    }
+    if (windowNameContains(window, "ConsoleOutput") ||
+        windowNameContains(window, "Console##MiniLogPanel")) {
+        return true;
+    }
+    const ImGuiWindow* root = window->RootWindow ? window->RootWindow : window;
+    return windowNameContains(root, "Console##MiniLogPanel");
+}
+
+bool isAnimationRelatedWindow(const ImGuiWindow* window) {
+    if (!window) {
+        return false;
+    }
+    for (const ImGuiWindow* cursor = window; cursor != nullptr; cursor = cursor->ParentWindow) {
+        if (windowNameContains(cursor, "Animation") ||
+            windowNameContains(cursor, "AnimationMainArea") ||
+            windowNameContains(cursor, "AnimationTimelineArea") ||
+            windowNameContains(cursor, "AnimBindingTreePane") ||
+            windowNameContains(cursor, "AnimDopesheetPane") ||
+            windowNameContains(cursor, "AnimCurvesPane")) {
+            return true;
+        }
+    }
+    const ImGuiWindow* root = window->RootWindow ? window->RootWindow : window;
+    return windowNameContains(root, "Animation");
+}
+
+bool shouldBypassGlobalSmoothScroll(const ImGuiWindow* window) {
+    return isConsoleRelatedWindow(window) || isAnimationRelatedWindow(window);
+}
+
 ImGuiWindow* findScrollableWindowFromHover(ImGuiWindow* hovered) {
     for (ImGuiWindow* window = hovered; window != nullptr; window = window->ParentWindow) {
         if (isTouchScrollableWindow(window)) {
@@ -102,8 +146,37 @@ float applyEdgeResistance(float value, float minValue, float maxValue, float res
 
 float computeElasticOverscrollLimit(float axisExtent, float scrollMax) {
     const float byViewport = axisExtent * 0.14f;
-    const float byRange = scrollMax * 0.35f + 6.0f;
-    return ImClamp(std::min(byViewport, byRange), 6.0f, 26.0f);
+    const float byRange = scrollMax * 0.16f + 6.0f;
+    return ImClamp(std::min(byViewport, byRange), 6.0f, 28.0f);
+}
+
+float smoothDampScalar(float current,
+                       float target,
+                       float& currentVelocity,
+                       float smoothTime,
+                       float maxSpeed,
+                       float deltaTime) {
+    smoothTime = ImMax(0.0001f, smoothTime);
+    const float omega = 2.0f / smoothTime;
+    const float x = omega * deltaTime;
+    const float exp = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+
+    float change = current - target;
+    const float originalTarget = target;
+    const float maxChange = maxSpeed * smoothTime;
+    change = ImClamp(change, -maxChange, maxChange);
+    target = current - change;
+
+    const float temp = (currentVelocity + omega * change) * deltaTime;
+    currentVelocity = (currentVelocity - omega * temp) * exp;
+    float output = target + (change + temp) * exp;
+
+    if (((originalTarget - current) > 0.0f) == (output > originalTarget)) {
+        output = originalTarget;
+        currentVelocity = 0.0f;
+    }
+
+    return output;
 }
 
 }
@@ -240,7 +313,7 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
     }
     
     // Script files
-    if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp" ||
+    if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".h" || ext == ".hpp" ||
         ext == ".lua" || ext == ".py" || ext == ".cs") {
         return FileCategory::Script;
     }
@@ -309,61 +382,106 @@ bool FileBrowser::matchesFilter(const fs::directory_entry& entry) const {
 #pragma endregion
 
 #pragma region ImGui Theme
-void applyModernTheme() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    ImVec4* colors = style.Colors;
-    ImGuiIO& io = ImGui::GetIO();
-    const float fontSizeBase = 18.0f;
-    const float fontSizeOffset = -2.5f;
-    const float fontSize = std::max(1.0f, fontSizeBase + fontSizeOffset);
-    ImFont* editorFont = nullptr;
+ImFont* loadModularityUiFont(ImGuiIO& io, float fontSize, std::string* outReport) {
+    ImFont* loadedFont = nullptr;
     fs::path primaryFontPath;
+    std::ostringstream report;
+
     const fs::path fontCandidates[] = {
         fs::path("Resources") / "Fonts" / "TheSunset.ttf",
         fs::path("Resources") / "Fonts" / "Thesunsethd-Regular (1).ttf",
         fs::path("TheSunset.ttf"),
         fs::path("Thesunsethd-Regular (1).ttf")
     };
+
+    std::error_code cwdEc;
+    const fs::path currentWorkingDir = fs::current_path(cwdEc);
     for (const auto& fontPath : fontCandidates) {
-        if (!fs::exists(fontPath)) {
+        std::error_code fileEc;
+        if (!fs::exists(fontPath, fileEc) || fileEc) {
+            report << "missing '" << fontPath.string() << "'";
+            if (fileEc) {
+                report << " (" << fileEc.message() << ")";
+            }
+            report << "; ";
             continue;
         }
+        if (!fs::is_regular_file(fontPath, fileEc) || fileEc) {
+            report << "invalid '" << fontPath.string() << "'";
+            if (fileEc) {
+                report << " (" << fileEc.message() << ")";
+            }
+            report << "; ";
+            continue;
+        }
+
         const std::string fontPathStr = fontPath.string();
-        editorFont = io.Fonts->AddFontFromFileTTF(fontPathStr.c_str(), fontSize);
-        if (editorFont) {
+        loadedFont = io.Fonts->AddFontFromFileTTF(fontPathStr.c_str(), fontSize);
+        if (loadedFont) {
             primaryFontPath = fontPath;
-            io.FontDefault = editorFont;
+            break;
+        }
+
+        report << "ImGui rejected '" << fontPathStr << "'; ";
+    }
+
+    if (!loadedFont) {
+        if (outReport) {
+            std::ostringstream finalReport;
+            finalReport << "UI font load failed. cwd='"
+                        << (cwdEc ? std::string("<unavailable>") : currentWorkingDir.string())
+                        << "'. Attempts: " << report.str();
+            *outReport = finalReport.str();
+        }
+        return nullptr;
+    }
+
+    const fs::path fallbackCandidates[] = {
+        fs::path("Resources") / "Fonts" / "TheSunset.ttf",
+        fs::path("TheSunset.ttf")
+    };
+    if (primaryFontPath.filename() != "TheSunset.ttf") {
+        for (const auto& fallbackPath : fallbackCandidates) {
+            std::error_code fallbackEc;
+            if (!fs::exists(fallbackPath, fallbackEc) || fallbackEc) {
+                continue;
+            }
+
+            const std::string fallbackPathStr = fallbackPath.string();
+            ImFontConfig mergeConfig;
+            mergeConfig.MergeMode = true;
+            ImFont* fallbackFont = io.Fonts->AddFontFromFileTTF(
+                fallbackPathStr.c_str(),
+                fontSize,
+                &mergeConfig,
+                io.Fonts->GetGlyphRangesDefault()
+            );
+            if (!fallbackFont && outReport) {
+                *outReport = "Failed to merge fallback font '" + fallbackPathStr + "'.";
+            }
             break;
         }
     }
+
+    return loadedFont;
+}
+
+void applyModernTheme() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4* colors = style.Colors;
+    ImGuiIO& io = ImGui::GetIO();
+    const float fontSize = std::max(1.0f, kModularityUiFontSizeBase + kModularityUiFontSizeOffset);
+    std::string fontReport;
+    ImFont* editorFont = loadModularityUiFont(io, fontSize, &fontReport);
     if (!editorFont) {
-        std::cerr << "[WARN] Failed to load editor font (TheSunset) from Resources/Fonts."
-                  << std::endl;
+        io.Fonts->AddFontDefault();
+        if (!fontReport.empty()) {
+            std::cerr << "[WARN] " << fontReport << std::endl;
+        }
     } else {
-        const fs::path fallbackCandidates[] = {
-            fs::path("Resources") / "Fonts" / "TheSunset.ttf",
-            fs::path("TheSunset.ttf")
-        };
-        if (primaryFontPath.filename() != "TheSunset.ttf") {
-            for (const auto& fallbackPath : fallbackCandidates) {
-                if (!fs::exists(fallbackPath)) {
-                    continue;
-                }
-                const std::string fallbackPathStr = fallbackPath.string();
-                ImFontConfig mergeConfig;
-                mergeConfig.MergeMode = true;
-                ImFont* fallbackFont = io.Fonts->AddFontFromFileTTF(
-                    fallbackPathStr.c_str(),
-                    fontSize,
-                    &mergeConfig,
-                    io.Fonts->GetGlyphRangesDefault()
-                );
-                if (!fallbackFont) {
-                    std::cerr << "[WARN] Failed to merge fallback font: "
-                              << fallbackPathStr << std::endl;
-                }
-                break;
-            }
+        io.FontDefault = editorFont;
+        if (!fontReport.empty()) {
+            std::cerr << "[WARN] " << fontReport << std::endl;
         }
     }
 
@@ -596,16 +714,32 @@ void updateTouchSwipeScrolling() {
 
     const bool touchScreenMode = (io.ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
     const bool hasWheelInput = std::abs(io.MouseWheelH) > 0.0001f || std::abs(io.MouseWheel) > 0.0001f;
+    ImVec2 wheel(io.MouseWheelH, io.MouseWheel);
+    if (io.MouseWheelRequestAxisSwap) {
+        wheel = ImVec2(wheel.y, 0.0f);
+    }
+    ImGuiWindow* wheelWindow = nullptr;
+    if ((std::abs(wheel.x) > 0.0001f || std::abs(wheel.y) > 0.0001f) && g.MovingWindow == nullptr) {
+        ImGuiWindow* baseWindow = g.WheelingWindow ? g.WheelingWindow : g.HoveredWindow;
+        wheelWindow = findScrollableWindowFromHover(baseWindow);
+        if (shouldBypassGlobalSmoothScroll(wheelWindow)) {
+            wheelWindow = nullptr;
+        }
+    }
 
-    // On non-touch platforms, skip the full window traversal when there is no
-    // scroll input and no active inertial movement to process.
+    // On non-touch platforms, skip traversal when there is no input and no
+    // residual smoothing/inertia to process.
     if (!touchScreenMode && !hasWheelInput && runtime.activeWindowId == 0) {
         bool hasResidualMotion = false;
         for (const auto& [id, state] : runtime.windowStates) {
             (void)id;
             if (state.isDragging ||
-                std::abs(state.velocity.x) > 0.35f ||
-                std::abs(state.velocity.y) > 0.35f) {
+                std::abs(state.inputVelocity.x) > 6.0f ||
+                std::abs(state.inputVelocity.y) > 6.0f ||
+                std::abs(state.smoothVelocity.x) > 6.0f ||
+                std::abs(state.smoothVelocity.y) > 6.0f ||
+                std::abs(state.targetScroll.x - state.currentScroll.x) > 0.08f ||
+                std::abs(state.targetScroll.y - state.currentScroll.y) > 0.08f) {
                 hasResidualMotion = true;
                 break;
             }
@@ -616,15 +750,23 @@ void updateTouchSwipeScrolling() {
         }
     }
 
-    const float dt = std::max(io.DeltaTime, 1.0f / 240.0f);
+    const float dt = ImClamp(io.DeltaTime, 1.0f / 240.0f, 1.0f / 30.0f);
     const float dragThresholdSqr = 16.0f;
-    const float edgeResistance = 0.18f;
-    const float wheelEdgeResistance = 0.52f;
-    const float freeScrollFriction = 5.8f;
-    const float overscrollReturnRate = 2.2f;
-    const float overscrollVelocityDamping = 9.0f;
-    const float settleVelocityEpsilon = 0.35f;
-    const float settlePositionEpsilon = 0.20f;
+    const float edgeResistance = 0.34f;
+    const float wheelVelocityBlend = 0.14f;
+    const float touchDragVelocityBlend = 0.22f;
+    const float wheelImpulseScale = 0.24f;
+    const float overscrollEdgeImpulseScale = 0.10f;
+    const float freeScrollFriction = 7.2f;
+    const float overscrollInputFriction = 11.0f;
+    const float overscrollReturnSmoothing = 8.0f;
+    const float scrollSmoothTime = 0.13f;
+    const float dragSmoothTime = 0.055f;
+    const float overscrollSmoothTime = 0.15f;
+    const float maxSmoothSpeed = 5000.0f;
+    const float settleVelocityEpsilon = 6.0f;
+    const float settlePositionEpsilon = 0.04f;
+    const float boundaryEpsilon = 0.10f;
 
     for (auto& [id, state] : runtime.windowStates) {
         state.touchedThisFrame = false;
@@ -641,16 +783,25 @@ void updateTouchSwipeScrolling() {
         state.touchedThisFrame = true;
         if (!state.initialized) {
             state.initialized = true;
-            state.virtualScroll = window->Scroll;
-            state.velocity = ImVec2(0.0f, 0.0f);
+            state.targetScroll = window->Scroll;
+            state.currentScroll = window->Scroll;
+            state.inputVelocity = ImVec2(0.0f, 0.0f);
+            state.smoothVelocity = ImVec2(0.0f, 0.0f);
             continue;
         }
 
         const bool stateIsIdle = !state.isDragging &&
-                                 std::abs(state.velocity.x) < 1.0f &&
-                                 std::abs(state.velocity.y) < 1.0f;
-        if (stateIsIdle) {
-            state.virtualScroll = window->Scroll;
+                                 std::abs(state.inputVelocity.x) < settleVelocityEpsilon &&
+                                 std::abs(state.inputVelocity.y) < settleVelocityEpsilon &&
+                                 std::abs(state.smoothVelocity.x) < settleVelocityEpsilon &&
+                                 std::abs(state.smoothVelocity.y) < settleVelocityEpsilon &&
+                                 std::abs(state.targetScroll.x - state.currentScroll.x) < boundaryEpsilon &&
+                                 std::abs(state.targetScroll.y - state.currentScroll.y) < boundaryEpsilon;
+        if (stateIsIdle && !(wheelWindow && wheelWindow->ID == window->ID)) {
+            state.targetScroll = window->Scroll;
+            state.currentScroll = window->Scroll;
+            state.inputVelocity = ImVec2(0.0f, 0.0f);
+            state.smoothVelocity = ImVec2(0.0f, 0.0f);
         }
     }
 
@@ -664,74 +815,11 @@ void updateTouchSwipeScrolling() {
         }
     }
 
-    ImVec2 wheel(io.MouseWheelH, io.MouseWheel);
-    if (io.MouseWheelRequestAxisSwap) {
-        wheel = ImVec2(wheel.y, 0.0f);
-    }
-    if ((std::abs(wheel.x) > 0.0001f || std::abs(wheel.y) > 0.0001f) && g.MovingWindow == nullptr) {
-        ImGuiWindow* baseWindow = g.WheelingWindow ? g.WheelingWindow : g.HoveredWindow;
-        ImGuiWindow* wheelWindow = findScrollableWindowFromHover(baseWindow);
-        if (wheelWindow) {
-            TouchSwipeWindowState& state = runtime.windowStates[wheelWindow->ID];
-            state.touchedThisFrame = true;
-            if (!state.initialized) {
-                state.initialized = true;
-                state.virtualScroll = wheelWindow->Scroll;
-                state.velocity = ImVec2(0.0f, 0.0f);
-            }
-            for (int axis = 0; axis < 2; ++axis) {
-                const float wheelDelta = (axis == 0) ? wheel.x : wheel.y;
-                if (!hasScrollableAxis(wheelWindow, axis) || std::abs(wheelDelta) < 0.0001f) {
-                    continue;
-                }
-                const float maxScroll = wheelWindow->ScrollMax[axis];
-                const float currentScroll = wheelWindow->Scroll[axis];
-                const bool pushingMin = wheelDelta > 0.0f;
-                const bool pushingMax = wheelDelta < 0.0f;
-                const bool atMin = currentScroll <= 0.5f;
-                const bool atMax = currentScroll >= maxScroll - 0.5f;
-                const bool outside = state.virtualScroll[axis] < 0.0f || state.virtualScroll[axis] > maxScroll;
-                if (!outside && !((pushingMin && atMin) || (pushingMax && atMax))) {
-                    continue;
-                }
-
-                const float maxStep = (axis == 0)
-                    ? (wheelWindow->InnerRect.GetWidth() * 0.67f)
-                    : (wheelWindow->InnerRect.GetHeight() * 0.67f);
-                const float baseStep = (axis == 0)
-                    ? (2.0f * wheelWindow->FontRefSize)
-                    : (5.0f * wheelWindow->FontRefSize);
-                const float scrollStep = ImTrunc(ImMin(baseStep, maxStep));
-                const float delta = -wheelDelta * scrollStep;
-                const float axisExtent = (axis == 0)
-                    ? wheelWindow->InnerRect.GetWidth()
-                    : wheelWindow->InnerRect.GetHeight();
-                const float overscrollLimit = computeElasticOverscrollLimit(axisExtent, maxScroll);
-                const float clampedValue = ImClamp(state.virtualScroll[axis], 0.0f, maxScroll);
-                const float overshoot = std::abs(state.virtualScroll[axis] - clampedValue);
-                const float remainingFactor = ImClamp(
-                    1.0f - (overshoot / std::max(overscrollLimit, 0.001f)),
-                    0.12f,
-                    1.0f);
-
-                const float previousValue = state.virtualScroll[axis];
-                const float stretchedValue = applyEdgeResistance(
-                    previousValue + delta * 0.50f * remainingFactor,
-                    0.0f,
-                    maxScroll,
-                    wheelEdgeResistance);
-                state.virtualScroll[axis] = stretchedValue;
-                const float frameVelocity = (stretchedValue - previousValue) / dt;
-                state.velocity[axis] = ImLerp(state.velocity[axis], frameVelocity, 0.35f);
-            }
-        }
-    }
-
     if (touchScreenMode) {
         if (io.MouseClicked[0] && runtime.activeWindowId == 0 &&
             g.ActiveId == 0 && g.MovingWindow == nullptr) {
             ImGuiWindow* hovered = findScrollableWindowFromHover(g.HoveredWindow);
-            if (hovered) {
+            if (hovered && !shouldBypassGlobalSmoothScroll(hovered)) {
                 const bool clickInTitleBar = hovered->TitleBarHeight > 0.0f &&
                                              hovered->TitleBarRect().Contains(io.MouseClickedPos[0]);
                 if (!clickInTitleBar) {
@@ -741,8 +829,10 @@ void updateTouchSwipeScrolling() {
                     runtime.dragging = false;
                     TouchSwipeWindowState& state = runtime.windowStates[hovered->ID];
                     state.isDragging = false;
-                    state.velocity = ImVec2(0.0f, 0.0f);
-                    state.virtualScroll = hovered->Scroll;
+                    state.inputVelocity = ImVec2(0.0f, 0.0f);
+                    state.smoothVelocity = ImVec2(0.0f, 0.0f);
+                    state.targetScroll = hovered->Scroll;
+                    state.currentScroll = hovered->Scroll;
                     state.initialized = true;
                 }
             }
@@ -781,12 +871,12 @@ void updateTouchSwipeScrolling() {
                             continue;
                         }
                         const float maxScroll = activeWindow->ScrollMax[axis];
-                        const float previousValue = state.virtualScroll[axis];
+                        const float previousValue = state.targetScroll[axis];
                         const float draggedValue = previousValue - pointerDelta[axis];
-                        state.virtualScroll[axis] = applyEdgeResistance(
+                        state.targetScroll[axis] = applyEdgeResistance(
                             draggedValue, 0.0f, maxScroll, edgeResistance);
-                        const float frameVelocity = (state.virtualScroll[axis] - previousValue) / dt;
-                        state.velocity[axis] = ImLerp(state.velocity[axis], frameVelocity, 0.65f);
+                        const float frameVelocity = (state.targetScroll[axis] - previousValue) / dt;
+                        state.inputVelocity[axis] = ImLerp(state.inputVelocity[axis], frameVelocity, touchDragVelocityBlend);
                     }
                 }
             } else {
@@ -815,6 +905,14 @@ void updateTouchSwipeScrolling() {
             continue;
         }
 
+        if (shouldBypassGlobalSmoothScroll(window)) {
+            state.targetScroll = window->Scroll;
+            state.currentScroll = window->Scroll;
+            state.inputVelocity = ImVec2(0.0f, 0.0f);
+            state.smoothVelocity = ImVec2(0.0f, 0.0f);
+            continue;
+        }
+
         const bool draggingThisWindow = runtime.dragging &&
                                         runtime.activeWindowId == windowId &&
                                         io.MouseDown[0] &&
@@ -822,55 +920,162 @@ void updateTouchSwipeScrolling() {
 
         for (int axis = 0; axis < 2; ++axis) {
             if (!hasScrollableAxis(window, axis)) {
-                state.virtualScroll[axis] = 0.0f;
-                state.velocity[axis] = 0.0f;
+                state.targetScroll[axis] = 0.0f;
+                state.currentScroll[axis] = 0.0f;
+                state.inputVelocity[axis] = 0.0f;
+                state.smoothVelocity[axis] = 0.0f;
                 continue;
             }
 
             const float maxScroll = window->ScrollMax[axis];
+            const float wheelDelta = (axis == 0) ? wheel.x : wheel.y;
+            const float externalDelta = window->Scroll[axis] - state.currentScroll[axis];
+            const bool wheelTargetsThisWindow = !touchScreenMode &&
+                                                wheelWindow &&
+                                                wheelWindow->ID == windowId;
+            const bool wheelAxisInput = wheelTargetsThisWindow &&
+                                        (std::abs(wheelDelta) > 0.0001f ||
+                                         std::abs(externalDelta) > 0.001f);
+            const bool hasAxisInput = draggingThisWindow || wheelAxisInput;
+
             if (!draggingThisWindow) {
+                const bool outsideBounds = state.targetScroll[axis] < -0.01f ||
+                                           state.targetScroll[axis] > maxScroll + 0.01f;
                 if (!touchScreenMode &&
-                    state.virtualScroll[axis] >= -0.05f &&
-                    state.virtualScroll[axis] <= maxScroll + 0.05f) {
-                    state.virtualScroll[axis] = window->Scroll[axis];
-                    state.velocity[axis] *= 0.5f;
+                    !wheelAxisInput &&
+                    std::abs(state.inputVelocity[axis]) < settleVelocityEpsilon &&
+                    std::abs(state.smoothVelocity[axis]) < settleVelocityEpsilon &&
+                    std::abs(state.targetScroll[axis] - state.currentScroll[axis]) < boundaryEpsilon &&
+                    !outsideBounds) {
+                    state.targetScroll[axis] = window->Scroll[axis];
+                    state.currentScroll[axis] = window->Scroll[axis];
+                    state.inputVelocity[axis] = 0.0f;
+                    state.smoothVelocity[axis] = 0.0f;
+                    continue;
                 }
 
-                float value = state.virtualScroll[axis];
-                float velocity = state.velocity[axis];
-                value += velocity * dt;
+                if (wheelAxisInput) {
+                    // ImGui has already moved scroll this frame; absorb that jump into
+                    // our target and smooth only the visible position.
+                    state.targetScroll[axis] += externalDelta;
+                    const float impulseVelocity = ImClamp(externalDelta / dt, -2200.0f, 2200.0f) * wheelImpulseScale;
+                    state.inputVelocity[axis] = ImLerp(state.inputVelocity[axis], impulseVelocity, wheelVelocityBlend);
 
-                const float clampedValue = ImClamp(value, 0.0f, maxScroll);
-                const float stretch = value - clampedValue;
+                    const bool pushingMin = wheelDelta > 0.0f;
+                    const bool pushingMax = wheelDelta < 0.0f;
+                    const bool atMin = state.targetScroll[axis] <= 0.5f;
+                    const bool atMax = state.targetScroll[axis] >= maxScroll - 0.5f;
+                    if ((pushingMin && atMin) || (pushingMax && atMax)) {
+                        const float maxStep = (axis == 0)
+                            ? (window->InnerRect.GetWidth() * 0.67f)
+                            : (window->InnerRect.GetHeight() * 0.67f);
+                        const float baseStep = (axis == 0)
+                            ? (1.0f * window->FontRefSize)
+                            : (2.2f * window->FontRefSize);
+                        const float scrollStep = ImTrunc(ImMin(baseStep, maxStep));
+                        const float delta = -wheelDelta * scrollStep;
+
+                        const float axisExtent = (axis == 0)
+                            ? window->InnerRect.GetWidth()
+                            : window->InnerRect.GetHeight();
+                        const float overscrollLimit = computeElasticOverscrollLimit(axisExtent, maxScroll);
+                        const float clampedValue = ImClamp(state.targetScroll[axis], 0.0f, maxScroll);
+                        const float overshoot = std::abs(state.targetScroll[axis] - clampedValue);
+                        const float remainingFactor = ImClamp(
+                            1.0f - (overshoot / std::max(overscrollLimit, 0.001f)),
+                            0.10f,
+                            1.0f);
+                        const float prev = state.targetScroll[axis];
+                        state.targetScroll[axis] = applyEdgeResistance(
+                            prev + delta * 0.10f * remainingFactor,
+                            0.0f,
+                            maxScroll,
+                            0.45f);
+
+                        const float edgeImpulse = ImClamp((delta * remainingFactor) / dt, -1000.0f, 1000.0f) * overscrollEdgeImpulseScale;
+                        state.inputVelocity[axis] = ImLerp(state.inputVelocity[axis], edgeImpulse, wheelVelocityBlend);
+                    }
+                } else if (!touchScreenMode) {
+                    // External movement (scrollbar drag, programmatic jump): follow target, no extra inertia.
+                    const float syncThreshold = ImClamp(maxScroll * 0.012f, 0.01f, 0.20f);
+                    if (maxScroll <= 1.0f || std::abs(externalDelta) > syncThreshold) {
+                        state.targetScroll[axis] = window->Scroll[axis];
+                        state.inputVelocity[axis] = 0.0f;
+                    }
+                }
+
+                state.targetScroll[axis] += state.inputVelocity[axis] * dt;
+                const float clampedTarget = ImClamp(state.targetScroll[axis], 0.0f, maxScroll);
+                const float stretch = state.targetScroll[axis] - clampedTarget;
                 if (std::abs(stretch) > 0.0f) {
-                    const float returnBlend = 1.0f - std::exp(-overscrollReturnRate * dt);
-                    value = ImLerp(value, clampedValue, returnBlend);
-                    velocity *= std::exp(-overscrollVelocityDamping * dt);
+                    state.inputVelocity[axis] *= std::exp(-overscrollInputFriction * dt);
                 } else {
-                    velocity *= std::exp(-freeScrollFriction * dt);
+                    state.inputVelocity[axis] *= std::exp(-freeScrollFriction * dt);
+                }
+                if (std::abs(state.inputVelocity[axis]) < settleVelocityEpsilon) {
+                    state.inputVelocity[axis] = 0.0f;
                 }
 
-                if (std::abs(velocity) < settleVelocityEpsilon &&
-                    std::abs(value - clampedValue) < settlePositionEpsilon) {
-                    value = clampedValue;
-                    velocity = 0.0f;
+                if (!hasAxisInput) {
+                    const float returnBlend = 1.0f - std::exp(-overscrollReturnSmoothing * dt);
+                    state.targetScroll[axis] = ImLerp(state.targetScroll[axis], clampedTarget, returnBlend);
+                    if (std::abs(state.targetScroll[axis] - clampedTarget) < boundaryEpsilon) {
+                        state.targetScroll[axis] = clampedTarget;
+                    }
                 }
-
-                state.virtualScroll[axis] = value;
-                state.velocity[axis] = velocity;
             }
 
             const float axisExtent = (axis == 0) ? window->InnerRect.GetWidth() : window->InnerRect.GetHeight();
             const float overscrollLimit = computeElasticOverscrollLimit(axisExtent, maxScroll);
-            const float targetScroll = ImClamp(
-                state.virtualScroll[axis],
+            state.targetScroll[axis] = ImClamp(
+                state.targetScroll[axis],
                 -overscrollLimit,
                 maxScroll + overscrollLimit);
-            state.virtualScroll[axis] = targetScroll;
+
+            const bool targetOutsideBounds = state.targetScroll[axis] < 0.0f || state.targetScroll[axis] > maxScroll;
+            const float smoothTime = draggingThisWindow
+                ? dragSmoothTime
+                : (targetOutsideBounds ? overscrollSmoothTime : scrollSmoothTime);
+
+            state.currentScroll[axis] = smoothDampScalar(
+                state.currentScroll[axis],
+                state.targetScroll[axis],
+                state.smoothVelocity[axis],
+                smoothTime,
+                maxSmoothSpeed,
+                dt);
+
+            state.currentScroll[axis] = ImClamp(
+                state.currentScroll[axis],
+                -overscrollLimit,
+                maxScroll + overscrollLimit);
+
+            const float clampedCurrent = ImClamp(state.currentScroll[axis], 0.0f, maxScroll);
+            const float clampedTarget = ImClamp(state.targetScroll[axis], 0.0f, maxScroll);
+            if (!hasAxisInput &&
+                std::abs(state.currentScroll[axis] - clampedCurrent) < boundaryEpsilon &&
+                std::abs(state.targetScroll[axis] - clampedTarget) < boundaryEpsilon) {
+                state.currentScroll[axis] = clampedCurrent;
+                state.targetScroll[axis] = clampedTarget;
+                if ((clampedCurrent <= 0.0f && state.smoothVelocity[axis] < 0.0f) ||
+                    (clampedCurrent >= maxScroll && state.smoothVelocity[axis] > 0.0f)) {
+                    state.smoothVelocity[axis] = 0.0f;
+                }
+            }
+
+            if (!hasAxisInput &&
+                std::abs(state.currentScroll[axis] - state.targetScroll[axis]) < settlePositionEpsilon &&
+                std::abs(state.inputVelocity[axis]) < settleVelocityEpsilon &&
+                std::abs(state.smoothVelocity[axis]) < settleVelocityEpsilon) {
+                state.currentScroll[axis] = state.targetScroll[axis];
+                state.inputVelocity[axis] = 0.0f;
+                state.smoothVelocity[axis] = 0.0f;
+            }
+
             if (axis == 0) {
-                ImGui::SetScrollX(window, targetScroll);
+                ImGui::SetScrollX(window, state.currentScroll[axis]);
             } else {
-                ImGui::SetScrollY(window, targetScroll);
+                ImGui::SetScrollY(window, state.currentScroll[axis]);
             }
         }
     }

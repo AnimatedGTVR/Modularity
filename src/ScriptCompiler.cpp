@@ -1,4 +1,5 @@
 #include "ScriptCompiler.h"
+#include "ModuCPPTranspiler.h"
 
 #include <algorithm>
 #include <array>
@@ -567,6 +568,25 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     if (!readFileToString(scriptAbs, scriptSource)) {
         error = "Unable to read script file: " + scriptAbs.string();
         return false;
+    }
+
+    fs::path transpiledPath;
+    fs::path compileSourcePath = scriptAbs;
+    if (ModuCPPTranspiler::shouldTranspile(scriptAbs, scriptSource)) {
+        ModuCPPTranspileResult transpiled;
+        ModuCPPTranspiler transpiler;
+        if (!transpiler.transpile(scriptAbs, scriptSource, transpiled, error)) {
+            error = "ModuCPP transpile failed: " + error;
+            return false;
+        }
+
+        transpiledPath = config.outDir / relativeParent / (baseName + ".moducpp.gen.cpp");
+        if (!writeTextFileIfChanged(transpiledPath, transpiled.generatedSource, error)) {
+            return false;
+        }
+
+        scriptSource = std::move(transpiled.generatedSource);
+        compileSourcePath = transpiledPath;
     }
 
     auto hasExternCSymbol = [&](const std::string& symbol) {
@@ -1150,12 +1170,12 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
                      updateSpec.present || tickUpdateSpec.present ||
                      needsInspectorWrap || needsRenderWrap || needsExitWrap;
 
-        fs::path sourceToCompile = scriptAbs;
+        fs::path sourceToCompile = compileSourcePath;
         if (useWrapper) {
             wrapperPath = config.outDir / relativeParent / (baseName + ".wrap.cpp");
             std::ostringstream wrapper;
 
-            std::string includePath = scriptAbs.lexically_normal().generic_string();
+            std::string includePath = sourceToCompile.lexically_normal().generic_string();
             if (needsInspectorWrap) {
                 wrapper << "#define Script_OnInspector Script_OnInspector_Impl\n";
             }
@@ -1285,7 +1305,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.dependencyPath = dependencyPath;
     outCommands.secondaryDependencyPath = secondaryDependencyPath;
     outCommands.binaryPath = binaryPath;
-    outCommands.wrapperPath = wrapperPath;
+    outCommands.wrapperPath = wrapperPath.empty() ? transpiledPath : wrapperPath;
     outCommands.sourcePath = scriptAbs;
     outCommands.usedWrapper = useWrapper;
     return true;

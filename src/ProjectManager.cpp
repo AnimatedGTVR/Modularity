@@ -396,7 +396,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=19\n";
+        file << "version=20\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "objectCount=" << objects.size() << "\n";
@@ -415,9 +415,11 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "renderType=" << static_cast<int>(obj.renderType) << "\n";
             file << "faceCamera=" << (obj.faceCamera ? 1 : 0) << "\n";
             file << "hasLight=" << (obj.hasLight ? 1 : 0) << "\n";
+            file << "hasLight2D=" << (obj.hasLight2D ? 1 : 0) << "\n";
             file << "hasCamera=" << (obj.hasCamera ? 1 : 0) << "\n";
             file << "hasPostFX=" << (obj.hasPostFX ? 1 : 0) << "\n";
             file << "hasUI=" << (obj.hasUI ? 1 : 0) << "\n";
+            file << "hasShadowCaster2D=" << (obj.hasShadowCaster2D ? 1 : 0) << "\n";
             file << "uiType=" << static_cast<int>(obj.ui.type) << "\n";
             file << "parentId=" << obj.parentId << "\n";
             file << "position=" << obj.localPosition.x << "," << obj.localPosition.y << "," << obj.localPosition.z << "\n";
@@ -679,6 +681,66 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "lightShadowBias=" << obj.light.shadowBias << "\n";
             file << "lightShadowSoftness=" << obj.light.shadowSoftness << "\n";
             file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
+            if (obj.hasLight2D) {
+                file << "light2dEnabled=" << (obj.light2D.enabled ? 1 : 0) << "\n";
+                file << "light2dType=" << static_cast<int>(obj.light2D.type) << "\n";
+                file << "light2dColor="
+                     << obj.light2D.color.r << ","
+                     << obj.light2D.color.g << ","
+                     << obj.light2D.color.b << ","
+                     << obj.light2D.color.a << "\n";
+                file << "light2dIntensity=" << obj.light2D.intensity << "\n";
+                file << "light2dRadius=" << obj.light2D.radius << "\n";
+                file << "light2dInnerRadius=" << obj.light2D.innerRadius << "\n";
+                file << "light2dOuterRadius=" << obj.light2D.outerRadius << "\n";
+                file << "light2dFalloffStrength=" << obj.light2D.falloffStrength << "\n";
+                file << "light2dInnerSpotAngle=" << obj.light2D.innerSpotAngle << "\n";
+                file << "light2dOuterSpotAngle=" << obj.light2D.outerSpotAngle << "\n";
+                file << "light2dBlendStyle=" << obj.light2D.blendStyle << "\n";
+                file << "light2dOrder=" << obj.light2D.lightOrder << "\n";
+                file << "light2dOverlap=" << static_cast<int>(obj.light2D.overlapOperation) << "\n";
+                file << "light2dShadowStrength=" << obj.light2D.shadowStrength << "\n";
+                file << "light2dVolumetric=" << (obj.light2D.volumetricEnabled ? 1 : 0) << "\n";
+                file << "light2dCastShadows=" << (obj.light2D.castsShadows ? 1 : 0) << "\n";
+                file << "light2dTargetAllLayers=" << (obj.light2D.targetAllLayers ? 1 : 0) << "\n";
+                file << "light2dTargetLayerMask=" << obj.light2D.targetLayerMask << "\n";
+                file << "light2dNormalQuality=" << static_cast<int>(obj.light2D.normalMapQuality) << "\n";
+                file << "light2dNormalDistance=" << obj.light2D.normalMapDistance << "\n";
+                file << "light2dUseDistanceExponent=" << (obj.light2D.useDistanceExponent ? 1 : 0) << "\n";
+                file << "light2dDistanceExponent=" << obj.light2D.distanceExponent << "\n";
+                file << "light2dCookie=" << obj.light2D.cookieTexturePath << "\n";
+                file << "light2dCookieScale=" << obj.light2D.cookieScale.x << "," << obj.light2D.cookieScale.y << "\n";
+                file << "light2dCookieRotation=" << obj.light2D.cookieRotation << "\n";
+                file << "light2dFreeformFeather=" << obj.light2D.freeformFeather << "\n";
+                file << "light2dFreeformEdgeFalloff=" << obj.light2D.freeformEdgeFalloff << "\n";
+                file << "light2dFlickerEnabled=" << (obj.light2D.flicker.enabled ? 1 : 0) << "\n";
+                file << "light2dFlickerSpeed=" << obj.light2D.flicker.speed << "\n";
+                file << "light2dFlickerAmount=" << obj.light2D.flicker.amount << "\n";
+                file << "light2dFlickerSeed=" << obj.light2D.flicker.seed << "\n";
+                if (!obj.light2D.shapePoints.empty()) {
+                    file << "light2dShape=";
+                    for (size_t i = 0; i < obj.light2D.shapePoints.size(); ++i) {
+                        if (i > 0) file << ";";
+                        file << obj.light2D.shapePoints[i].x << "," << obj.light2D.shapePoints[i].y;
+                    }
+                    file << "\n";
+                }
+            }
+            if (obj.hasShadowCaster2D) {
+                file << "shadowCaster2dEnabled=" << (obj.shadowCaster2D.enabled ? 1 : 0) << "\n";
+                file << "shadowCaster2dSelfShadow=" << (obj.shadowCaster2D.castsSelfShadow ? 1 : 0) << "\n";
+                file << "shadowCaster2dTargetAllLayers=" << (obj.shadowCaster2D.targetAllLayers ? 1 : 0) << "\n";
+                file << "shadowCaster2dTargetLayerMask=" << obj.shadowCaster2D.targetLayerMask << "\n";
+                file << "shadowCaster2dStrength=" << obj.shadowCaster2D.shadowStrength << "\n";
+                if (!obj.shadowCaster2D.points.empty()) {
+                    file << "shadowCaster2dShape=";
+                    for (size_t i = 0; i < obj.shadowCaster2D.points.size(); ++i) {
+                        if (i > 0) file << ";";
+                        file << obj.shadowCaster2D.points[i].x << "," << obj.shadowCaster2D.points[i].y;
+                    }
+                    file << "\n";
+                }
+            }
             file << "cameraType=" << static_cast<int>(obj.camera.type) << "\n";
             file << "cameraFov=" << obj.camera.fov << "\n";
             file << "cameraNear=" << obj.camera.nearClip << "\n";
@@ -709,6 +771,25 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiTextEffectIntensity=" << obj.ui.textEffectIntensity << "\n";
             file << "uiRenderIn3D=" << (obj.ui.renderIn3D ? 1 : 0) << "\n";
             file << "uiRenderTargetSize=" << obj.ui.renderTargetSize.x << "," << obj.ui.renderTargetSize.y << "\n";
+            file << "uiPseudo3DEnabled=" << (obj.ui.pseudo3DEnabled ? 1 : 0) << "\n";
+            file << "uiPseudo3DUseOffscreen=" << (obj.ui.pseudo3DUseOffscreenSurface ? 1 : 0) << "\n";
+            file << "uiPseudo3DPanelSize=" << obj.ui.pseudo3DPanelSize.x << "," << obj.ui.pseudo3DPanelSize.y << "\n";
+            file << "uiPseudo3DTopLeftOffset=" << obj.ui.pseudo3DTopLeftOffset.x << "," << obj.ui.pseudo3DTopLeftOffset.y << "\n";
+            file << "uiPseudo3DTopRightOffset=" << obj.ui.pseudo3DTopRightOffset.x << "," << obj.ui.pseudo3DTopRightOffset.y << "\n";
+            file << "uiPseudo3DBottomRightOffset=" << obj.ui.pseudo3DBottomRightOffset.x << "," << obj.ui.pseudo3DBottomRightOffset.y << "\n";
+            file << "uiPseudo3DBottomLeftOffset=" << obj.ui.pseudo3DBottomLeftOffset.x << "," << obj.ui.pseudo3DBottomLeftOffset.y << "\n";
+            file << "uiPseudo3DPivot=" << obj.ui.pseudo3DPivot.x << "," << obj.ui.pseudo3DPivot.y << "\n";
+            file << "uiPseudo3DPerspectiveIntensity=" << obj.ui.pseudo3DPerspectiveIntensity << "\n";
+            file << "uiPseudo3DSkewAmount=" << obj.ui.pseudo3DSkewAmount << "\n";
+            file << "uiPseudo3DCurvatureAmount=" << obj.ui.pseudo3DCurvatureAmount << "\n";
+            file << "uiPseudo3DAnchorTargetId=" << obj.ui.pseudo3DAnchorTargetId << "\n";
+            file << "uiPseudo3DDistanceScaling=" << (obj.ui.pseudo3DDistanceScalingEnabled ? 1 : 0) << "\n";
+            file << "uiPseudo3DAdjustPerspectiveDistance=" << (obj.ui.pseudo3DAdjustPerspectiveWithDistance ? 1 : 0) << "\n";
+            file << "uiPseudo3DMinDistance=" << obj.ui.pseudo3DMinDistance << "\n";
+            file << "uiPseudo3DMaxDistance=" << obj.ui.pseudo3DMaxDistance << "\n";
+            file << "uiPseudo3DInteractionDistance=" << obj.ui.pseudo3DInteractionDistance << "\n";
+            file << "uiPseudo3DDepthSort=" << obj.ui.pseudo3DDepthSort << "\n";
+            file << "uiPseudo3DAllowInteraction=" << (obj.ui.pseudo3DAllowInteraction ? 1 : 0) << "\n";
             file << "uiSpriteSheetEnabled=" << (obj.ui.spriteSheetEnabled ? 1 : 0) << "\n";
             file << "uiSpriteSheetGrid=" << obj.ui.spriteSheetColumns << "," << obj.ui.spriteSheetRows << "\n";
             file << "uiSpriteSheetFrame=" << obj.ui.spriteSheetFrame << "\n";
@@ -724,6 +805,9 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                  << obj.ui.nineSliceBorder.w << "\n";
             file << "uiNineSliceTileEdges=" << (obj.ui.nineSliceTileEdges ? 1 : 0) << "\n";
             file << "uiNineSliceTileCenter=" << (obj.ui.nineSliceTileCenter ? 1 : 0) << "\n";
+            file << "uiReceiveLighting2D=" << (obj.ui.receiveLighting2D ? 1 : 0) << "\n";
+            file << "uiUnlitLighting2D=" << (obj.ui.unlitLighting2D ? 1 : 0) << "\n";
+            file << "uiEmissiveLighting2D=" << obj.ui.emissiveLighting2D << "\n";
             if (!obj.ui.spriteCustomFrames.empty()) {
                 file << "uiSpriteCustomFrames=";
                 for (size_t i = 0; i < obj.ui.spriteCustomFrames.size(); ++i) {
@@ -933,6 +1017,13 @@ void ApplyLegacyTypePreset(SceneObject& obj, ObjectType legacyType) {
             obj.hasUI = true;
             obj.ui.type = UIElementType::Sprite2D;
             break;
+        case ObjectType::Light2D:
+            obj.hasLight2D = true;
+            obj.light2D.type = Light2DType::Point;
+            break;
+        case ObjectType::ShadowCaster2D:
+            obj.hasShadowCaster2D = true;
+            break;
         case ObjectType::DirectionalLight:
             obj.hasLight = true;
             obj.light.type = LightType::Directional;
@@ -1007,9 +1098,11 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
          }},
         {"faceCamera", +[](SceneObject& obj, const std::string& value) { obj.faceCamera = std::stoi(value) != 0; }},
         {"hasLight", +[](SceneObject& obj, const std::string& value) { obj.hasLight = std::stoi(value) != 0; }},
+        {"hasLight2D", +[](SceneObject& obj, const std::string& value) { obj.hasLight2D = std::stoi(value) != 0; }},
         {"hasCamera", +[](SceneObject& obj, const std::string& value) { obj.hasCamera = std::stoi(value) != 0; }},
         {"hasPostFX", +[](SceneObject& obj, const std::string& value) { obj.hasPostFX = std::stoi(value) != 0; }},
         {"hasUI", +[](SceneObject& obj, const std::string& value) { obj.hasUI = std::stoi(value) != 0; }},
+        {"hasShadowCaster2D", +[](SceneObject& obj, const std::string& value) { obj.hasShadowCaster2D = std::stoi(value) != 0; }},
         {"uiType", +[](SceneObject& obj, const std::string& value) {
              obj.ui.type = static_cast<UIElementType>(std::stoi(value));
              if (obj.ui.type != UIElementType::None) {
@@ -1230,6 +1323,44 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"lightShadowBias", +[](SceneObject& obj, const std::string& value) { obj.light.shadowBias = std::stof(value); }},
         {"lightShadowSoftness", +[](SceneObject& obj, const std::string& value) { obj.light.shadowSoftness = std::stof(value); }},
         {"lightEnabled", +[](SceneObject& obj, const std::string& value) { obj.light.enabled = (std::stoi(value) != 0); }},
+        {"light2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.light2D.enabled = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dType", +[](SceneObject& obj, const std::string& value) { obj.light2D.type = static_cast<Light2DType>(std::stoi(value)); obj.hasLight2D = true; }},
+        {"light2dColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.light2D.color); obj.hasLight2D = true; }},
+        {"light2dIntensity", +[](SceneObject& obj, const std::string& value) { obj.light2D.intensity = std::stof(value); obj.hasLight2D = true; }},
+        {"light2dRadius", +[](SceneObject& obj, const std::string& value) { obj.light2D.radius = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dInnerRadius", +[](SceneObject& obj, const std::string& value) { obj.light2D.innerRadius = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dOuterRadius", +[](SceneObject& obj, const std::string& value) { obj.light2D.outerRadius = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dFalloffStrength", +[](SceneObject& obj, const std::string& value) { obj.light2D.falloffStrength = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dInnerSpotAngle", +[](SceneObject& obj, const std::string& value) { obj.light2D.innerSpotAngle = std::clamp(std::stof(value), 0.0f, 360.0f); obj.hasLight2D = true; }},
+        {"light2dOuterSpotAngle", +[](SceneObject& obj, const std::string& value) { obj.light2D.outerSpotAngle = std::clamp(std::stof(value), 0.0f, 360.0f); obj.hasLight2D = true; }},
+        {"light2dBlendStyle", +[](SceneObject& obj, const std::string& value) { obj.light2D.blendStyle = std::stoi(value); obj.hasLight2D = true; }},
+        {"light2dOrder", +[](SceneObject& obj, const std::string& value) { obj.light2D.lightOrder = std::stoi(value); obj.hasLight2D = true; }},
+        {"light2dOverlap", +[](SceneObject& obj, const std::string& value) { obj.light2D.overlapOperation = static_cast<Light2DOverlapOperation>(std::stoi(value)); obj.hasLight2D = true; }},
+        {"light2dShadowStrength", +[](SceneObject& obj, const std::string& value) { obj.light2D.shadowStrength = std::clamp(std::stof(value), 0.0f, 1.0f); obj.hasLight2D = true; }},
+        {"light2dVolumetric", +[](SceneObject& obj, const std::string& value) { obj.light2D.volumetricEnabled = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dCastShadows", +[](SceneObject& obj, const std::string& value) { obj.light2D.castsShadows = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dTargetAllLayers", +[](SceneObject& obj, const std::string& value) { obj.light2D.targetAllLayers = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dTargetLayerMask", +[](SceneObject& obj, const std::string& value) { obj.light2D.targetLayerMask = static_cast<uint32_t>(std::stoul(value)); obj.hasLight2D = true; }},
+        {"light2dNormalQuality", +[](SceneObject& obj, const std::string& value) { obj.light2D.normalMapQuality = static_cast<Light2DNormalMapQuality>(std::stoi(value)); obj.hasLight2D = true; }},
+        {"light2dNormalDistance", +[](SceneObject& obj, const std::string& value) { obj.light2D.normalMapDistance = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dUseDistanceExponent", +[](SceneObject& obj, const std::string& value) { obj.light2D.useDistanceExponent = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dDistanceExponent", +[](SceneObject& obj, const std::string& value) { obj.light2D.distanceExponent = std::max(0.01f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dCookie", +[](SceneObject& obj, const std::string& value) { obj.light2D.cookieTexturePath = value; obj.hasLight2D = true; }},
+        {"light2dCookieScale", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.light2D.cookieScale); obj.hasLight2D = true; }},
+        {"light2dCookieRotation", +[](SceneObject& obj, const std::string& value) { obj.light2D.cookieRotation = std::stof(value); obj.hasLight2D = true; }},
+        {"light2dFreeformFeather", +[](SceneObject& obj, const std::string& value) { obj.light2D.freeformFeather = std::max(0.0f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dFreeformEdgeFalloff", +[](SceneObject& obj, const std::string& value) { obj.light2D.freeformEdgeFalloff = std::max(0.01f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dFlickerEnabled", +[](SceneObject& obj, const std::string& value) { obj.light2D.flicker.enabled = (std::stoi(value) != 0); obj.hasLight2D = true; }},
+        {"light2dFlickerSpeed", +[](SceneObject& obj, const std::string& value) { obj.light2D.flicker.speed = std::max(0.01f, std::stof(value)); obj.hasLight2D = true; }},
+        {"light2dFlickerAmount", +[](SceneObject& obj, const std::string& value) { obj.light2D.flicker.amount = std::clamp(std::stof(value), 0.0f, 1.0f); obj.hasLight2D = true; }},
+        {"light2dFlickerSeed", +[](SceneObject& obj, const std::string& value) { obj.light2D.flicker.seed = std::stof(value); obj.hasLight2D = true; }},
+        {"light2dShape", +[](SceneObject& obj, const std::string& value) { ParseVec2List(value, obj.light2D.shapePoints); obj.hasLight2D = true; }},
+        {"shadowCaster2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.shadowCaster2D.enabled = (std::stoi(value) != 0); obj.hasShadowCaster2D = true; }},
+        {"shadowCaster2dSelfShadow", +[](SceneObject& obj, const std::string& value) { obj.shadowCaster2D.castsSelfShadow = (std::stoi(value) != 0); obj.hasShadowCaster2D = true; }},
+        {"shadowCaster2dTargetAllLayers", +[](SceneObject& obj, const std::string& value) { obj.shadowCaster2D.targetAllLayers = (std::stoi(value) != 0); obj.hasShadowCaster2D = true; }},
+        {"shadowCaster2dTargetLayerMask", +[](SceneObject& obj, const std::string& value) { obj.shadowCaster2D.targetLayerMask = static_cast<uint32_t>(std::stoul(value)); obj.hasShadowCaster2D = true; }},
+        {"shadowCaster2dStrength", +[](SceneObject& obj, const std::string& value) { obj.shadowCaster2D.shadowStrength = std::clamp(std::stof(value), 0.0f, 1.0f); obj.hasShadowCaster2D = true; }},
+        {"shadowCaster2dShape", +[](SceneObject& obj, const std::string& value) { ParseVec2List(value, obj.shadowCaster2D.points); obj.hasShadowCaster2D = true; }},
         {"cameraType", +[](SceneObject& obj, const std::string& value) { obj.camera.type = static_cast<SceneCameraType>(std::stoi(value)); }},
         {"cameraFov", +[](SceneObject& obj, const std::string& value) { obj.camera.fov = std::stof(value); }},
         {"cameraNear", +[](SceneObject& obj, const std::string& value) { obj.camera.nearClip = std::stof(value); }},
@@ -1264,6 +1395,29 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiTextEffectIntensity", +[](SceneObject& obj, const std::string& value) { obj.ui.textEffectIntensity = std::max(0.0f, std::stof(value)); }},
         {"uiRenderIn3D", +[](SceneObject& obj, const std::string& value) { obj.ui.renderIn3D = (std::stoi(value) != 0); }},
         {"uiRenderTargetSize", +[](SceneObject& obj, const std::string& value) { ParseIVec2(value, obj.ui.renderTargetSize); }},
+        {"uiPseudo3DEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DEnabled = (std::stoi(value) != 0); }},
+        {"uiPseudo3DUseOffscreen", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DUseOffscreenSurface = (std::stoi(value) != 0); }},
+        {"uiPseudo3DPanelSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DPanelSize); }},
+        {"uiPseudo3DTopLeftOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DTopLeftOffset); }},
+        {"uiPseudo3DTopRightOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DTopRightOffset); }},
+        {"uiPseudo3DBottomRightOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DBottomRightOffset); }},
+        {"uiPseudo3DBottomLeftOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DBottomLeftOffset); }},
+        {"uiPseudo3DPivot", +[](SceneObject& obj, const std::string& value) {
+             ParseVec2(value, obj.ui.pseudo3DPivot);
+             obj.ui.pseudo3DPivot.x = std::clamp(obj.ui.pseudo3DPivot.x, 0.0f, 1.0f);
+             obj.ui.pseudo3DPivot.y = std::clamp(obj.ui.pseudo3DPivot.y, 0.0f, 1.0f);
+         }},
+        {"uiPseudo3DPerspectiveIntensity", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DPerspectiveIntensity = std::stof(value); }},
+        {"uiPseudo3DSkewAmount", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DSkewAmount = std::stof(value); }},
+        {"uiPseudo3DCurvatureAmount", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DCurvatureAmount = std::stof(value); }},
+        {"uiPseudo3DAnchorTargetId", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DAnchorTargetId = std::stoi(value); }},
+        {"uiPseudo3DDistanceScaling", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DDistanceScalingEnabled = (std::stoi(value) != 0); }},
+        {"uiPseudo3DAdjustPerspectiveDistance", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DAdjustPerspectiveWithDistance = (std::stoi(value) != 0); }},
+        {"uiPseudo3DMinDistance", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DMinDistance = std::max(0.01f, std::stof(value)); }},
+        {"uiPseudo3DMaxDistance", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DMaxDistance = std::max(0.02f, std::stof(value)); }},
+        {"uiPseudo3DInteractionDistance", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DInteractionDistance = std::max(0.0f, std::stof(value)); }},
+        {"uiPseudo3DDepthSort", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DDepthSort = std::stoi(value); }},
+        {"uiPseudo3DAllowInteraction", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DAllowInteraction = (std::stoi(value) != 0); }},
         {"uiSpriteSheetEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.spriteSheetEnabled = (std::stoi(value) != 0); }},
         {"uiSpriteSheetGrid", +[](SceneObject& obj, const std::string& value) {
              glm::ivec2 grid(1, 1);
@@ -1296,6 +1450,15 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
          }},
         {"uiNineSliceTileCenter", +[](SceneObject& obj, const std::string& value) {
              obj.ui.nineSliceTileCenter = (std::stoi(value) != 0);
+         }},
+        {"uiReceiveLighting2D", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.receiveLighting2D = (std::stoi(value) != 0);
+         }},
+        {"uiUnlitLighting2D", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.unlitLighting2D = (std::stoi(value) != 0);
+         }},
+        {"uiEmissiveLighting2D", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.emissiveLighting2D = std::max(0.0f, std::stof(value));
          }},
         {"uiSpriteCustomFrames", +[](SceneObject& obj, const std::string& value) {
              obj.ui.spriteCustomFrames.clear();
@@ -1434,6 +1597,12 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
     if (obj.type == ObjectType::Sprite25D) {
         return ObjectType::Sprite25D;
     }
+    if (obj.type == ObjectType::Light2D && obj.hasLight2D) {
+        return ObjectType::Light2D;
+    }
+    if (obj.type == ObjectType::ShadowCaster2D && obj.hasShadowCaster2D) {
+        return ObjectType::ShadowCaster2D;
+    }
     if (obj.hasRenderer) {
         switch (obj.renderType) {
             case RenderType::Cube: return ObjectType::Cube;
@@ -1467,11 +1636,17 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
             case LightType::Area: return ObjectType::AreaLight;
         }
     }
+    if (obj.hasLight2D) {
+        return ObjectType::Light2D;
+    }
     if (obj.hasCamera) {
         return ObjectType::Camera;
     }
     if (obj.hasPostFX) {
         return ObjectType::PostFXNode;
+    }
+    if (obj.hasShadowCaster2D) {
+        return ObjectType::ShadowCaster2D;
     }
     return ObjectType::Empty;
 }
@@ -1488,7 +1663,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         objects.clear();
         std::string line;
         SceneObject* currentObj = nullptr;
-        int sceneVersion = 9;
+        int sceneVersion = 20;
         float sceneTimeOfDay = -1.0f;
 
         while (std::getline(file, line)) {

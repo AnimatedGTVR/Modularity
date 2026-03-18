@@ -1505,7 +1505,11 @@ bool VulkanRenderer::createSceneTargetImage(SceneTarget& target, uint32_t width,
     }
 
     if (imguiInitialized && sceneSampler != VK_NULL_HANDLE) {
-        target.descriptorSet = ImGui_ImplVulkan_AddTexture(sceneSampler, target.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const bool isGameTarget = (&target == &gameSceneTarget);
+        const VkSampler sampler = (isGameTarget && sceneSamplerPoint != VK_NULL_HANDLE)
+            ? sceneSamplerPoint
+            : sceneSampler;
+        target.descriptorSet = ImGui_ImplVulkan_AddTexture(sampler, target.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     return true;
@@ -1570,7 +1574,11 @@ bool VulkanRenderer::ensureSceneTarget(SceneTarget& target) {
         }
         target.resizePending = false;
     } else if (target.descriptorSet == VK_NULL_HANDLE && imguiInitialized && sceneSampler != VK_NULL_HANDLE) {
-        target.descriptorSet = ImGui_ImplVulkan_AddTexture(sceneSampler, target.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const bool isGameTarget = (&target == &gameSceneTarget);
+        const VkSampler sampler = (isGameTarget && sceneSamplerPoint != VK_NULL_HANDLE)
+            ? sceneSamplerPoint
+            : sceneSampler;
+        target.descriptorSet = ImGui_ImplVulkan_AddTexture(sampler, target.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     return true;

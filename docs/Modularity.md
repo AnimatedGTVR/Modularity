@@ -6,7 +6,7 @@ This document explains how the Modularity C++ engine is structured, how projects
 Modularity is a native C++ engine with an integrated editor. The core is built around:
 - A scene graph made of `SceneObject` instances with component-style flags/data.
 - An OpenGL renderer with post-processing and UI rendering.
-- A scripting system that hot-compiles native C++/C into shared libraries and optionally hosts managed C# via Mono.
+- A scripting system that supports high-level `ModuCPP` authoring, raw native C++/C shared-library scripts, and managed C# via Mono.
 - Optional PhysX-based 3D physics, plus a lightweight built-in 2D simulation.
 - Audio via miniaudio with spatial playback and reverb zones.
 
@@ -94,7 +94,7 @@ Examples of built-in types:
 - **Light**: light type, color, intensity, range, and light-specific parameters.
 - **Camera**: FOV, near/far, 2D settings, post-FX toggle.
 - **PostFX**: global effects settings (bloom, color adjust, motion blur, vignette, chromatic aberration, AO).
-- **Scripts**: one or more script components (`C++`, `C`, or managed `C#`).
+- **Scripts**: one or more script components authored as `ModuCPP`/native `C++`, `C`, or managed `C#`.
 
 ### Physics components
 3D (PhysX, optional):
@@ -164,20 +164,32 @@ Raw meshes:
 Native scripts are compiled to shared libraries and hot-loaded at runtime. A project-specific `scripts.modu` controls build settings and include paths.
 
 Key concepts:
+- `ModuCPP` is now the preferred native authoring layer for gameplay scripts. `.moducpp` files and `.cpp` files that declare `public class ... : ModuBehaviour` are transpiled into native C++ before compile.
 - C++ hooks like `Begin`, `TickUpdate`, and `Update`.
 - C hooks via the C API bridge (`Modu_*` hook names in `.c` scripts).
 - Auto-generated wrappers export `Script_Begin`, `Script_TickUpdate`, etc., when hook names are detected.
+- The helper header `#include "ModuCPP"` also works in raw native C++ and provides `Config<T>()`, `State<T>()`, persistent inspector helpers, input helpers, 2D movement helpers, and audio/sprite facades.
 
 For full details, see:
 - `docs/Scripting.md`
 
 ### Managed C# scripting (experimental)
-Modularity can host managed scripts using Mono, with a minimal API surface.
-Managed project files are under `Scripts/Managed` (separate from `Assets/Scripts` used for native scripts).
+Modularity can host managed scripts using Mono via the `ModuCPP` managed bridge.
+Managed project files are under `Scripts/Managed` (separate from `Assets/Scripts` used for native scripts), and scripts can use object/transform, physics, animation, UI, sprite, audio, settings, and inspector helpers from `ModuCPP.Context`.
+The current managed bridge ABI is `version = 6`, which includes the expanded object state, 2D motion, sprite fade, audio, and detailed raycast helpers.
 
 For setup and caveats, see:
 - `docs/Scripting.md`
 - `docs/mono-embedding.md`
+
+### Shipped scripting mechanics
+The current repo includes example systems that are useful to call out in public-facing documentation:
+- Dialogue runtime with localization, typewriter timing, audio, and text effects
+- Interactable objects with proximity checks, keypress interaction, selection-state toggles, and dialogue handoff
+- Main menu controller with configurable cursor movement, sounds, and menu actions
+- Top-down 2D movement with optional Rigidbody2D driving, directional sprite clips, sprinting, and footsteps
+- Standalone 3D movement controller with configurable locomotion/grounding tuning
+- Timed object enable/disable behavior, scripted editor windows, and animation tooling
 
 ## 10) Physics
 ### 3D (PhysX)

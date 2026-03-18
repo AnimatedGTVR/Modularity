@@ -384,12 +384,70 @@ struct Parser {
                 }
                 while (peek().type != TokenType::End && peek().type != TokenType::RBrace) {
                     if (match(TokenType::Semicolon)) {
-                        layers.push_back({"Layer_" + std::to_string(layers.size())});
+                        layers.push_back({ "Layer_" + std::to_string(layers.size()), true, "" });
                         continue;
                     }
-                    if (peek().type == TokenType::Identifier) {
-                        layers.push_back({advance().text});
+                    if (peek().type == TokenType::Identifier || peek().type == TokenType::String) {
+                        layers.push_back({ advance().text, true, "" });
                         match(TokenType::Semicolon);
+                        continue;
+                    }
+                    advance();
+                }
+                match(TokenType::RBrace);
+                continue;
+            }
+            if (peek().type == TokenType::Identifier && peek().text == "visible") {
+                advance();
+                if (!match(TokenType::LBrace)) {
+                    error(peek().line, "expected '{' after layer visibility");
+                    continue;
+                }
+                size_t visibleIndex = 0;
+                while (peek().type != TokenType::End && peek().type != TokenType::RBrace) {
+                    if (peek().type == TokenType::Identifier && (peek().text == "true" || peek().text == "false")) {
+                        if (visibleIndex >= layers.size()) {
+                            layers.resize(visibleIndex + 1);
+                            if (layers[visibleIndex].name.empty()) {
+                                layers[visibleIndex].name = "Layer_" + std::to_string(visibleIndex);
+                            }
+                        }
+                        layers[visibleIndex].visible = (advance().text == "true");
+                        ++visibleIndex;
+                        match(TokenType::Semicolon);
+                        continue;
+                    }
+                    if (match(TokenType::Semicolon)) {
+                        ++visibleIndex;
+                        continue;
+                    }
+                    advance();
+                }
+                match(TokenType::RBrace);
+                continue;
+            }
+            if (peek().type == TokenType::Identifier && peek().text == "pixels") {
+                advance();
+                if (!match(TokenType::LBrace)) {
+                    error(peek().line, "expected '{' after layer pixels");
+                    continue;
+                }
+                size_t pixelIndex = 0;
+                while (peek().type != TokenType::End && peek().type != TokenType::RBrace) {
+                    if (peek().type == TokenType::String) {
+                        if (pixelIndex >= layers.size()) {
+                            layers.resize(pixelIndex + 1);
+                            if (layers[pixelIndex].name.empty()) {
+                                layers[pixelIndex].name = "Layer_" + std::to_string(pixelIndex);
+                            }
+                        }
+                        layers[pixelIndex].pixelData = advance().text;
+                        ++pixelIndex;
+                        match(TokenType::Semicolon);
+                        continue;
+                    }
+                    if (match(TokenType::Semicolon)) {
+                        ++pixelIndex;
                         continue;
                     }
                     advance();
@@ -631,7 +689,21 @@ std::string WriteSpritesheet(const SpritesheetDocument& inputDocument) {
         out << "    names\n";
         out << "    {\n";
         for (const SpritesheetLayer& layer : document.layers) {
-            out << "        " << layer.name << ";\n";
+            out << "        \"" << EscapeString(layer.name) << "\";\n";
+        }
+        out << "    }\n";
+        out << "\n";
+        out << "    visible\n";
+        out << "    {\n";
+        for (const SpritesheetLayer& layer : document.layers) {
+            out << "        " << (layer.visible ? "true" : "false") << ";\n";
+        }
+        out << "    }\n";
+        out << "\n";
+        out << "    pixels\n";
+        out << "    {\n";
+        for (const SpritesheetLayer& layer : document.layers) {
+            out << "        \"" << EscapeString(layer.pixelData) << "\";\n";
         }
         out << "    }\n";
     }

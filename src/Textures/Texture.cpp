@@ -18,6 +18,22 @@ Texture::Texture(const std::string& path,
         return;
     }
 
+    if (m_Channels == 4) {
+        const size_t pixelCount = static_cast<size_t>(m_Width) * static_cast<size_t>(m_Height);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const unsigned char alpha = data[i * 4 + 3];
+            if (alpha == 0 || alpha == 255) {
+                if (alpha == 0) {
+                    m_HasBinaryAlpha = true;
+                }
+                continue;
+            }
+
+            m_UsesAlphaBlending = true;
+            break;
+        }
+    }
+
     // choose formats based on channels
     if (m_Channels == 1) {
         m_InternalFormat = m_DataFormat = GL_RED;

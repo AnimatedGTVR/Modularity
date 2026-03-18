@@ -1,0 +1,758 @@
+#pragma once
+
+#include "ScriptRuntime.h"
+#include "SceneObject.h"
+
+#include <GLFW/glfw3.h>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cfloat>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <typeinfo>
+#include <unordered_map>
+#include <vector>
+
+namespace ModuCPP {
+
+using vec2 = glm::vec2;
+using vec3 = glm::vec3;
+
+namespace detail {
+inline thread_local ScriptContext* gCtx = nullptr;
+
+inline std::string trim(std::string value) {
+    auto notSpace = [](unsigned char c) { return std::isspace(c) == 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+    value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
+    return value;
+}
+
+inline std::string settingKeyFromLabel(const char* label) {
+    if (!label || !*label) return "value";
+    std::string raw(label);
+    const size_t hiddenPos = raw.find("##");
+    if (hiddenPos != std::string::npos) {
+        raw = raw.substr(0, hiddenPos);
+    }
+
+    std::string key;
+    key.reserve(raw.size() + 8);
+    bool prevUnderscore = false;
+    for (char ch : raw) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) != 0) {
+            key.push_back(static_cast<char>(std::tolower(c)));
+            prevUnderscore = false;
+        } else if (!prevUnderscore) {
+            key.push_back('_');
+            prevUnderscore = true;
+        }
+    }
+
+    while (!key.empty() && key.front() == '_') key.erase(key.begin());
+    while (!key.empty() && key.back() == '_') key.pop_back();
+    if (key.empty()) key = "value";
+    return key;
+}
+
+inline std::string makeScriptInstanceKey(const ScriptContext& ctx, const std::string& suffix) {
+    std::string key;
+    if (ctx.script && !ctx.script->path.empty()) {
+        key = ctx.script->path;
+    } else if (ctx.script) {
+        key = "script:" + std::to_string(reinterpret_cast<uintptr_t>(ctx.script));
+    } else {
+        key = "script:none";
+    }
+
+    if (ctx.object) {
+        key += "|obj:" + std::to_string(ctx.object->id);
+        if (ctx.script) {
+            auto it = std::find_if(ctx.object->scripts.begin(), ctx.object->scripts.end(),
+                                   [&](const ScriptComponent& s) { return &s == ctx.script; });
+            if (it != ctx.object->scripts.end()) {
+                key += "|slot:" + std::to_string(std::distance(ctx.object->scripts.begin(), it));
+            }
+        }
+    }
+
+    key += "|" + suffix;
+    return key;
+}
+
+template <typename T>
+std::unordered_map<std::string, T>& configStore() {
+    static std::unordered_map<std::string, T> store;
+    return store;
+}
+
+template <typename T>
+std::unordered_map<std::string, T>& stateStore() {
+    static std::unordered_map<std::string, T> store;
+    return store;
+}
+
+inline ImGuiKey glfwToImGuiKey(int key) {
+    switch (key) {
+        case GLFW_KEY_W: return ImGuiKey_W;
+        case GLFW_KEY_A: return ImGuiKey_A;
+        case GLFW_KEY_S: return ImGuiKey_S;
+        case GLFW_KEY_D: return ImGuiKey_D;
+        case GLFW_KEY_E: return ImGuiKey_E;
+        case GLFW_KEY_UP: return ImGuiKey_UpArrow;
+        case GLFW_KEY_DOWN: return ImGuiKey_DownArrow;
+        case GLFW_KEY_LEFT: return ImGuiKey_LeftArrow;
+        case GLFW_KEY_RIGHT: return ImGuiKey_RightArrow;
+        case GLFW_KEY_LEFT_SHIFT: return ImGuiKey_LeftShift;
+        case GLFW_KEY_RIGHT_SHIFT: return ImGuiKey_RightShift;
+        case GLFW_KEY_SPACE: return ImGuiKey_Space;
+        case GLFW_KEY_ENTER: return ImGuiKey_Enter;
+        case GLFW_KEY_KP_ENTER: return ImGuiKey_KeypadEnter;
+        default: return ImGuiKey_None;
+    }
+}
+
+inline bool isAudioPath(const std::string& path) {
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= path.size()) return false;
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return ext == "wav" || ext == "mp3" || ext == "ogg" || ext == "flac" ||
+           ext == "aac" || ext == "m4a";
+}
+
+inline bool isValidClip(const ScriptContext& ctx, int clipIndex) {
+    return clipIndex >= 0 && clipIndex < ctx.GetSpriteClipCount();
+}
+} // namespace detail
+
+struct Scope {
+    explicit Scope(ScriptContext& ctx) : previous(detail::gCtx) {
+        detail::gCtx = &ctx;
+    }
+
+    ~Scope() {
+        detail::gCtx = previous;
+    }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+private:
+    ScriptContext* previous;
+};
+
+inline ScriptContext* ctxPtr() {
+    return detail::gCtx;
+}
+
+inline ScriptContext& ctx() {
+    return *detail::gCtx;
+}
+
+template <typename T>
+inline T& Config() {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = detail::makeScriptInstanceKey(
+        scriptCtx,
+        std::string("config:") + typeid(T).name());
+    return detail::configStore<T>()[key];
+}
+
+template <typename T>
+inline T& State() {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = detail::makeScriptInstanceKey(
+        scriptCtx,
+        std::string("state:") + typeid(T).name());
+    return detail::stateStore<T>()[key];
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, bool& value) {
+    ctx.AutoSetting(key, value);
+}
+inline void BindSetting(ScriptContext& ctx, const std::string& key, bool& value) {
+    ctx.AutoSetting(key, value);
+}
+
+inline void BindSetting(const char* key, bool& value) {
+    if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, float& value) {
+    ctx.AutoSetting(key, value);
+}
+inline void BindSetting(ScriptContext& ctx, const std::string& key, float& value) {
+    ctx.AutoSetting(key, value);
+}
+
+inline void BindSetting(const char* key, float& value) {
+    if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, int& value) {
+    ctx.AutoSetting(key, value);
+}
+inline void BindSetting(ScriptContext& ctx, const std::string& key, int& value) {
+    ctx.AutoSetting(key, value);
+}
+
+inline void BindSetting(const char* key, int& value) {
+    if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, vec3& value) {
+    ctx.AutoSetting(key, value);
+}
+inline void BindSetting(ScriptContext& ctx, const std::string& key, vec3& value) {
+    ctx.AutoSetting(key, value);
+}
+
+inline void BindSetting(const char* key, vec3& value) {
+    if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, std::string& value) {
+    ctx.AutoSetting(key, value);
+}
+inline void BindSetting(ScriptContext& ctx, const std::string& key, std::string& value) {
+    ctx.AutoSetting(key, value);
+}
+
+inline void BindSetting(const char* key, std::string& value) {
+    if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+template <typename T, size_t N>
+inline void BindArray(ScriptContext& ctx, const std::string& keyPrefix, std::array<T, N>& values) {
+    for (size_t i = 0; i < N; ++i) {
+        BindSetting(ctx, keyPrefix + std::to_string(i), values[i]);
+    }
+}
+
+template <typename T, size_t N>
+inline void BindArray(ScriptContext& ctx, const char* keyPrefix, std::array<T, N>& values) {
+    BindArray(ctx, std::string(keyPrefix ? keyPrefix : ""), values);
+}
+
+template <typename T, size_t N>
+inline void BindArray(const std::string& keyPrefix, std::array<T, N>& values) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        BindArray(*scriptCtx, keyPrefix, values);
+    }
+}
+
+template <typename T, size_t N>
+inline void BindArray(const char* keyPrefix, std::array<T, N>& values) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        BindArray(*scriptCtx, keyPrefix, values);
+    }
+}
+
+template <typename T, size_t Rows, size_t Cols>
+inline void BindArray2D(ScriptContext& ctx, const std::string& keyPrefix,
+                        std::array<std::array<T, Cols>, Rows>& values) {
+    for (size_t row = 0; row < Rows; ++row) {
+        for (size_t col = 0; col < Cols; ++col) {
+            BindSetting(ctx, keyPrefix + std::to_string(row) + "_" + std::to_string(col),
+                        values[row][col]);
+        }
+    }
+}
+
+template <typename T, size_t Rows, size_t Cols>
+inline void BindArray2D(ScriptContext& ctx, const char* keyPrefix,
+                        std::array<std::array<T, Cols>, Rows>& values) {
+    BindArray2D(ctx, std::string(keyPrefix ? keyPrefix : ""), values);
+}
+
+template <typename T, size_t Rows, size_t Cols>
+inline void BindArray2D(const std::string& keyPrefix, std::array<std::array<T, Cols>, Rows>& values) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        BindArray2D(*scriptCtx, keyPrefix, values);
+    }
+}
+
+template <typename T, size_t Rows, size_t Cols>
+inline void BindArray2D(const char* keyPrefix, std::array<std::array<T, Cols>, Rows>& values) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        BindArray2D(*scriptCtx, keyPrefix, values);
+    }
+}
+
+inline bool EditFloat(const char* label, float& value, float speed = 0.1f,
+                      float minValue = 0.0f, float maxValue = 0.0f,
+                      const char* format = "%.2f", const char* keyOverride = nullptr) {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
+    scriptCtx.AutoSetting(key, value);
+    const bool changed = ImGui::DragFloat(label, &value, speed, minValue, maxValue, format);
+    if (changed) {
+        scriptCtx.SaveAutoSettings();
+    }
+    return changed;
+}
+
+inline bool EditVec3(const char* label, vec3& value, float speed = 0.1f,
+                     float minValue = 0.0f, float maxValue = 0.0f,
+                     const char* format = "%.2f", const char* keyOverride = nullptr) {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
+    scriptCtx.AutoSetting(key, value);
+    const bool changed = ImGui::DragFloat3(label, &value.x, speed, minValue, maxValue, format);
+    if (changed) {
+        scriptCtx.SaveAutoSettings();
+    }
+    return changed;
+}
+
+inline bool EditBool(const char* label, bool& value, const char* keyOverride = nullptr) {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
+    scriptCtx.AutoSetting(key, value);
+    const bool changed = ImGui::Checkbox(label, &value);
+    if (changed) {
+        scriptCtx.SaveAutoSettings();
+    }
+    return changed;
+}
+
+inline bool EditInt(const char* label, int& value, int step = 1,
+                    int stepFast = 100, const char* keyOverride = nullptr) {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
+    scriptCtx.AutoSetting(key, value);
+    const bool changed = ImGui::InputInt(label, &value, step, stepFast);
+    if (changed) {
+        scriptCtx.SaveAutoSettings();
+    }
+    return changed;
+}
+
+inline bool EditString(const char* label, std::string& value,
+                       size_t capacity = 512, const char* keyOverride = nullptr,
+                       ImGuiInputTextFlags flags = 0,
+                       bool multiline = false,
+                       float multilineHeight = 90.0f) {
+    ScriptContext& scriptCtx = ctx();
+    const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
+    scriptCtx.AutoSetting(key, value);
+
+    std::vector<char> buffer(capacity + 1, '\0');
+    std::snprintf(buffer.data(), buffer.size(), "%s", value.c_str());
+
+    bool changed = false;
+    if (multiline) {
+        changed = ImGui::InputTextMultiline(label, buffer.data(), buffer.size(),
+                                            ImVec2(-FLT_MIN, multilineHeight), flags);
+    } else {
+        changed = ImGui::InputText(label, buffer.data(), buffer.size(), flags);
+    }
+
+    if (changed) {
+        value = buffer.data();
+        scriptCtx.SaveAutoSettings();
+    }
+
+    return changed;
+}
+
+constexpr int KEY_W = GLFW_KEY_W;
+constexpr int KEY_A = GLFW_KEY_A;
+constexpr int KEY_S = GLFW_KEY_S;
+constexpr int KEY_D = GLFW_KEY_D;
+constexpr int KEY_E = GLFW_KEY_E;
+constexpr int KEY_UP = GLFW_KEY_UP;
+constexpr int KEY_DOWN = GLFW_KEY_DOWN;
+constexpr int KEY_LEFT = GLFW_KEY_LEFT;
+constexpr int KEY_RIGHT = GLFW_KEY_RIGHT;
+constexpr int KEY_SHIFT_LEFT = GLFW_KEY_LEFT_SHIFT;
+constexpr int KEY_SHIFT_RIGHT = GLFW_KEY_RIGHT_SHIFT;
+constexpr int KEY_SPACE = GLFW_KEY_SPACE;
+constexpr int KEY_ENTER = GLFW_KEY_ENTER;
+constexpr int KEY_KP_ENTER = GLFW_KEY_KP_ENTER;
+
+inline bool KeyDown(ScriptContext& ctx, int key) {
+    return ctx.IsKeyDown(key, detail::glfwToImGuiKey(key));
+}
+
+inline bool KeyDown(int key) {
+    if (ScriptContext* scriptCtx = ctxPtr()) return KeyDown(*scriptCtx, key);
+    return false;
+}
+
+inline bool KeyPressed(ScriptContext& ctx, int key) {
+    return ctx.IsKeyPressed(key, detail::glfwToImGuiKey(key));
+}
+
+inline bool KeyPressed(int key) {
+    if (ScriptContext* scriptCtx = ctxPtr()) return KeyPressed(*scriptCtx, key);
+    return false;
+}
+
+struct InputFacade {
+    vec2 WASD() const {
+        vec2 move(0.0f);
+        if (KeyDown(KEY_W)) move.y += 1.0f;
+        if (KeyDown(KEY_S)) move.y -= 1.0f;
+        if (KeyDown(KEY_D)) move.x += 1.0f;
+        if (KeyDown(KEY_A)) move.x -= 1.0f;
+        return move;
+    }
+
+    vec2 WASDNormalized() const {
+        vec2 move = WASD();
+        const float len = glm::length(move);
+        if (len > 1e-4f) {
+            move /= len;
+        }
+        return move;
+    }
+
+    bool sprint() const {
+        return KeyDown(KEY_SHIFT_LEFT) || KeyDown(KEY_SHIFT_RIGHT);
+    }
+
+    bool jump() const {
+        return KeyDown(KEY_SPACE);
+    }
+};
+
+inline const InputFacade input{};
+
+inline bool hasRigidbody2D(ScriptContext& ctx) {
+    return ctx.HasRigidbody2D();
+}
+
+inline bool hasRigidbody2D() {
+    if (ScriptContext* scriptCtx = ctxPtr()) return hasRigidbody2D(*scriptCtx);
+    return false;
+}
+
+inline vec2 getRigidbody2DVelocity(ScriptContext& ctx) {
+    vec2 velocity(0.0f);
+    ctx.GetRigidbody2DVelocity(velocity);
+    return velocity;
+}
+
+inline vec2 getRigidbody2DVelocity() {
+    if (ScriptContext* scriptCtx = ctxPtr()) return getRigidbody2DVelocity(*scriptCtx);
+    return vec2(0.0f);
+}
+
+inline bool setRigidbody2DVelocity(ScriptContext& ctx, const vec2& velocity) {
+    return ctx.SetRigidbody2DVelocity(velocity);
+}
+
+inline bool setRigidbody2DVelocity(const vec2& velocity) {
+    if (ScriptContext* scriptCtx = ctxPtr()) return setRigidbody2DVelocity(*scriptCtx, velocity);
+    return false;
+}
+
+inline vec2 moveTowards(const vec2& current, const vec2& target, float maxDelta) {
+    if (maxDelta <= 0.0f) return current;
+    vec2 delta = target - current;
+    const float len = glm::length(delta);
+    if (len <= maxDelta || len <= 1e-6f) {
+        return target;
+    }
+    return current + (delta / len) * maxDelta;
+}
+
+inline bool TryMoveRigidbody2D(ScriptContext& ctx,
+                               const vec2& targetVelocity, float acceleration, float drag, float dt,
+                               vec2* outVelocity = nullptr) {
+    if (!hasRigidbody2D(ctx)) return false;
+
+    vec2 velocity = getRigidbody2DVelocity(ctx);
+    if (acceleration <= 0.0f) {
+        velocity = targetVelocity;
+    } else {
+        velocity = moveTowards(velocity, targetVelocity, acceleration * dt);
+    }
+
+    if (glm::length(targetVelocity) < 1e-4f && drag > 0.0f) {
+        const float damp = std::max(0.0f, 1.0f - drag * dt);
+        velocity *= damp;
+    }
+
+    setRigidbody2DVelocity(ctx, velocity);
+    if (outVelocity) {
+        *outVelocity = velocity;
+    }
+    return true;
+}
+
+inline bool TryMoveRigidbody2D(const vec2& targetVelocity, float acceleration, float drag, float dt,
+                               vec2* outVelocity = nullptr) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        return TryMoveRigidbody2D(*scriptCtx, targetVelocity, acceleration, drag, dt, outVelocity);
+    }
+    return false;
+}
+
+inline void moveRigidbody2D(ScriptContext& ctx, const vec2& targetVelocity,
+                            float acceleration, float drag, float dt) {
+    (void)TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt, nullptr);
+}
+
+inline void moveRigidbody2D(const vec2& targetVelocity, float acceleration, float drag, float dt) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        moveRigidbody2D(*scriptCtx, targetVelocity, acceleration, drag, dt);
+    }
+}
+
+inline void movePosition2D(ScriptContext& ctx, const vec2& delta) {
+    if (!ctx.object) return;
+    vec2 pos = ctx.object->ui.position;
+    pos += delta;
+    ctx.SetPosition2D(pos);
+}
+
+inline void movePosition2D(const vec2& delta) {
+    if (ScriptContext* scriptCtx = ctxPtr()) movePosition2D(*scriptCtx, delta);
+}
+
+inline bool warnOnce(ScriptContext& ctx, bool& alreadyWarned, const std::string& message,
+                     ConsoleMessageType type = ConsoleMessageType::Warning) {
+    if (alreadyWarned) return false;
+    ctx.AddConsoleMessage(message, type);
+    alreadyWarned = true;
+    return true;
+}
+
+inline bool warnOnce(bool& alreadyWarned, const std::string& message,
+                     ConsoleMessageType type = ConsoleMessageType::Warning) {
+    if (ScriptContext* scriptCtx = ctxPtr()) return warnOnce(*scriptCtx, alreadyWarned, message, type);
+    return false;
+}
+
+inline bool warnMissingComponentOnce(ScriptContext& ctx,
+                                     bool& alreadyWarned,
+                                     const char* scriptName,
+                                     const char* componentName) {
+    return warnOnce(ctx, alreadyWarned,
+                    std::string(scriptName ? scriptName : "Script") +
+                    ": missing " +
+                    (componentName ? componentName : "required component") +
+                    ".");
+}
+
+inline bool warnMissingComponentOnce(bool& alreadyWarned,
+                                     const char* scriptName,
+                                     const char* componentName) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        return warnMissingComponentOnce(*scriptCtx, alreadyWarned, scriptName, componentName);
+    }
+    return false;
+}
+
+inline bool hasAudioSource(ScriptContext& ctx) {
+    return ctx.HasAudioSource();
+}
+
+inline bool hasAudioSource() {
+    if (ScriptContext* scriptCtx = ctxPtr()) return hasAudioSource(*scriptCtx);
+    return false;
+}
+
+inline bool playSound(ScriptContext& ctx, const std::string& clipPath = "", float volumeScale = 1.0f) {
+    return ctx.PlayAudioOneShot(clipPath, volumeScale);
+}
+
+inline bool playSound(const std::string& clipPath = "", float volumeScale = 1.0f) {
+    if (ScriptContext* scriptCtx = ctxPtr()) return playSound(*scriptCtx, clipPath, volumeScale);
+    return false;
+}
+
+struct AudioFacade {
+    bool HasSource() const { return hasAudioSource(); }
+    bool PlayOneShot(const std::string& clipPath = "", float volumeScale = 1.0f) const {
+        return playSound(clipPath, volumeScale);
+    }
+    bool Play() const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->PlayAudio();
+        }
+        return false;
+    }
+    bool Stop() const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->StopAudio();
+        }
+        return false;
+    }
+};
+
+inline const AudioFacade audio{};
+
+struct SpriteFacade {
+    bool HasClips() const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->GetSpriteClipCount() > 0;
+        }
+        return false;
+    }
+
+    int ClipCount() const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->GetSpriteClipCount();
+        }
+        return 0;
+    }
+
+    int ClipIndex() const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->GetSpriteClipIndex();
+        }
+        return -1;
+    }
+
+    bool SetClip(int clipIndex) const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->SetSpriteClipIndex(clipIndex);
+        }
+        return false;
+    }
+
+    bool SetClip(const std::string& clipName) const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->SetSpriteClipName(clipName);
+        }
+        return false;
+    }
+
+    std::string ClipNameAt(int clipIndex) const {
+        if (ScriptContext* scriptCtx = ctxPtr()) {
+            return scriptCtx->GetSpriteClipNameAt(clipIndex);
+        }
+        return {};
+    }
+};
+
+inline const SpriteFacade sprite{};
+
+inline bool EditClipSelector(const char* label, int& clipIndex) {
+    ScriptContext* scriptCtx = ctxPtr();
+    if (!scriptCtx) return false;
+
+    const int clipCount = scriptCtx->GetSpriteClipCount();
+    std::string preview = detail::isValidClip(*scriptCtx, clipIndex)
+        ? scriptCtx->GetSpriteClipNameAt(clipIndex)
+        : std::string("<None>");
+
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview.c_str())) {
+        const bool noneSelected = (clipIndex < 0 || clipIndex >= clipCount);
+        if (ImGui::Selectable("<None>", noneSelected)) {
+            clipIndex = -1;
+            changed = true;
+        }
+        if (noneSelected) ImGui::SetItemDefaultFocus();
+
+        for (int i = 0; i < clipCount; ++i) {
+            const std::string clipName = scriptCtx->GetSpriteClipNameAt(i);
+            const bool selected = (clipIndex == i);
+            if (ImGui::Selectable(clipName.c_str(), selected)) {
+                clipIndex = i;
+                changed = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+
+        ImGui::EndCombo();
+    }
+
+    return changed;
+}
+
+inline bool EditDirectionalClipGrid(std::array<int, 4>& idleClips,
+                                    std::array<std::array<int, 4>, 4>& walkClips) {
+    static constexpr const char* kDirectionLabels[4] = { "Down", "Up", "Right", "Left" };
+
+    ScriptContext* scriptCtx = ctxPtr();
+    if (!scriptCtx) return false;
+
+    bool changed = false;
+    const int clipCount = scriptCtx->GetSpriteClipCount();
+    if (clipCount <= 0) {
+        ImGui::TextDisabled("Enable Sprite Sheet clips on this object to assign animation frames.");
+        return false;
+    }
+
+    ImGui::TextDisabled("%d sprite clips available.", clipCount);
+    for (int dir = 0; dir < 4; ++dir) {
+        if (ImGui::CollapsingHeader(kDirectionLabels[dir], ImGuiTreeNodeFlags_DefaultOpen)) {
+            changed |= EditClipSelector(("Idle##" + std::string(kDirectionLabels[dir])).c_str(), idleClips[dir]);
+            for (int frame = 0; frame < 4; ++frame) {
+                changed |= EditClipSelector(
+                    ("Walk " + std::to_string(frame + 1) + "##" + std::string(kDirectionLabels[dir])).c_str(),
+                    walkClips[dir][frame]);
+            }
+        }
+    }
+
+    return changed;
+}
+
+template <size_t N>
+inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds,
+                         const char* itemPrefix = "Sound") {
+    bool changed = false;
+
+    ImGui::TextUnformatted(heading);
+    for (size_t i = 0; i < N; ++i) {
+        ImGui::PushID(static_cast<int>(i));
+
+        std::vector<char> buffer(512, '\0');
+        std::snprintf(buffer.data(), buffer.size(), "%s", sounds[i].c_str());
+        ImGui::SetNextItemWidth(-84.0f);
+        if (ImGui::InputText("##clip", buffer.data(), buffer.size())) {
+            sounds[i] = detail::trim(buffer.data());
+            changed = true;
+        }
+
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                if (payload->Data && payload->DataSize > 0) {
+                    const char* droppedPath = static_cast<const char*>(payload->Data);
+                    if (droppedPath) {
+                        std::string candidate = droppedPath;
+                        if (detail::isAudioPath(candidate)) {
+                            sounds[i] = candidate;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear")) {
+            sounds[i].clear();
+            changed = true;
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s %zu", itemPrefix, i + 1);
+
+        ImGui::PopID();
+    }
+
+    return changed;
+}
+
+} // namespace ModuCPP
+
+#define MODUCPP_JOIN_IMPL(a, b) a##b
+#define MODUCPP_JOIN(a, b) MODUCPP_JOIN_IMPL(a, b)
+#define MODU_SCRIPT(ctx) \
+    ::ModuCPP::Scope MODUCPP_JOIN(_modu_scope_, __LINE__){(ctx)}; \
+    auto* obj = (ctx).object

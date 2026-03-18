@@ -4,6 +4,8 @@
 
 struct SpritesheetLayer {
     std::string name;
+    bool visible = true;
+    std::string pixelData;
 };
 
 struct SpritesheetDocument {

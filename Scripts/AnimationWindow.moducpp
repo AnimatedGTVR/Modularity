@@ -1,10 +1,152 @@
-#include "ScriptRuntime.h"
-#include "SceneObject.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ModuCPP"
 #include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
+
+public class AnimationWindow : ModuBehaviour {
+    void RenderEditorWindow(MODU_obj) {
+        ImGui::TextUnformatted("Simple Animation");
+        ImGui::Separator();
+
+        SceneObject* selectedObj = ctx.object;
+        SceneObject* targetObj = resolveTarget(ctx);
+
+        ImGui::TextDisabled("Select a GameObject to animate:");
+        ImGui::BeginDisabled();
+        ImGui::InputText("##TargetName", targetName, sizeof(targetName));
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Use Selected") && selectedObj) {
+            targetId = selectedObj->id;
+            syncTargetLabel(selectedObj);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) {
+            targetId = -1;
+            targetName[0] = '\0';
+            targetObj = nullptr;
+        }
+
+        ImGui::Spacing();
+        const float drawerTarget = animDrawerCollapsed ? 0.0f : 1.0f;
+        const float drawerBlend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
+        animDrawerOpenAmount += (drawerTarget - animDrawerOpenAmount) * drawerBlend;
+        if (std::abs(animDrawerOpenAmount - drawerTarget) < 0.001f) {
+            animDrawerOpenAmount = drawerTarget;
+        }
+        animDrawerOpenAmount = std::clamp(animDrawerOpenAmount, 0.0f, 1.0f);
+
+        const float tabRowHeight = ImGui::GetFrameHeightWithSpacing() + 4.0f;
+        const float transportReserve = ImGui::GetFrameHeightWithSpacing() * 2.2f + 24.0f;
+        float drawerMaxHeight = ImGui::GetContentRegionAvail().y - tabRowHeight - transportReserve;
+        if (drawerMaxHeight < 0.0f) drawerMaxHeight = 0.0f;
+        const float drawerHeight = drawerMaxHeight * animDrawerOpenAmount;
+        if (drawerHeight > 0.5f) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, animDrawerOpenAmount);
+            ImGui::BeginChild("AnimModeDrawerContent", ImVec2(0.0f, drawerHeight), false);
+
+            if (animDrawerActiveTab == AnimDrawerTab::Pose) {
+                ImGui::TextDisabled("Pose Editor");
+                ImGui::Separator();
+
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+                if (ImGui::Button("Key")) {
+                    if (targetObj) captureKeyframe(*targetObj, currentTime);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete") && selectedKey >= 0) {
+                    deleteKeyframe(selectedKey);
+                }
+                ImGui::PopStyleVar();
+
+                ImGui::Spacing();
+                drawTimeline(currentTime, clipLength, selectedKey);
+                ImGui::SliderFloat("Time", &currentTime, 0.0f, clipLength, "%.2fs");
+
+                ImGui::Spacing();
+                drawKeyframeTable();
+            } else {
+                ImGui::TextDisabled("Playback");
+                ImGui::Separator();
+                ImGui::Checkbox("Loop", &loop);
+                ImGui::Checkbox("Apply On Scrub", &applyOnScrub);
+                ImGui::SliderFloat("Length", &clipLength, 0.1f, 20.0f, "%.2fs");
+                ImGui::SliderFloat("Speed", &playSpeed, 0.1f, 4.0f, "%.2fx");
+            }
+
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+        }
+
+        const float tabSpacing = ImGui::GetStyle().ItemSpacing.x;
+        const float tabWidth = ImMax(72.0f, (ImGui::GetContentRegionAvail().x - tabSpacing) * 0.5f);
+        auto handleDrawerTabClick = [&](AnimDrawerTab tab) {
+            const bool isDoubleClick = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+            if (animDrawerCollapsed) {
+                animDrawerCollapsed = false;
+                animDrawerActiveTab = tab;
+                return;
+            }
+            if (animDrawerActiveTab != tab) {
+                animDrawerActiveTab = tab;
+                return;
+            }
+            if (isDoubleClick) {
+                animDrawerCollapsed = true;
+            }
+        };
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+        const ImGuiSelectableFlags drawerTabFlags = ImGuiSelectableFlags_AllowDoubleClick;
+        if (ImGui::Selectable("Pose Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Pose, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
+            handleDrawerTabClick(AnimDrawerTab::Pose);
+        }
+        ImGui::SameLine();
+        if (ImGui::Selectable("Config Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Config, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
+            handleDrawerTabClick(AnimDrawerTab::Config);
+        }
+        ImGui::PopStyleVar();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("Transport");
+        if (ImGui::Button(isPlaying ? "Pause" : "Play")) {
+            isPlaying = !isPlaying;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            isPlaying = false;
+            currentTime = 0.0f;
+        }
+
+        if (targetObj) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Target: %s", targetObj->name.c_str());
+        } else {
+            ImGui::TextDisabled("No target selected.");
+        }
+
+        if (isPlaying && clipLength > 0.0f) {
+            currentTime += ImGui::GetIO().DeltaTime * playSpeed;
+            if (currentTime > clipLength) {
+                if (loop) currentTime = std::fmod(currentTime, clipLength);
+                else {
+                    currentTime = clipLength;
+                    isPlaying = false;
+                }
+            }
+        }
+
+        if (targetObj && (isPlaying || applyOnScrub)) {
+            applyPoseAtTime(ctx, *targetObj, currentTime);
+        }
+    }
+
+    void ExitRenderEditorWindow(MODU_obj) {
+        (void)ctx;
+    }
+}
 
 namespace {
 struct Keyframe {
@@ -189,145 +331,3 @@ void drawKeyframeTable() {
     }
 }
 } // namespace
-
-extern "C" void RenderEditorWindow(ScriptContext& ctx) {
-    ImGui::TextUnformatted("Simple Animation");
-    ImGui::Separator();
-
-    SceneObject* selectedObj = ctx.object;
-    SceneObject* targetObj = resolveTarget(ctx);
-
-    ImGui::TextDisabled("Select a GameObject to animate:");
-    ImGui::BeginDisabled();
-    ImGui::InputText("##TargetName", targetName, sizeof(targetName));
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Use Selected") && selectedObj) {
-        targetId = selectedObj->id;
-        syncTargetLabel(selectedObj);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear")) {
-        targetId = -1;
-        targetName[0] = '\0';
-        targetObj = nullptr;
-    }
-
-    ImGui::Spacing();
-    const float drawerTarget = animDrawerCollapsed ? 0.0f : 1.0f;
-    const float drawerBlend = 1.0f - std::exp(-12.0f * ImGui::GetIO().DeltaTime);
-    animDrawerOpenAmount += (drawerTarget - animDrawerOpenAmount) * drawerBlend;
-    if (std::abs(animDrawerOpenAmount - drawerTarget) < 0.001f) {
-        animDrawerOpenAmount = drawerTarget;
-    }
-    animDrawerOpenAmount = std::clamp(animDrawerOpenAmount, 0.0f, 1.0f);
-
-    const float tabRowHeight = ImGui::GetFrameHeightWithSpacing() + 4.0f;
-    const float transportReserve = ImGui::GetFrameHeightWithSpacing() * 2.2f + 24.0f;
-    float drawerMaxHeight = ImGui::GetContentRegionAvail().y - tabRowHeight - transportReserve;
-    if (drawerMaxHeight < 0.0f) drawerMaxHeight = 0.0f;
-    const float drawerHeight = drawerMaxHeight * animDrawerOpenAmount;
-    if (drawerHeight > 0.5f) {
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, animDrawerOpenAmount);
-        ImGui::BeginChild("AnimModeDrawerContent", ImVec2(0.0f, drawerHeight), false);
-
-        if (animDrawerActiveTab == AnimDrawerTab::Pose) {
-            ImGui::TextDisabled("Pose Editor");
-            ImGui::Separator();
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-            if (ImGui::Button("Key")) {
-                if (targetObj) captureKeyframe(*targetObj, currentTime);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Delete") && selectedKey >= 0) {
-                deleteKeyframe(selectedKey);
-            }
-            ImGui::PopStyleVar();
-
-            ImGui::Spacing();
-            drawTimeline(currentTime, clipLength, selectedKey);
-            ImGui::SliderFloat("Time", &currentTime, 0.0f, clipLength, "%.2fs");
-
-            ImGui::Spacing();
-            drawKeyframeTable();
-        } else {
-            ImGui::TextDisabled("Playback");
-            ImGui::Separator();
-            ImGui::Checkbox("Loop", &loop);
-            ImGui::Checkbox("Apply On Scrub", &applyOnScrub);
-            ImGui::SliderFloat("Length", &clipLength, 0.1f, 20.0f, "%.2fs");
-            ImGui::SliderFloat("Speed", &playSpeed, 0.1f, 4.0f, "%.2fx");
-        }
-
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
-    }
-
-    const float tabSpacing = ImGui::GetStyle().ItemSpacing.x;
-    const float tabWidth = ImMax(72.0f, (ImGui::GetContentRegionAvail().x - tabSpacing) * 0.5f);
-    auto handleDrawerTabClick = [&](AnimDrawerTab tab) {
-        const bool isDoubleClick = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-        if (animDrawerCollapsed) {
-            animDrawerCollapsed = false;
-            animDrawerActiveTab = tab;
-            return;
-        }
-        if (animDrawerActiveTab != tab) {
-            animDrawerActiveTab = tab;
-            return;
-        }
-        if (isDoubleClick) {
-            animDrawerCollapsed = true;
-        }
-    };
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-    const ImGuiSelectableFlags drawerTabFlags = ImGuiSelectableFlags_AllowDoubleClick;
-    if (ImGui::Selectable("Pose Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Pose, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
-        handleDrawerTabClick(AnimDrawerTab::Pose);
-    }
-    ImGui::SameLine();
-    if (ImGui::Selectable("Config Mode##AnimDrawerTab", animDrawerActiveTab == AnimDrawerTab::Config, drawerTabFlags, ImVec2(tabWidth, 0.0f))) {
-        handleDrawerTabClick(AnimDrawerTab::Config);
-    }
-    ImGui::PopStyleVar();
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::TextDisabled("Transport");
-    if (ImGui::Button(isPlaying ? "Pause" : "Play")) {
-        isPlaying = !isPlaying;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Stop")) {
-        isPlaying = false;
-        currentTime = 0.0f;
-    }
-
-    if (targetObj) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("Target: %s", targetObj->name.c_str());
-    } else {
-        ImGui::TextDisabled("No target selected.");
-    }
-
-    if (isPlaying && clipLength > 0.0f) {
-        currentTime += ImGui::GetIO().DeltaTime * playSpeed;
-        if (currentTime > clipLength) {
-            if (loop) currentTime = std::fmod(currentTime, clipLength);
-            else {
-                currentTime = clipLength;
-                isPlaying = false;
-            }
-        }
-    }
-
-    if (targetObj && (isPlaying || applyOnScrub)) {
-        applyPoseAtTime(ctx, *targetObj, currentTime);
-    }
-}
-
-extern "C" void ExitRenderEditorWindow(ScriptContext& ctx) {
-    (void)ctx;
-}

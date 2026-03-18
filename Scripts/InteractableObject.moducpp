@@ -1,9 +1,115 @@
+#include "ModuCPP"
 #include "DialoguePortShared.h"
 
 #include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
+using namespace ModuCPP;
+
+public class InteractableObject : ModuBehaviour
+{
+    inspector
+    {
+        Config(InteractableConfig, config);
+        Run(const int objectId = ctx.object ? ctx.object->id : -1);
+        Run(InteractableRuntimeState& runtimeState = g_runtimeStates[objectId]);
+        Run(isPlayerInRange(ctx, config, &runtimeState));
+
+        Header("InteractableObject");
+        Run(drawSelectionNameInfo(config, ctx.object));
+
+        Tabs {
+            Tab("Basics") {
+                Toggle("Can Interact", config.canInteract);
+                Toggle("One Time Use", config.oneTimeUse);
+                Toggle("Interact On Key Press", config.interactOnKeyPress);
+                Toggle("Require Player In Range", config.requirePlayerInRange);
+                Slider("Interact Distance", config.interactDistance, 0.0f, 100.0f);
+                Toggle("Debug Range", config.debugRange);
+                ObjectRef("Player", config.playerRef);
+                String("Selection Name Override", config.selectionNameOverride);
+                Run(changed |= drawInteractNowButton(ctx, config, runtimeState));
+            }
+
+            Tab("Selection") {
+                Run(bool _moduPrevIsSelected = config.isSelected);
+                Toggle("Is Selected", config.isSelected);
+                Run(if (config.isSelected != _moduPrevIsSelected) { applySelectedState(ctx, config); });
+                ObjectList("Selected State Enable", config.selectedStateEnable);
+                ObjectList("Selected State Disable", config.selectedStateDisable);
+            }
+
+            Tab("Options") {
+                InteractionOptions("Interaction Options", config);
+            }
+
+            Tab("Runtime") {
+                RuntimeInteractableStatus();
+            }
+        }
+
+        AutoSave(config);
+    }
+
+    void Begin(MODU_obj, float dt)
+    {
+        (void)dt;
+        if (!ctx.object) return;
+
+        const InteractableConfig config = loadConfig(ctx);
+        InteractableRuntimeState& state = g_runtimeStates[ctx.object->id];
+        ResetRuntimeState(ctx, config, state);
+        applySelectedState(ctx, config);
+    }
+
+    void TickUpdate(MODU_obj, float dt)
+    {
+        (void)dt;
+        if (!ctx.object) return;
+
+        InteractableConfig config = loadConfig(ctx);
+        InteractableRuntimeState& state = g_runtimeStates[ctx.object->id];
+
+        SyncSelectedState(ctx, config, state);
+        isPlayerInRange(ctx, config, &state);
+
+        if (!config.interactOnKeyPress || !ConsumeInteractPressed(state)) {
+            return;
+        }
+
+        if (interact(ctx, config, &state)) {
+            saveConfig(ctx, config);
+        }
+    }
+
+    void ResetRuntimeState(ScriptContext& ctx, const InteractableConfig& config, InteractableRuntimeState& state) {
+        state.prevInteractDown = false;
+        state.hasSelectionState = true;
+        state.lastSelectionState = config.isSelected;
+        state.lastRangeDistance = -1.0f;
+        state.lastRangeInRange = false;
+        state.lastRangeHasPlayer = false;
+        state.lastPlayerWorldPos = glm::vec3(0.0f);
+        state.lastSelfWorldPos = ctx.object ? getObjectReferencePosition(ctx, *ctx.object) : glm::vec3(0.0f);
+    }
+
+    void SyncSelectedState(ScriptContext& ctx, const InteractableConfig& config, InteractableRuntimeState& state) {
+        if (state.hasSelectionState && state.lastSelectionState == config.isSelected) {
+            return;
+        }
+        applySelectedState(ctx, config);
+        state.hasSelectionState = true;
+        state.lastSelectionState = config.isSelected;
+    }
+
+    bool ConsumeInteractPressed(InteractableRuntimeState& state) {
+        const bool interactDown = isInteractDown();
+        const bool interactPressed = interactDown && !state.prevInteractDown;
+        state.prevInteractDown = interactDown;
+        return interactPressed;
+    }
+}
 
 namespace {
 using namespace DialoguePort;
@@ -214,108 +320,87 @@ bool drawInteractionTypeCombo(InteractionType& type) {
     return changed;
 }
 
-void drawTextEffectEditor(TextEffectType& effect) {
-    int flags = static_cast<int>(effect);
+bool drawDialogueLineEditor(ScriptContext& ctx, std::vector<DialogueLine>& lines, int& selectedIndex);
 
-    bool wave = (flags & static_cast<int>(TextEffectType::Wave)) != 0;
-    bool shake = (flags & static_cast<int>(TextEffectType::Shake)) != 0;
-    bool bounce = (flags & static_cast<int>(TextEffectType::Bounce)) != 0;
-    bool rotate = (flags & static_cast<int>(TextEffectType::Rotate)) != 0;
-    bool fade = (flags & static_cast<int>(TextEffectType::Fade)) != 0;
-
-    if (ImGui::Checkbox("Wave", &wave)) {
-        if (wave) flags |= static_cast<int>(TextEffectType::Wave);
-        else flags &= ~static_cast<int>(TextEffectType::Wave);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Shake", &shake)) {
-        if (shake) flags |= static_cast<int>(TextEffectType::Shake);
-        else flags &= ~static_cast<int>(TextEffectType::Shake);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Bounce", &bounce)) {
-        if (bounce) flags |= static_cast<int>(TextEffectType::Bounce);
-        else flags &= ~static_cast<int>(TextEffectType::Bounce);
-    }
-
-    if (ImGui::Checkbox("Rotate", &rotate)) {
-        if (rotate) flags |= static_cast<int>(TextEffectType::Rotate);
-        else flags &= ~static_cast<int>(TextEffectType::Rotate);
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Fade", &fade)) {
-        if (fade) flags |= static_cast<int>(TextEffectType::Fade);
-        else flags &= ~static_cast<int>(TextEffectType::Fade);
-    }
-
-    effect = static_cast<TextEffectType>(flags);
-}
-
-bool drawDialogueLineEditor(ScriptContext& ctx, std::vector<DialogueLine>& lines, int& selectedIndex) {
+bool drawInteractionOptionsEditor(ScriptContext& ctx,
+                                  InteractableConfig& config,
+                                  int& selectedOption,
+                                  int& selectedDialogueLine) {
     bool changed = false;
 
-    if (ImGui::Button("Add Dialogue Line")) {
-        if (!lines.empty()) {
-            lines.push_back(lines.back());
-        } else {
-            lines.emplace_back();
-        }
-        selectedIndex = static_cast<int>(lines.size()) - 1;
+    if (ImGui::Button("Add Option")) {
+        config.options.emplace_back();
+        selectedOption = static_cast<int>(config.options.size()) - 1;
         changed = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Remove Dialogue Line") && selectedIndex >= 0 && selectedIndex < static_cast<int>(lines.size())) {
-        lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(selectedIndex));
-        if (lines.empty()) selectedIndex = -1;
-        else selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
+    if (ImGui::Button("Remove Option") &&
+        selectedOption >= 0 &&
+        selectedOption < static_cast<int>(config.options.size())) {
+        config.options.erase(config.options.begin() + static_cast<std::ptrdiff_t>(selectedOption));
+        if (config.options.empty()) selectedOption = -1;
+        else selectedOption = std::clamp(selectedOption, 0, static_cast<int>(config.options.size()) - 1);
         changed = true;
     }
 
-    if (lines.empty()) {
-        ImGui::TextDisabled("No override dialogue lines configured.");
+    if (config.options.empty()) {
+        ImGui::TextDisabled("No options configured.");
         return changed;
     }
 
-    selectedIndex = std::clamp(selectedIndex, 0, static_cast<int>(lines.size()) - 1);
+    config.selectedOptionIndex = std::clamp(config.selectedOptionIndex, 0,
+                                            static_cast<int>(config.options.size()) - 1);
+    changed |= ImGui::SliderInt("Selected Option Index", &config.selectedOptionIndex, 0,
+                                static_cast<int>(config.options.size()) - 1);
 
-    ImGui::BeginChild("DialogueLinesList", ImVec2(230.0f, 220.0f), true);
-    for (size_t i = 0; i < lines.size(); ++i) {
-        std::string label = std::to_string(i + 1) + ". " +
-            (lines[i].characterName.empty() ? std::string("<Unnamed>") : lines[i].characterName);
-        if (ImGui::Selectable(label.c_str(), selectedIndex == static_cast<int>(i))) {
-            selectedIndex = static_cast<int>(i);
+    selectedOption = std::clamp(selectedOption, 0, static_cast<int>(config.options.size()) - 1);
+    ImGui::BeginChild("OptionList", ImVec2(230.0f, 180.0f), true);
+    for (size_t i = 0; i < config.options.size(); ++i) {
+        const std::string label = std::to_string(i + 1) + ". " +
+            (config.options[i].optionName.empty() ? std::string("<Unnamed>") : config.options[i].optionName);
+        if (ImGui::Selectable(label.c_str(), selectedOption == static_cast<int>(i))) {
+            selectedOption = static_cast<int>(i);
         }
     }
     ImGui::EndChild();
 
     ImGui::SameLine();
     ImGui::BeginGroup();
-    DialogueLine& line = lines[static_cast<size_t>(selectedIndex)];
 
-    changed |= DrawStdStringInput("Character Name", line.characterName, 256);
-    changed |= DrawStdStringInput("Sentence (EN)", line.sentence, 2048, 0, true, 60.0f);
-    changed |= DrawStdStringInput("Sentence (DE)", line.sentenceGerman, 2048, 0, true, 60.0f);
-    changed |= DrawStdStringInput("Sentence (JP Kana)", line.sentenceJapaneseKana, 2048, 0, true, 60.0f);
+    InteractionOption& option = config.options[static_cast<size_t>(selectedOption)];
+    changed |= DrawStdStringInput("Option Name", option.optionName, 256);
+    changed |= drawInteractionTypeCombo(option.interactionType);
 
-    changed |= DrawAudioClipInput("Character Voice Clip", line.characterSoundClip, 512);
-    changed |= ImGui::DragFloat("Typing Speed", &line.typingSpeed, 0.001f, 0.001f, 1.0f, "%.3f");
-    changed |= ImGui::DragFloat("Animation Speed", &line.animationSpeed, 0.01f, 0.01f, 10.0f, "%.2f");
-    changed |= ImGui::DragFloat("Effect Intensity", &line.effectIntensity, 0.01f, 0.0f, 10.0f, "%.2f");
-
-    ImGui::TextUnformatted("Text Effects");
-    TextEffectType before = line.textEffect;
-    drawTextEffectEditor(line.textEffect);
-    changed |= (before != line.textEffect);
-
-    changed |= DrawObjectRefInput(ctx, "Not Talking Object", line.notTalkingObjectRef);
-    changed |= DrawObjectRefInput(ctx, "Open Mouth Object", line.openMouthObjectRef);
-    changed |= DrawObjectRefInput(ctx, "Closed Mouth Object", line.closedMouthObjectRef);
-
-    changed |= DrawObjectRefListEditor(ctx, "Line Items To Enable", line.itemsToEnable);
-    changed |= DrawObjectRefListEditor(ctx, "Line Items To Disable", line.itemsToDisable);
+    if (option.interactionType == InteractionType::Dialogue) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Dialogue Settings");
+        changed |= DrawObjectRefInput(ctx, "Dialogue System Ref", option.dialogueSystemRef);
+        changed |= drawDialogueLineEditor(ctx, option.dialogueLines, selectedDialogueLine);
+        changed |= DrawObjectRefListEditor(ctx, "Dialogue End Enable", option.dialogueItemsToEnableOnEnd);
+        changed |= DrawObjectRefListEditor(ctx, "Dialogue End Disable", option.dialogueItemsToDisableOnEnd);
+    } else {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Object Toggle Settings");
+        changed |= DrawObjectRefListEditor(ctx, "Items To Enable", option.itemsToEnable);
+        changed |= DrawObjectRefListEditor(ctx, "Items To Disable", option.itemsToDisable);
+    }
 
     ImGui::EndGroup();
     return changed;
+}
+
+void drawTextEffectEditor(TextEffectType& effect) {
+    DrawTextEffectFlagsEditor(effect);
+}
+
+bool drawDialogueLineEditor(ScriptContext& ctx, std::vector<DialogueLine>& lines, int& selectedIndex) {
+    return DrawDialogueLineEditor(ctx,
+                                  lines,
+                                  selectedIndex,
+                                  "Add Dialogue Line",
+                                  "Remove Dialogue Line",
+                                  "No override dialogue lines configured.",
+                                  "DialogueLinesList");
 }
 
 void applySelectedState(ScriptContext& ctx, const InteractableConfig& config) {
@@ -383,26 +468,71 @@ bool isPlayerInRange(ScriptContext& ctx, const InteractableConfig& config,
     return !config.requirePlayerInRange || inRange;
 }
 
-ScriptComponent* findDialogueScript(SceneObject* object) {
+bool isDialogueSystemScript(const ScriptComponent& script) {
+    auto toLower = [](std::string value) {
+        for (char& ch : value) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        return value;
+    };
+
+    const std::string pathLower = toLower(script.path);
+    const std::string managedTypeLower = toLower(script.managedType);
+    return pathLower.find("dialoguesystem") != std::string::npos ||
+           managedTypeLower.find("dialoguesystem") != std::string::npos;
+}
+
+struct DialogueScriptTarget {
+    SceneObject* object = nullptr;
+    ScriptComponent* script = nullptr;
+};
+
+ScriptComponent* findDialogueSystemScriptOnObject(SceneObject* object) {
     if (!object) return nullptr;
 
     for (ScriptComponent& script : object->scripts) {
-        if (script.path.find("DialogueSystem") != std::string::npos) {
+        if (isDialogueSystemScript(script)) {
             return &script;
         }
-    }
-
-    for (ScriptComponent& script : object->scripts) {
-        if (script.language == ScriptLanguage::Cpp) {
-            return &script;
-        }
-    }
-
-    if (!object->scripts.empty()) {
-        return &object->scripts.front();
     }
 
     return nullptr;
+}
+
+DialogueScriptTarget findDialogueScriptTarget(ScriptContext& ctx, SceneObject* object) {
+    if (!object) return {};
+
+    if (ScriptComponent* direct = findDialogueSystemScriptOnObject(object)) {
+        return DialogueScriptTarget{object, direct};
+    }
+
+    std::vector<int> pendingChildIds = object->childIds;
+    int childGuard = 0;
+    while (!pendingChildIds.empty() && childGuard < 512) {
+        const int childId = pendingChildIds.back();
+        pendingChildIds.pop_back();
+        ++childGuard;
+        SceneObject* child = ctx.FindObjectById(childId);
+        if (!child) continue;
+        if (ScriptComponent* childScript = findDialogueSystemScriptOnObject(child)) {
+            return DialogueScriptTarget{child, childScript};
+        }
+        pendingChildIds.insert(pendingChildIds.end(), child->childIds.begin(), child->childIds.end());
+    }
+
+    int parentId = object->parentId;
+    int parentGuard = 0;
+    while (parentId >= 0 && parentGuard < 256) {
+        ++parentGuard;
+        SceneObject* parent = ctx.FindObjectById(parentId);
+        if (!parent) break;
+        if (ScriptComponent* parentScript = findDialogueSystemScriptOnObject(parent)) {
+            return DialogueScriptTarget{parent, parentScript};
+        }
+        parentId = parent->parentId;
+    }
+
+    return {};
 }
 
 bool executeDialogueOption(ScriptContext& ctx,
@@ -415,25 +545,25 @@ bool executeDialogueOption(ScriptContext& ctx,
         return false;
     }
 
-    ScriptComponent* dialogueScript = findDialogueScript(dialogueObject);
-    if (!dialogueScript) {
-        ctx.AddConsoleMessage("InteractableObject: target DialogueSystem object has no script component.",
+    const DialogueScriptTarget dialogueTarget = findDialogueScriptTarget(ctx, dialogueObject);
+    if (!dialogueTarget.script || !dialogueTarget.object) {
+        ctx.AddConsoleMessage("InteractableObject: target DialogueSystem object has no DialogueSystem script in its hierarchy.",
                               ConsoleMessageType::Warning);
         return false;
     }
 
     bool changed = false;
-    changed |= SetScriptSetting(dialogueScript, kInteractionRequestPending, "1");
-    changed |= SetScriptSetting(dialogueScript, kInteractionOverrideLines, SerializeDialogueLines(option.dialogueLines));
-    changed |= SetScriptSetting(dialogueScript, kInteractionEndEnable, SerializeObjectRefs(option.dialogueItemsToEnableOnEnd));
-    changed |= SetScriptSetting(dialogueScript, kInteractionEndDisable, SerializeObjectRefs(option.dialogueItemsToDisableOnEnd));
-    changed |= SetScriptSetting(dialogueScript, kInteractionPlayerRef, config.playerRef);
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionRequestPending, "1");
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionOverrideLines, SerializeDialogueLines(option.dialogueLines));
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionEndEnable, SerializeObjectRefs(option.dialogueItemsToEnableOnEnd));
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionEndDisable, SerializeObjectRefs(option.dialogueItemsToDisableOnEnd));
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionPlayerRef, config.playerRef);
 
-    const int currentSerial = ParseInt(GetScriptSetting(dialogueScript, kInteractionRequestSerial, "0"), 0);
-    changed |= SetScriptSetting(dialogueScript, kInteractionRequestSerial, std::to_string(currentSerial + 1));
+    const int currentSerial = ParseInt(GetScriptSetting(dialogueTarget.script, kInteractionRequestSerial, "0"), 0);
+    changed |= SetScriptSetting(dialogueTarget.script, kInteractionRequestSerial, std::to_string(currentSerial + 1));
 
-    if (!dialogueObject->enabled) {
-        dialogueObject->enabled = true;
+    if (!dialogueTarget.object->enabled) {
+        dialogueTarget.object->enabled = true;
         changed = true;
     }
 
@@ -499,189 +629,41 @@ const char* selectionName(const InteractableConfig& config, const SceneObject* o
     return "Interactable";
 }
 
+void drawSelectionNameInfo(const InteractableConfig& config, const SceneObject* object) {
+    ImGui::TextDisabled("Selection Name: %s", selectionName(config, object));
+}
+
+bool drawInteractNowButton(ScriptContext& ctx, InteractableConfig& config, InteractableRuntimeState& runtimeState) {
+    return ImGui::Button("Interact Now") && interact(ctx, config, &runtimeState);
+}
+
+void runtimeStatusBool(const char* label, bool value) {
+    ImGui::TextDisabled("%s: %s", label, value ? "Yes" : "No");
+}
+
+void runtimeStatusVec3(const char* label, const glm::vec3& value) {
+    ImGui::TextDisabled("%s: (%.2f, %.2f, %.2f)", label, value.x, value.y, value.z);
+}
+
 void drawRuntimeStatus(const InteractableConfig& config, const InteractableRuntimeState* runtimeState) {
     ImGui::Separator();
     ImGui::TextUnformatted("Runtime");
-    ImGui::TextDisabled("Can Interact: %s", config.canInteract ? "Yes" : "No");
+    runtimeStatusBool("Can Interact", config.canInteract);
     ImGui::TextDisabled("Options: %zu", config.options.size());
     ImGui::TextDisabled("Selected Option: %d", config.selectedOptionIndex);
-    if (!runtimeState) return;
-    if (config.requirePlayerInRange || config.debugRange) {
-        if (!runtimeState->lastRangeHasPlayer) {
-            ImGui::TextDisabled("Range: player not found");
-        } else {
-            ImGui::TextDisabled("Range Distance: %.2f / %.2f",
-                                runtimeState->lastRangeDistance,
-                                std::max(0.0f, config.interactDistance));
-            ImGui::TextDisabled("In Range: %s", runtimeState->lastRangeInRange ? "Yes" : "No");
-            if (config.debugRange) {
-                ImGui::TextDisabled("Self Pos: (%.2f, %.2f, %.2f)",
-                                    runtimeState->lastSelfWorldPos.x,
-                                    runtimeState->lastSelfWorldPos.y,
-                                    runtimeState->lastSelfWorldPos.z);
-                ImGui::TextDisabled("Player Pos: (%.2f, %.2f, %.2f)",
-                                    runtimeState->lastPlayerWorldPos.x,
-                                    runtimeState->lastPlayerWorldPos.y,
-                                    runtimeState->lastPlayerWorldPos.z);
-            }
-        }
-    }
-}
-
-} // namespace
-
-extern "C" void Script_OnInspector(ScriptContext& ctx) {
-    InteractableConfig config = loadConfig(ctx);
-    bool changed = false;
-    const int objectId = ctx.object ? ctx.object->id : -1;
-    InteractableRuntimeState& runtimeState = g_runtimeStates[objectId];
-    isPlayerInRange(ctx, config, &runtimeState);
-
-    ImGui::TextUnformatted("InteractableObject (Unity Port)");
-    ImGui::Separator();
-
-    ImGui::TextDisabled("Selection Name: %s", selectionName(config, ctx.object));
-
-    changed |= ImGui::Checkbox("Can Interact", &config.canInteract);
-    changed |= ImGui::Checkbox("One Time Use", &config.oneTimeUse);
-    changed |= ImGui::Checkbox("Interact On E", &config.interactOnKeyPress);
-    changed |= ImGui::Checkbox("Require Player In Range", &config.requirePlayerInRange);
-    changed |= ImGui::DragFloat("Interaction Distance", &config.interactDistance, 0.05f, 0.0f, 100.0f, "%.2f");
-    changed |= ImGui::Checkbox("Debug Range", &config.debugRange);
-
-    changed |= DrawObjectRefInput(ctx, "Player Ref", config.playerRef);
-    changed |= DrawStdStringInput("Selection Name Override", config.selectionNameOverride, 256);
-
-    if (ImGui::Checkbox("Is Selected", &config.isSelected)) {
-        applySelectedState(ctx, config);
-        changed = true;
-    }
-
-    changed |= DrawObjectRefListEditor(ctx, "Selected State Enable", config.selectedStateEnable);
-    changed |= DrawObjectRefListEditor(ctx, "Selected State Disable", config.selectedStateDisable);
-
-    if (ImGui::Button("Interact Now")) {
-        if (interact(ctx, config, &runtimeState)) {
-            changed = true;
-        }
-    }
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Interaction Options");
-
-    if (ImGui::Button("Add Option")) {
-        config.options.emplace_back();
-        const int objectId = ctx.object ? ctx.object->id : -1;
-        g_selectedOptionEditorIndex[objectId] = static_cast<int>(config.options.size()) - 1;
-        changed = true;
-    }
-    ImGui::SameLine();
-    {
-        const int objectId = ctx.object ? ctx.object->id : -1;
-        int& selected = g_selectedOptionEditorIndex[objectId];
-        if (ImGui::Button("Remove Option") && selected >= 0 && selected < static_cast<int>(config.options.size())) {
-            config.options.erase(config.options.begin() + static_cast<std::ptrdiff_t>(selected));
-            if (config.options.empty()) selected = -1;
-            else selected = std::clamp(selected, 0, static_cast<int>(config.options.size()) - 1);
-            changed = true;
-        }
-    }
-
-    if (!config.options.empty()) {
-        config.selectedOptionIndex = std::clamp(config.selectedOptionIndex, 0, static_cast<int>(config.options.size()) - 1);
-        changed |= ImGui::SliderInt("Selected Option Index", &config.selectedOptionIndex, 0,
-                                    static_cast<int>(config.options.size()) - 1);
-
-        const int objectId = ctx.object ? ctx.object->id : -1;
-        int& selected = g_selectedOptionEditorIndex[objectId];
-        selected = std::clamp(selected, 0, static_cast<int>(config.options.size()) - 1);
-
-        ImGui::BeginChild("OptionList", ImVec2(230.0f, 180.0f), true);
-        for (size_t i = 0; i < config.options.size(); ++i) {
-            const std::string label = std::to_string(i + 1) + ". " +
-                (config.options[i].optionName.empty() ? std::string("<Unnamed>") : config.options[i].optionName);
-            if (ImGui::Selectable(label.c_str(), selected == static_cast<int>(i))) {
-                selected = static_cast<int>(i);
-            }
-        }
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-
-        InteractionOption& option = config.options[static_cast<size_t>(selected)];
-        changed |= DrawStdStringInput("Option Name", option.optionName, 256);
-        changed |= drawInteractionTypeCombo(option.interactionType);
-
-        if (option.interactionType == InteractionType::Dialogue) {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Dialogue Settings");
-            changed |= DrawObjectRefInput(ctx, "Dialogue System Ref", option.dialogueSystemRef);
-
-            int& selectedLine = g_selectedDialogueLineEditorIndex[objectId];
-            changed |= drawDialogueLineEditor(ctx, option.dialogueLines, selectedLine);
-
-            changed |= DrawObjectRefListEditor(ctx, "Dialogue End Enable", option.dialogueItemsToEnableOnEnd);
-            changed |= DrawObjectRefListEditor(ctx, "Dialogue End Disable", option.dialogueItemsToDisableOnEnd);
-        } else {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Object Toggle Settings");
-            changed |= DrawObjectRefListEditor(ctx, "Items To Enable", option.itemsToEnable);
-            changed |= DrawObjectRefListEditor(ctx, "Items To Disable", option.itemsToDisable);
-        }
-
-        ImGui::EndGroup();
-    } else {
-        ImGui::TextDisabled("No options configured.");
-    }
-
-    if (changed) {
-        saveConfig(ctx, config);
-    }
-
-    drawRuntimeStatus(config, &runtimeState);
-}
-
-void Begin(ScriptContext& ctx, float /*deltaTime*/) {
-    if (!ctx.object) return;
-
-    const InteractableConfig config = loadConfig(ctx);
-    InteractableRuntimeState& state = g_runtimeStates[ctx.object->id];
-    state.prevInteractDown = false;
-    state.hasSelectionState = true;
-    state.lastSelectionState = config.isSelected;
-    state.lastRangeDistance = -1.0f;
-    state.lastRangeInRange = false;
-    state.lastRangeHasPlayer = false;
-    state.lastPlayerWorldPos = glm::vec3(0.0f);
-    state.lastSelfWorldPos = ctx.object ? getObjectReferencePosition(ctx, *ctx.object) : glm::vec3(0.0f);
-
-    applySelectedState(ctx, config);
-}
-
-void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {
-    if (!ctx.object) return;
-
-    InteractableConfig config = loadConfig(ctx);
-    InteractableRuntimeState& state = g_runtimeStates[ctx.object->id];
-
-    if (!state.hasSelectionState || state.lastSelectionState != config.isSelected) {
-        applySelectedState(ctx, config);
-        state.hasSelectionState = true;
-        state.lastSelectionState = config.isSelected;
-    }
-
-    isPlayerInRange(ctx, config, &state);
-
-    const bool interactDown = isInteractDown();
-    const bool interactPressed = interactDown && !state.prevInteractDown;
-    state.prevInteractDown = interactDown;
-
-    if (!config.interactOnKeyPress || !interactPressed) {
+    if (!runtimeState || !(config.requirePlayerInRange || config.debugRange)) return;
+    if (!runtimeState->lastRangeHasPlayer) {
+        ImGui::TextDisabled("Range: player not found");
         return;
     }
 
-    if (interact(ctx, config, &state)) {
-        saveConfig(ctx, config);
-    }
+    ImGui::TextDisabled("Range Distance: %.2f / %.2f",
+                        runtimeState->lastRangeDistance,
+                        std::max(0.0f, config.interactDistance));
+    runtimeStatusBool("In Range", runtimeState->lastRangeInRange);
+    if (!config.debugRange) return;
+    runtimeStatusVec3("Self Pos", runtimeState->lastSelfWorldPos);
+    runtimeStatusVec3("Player Pos", runtimeState->lastPlayerWorldPos);
 }
+
+} // namespace

@@ -45,6 +45,8 @@ TextEditor::TextEditor()
 	, mHandleKeyboardInputs(true)
 	, mHandleMouseInputs(true)
 	, mAllowTabInput(true)
+	, mAllowArrowNavigation(true)
+	, mAllowEnterInput(true)
 	, mSmartTabDelete(true)
 	, mCursorScreenPos(0.0f, 0.0f)
 	, mCursorScreenPosValid(false)
@@ -730,9 +732,9 @@ void TextEditor::HandleKeyboardInputs()
 			Undo();
 		else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Y))
 			Redo();
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+		else if (mAllowArrowNavigation && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
 			MoveUp(1, shift);
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+		else if (mAllowArrowNavigation && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
 			MoveDown(1, shift);
 		else if (!alt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
 			MoveLeft(1, shift, ctrl);
@@ -812,7 +814,7 @@ void TextEditor::HandleKeyboardInputs()
 			Cut();
 		else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_A))
 			SelectAll();
-		else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Enter))
+		else if (mAllowEnterInput && !IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Enter))
 			EnterCharacter('\n', false);
 		else if (mAllowTabInput && !IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Tab))
 			EnterCharacter('\t', shift);

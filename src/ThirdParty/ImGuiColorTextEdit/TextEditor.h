@@ -225,6 +225,10 @@ public:
 	inline bool IsHandleKeyboardInputsEnabled() const { return mHandleKeyboardInputs; }
 	inline void SetAllowTabInput(bool aValue) { mAllowTabInput = aValue; }
 	inline bool IsTabInputAllowed() const { return mAllowTabInput; }
+	inline void SetAllowArrowNavigation(bool aValue) { mAllowArrowNavigation = aValue; }
+	inline bool IsArrowNavigationAllowed() const { return mAllowArrowNavigation; }
+	inline void SetAllowEnterInput(bool aValue) { mAllowEnterInput = aValue; }
+	inline bool IsEnterInputAllowed() const { return mAllowEnterInput; }
 	inline void SetSmartTabDelete(bool aValue) { mSmartTabDelete = aValue; }
 	inline bool IsSmartTabDeleteEnabled() const { return mSmartTabDelete; }
 
@@ -254,6 +258,8 @@ public:
 	void SetSelection(const Coordinates& aStart, const Coordinates& aEnd, SelectionMode aMode = SelectionMode::Normal);
 	std::string GetWordUnderCursorPublic() const;
 	std::string GetWordAtPublic(const Coordinates& aCoords) const;
+	Coordinates FindWordStartPublic(const Coordinates& aCoords) const { return FindWordStart(aCoords); }
+	Coordinates FindWordEndPublic(const Coordinates& aCoords) const { return FindWordEnd(aCoords); }
 	ImVec2 GetCursorScreenPositionPublic() const { return mCursorScreenPos; }
 	bool HasCursorScreenPosition() const { return mCursorScreenPosValid; }
 	void SelectWordUnderCursor();
@@ -378,6 +384,8 @@ private:
 	bool mHandleKeyboardInputs;
 	bool mHandleMouseInputs;
 	bool mAllowTabInput;
+	bool mAllowArrowNavigation;
+	bool mAllowEnterInput;
 	bool mSmartTabDelete;
 	ImVec2 mCursorScreenPos;
 	bool mCursorScreenPosValid;

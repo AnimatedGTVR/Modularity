@@ -1,0 +1,23 @@
+#include "ModuCPP"
+
+#include <algorithm>
+
+public class FPSDisplay : ModuBehaviour {
+    public bool clampTo120 = false;
+    public float smoothing = 0.15f;
+    private float smoothFps = 0.0f;
+
+    void TickUpdate(MODU_obj, float dt) {
+        ctx.SetFPSCap(clampTo120, 120.0f);
+        if (!obj || obj->type != ObjectType::UIText) return;
+
+        const float fps = (dt > 1e-6f) ? (1.0f / dt) : 0.0f;
+        const float k = std::clamp(smoothing, 0.0f, 1.0f);
+        if (smoothFps <= 0.0f) {
+            smoothFps = fps;
+        }
+        smoothFps = smoothFps + (fps - smoothFps) * k;
+        obj->ui.label = "FPS: " + std::to_string(static_cast<int>(smoothFps + 0.5f));
+    }
+}
+
