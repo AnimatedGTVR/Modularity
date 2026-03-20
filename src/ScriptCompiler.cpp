@@ -342,32 +342,122 @@ namespace {
 #endif
     // why does windows need all of this :sob:
 #if defined(_WIN32)
-    std::string wrapForWindowsCmd(const std::string& command) {
-        if (command.empty()) return command;
-        if (command.rfind("cmd ", 0) == 0 || command.rfind("cmd.exe ", 0) == 0) {
-            return command;
-        }
-
-        std::ostringstream wrapped;
-        wrapped << "cmd /d /s /c \"" << command << "\"";
-        return wrapped.str();
-    }
-
     std::string getEnvValue(const char* name) {
         const char* value = std::getenv(name);
         return value ? std::string(value) : std::string();
     }
 
-    std::string runCapture(const std::string& command) {
-        std::array<char, 256> buffer{};
-        std::string output;
-        const std::string wrappedCommand = wrapForWindowsCmd(command);
-        FILE* pipe = _popen(wrappedCommand.c_str(), "r");
-        if (!pipe) return output;
-        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-            output += buffer.data();
+    std::wstring utf8ToWide(const std::string& value) {
+        if (value.empty()) return std::wstring();
+
+        int len = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+        if (len <= 0) return std::wstring(value.begin(), value.end());
+
+        std::wstring wide(static_cast<size_t>(len) - 1, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide.data(), len);
+        return wide;
+    }
+
+    fs::path getCommandProcessorPath() {
+        std::string comspec = getEnvValue("ComSpec");
+        if (!comspec.empty()) {
+            return fs::path(comspec);
         }
-        _pclose(pipe);
+
+        wchar_t buffer[MAX_PATH];
+        UINT len = GetSystemDirectoryW(buffer, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) {
+            return fs::path(L"cmd.exe");
+        }
+        return fs::path(buffer) / "cmd.exe";
+    }
+
+    bool runWindowsShellCommand(const std::string& command, std::string& output, int& exitCode) {
+        output.clear();
+        exitCode = -1;
+        if (command.empty()) return false;
+
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+
+        HANDLE readPipe = nullptr;
+        HANDLE writePipe = nullptr;
+        if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+            return false;
+        }
+        if (!SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0)) {
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            return false;
+        }
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = writePipe;
+        si.hStdError = writePipe;
+
+        PROCESS_INFORMATION pi{};
+        const fs::path cmdPath = getCommandProcessorPath();
+        std::wstring commandLine = L"\"";
+        commandLine += cmdPath.wstring();
+        commandLine += L"\" /d /s /c \"";
+        commandLine += utf8ToWide(command);
+        commandLine += L"\"";
+
+        std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+        mutableCommand.push_back(L'\0');
+
+        BOOL launched = CreateProcessW(
+            nullptr,
+            mutableCommand.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        );
+
+        CloseHandle(writePipe);
+        writePipe = nullptr;
+
+        if (!launched) {
+            CloseHandle(readPipe);
+            return false;
+        }
+
+        std::array<char, 4096> buffer{};
+        DWORD bytesRead = 0;
+        while (ReadFile(readPipe, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead, nullptr) &&
+               bytesRead > 0) {
+            output.append(buffer.data(), bytesRead);
+        }
+
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD processExitCode = 0;
+        if (!GetExitCodeProcess(pi.hProcess, &processExitCode)) {
+            processExitCode = static_cast<DWORD>(-1);
+        }
+
+        exitCode = static_cast<int>(processExitCode);
+
+        CloseHandle(readPipe);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+
+    std::string runCapture(const std::string& command) {
+        std::string output;
+        int exitCode = 0;
+        if (!runWindowsShellCommand(command, output, exitCode)) {
+            return std::string();
+        }
         return output;
     }
 
@@ -1528,13 +1618,16 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 }
 
 bool ScriptCompiler::runCommand(const std::string& command, std::string& output) {
-    std::array<char, 256> buffer{};
 #ifdef _WIN32
-    const std::string wrappedCommand = wrapForWindowsCmd(command);
-    FILE* pipe = _popen(wrappedCommand.c_str(), "r");
+    int exitCode = 0;
+    if (!runWindowsShellCommand(command, output, exitCode)) {
+        output = "Failed to spawn process: " + command;
+        return false;
+    }
+    return exitCode == 0;
 #else
+    std::array<char, 256> buffer{};
     FILE* pipe = popen(command.c_str(), "r");
-#endif
     if (!pipe) {
         output = "Failed to spawn process: " + command;
         return false;
@@ -1544,15 +1637,12 @@ bool ScriptCompiler::runCommand(const std::string& command, std::string& output)
         output += buffer.data();
     }
 
-#ifdef _WIN32
-    int returnCode = _pclose(pipe);
-#else
     int returnCode = pclose(pipe);
-#endif
     if (returnCode != 0) {
         return false;
     }
     return true;
+#endif
 }
 
 bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileOutput& output,
