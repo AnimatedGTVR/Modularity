@@ -437,11 +437,12 @@ namespace {
         if (vsDevCmd.empty()) return command;
 
         std::ostringstream wrapped;
-        wrapped << "cmd /c \"\""
+        // _popen() already runs through cmd.exe on Windows. Adding another
+        // nested `cmd /c` here breaks quoted paths under `C:\Program Files\...`.
+        wrapped << "call \""
                 << vsDevCmd
                 << "\" -arch=x64 -host_arch=x64 >nul && "
                 << command
-                << "\"";
         return wrapped.str();
     }
 #endif
