@@ -442,7 +442,7 @@ namespace {
         wrapped << "call \""
                 << vsDevCmd
                 << "\" -arch=x64 -host_arch=x64 >nul && "
-                << command
+                << command;
         return wrapped.str();
     }
 #endif
