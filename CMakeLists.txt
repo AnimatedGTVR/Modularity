@@ -261,21 +261,17 @@ if(MODULARITY_ENABLE_PHYSX)
     set(PX_OUTPUT_LIB_DIR ${CMAKE_BINARY_DIR}/physx CACHE PATH "PhysX output lib directory")
     set(PX_OUTPUT_BIN_DIR ${CMAKE_BINARY_DIR}/physx/bin CACHE PATH "PhysX output bin directory")
     if(WIN32)
-        # The PhysX "compiler/public" wrapper forces PUBLIC_RELEASE=1, which
-        # makes Windows builds try to copy optional freeglut DLLs from NVIDIA's
-        # internal package layout. Build the SDK entrypoint directly instead.
-        if(NOT DEFINED PHYSX_CMAKE_MODULES_PATH OR PHYSX_CMAKE_MODULES_PATH STREQUAL "")
-            list(APPEND PHYSX_CMAKE_MODULES_PATH
-                ${PHYSX_ROOT_DIR}/source/compiler/cmake/modules
-            )
-            set(PHYSX_CMAKE_MODULES_PATH ${PHYSX_CMAKE_MODULES_PATH} CACHE INTERNAL "Path to PhysX CMake modules")
-        endif()
-        list(APPEND CMAKE_MODULE_PATH ${PHYSX_CMAKE_MODULES_PATH})
-        set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-        add_subdirectory(${PHYSX_ROOT_DIR}/source/compiler/cmake ${CMAKE_BINARY_DIR}/physx/sdk_source_bin)
-    else()
-        add_subdirectory(${PHYSX_ROOT_DIR}/compiler/public ${CMAKE_BINARY_DIR}/physx)
+        # The PhysX public wrapper is required on Windows because the raw SDK
+        # entrypoint references private NVIDIA-only sources when PUBLIC_RELEASE
+        # is not enabled. Its public-release path still tries to copy optional
+        # freeglut DLLs, so provide local placeholders to satisfy configure.
+        set(PHYSX_FREEGLUT_STUB_DIR ${CMAKE_BINARY_DIR}/physx/freeglut-stub/bin/win64)
+        file(MAKE_DIRECTORY ${PHYSX_FREEGLUT_STUB_DIR})
+        file(WRITE ${PHYSX_FREEGLUT_STUB_DIR}/freeglut.dll "")
+        file(WRITE ${PHYSX_FREEGLUT_STUB_DIR}/freeglutd.dll "")
+        set(PHYSX_SLN_FREEGLUT_PATH ${CMAKE_BINARY_DIR}/physx/freeglut-stub/bin CACHE PATH "PhysX freeglut copy path" FORCE)
     endif()
+    add_subdirectory(${PHYSX_ROOT_DIR}/compiler/public ${CMAKE_BINARY_DIR}/physx)
     target_include_directories(core PUBLIC ${PHYSX_ROOT_DIR}/include)
     target_compile_definitions(core PUBLIC MODULARITY_ENABLE_PHYSX PX_PHYSX_STATIC_LIB)
     target_link_libraries(core PUBLIC PhysX PhysXCommon PhysXFoundation PhysXExtensions PhysXCooking)
