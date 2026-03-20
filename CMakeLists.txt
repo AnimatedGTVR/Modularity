@@ -294,12 +294,20 @@ if(MODULARITY_BUILD_EDITOR)
     target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
     if(WIN32)
         target_compile_definitions(Modularity PRIVATE ${MODULARITY_WINDOWS_DEFINES})
+        set_target_properties(Modularity PROPERTIES
+            ENABLE_EXPORTS ON
+            WINDOWS_EXPORT_ALL_SYMBOLS ON
+        )
     endif()
 endif()
 add_executable(ModularityPlayer src/main_player.cpp)
 target_compile_options(ModularityPlayer PRIVATE ${MODULARITY_WARNING_FLAGS})
 if(WIN32)
     target_compile_definitions(ModularityPlayer PRIVATE ${MODULARITY_WINDOWS_DEFINES})
+    set_target_properties(ModularityPlayer PROPERTIES
+        ENABLE_EXPORTS ON
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
 endif()
 
 # Link order matters on Linux

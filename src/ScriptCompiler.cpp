@@ -11,6 +11,7 @@
 #include <sstream>
 #include <regex>
 #include <unordered_set>
+#include <vector>
 #if defined(_WIN32)
     #include <windows.h>
 #endif
@@ -76,6 +77,133 @@ namespace {
         if (ec) return std::nullopt;
         return t;
     }
+
+#if defined(_WIN32)
+    fs::path getCurrentExecutablePath() {
+        std::wstring buffer(MAX_PATH, L'\0');
+        for (;;) {
+            DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (len == 0) return {};
+            if (len < buffer.size() - 1) {
+                buffer.resize(len);
+                return fs::path(buffer);
+            }
+            buffer.resize(buffer.size() * 2);
+        }
+    }
+
+    bool looksLikeEngineRoot(const fs::path& candidate) {
+        std::error_code ec;
+        return fs::exists(candidate / "CMakeLists.txt", ec) &&
+               fs::exists(candidate / "src" / "ScriptCompiler.cpp", ec);
+    }
+
+    std::optional<fs::path> findEngineRootFrom(const fs::path& start) {
+        fs::path current = start;
+        while (!current.empty()) {
+            if (looksLikeEngineRoot(current)) {
+                return current;
+            }
+            fs::path parent = current.parent_path();
+            if (parent == current) break;
+            current = parent;
+        }
+        return std::nullopt;
+    }
+
+    void appendExistingUniquePath(std::vector<fs::path>& out, std::unordered_set<std::string>& seen,
+                                  const fs::path& candidate) {
+        if (candidate.empty()) return;
+
+        std::error_code ec;
+        if (!fs::exists(candidate, ec) || ec) return;
+
+        fs::path normalized = fs::weakly_canonical(candidate, ec);
+        if (ec) {
+            ec.clear();
+            normalized = fs::absolute(candidate, ec);
+            if (ec) normalized = candidate;
+        }
+
+        const std::string key = normalized.lexically_normal().string();
+        if (!seen.insert(key).second) return;
+        out.push_back(normalized);
+    }
+
+    std::optional<fs::path> findNamedFileRecursively(const fs::path& root,
+                                                     const std::string& filename) {
+        std::error_code ec;
+        if (!fs::exists(root, ec) || ec) return std::nullopt;
+
+        fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+        fs::recursive_directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            const fs::directory_entry& entry = *it;
+            if (!entry.is_regular_file(ec) || ec) {
+                ec.clear();
+                continue;
+            }
+            if (entry.path().filename() == filename) {
+                fs::path found = fs::weakly_canonical(entry.path(), ec);
+                if (ec) {
+                    ec.clear();
+                    return entry.path();
+                }
+                return found;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<fs::path> findHostImportLibrary() {
+        static bool resolved = false;
+        static std::optional<fs::path> cachedPath;
+        if (resolved) {
+            return cachedPath;
+        }
+        resolved = true;
+
+        const fs::path exePath = getCurrentExecutablePath();
+        if (exePath.empty()) return std::nullopt;
+
+        const fs::path exeDir = exePath.parent_path();
+        const std::string libName = exePath.stem().string() + ".lib";
+        std::vector<fs::path> exactCandidates;
+        std::unordered_set<std::string> seen;
+
+        appendExistingUniquePath(exactCandidates, seen, exeDir / libName);
+        appendExistingUniquePath(exactCandidates, seen, exeDir.parent_path() / libName);
+        appendExistingUniquePath(exactCandidates, seen,
+                                 exeDir.parent_path() / exeDir.filename() / libName);
+
+        if (auto engineRoot = findEngineRootFrom(exeDir)) {
+            const fs::path buildDir = *engineRoot / "build";
+            appendExistingUniquePath(exactCandidates, seen, buildDir / libName);
+            appendExistingUniquePath(exactCandidates, seen, buildDir / "Debug" / libName);
+            appendExistingUniquePath(exactCandidates, seen, buildDir / "Release" / libName);
+            appendExistingUniquePath(exactCandidates, seen, buildDir / "RelWithDebInfo" / libName);
+            appendExistingUniquePath(exactCandidates, seen, buildDir / "MinSizeRel" / libName);
+            appendExistingUniquePath(exactCandidates, seen,
+                                     buildDir / "player-cache" / "Debug" / libName);
+            appendExistingUniquePath(exactCandidates, seen,
+                                     buildDir / "player-cache" / "Release" / libName);
+            appendExistingUniquePath(exactCandidates, seen,
+                                     buildDir / "player-cache" / "RelWithDebInfo" / libName);
+            appendExistingUniquePath(exactCandidates, seen,
+                                     buildDir / "player-cache" / "MinSizeRel" / libName);
+
+            if (auto recursiveMatch = findNamedFileRecursively(buildDir, libName)) {
+                appendExistingUniquePath(exactCandidates, seen, *recursiveMatch);
+            }
+        }
+
+        if (!exactCandidates.empty()) {
+            cachedPath = exactCandidates.front();
+            return cachedPath;
+        }
+        return std::nullopt;
+    }
+#endif
 
     struct DependencyInfo {
         bool hasDepFile = false;
@@ -628,6 +756,18 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         }
     };
 
+#ifdef _WIN32
+    const std::optional<fs::path> hostImportLib = findHostImportLibrary();
+    if (!hostImportLib) {
+        const fs::path exePath = getCurrentExecutablePath();
+        error = "Unable to locate the host import library for " +
+                (exePath.empty() ? std::string("the running executable")
+                                 : exePath.filename().string()) +
+                ". Rebuild the current Windows target so its .lib is generated before compiling scripts.";
+        return false;
+    }
+#endif
+
     fs::path wrapperPath;
     bool useWrapper = false;
     std::ostringstream compileCmd;
@@ -1141,7 +1281,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
         std::ostringstream linkRsp;
         linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
-                << "\" /OUT:\"" << binaryPath.string() << "\"";
+                << "\" /OUT:\"" << binaryPath.string() << "\""
+                << " \"" << hostImportLib->string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
             linkRsp << " " << lib;
         }
@@ -1289,7 +1430,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
         std::ostringstream linkRsp;
         linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
-                << binaryPath.string() << "\"";
+                << binaryPath.string() << "\""
+                << " \"" << hostImportLib->string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
             linkRsp << " " << lib;
         }
