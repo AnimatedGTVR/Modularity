@@ -2431,8 +2431,11 @@ void Engine::renderAnimationWindow() {
         if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
             std::error_code ec;
             fs::path rel = fs::relative(absolutePath, projectManager.currentProject.projectPath, ec);
-            if (!ec && !rel.empty() && rel.native().find("..") != 0) {
-                return rel.generic_string();
+            if (!ec && !rel.empty()) {
+                const auto first = rel.begin();
+                if (first != rel.end() && *first != fs::path("..")) {
+                    return rel.generic_string();
+                }
             }
         }
         return absolutePath.generic_string();
