@@ -356,8 +356,20 @@ if(NOT WIN32)
 else()
     if(MODULARITY_BUILD_EDITOR)
         target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
+        if(MSVC)
+            target_link_options(Modularity PRIVATE
+                "/WHOLEARCHIVE:$<TARGET_FILE:core>"
+                "/WHOLEARCHIVE:$<TARGET_FILE:imgui>"
+            )
+        endif()
     endif()
     target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
+    if(MSVC)
+        target_link_options(ModularityPlayer PRIVATE
+            "/WHOLEARCHIVE:$<TARGET_FILE:core_player>"
+            "/WHOLEARCHIVE:$<TARGET_FILE:imgui>"
+        )
+    endif()
 endif()
 
 # Copy resources once to avoid parallel target races writing the same directory.
