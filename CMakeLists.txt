@@ -144,6 +144,9 @@ if(MODULARITY_HAS_VULKAN)
 endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCES})
+if(WIN32 AND MSVC)
+    target_compile_definitions(imgui PRIVATE IMGUI_API=__declspec\(dllexport\))
+endif()
 
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
@@ -213,7 +216,7 @@ target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_U
 target_compile_definitions(core PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 if(WIN32)
-    target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+    target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES} MODULARITY_SCRIPT_HOST)
 endif()
 if(SNDFILE_FOUND)
     target_link_libraries(core PUBLIC PkgConfig::SNDFILE)
@@ -240,7 +243,7 @@ target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODUL
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 if(WIN32)
-    target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES})
+    target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES} MODULARITY_SCRIPT_HOST)
 endif()
 if(SNDFILE_FOUND)
     target_link_libraries(core_player PUBLIC PkgConfig::SNDFILE)

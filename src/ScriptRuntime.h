@@ -6,7 +6,19 @@
 
 class Engine;
 
-struct ScriptContext {
+#if defined(_WIN32)
+    #if defined(MODULARITY_SCRIPT_HOST)
+        #define MODULARITY_SCRIPT_API __declspec(dllexport)
+    #elif defined(MODULARITY_SCRIPT_IMPORTS)
+        #define MODULARITY_SCRIPT_API __declspec(dllimport)
+    #else
+        #define MODULARITY_SCRIPT_API
+    #endif
+#else
+    #define MODULARITY_SCRIPT_API
+#endif
+
+struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
     SceneObject* object = nullptr;
     ScriptComponent* script = nullptr;
@@ -251,3 +263,5 @@ private:
 #ifndef IEnum_Ensure
 #define IEnum_Ensure(fn) ctx.EnsureIEnum(fn)
 #endif
+
+#undef MODULARITY_SCRIPT_API

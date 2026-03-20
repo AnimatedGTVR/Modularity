@@ -857,6 +857,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         for (const auto& inc : config.includeDirs) {
             cmd << " /I\"" << inc.string() << "\"";
         }
+        cmd << " /DMODULARITY_SCRIPT_IMPORTS";
         for (const auto& def : config.defines) {
             cmd << " /D\"" << escapeDefine(def) << "\"";
         }
