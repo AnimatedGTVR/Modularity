@@ -1,0 +1,24 @@
+# build.modu
+platform=Linux
+architecture=x86_64
+companyName=Tareno Labs LLC.
+buildName=The Waking Soul
+version=0.1
+splashImage=Assets/Textures/Heart.png
+splashEnabled=1
+splashDuration=2
+packageStandaloneArchive=1
+developmentBuild=0
+autoConnectProfiler=0
+scriptDebugging=0
+deepProfiling=0
+scriptsOnlyBuild=0
+serverBuild=0
+compressionMethod=Default
+rendererAmbient=0.2,0.2,0.2
+rendererShadowResolution=512
+rendererAutoReloadShaders=1
+editorCameraFov=45
+editorCameraNear=0.1
+editorCameraFar=100
+scene=thingy,1

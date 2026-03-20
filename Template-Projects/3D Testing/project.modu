@@ -1,0 +1,4 @@
+name=The Waking Soul
+lastScene=Main
+pipeline=3D
+renderer=OpenGL

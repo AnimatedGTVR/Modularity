@@ -1,0 +1,10 @@
+# Scripts.modu
+cppStandard=c++20
+scriptsDir=Scripts
+outDir=Cache/ScriptBin
+includeDir=src
+includeDir=include
+define=MODU_SCRIPTING=1
+define=MODU_PROJECT_NAME="The Waking Soul"
+linux.linkLib=pthread
+linux.linkLib=dl
