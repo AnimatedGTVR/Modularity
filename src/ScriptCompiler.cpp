@@ -10,6 +10,7 @@
 #include <optional>
 #include <sstream>
 #include <regex>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #if defined(_WIN32)
@@ -341,6 +342,17 @@ namespace {
 #endif
     // why does windows need all of this :sob:
 #if defined(_WIN32)
+    std::string wrapForWindowsCmd(const std::string& command) {
+        if (command.empty()) return command;
+        if (command.rfind("cmd ", 0) == 0 || command.rfind("cmd.exe ", 0) == 0) {
+            return command;
+        }
+
+        std::ostringstream wrapped;
+        wrapped << "cmd /d /s /c \"" << command << "\"";
+        return wrapped.str();
+    }
+
     std::string getEnvValue(const char* name) {
         const char* value = std::getenv(name);
         return value ? std::string(value) : std::string();
@@ -349,7 +361,8 @@ namespace {
     std::string runCapture(const std::string& command) {
         std::array<char, 256> buffer{};
         std::string output;
-        FILE* pipe = _popen(command.c_str(), "r");
+        const std::string wrappedCommand = wrapForWindowsCmd(command);
+        FILE* pipe = _popen(wrappedCommand.c_str(), "r");
         if (!pipe) return output;
         while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
             output += buffer.data();
@@ -359,10 +372,18 @@ namespace {
     }
 
     std::string findVsDevCmd() {
+        static bool resolved = false;
+        static std::string cachedPath;
+        if (resolved) return cachedPath;
+        resolved = true;
+
         std::string vsInstall = getEnvValue("VSINSTALLDIR");
         if (!vsInstall.empty()) {
             fs::path candidate = fs::path(vsInstall) / "Common7" / "Tools" / "VsDevCmd.bat";
-            if (fs::exists(candidate)) return candidate.string();
+            if (fs::exists(candidate)) {
+                cachedPath = candidate.string();
+                return cachedPath;
+            }
         }
 
         std::string programFilesX86 = getEnvValue("ProgramFiles(x86)");
@@ -381,12 +402,21 @@ namespace {
         if (installPath.empty()) return std::string();
 
         fs::path devCmd = fs::path(installPath) / "Common7" / "Tools" / "VsDevCmd.bat";
-        if (fs::exists(devCmd)) return devCmd.string();
+        if (fs::exists(devCmd)) {
+            cachedPath = devCmd.string();
+            return cachedPath;
+        }
         return std::string();
     }
 
     // well, that's one way to make VS Harder to implement, For God's Sake, MICROSOFT!!!!
     std::string findVsTool(const char* toolName) {
+        static std::unordered_map<std::string, std::string> cache;
+        const std::string cacheKey = toolName ? std::string(toolName) : std::string();
+        if (auto it = cache.find(cacheKey); it != cache.end()) {
+            return it->second;
+        }
+
         std::string programFilesX86 = getEnvValue("ProgramFiles(x86)");
         if (programFilesX86.empty()) {
             programFilesX86 = getEnvValue("ProgramFiles");
@@ -401,6 +431,7 @@ namespace {
                 << "-find \"VC\\Tools\\MSVC\\**\\bin\\Hostx64\\x64\\" << toolName << "\"";
             std::string found = trimCopy(runCapture(cmd.str()));
             if (!found.empty() && fs::exists(found)) {
+                cache.emplace(cacheKey, found);
                 return found;
             }
         }
@@ -412,7 +443,10 @@ namespace {
                 for (const auto& entry : fs::directory_iterator(fallback)) {
                     if (!entry.is_directory()) continue;
                     fs::path candidate = entry.path() / "bin" / "Hostx64" / "x64" / toolName;
-                    if (fs::exists(candidate)) return candidate.string();
+                    if (fs::exists(candidate)) {
+                        cache.emplace(cacheKey, candidate.string());
+                        return candidate.string();
+                    }
                 }
             }
         }
@@ -1496,7 +1530,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 bool ScriptCompiler::runCommand(const std::string& command, std::string& output) {
     std::array<char, 256> buffer{};
 #ifdef _WIN32
-    FILE* pipe = _popen(command.c_str(), "r");
+    const std::string wrappedCommand = wrapForWindowsCmd(command);
+    FILE* pipe = _popen(wrappedCommand.c_str(), "r");
 #else
     FILE* pipe = popen(command.c_str(), "r");
 #endif
