@@ -250,14 +250,32 @@ if(MODULARITY_ENABLE_PHYSX)
     set(PX_USE_GLUT OFF CACHE BOOL "" FORCE)
     set(PX_ENABLE_GLUT OFF CACHE BOOL "" FORCE)
     set(PX_BUILDSNIPPETS OFF CACHE BOOL "" FORCE)
+    set(PX_BUILDPVDRUNTIME OFF CACHE BOOL "" FORCE)
     set(PX_BUILDPUBLICSAMPLES OFF CACHE BOOL "" FORCE)
     set(PX_BUILDTESTS OFF CACHE BOOL "" FORCE)
     set(PX_BUILDFASTXML OFF CACHE BOOL "" FORCE)
+    set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "" FORCE)
+    set(PX_GENERATE_GPU_PROJECTS_ONLY OFF CACHE BOOL "" FORCE)
 
     # PhysX build system expects output locations when using the GameWorks layout.
     set(PX_OUTPUT_LIB_DIR ${CMAKE_BINARY_DIR}/physx CACHE PATH "PhysX output lib directory")
     set(PX_OUTPUT_BIN_DIR ${CMAKE_BINARY_DIR}/physx/bin CACHE PATH "PhysX output bin directory")
-    add_subdirectory(${PHYSX_ROOT_DIR}/compiler/public ${CMAKE_BINARY_DIR}/physx)
+    if(WIN32)
+        # The PhysX "compiler/public" wrapper forces PUBLIC_RELEASE=1, which
+        # makes Windows builds try to copy optional freeglut DLLs from NVIDIA's
+        # internal package layout. Build the SDK entrypoint directly instead.
+        if(NOT DEFINED PHYSX_CMAKE_MODULES_PATH OR PHYSX_CMAKE_MODULES_PATH STREQUAL "")
+            list(APPEND PHYSX_CMAKE_MODULES_PATH
+                ${PHYSX_ROOT_DIR}/source/compiler/cmake/modules
+            )
+            set(PHYSX_CMAKE_MODULES_PATH ${PHYSX_CMAKE_MODULES_PATH} CACHE INTERNAL "Path to PhysX CMake modules")
+        endif()
+        list(APPEND CMAKE_MODULE_PATH ${PHYSX_CMAKE_MODULES_PATH})
+        set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+        add_subdirectory(${PHYSX_ROOT_DIR}/source/compiler/cmake ${CMAKE_BINARY_DIR}/physx/sdk_source_bin)
+    else()
+        add_subdirectory(${PHYSX_ROOT_DIR}/compiler/public ${CMAKE_BINARY_DIR}/physx)
+    endif()
     target_include_directories(core PUBLIC ${PHYSX_ROOT_DIR}/include)
     target_compile_definitions(core PUBLIC MODULARITY_ENABLE_PHYSX PX_PHYSX_STATIC_LIB)
     target_link_libraries(core PUBLIC PhysX PhysXCommon PhysXFoundation PhysXExtensions PhysXCooking)
