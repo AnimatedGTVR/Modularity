@@ -122,7 +122,7 @@ if !DUR_REM! lss 10 set "DUR_REM=0!DUR_REM!"
 
 echo.
 echo =========================================
-echo   SUCCESS! Native Linux Build Complete in !DUR_SEC!.!DUR_REM!s!
+echo   SUCCESS! Native Windows Build Complete in !DUR_SEC!.!DUR_REM!s!
 echo   At build\%BUILD_TYPE%\main.exe
 echo =========================================
 echo.
