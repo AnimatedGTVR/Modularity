@@ -605,7 +605,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             cmd << " /I\"" << inc.string() << "\"";
         }
         for (const auto& def : config.defines) {
-            cmd << " /D" << escapeDefine(def);
+            cmd << " /D\"" << escapeDefine(def) << "\"";
         }
     };
 
@@ -632,6 +632,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     bool useWrapper = false;
     std::ostringstream compileCmd;
     std::ostringstream linkCmd;
+    std::string buildSignaturePayload;
 
     if (isCSource) {
         const std::string cContextPattern = "(?:struct\\s+)?ModuScriptContext\\s*\\*";
@@ -1124,18 +1125,38 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         }
 
 #ifdef _WIN32
-        compileCmd << "cl /nologo /TC /MD /Zi /Od";
-        appendWindowsIncludesAndDefines(compileCmd);
-        compileCmd << " /c \"" << scriptAbs.string() << "\" /Fo\"" << objectPath.string() << "\"";
-        compileCmd << " && ";
-        compileCmd << "cl /nologo /TP /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
-        appendWindowsIncludesAndDefines(compileCmd);
-        compileCmd << " /c \"" << wrapperPath.string() << "\" /Fo\"" << secondaryObjectPath.string() << "\"";
-        linkCmd << "link /nologo /DLL \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
+        fs::path scriptRspPath = config.outDir / relativeParent / (baseName + ".compile.rsp");
+        fs::path wrapperRspPath = config.outDir / relativeParent / (baseName + ".wrap.compile.rsp");
+        fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
+
+        std::ostringstream scriptRsp;
+        scriptRsp << "/nologo /TC /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(scriptRsp);
+        scriptRsp << " /c \"" << scriptAbs.string() << "\" /Fo\"" << objectPath.string() << "\"";
+
+        std::ostringstream wrapperRsp;
+        wrapperRsp << "/nologo /TP /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(wrapperRsp);
+        wrapperRsp << " /c \"" << wrapperPath.string() << "\" /Fo\"" << secondaryObjectPath.string() << "\"";
+
+        std::ostringstream linkRsp;
+        linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
                 << "\" /OUT:\"" << binaryPath.string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
-            linkCmd << " " << lib;
+            linkRsp << " " << lib;
         }
+
+        if (!writeTextFileIfChanged(scriptRspPath, scriptRsp.str(), error) ||
+            !writeTextFileIfChanged(wrapperRspPath, wrapperRsp.str(), error) ||
+            !writeTextFileIfChanged(linkRspPath, linkRsp.str(), error)) {
+            return false;
+        }
+
+        compileCmd << "cl @\"" << scriptRspPath.string() << "\"";
+        compileCmd << " && ";
+        compileCmd << "cl @\"" << wrapperRspPath.string() << "\"";
+        linkCmd << "link @\"" << linkRspPath.string() << "\"";
+        buildSignaturePayload = scriptRsp.str() + "\n---rsp---\n" + wrapperRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
         compileCmd << posixCompileDriver(false) << " -std=c11 -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
@@ -1258,14 +1279,29 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         }
 
 #ifdef _WIN32
-        compileCmd << "cl /nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
-        appendWindowsIncludesAndDefines(compileCmd);
-        compileCmd << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
-        linkCmd << "link /nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
+        fs::path compileRspPath = config.outDir / relativeParent / (baseName + ".compile.rsp");
+        fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
+
+        std::ostringstream compileRsp;
+        compileRsp << "/nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        appendWindowsIncludesAndDefines(compileRsp);
+        compileRsp << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
+
+        std::ostringstream linkRsp;
+        linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
                 << binaryPath.string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
-            linkCmd << " " << lib;
+            linkRsp << " " << lib;
         }
+
+        if (!writeTextFileIfChanged(compileRspPath, compileRsp.str(), error) ||
+            !writeTextFileIfChanged(linkRspPath, linkRsp.str(), error)) {
+            return false;
+        }
+
+        compileCmd << "cl @\"" << compileRspPath.string() << "\"";
+        linkCmd << "link @\"" << linkRspPath.string() << "\"";
+        buildSignaturePayload = compileRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
         compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
@@ -1307,6 +1343,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath.empty() ? transpiledPath : wrapperPath;
     outCommands.sourcePath = scriptAbs;
+    outCommands.signaturePath = config.outDir / relativeParent / (baseName + ".buildsig");
+    outCommands.buildSignature = compileStr + "\n---link---\n" + linkStr +
+                                 "\n---payload---\n" + buildSignaturePayload;
     outCommands.usedWrapper = useWrapper;
     return true;
 }
@@ -1352,6 +1391,10 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
         std::error_code ec;
         fs::create_directories(commands.binaryPath.parent_path(), ec);
     }
+    if (!commands.signaturePath.empty()) {
+        std::error_code ec;
+        fs::create_directories(commands.signaturePath.parent_path(), ec);
+    }
 
     bool needsCompile = true;
     bool needsLink = true;
@@ -1364,6 +1407,15 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
                                          ? getFileWriteTime(commands.secondaryObjectPath)
                                          : std::optional<fs::file_time_type>{};
     const auto binaryTime = getFileWriteTime(commands.binaryPath);
+    std::optional<std::string> previousSignature;
+    if (!commands.signaturePath.empty()) {
+        std::ifstream signatureIn(commands.signaturePath, std::ios::binary);
+        if (signatureIn.is_open()) {
+            std::ostringstream ss;
+            ss << signatureIn.rdbuf();
+            previousSignature = ss.str();
+        }
+    }
 
     std::optional<fs::file_time_type> fallbackNewestInput = sourceTime;
     if (wrapperTime) {
@@ -1393,6 +1445,9 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     if (hasSecondaryObject) {
         needsCompile = needsCompile ||
                        objectNeedsCompile(secondaryObjectTime, commands.secondaryDependencyPath);
+    }
+    if (!previousSignature || *previousSignature != commands.buildSignature) {
+        needsCompile = true;
     }
 
     if (!needsCompile) {
@@ -1430,6 +1485,14 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
         }
     } else {
         output.linkLog += "Skipped link (up-to-date)\n";
+    }
+
+    if (!commands.signaturePath.empty()) {
+        std::string writeError;
+        if (!writeTextFileIfChanged(commands.signaturePath, commands.buildSignature, writeError)) {
+            error = writeError;
+            return false;
+        }
     }
 
     return true;

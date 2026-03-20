@@ -22,6 +22,8 @@ struct ScriptBuildCommands {
     fs::path binaryPath;
     fs::path wrapperPath;
     fs::path sourcePath;
+    fs::path signaturePath;
+    std::string buildSignature;
     bool usedWrapper = false;
 };
 
