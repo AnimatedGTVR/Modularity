@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <unordered_map>
 
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
@@ -30,6 +31,63 @@ std::string GetPlatformDefaultProjectsPath() {
     }
 #endif
     return (fs::current_path() / "Projects").string();
+}
+
+std::optional<fs::path> FindBundledScriptSdkRoot(const fs::path& start) {
+    if (start.empty()) return std::nullopt;
+
+    std::error_code ec;
+    fs::path candidate = start;
+    for (int depth = 0; depth < 6 && !candidate.empty(); ++depth) {
+        fs::path sdkRoot = candidate / "Resources" / "ScriptSDK";
+        if (fs::exists(sdkRoot / "src" / "ScriptRuntime.h", ec)) {
+            return sdkRoot;
+        }
+        fs::path parent = candidate.parent_path();
+        if (parent == candidate) break;
+        candidate = parent;
+    }
+    return std::nullopt;
+}
+
+std::optional<fs::path> FindEngineSourceRoot(const fs::path& start) {
+    if (start.empty()) return std::nullopt;
+
+    std::error_code ec;
+    fs::path candidate = start;
+    while (!candidate.empty()) {
+        if (fs::exists(candidate / "CMakeLists.txt", ec) &&
+            fs::exists(candidate / "src" / "ScriptCompiler.cpp", ec)) {
+            return candidate;
+        }
+        fs::path parent = candidate.parent_path();
+        if (parent == candidate) break;
+        candidate = parent;
+    }
+    return std::nullopt;
+}
+
+void WriteDefaultScriptIncludeDirs(std::ofstream& scriptCfg,
+                                   const fs::path& baseRoot,
+                                   bool bundledSdk) {
+    auto writeIfExists = [&](const fs::path& path) {
+        std::error_code ec;
+        if (path.empty() || !fs::exists(path, ec) || ec) return;
+        scriptCfg << "includeDir=" << path.string() << "\n";
+    };
+
+    writeIfExists(baseRoot / "src");
+    writeIfExists(baseRoot / "include");
+    writeIfExists(baseRoot / "src/ThirdParty");
+    writeIfExists(baseRoot / "src/ThirdParty/glm");
+    writeIfExists(baseRoot / "src/ThirdParty/glad");
+    writeIfExists(baseRoot / "src/ThirdParty/glfw/include");
+    writeIfExists(baseRoot / "src/ThirdParty/imgui");
+    writeIfExists(baseRoot / "src/ThirdParty/imgui/backends");
+    writeIfExists(baseRoot / "src/ThirdParty/assimp/include");
+    if (!bundledSdk) {
+        writeIfExists(baseRoot / "build/src/ThirdParty/assimp/include");
+    }
 }
 } // namespace
 
@@ -66,16 +124,17 @@ bool Project::create() {
         saveProjectFile();
 
         // Initialize a default scripting build file
-        fs::path engineRoot = fs::current_path();
         std::ofstream scriptCfg(scriptsConfigPath);
         scriptCfg << "# scripts.modu\n";
         scriptCfg << "cppStandard=c++20\n";
         scriptCfg << "scriptsDir=Assets/Scripts\n";
         scriptCfg << "outDir=Library/CompiledScripts\n";
-        scriptCfg << "includeDir=" << (engineRoot / "src").string() << "\n";
-        scriptCfg << "includeDir=" << (engineRoot / "include").string() << "\n";
-        scriptCfg << "includeDir=" << (engineRoot / "src/ThirdParty").string() << "\n";
-        scriptCfg << "includeDir=" << (engineRoot / "src/ThirdParty/glm").string() << "\n";
+        const fs::path runtimeRoot = fs::current_path();
+        if (auto bundledSdkRoot = FindBundledScriptSdkRoot(runtimeRoot)) {
+            WriteDefaultScriptIncludeDirs(scriptCfg, *bundledSdkRoot, true);
+        } else if (auto engineRoot = FindEngineSourceRoot(runtimeRoot)) {
+            WriteDefaultScriptIncludeDirs(scriptCfg, *engineRoot, false);
+        }
         scriptCfg << "define=MODU_SCRIPTING=1\n";
         scriptCfg << "define=MODU_PROJECT_NAME=\"" << name << "\"\n";
         scriptCfg << "linux.linkLib=pthread\n";

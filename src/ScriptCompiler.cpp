@@ -40,6 +40,40 @@ namespace {
         return value.substr(start, end - start);
     }
 
+    bool addBundledScriptSdkIncludeRoots(const fs::path& start, ScriptBuildConfig& outConfig) {
+        if (start.empty()) return false;
+
+        std::error_code ec;
+        auto addIfExists = [&](const fs::path& p) {
+            if (p.empty()) return;
+            if (fs::exists(p, ec)) {
+                outConfig.includeDirs.push_back(p);
+            }
+        };
+
+        fs::path candidate = start;
+        for (int depth = 0; depth < 6 && !candidate.empty(); ++depth) {
+            const fs::path sdkRoot = candidate / "Resources" / "ScriptSDK";
+            if (fs::exists(sdkRoot / "src" / "ScriptRuntime.h", ec)) {
+                addIfExists(sdkRoot / "src");
+                addIfExists(sdkRoot / "include");
+                addIfExists(sdkRoot / "src/ThirdParty");
+                addIfExists(sdkRoot / "src/ThirdParty/glm");
+                addIfExists(sdkRoot / "src/ThirdParty/glad");
+                addIfExists(sdkRoot / "src/ThirdParty/glfw/include");
+                addIfExists(sdkRoot / "src/ThirdParty/imgui");
+                addIfExists(sdkRoot / "src/ThirdParty/imgui/backends");
+                addIfExists(sdkRoot / "src/ThirdParty/assimp/include");
+                return true;
+            }
+
+            fs::path parent = candidate.parent_path();
+            if (parent == candidate) break;
+            candidate = parent;
+        }
+        return false;
+    }
+
     bool writeTextFileIfChanged(const fs::path& path, const std::string& text,
                                 std::string& error) {
         std::error_code ec;
@@ -686,6 +720,9 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
     tryAddEngineRoot(configPath.parent_path());
     tryAddEngineRoot(fs::current_path());
     tryAddEngineRoot(fs::current_path().parent_path());
+    addBundledScriptSdkIncludeRoots(configPath.parent_path(), outConfig);
+    addBundledScriptSdkIncludeRoots(fs::current_path(), outConfig);
+    addBundledScriptSdkIncludeRoots(fs::current_path().parent_path(), outConfig);
 #if defined(__linux__)
     {
         std::error_code ec;
@@ -693,6 +730,8 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
         if (!ec) {
             tryAddEngineRoot(exe.parent_path());
             tryAddEngineRoot(exe.parent_path().parent_path());
+            addBundledScriptSdkIncludeRoots(exe.parent_path(), outConfig);
+            addBundledScriptSdkIncludeRoots(exe.parent_path().parent_path(), outConfig);
         }
     }
 #elif defined(_WIN32)
@@ -703,6 +742,8 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
             fs::path exe(buffer);
             tryAddEngineRoot(exe.parent_path());
             tryAddEngineRoot(exe.parent_path().parent_path());
+            addBundledScriptSdkIncludeRoots(exe.parent_path(), outConfig);
+            addBundledScriptSdkIncludeRoots(exe.parent_path().parent_path(), outConfig);
         }
     }
 #endif

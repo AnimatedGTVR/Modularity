@@ -59,6 +59,7 @@ endif()
 option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
 option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
 option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ON)
+set(MODULARITY_SCRIPT_SDK_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyScriptSDK.cmake)
 
 set(MODULARITY_HAS_VULKAN OFF)
 if(MODULARITY_ENABLE_VULKAN)
@@ -385,12 +386,22 @@ if(MODULARITY_BUILD_EDITOR)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Template-Projects
             $<TARGET_FILE_DIR:Modularity>/Template-Projects
+        COMMAND ${CMAKE_COMMAND}
+            "-DSRC_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"
+            "-DDST_ROOT=$<TARGET_FILE_DIR:Modularity>/Resources/ScriptSDK"
+            -P "${MODULARITY_SCRIPT_SDK_COPY_SCRIPT}"
     )
 else()
     add_custom_command(TARGET ModularityPlayer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Resources
             $<TARGET_FILE_DIR:ModularityPlayer>/Resources
+        COMMAND ${CMAKE_COMMAND}
+            "-DSRC_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"
+            "-DDST_ROOT=$<TARGET_FILE_DIR:ModularityPlayer>/Resources/ScriptSDK"
+            -P "${MODULARITY_SCRIPT_SDK_COPY_SCRIPT}"
     )
 endif()
 
@@ -422,16 +433,25 @@ if(WIN32 AND MODULARITY_ENABLE_PHYSX)
 endif()
 
 include(GNUInstallDirs)
+set(MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT ${CMAKE_BINARY_DIR}/InstallScriptSDK.cmake)
+configure_file(
+    ${CMAKE_SOURCE_DIR}/cmake/InstallScriptSDK.cmake.in
+    ${MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT}
+    @ONLY
+)
 
 if(MODULARITY_BUILD_EDITOR)
     install(TARGETS Modularity
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
 
 install(TARGETS ModularityPlayer
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(SCRIPT ${MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT})
 
 if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
     file(GLOB PHYSX_SO_FILES

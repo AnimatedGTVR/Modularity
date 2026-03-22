@@ -1554,6 +1554,7 @@ void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std:
     std::error_code ec;
 #ifdef _WIN32
     fs::path exePath = exportRoot / (std::string(exeBaseName) + ".exe");
+    fs::path importLibPath = exportRoot / (std::string(exeBaseName) + ".lib");
 #else
     fs::path exePath = exportRoot / exeBaseName;
 #endif
@@ -1564,6 +1565,16 @@ void cleanExportOutput(const fs::path& exportRoot, const char* exeBaseName, std:
             return;
         }
     }
+
+#ifdef _WIN32
+    if (fs::exists(importLibPath)) {
+        fs::remove(importLibPath, ec);
+        if (ec) {
+            error = "Failed to remove existing import library.";
+            return;
+        }
+    }
+#endif
 
     fs::path projectDir = exportRoot / "Project";
     if (fs::exists(projectDir)) {
@@ -6680,6 +6691,37 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             return result;
         }
 
+        std::string copyError;
+
+#ifdef _WIN32
+        {
+            const fs::path importLibSource = exePath.parent_path() / (exePath.stem().string() + ".lib");
+            if (fs::exists(importLibSource)) {
+                fs::copy_file(importLibSource,
+                              exportRoot / importLibSource.filename(),
+                              fs::copy_options::overwrite_existing,
+                              ec);
+                if (ec) {
+                    result.message = "Failed to copy player import library.";
+                    return result;
+                }
+            }
+        }
+#endif
+
+        {
+            const fs::path scriptSdkSource = buildRoot / "Resources" / "ScriptSDK";
+            if (fs::exists(scriptSdkSource)) {
+                if (!CopyDirectoryIntoRuntimeRoot(scriptSdkSource,
+                                                  exportRoot,
+                                                  fs::path("Resources") / "ScriptSDK",
+                                                  copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+        }
+
         fs::path runtimeStageRoot = exportRoot / "_runtime_stage";
         fs::create_directories(runtimeStageRoot, ec);
         if (ec) {
@@ -6687,7 +6729,6 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             return result;
         }
 
-        std::string copyError;
         RuntimeExportStager runtimeStager(projectRoot, runtimeStageRoot);
 
         setStatus(0.74f, "Staging runtime resources...");
