@@ -26,6 +26,18 @@ namespace {
 constexpr int kRuntimeInternalWidth = 1280;
 constexpr int kRuntimeInternalHeight = 720;
 
+ConsoleMessageType DiagnosticConsoleType(Modularity::ScriptDiagnosticSeverity severity) {
+    switch (severity) {
+        case Modularity::ScriptDiagnosticSeverity::Error:
+            return ConsoleMessageType::Error;
+        case Modularity::ScriptDiagnosticSeverity::Warning:
+            return ConsoleMessageType::Warning;
+        case Modularity::ScriptDiagnosticSeverity::Info:
+        default:
+            return ConsoleMessageType::Info;
+    }
+}
+
 struct MaterialFileData {
     MaterialProperties props;
     std::string albedo;
@@ -2300,6 +2312,12 @@ void Engine::restorePlayModeSnapshot() {
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
     gameUiGizmoHistoryCaptured = false;
+    worldUiRectGizmoSnapshots.clear();
+    gameUiRectGizmoSnapshots.clear();
+    worldUiRectGizmoModel = glm::mat4(1.0f);
+    gameUiRectGizmoModel = glm::mat4(1.0f);
+    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
 
     playModeSnapshot = {};
 }
@@ -2330,6 +2348,12 @@ void Engine::undo() {
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
     gameUiGizmoHistoryCaptured = false;
+    worldUiRectGizmoSnapshots.clear();
+    gameUiRectGizmoSnapshots.clear();
+    worldUiRectGizmoModel = glm::mat4(1.0f);
+    gameUiRectGizmoModel = glm::mat4(1.0f);
+    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 
@@ -2359,6 +2383,12 @@ void Engine::redo() {
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
     gameUiGizmoHistoryCaptured = false;
+    worldUiRectGizmoSnapshots.clear();
+    gameUiRectGizmoSnapshots.clear();
+    worldUiRectGizmoModel = glm::mat4(1.0f);
+    gameUiRectGizmoModel = glm::mat4(1.0f);
+    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 #pragma endregion
@@ -2376,6 +2406,70 @@ fs::path resolveScriptsConfigPath(const Project& project) {
 }
 
 #pragma region Engine Lifecycle
+bool Engine::hasInstalledPackage(const char* id) const {
+    return id && *id && packageManager.isInstalled(id);
+}
+
+bool Engine::hasSpriteEditorPackage() const {
+    return hasInstalledPackage("moduengine.sprite-editor");
+}
+
+bool Engine::hasSpritesheetPackage() const {
+    return hasInstalledPackage("moduengine.spritesheet");
+}
+
+bool Engine::has2DWorldPackage() const {
+    return hasInstalledPackage("moduengine.2d-world");
+}
+
+bool Engine::hasMeshBuilderPackage() const {
+    return hasInstalledPackage("moduengine.mesh-builder");
+}
+
+bool Engine::hasScriptingWindowPackage() const {
+    return hasInstalledPackage("moduengine.scripting-window");
+}
+
+bool Engine::hasVulkanPipelinePackage() const {
+    return hasInstalledPackage("moduengine.vulkan-pipeline");
+}
+
+void Engine::clampOptionalPackageState(bool logMissingRenderer) {
+    if (!hasMeshBuilderPackage()) {
+        showMeshBuilder = false;
+        meshEditMode = false;
+    }
+
+    if (!hasScriptingWindowPackage()) {
+        showScriptingWindow = false;
+        if (currentWorkspace == WorkspaceMode::Scripting) {
+            currentWorkspace = WorkspaceMode::Default;
+        }
+        workspaceTabVisible[2] = false;
+    } else {
+        workspaceTabVisible[2] = true;
+    }
+
+    if (!hasSpriteEditorPackage()) {
+        showPixelSpriteEditorWindow = false;
+    }
+
+    if (!hasSpritesheetPackage()) {
+        showImportSpriteSheetDialog = false;
+    }
+
+    if (projectManager.currentProject.isLoaded &&
+        projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan &&
+        !hasVulkanPipelinePackage()) {
+        projectManager.currentProject.rendererBackend = Modularity::GraphicsBackend::OpenGL;
+        projectManager.currentProject.saveProjectFile();
+        if (logMissingRenderer) {
+            addConsoleMessage("Project requested Vulkan, but moduengine.vulkan-pipeline is not installed. Falling back to OpenGL.",
+                              ConsoleMessageType::Warning);
+        }
+    }
+}
+
 Modularity::GraphicsBackend Engine::resolveRequestedBackend() const {
     const char* value = std::getenv("MODULARITY_RENDER_BACKEND");
     if (!value || !*value) {
@@ -2633,6 +2727,8 @@ void Engine::run() {
     bool runtime2DProfileWasEnabled = false;
     
     while (!glfwWindowShouldClose(editorWindow)) {
+        ++renderFrameSerial;
+        renderer.setFrameSerial(renderFrameSerial);
         double frameStart = glfwGetTime();
         const auto frameStartClock = Runtime2DClock::now();
         const bool runtime2DProfileThisFrame =
@@ -2799,13 +2895,6 @@ void Engine::run() {
             updateAIAgents(deltaTime);
         }
 
-        if (runtime2DProfileThisFrame) {
-            const auto transformStart = Runtime2DClock::now();
-            updateHierarchyWorldTransforms();
-            profileTransformMs += Runtime2DMsSince(transformStart, Runtime2DClock::now());
-        } else {
-            updateHierarchyWorldTransforms();
-        }
         if (hasRuntimeSkeletal) {
             updateSkinningMatrices();
         }
@@ -3002,26 +3091,31 @@ void Engine::run() {
         } else if (!playerMode) {
             mainDockspaceId = setupDockspace([this]() { renderPlayControlsBar(); });
             renderMainMenuBar();
+            const bool skipDockedWindowsThisFrame = workspaceLayoutSettlingFrame;
+            workspaceLayoutSettlingFrame = false;
 
-            if (!viewportFullscreen) {
+            if (!viewportFullscreen && !skipDockedWindowsThisFrame) {
                 if (showHierarchy) renderHierarchyPanel();
                 if (showInspector) renderInspectorPanel();
                 if (showFileBrowser) renderFileBrowserPanel();
-                if (showMeshBuilder) renderMeshBuilderPanel();
-                if (showScriptingWindow) renderScriptingWindow();
+                if (showMeshBuilder && hasMeshBuilderPackage()) renderMeshBuilderPanel();
+                if (showScriptingWindow && hasScriptingWindowPackage()) renderScriptingWindow();
                 if (showEnvironmentWindow) renderEnvironmentWindow();
                 if (showCameraWindow) renderCameraWindow();
                 if (showAnimationWindow) renderAnimationWindow();
                 if (showAIPathfindingWindow) renderAIPathfindingWindow();
-                if (showPixelSpriteEditorWindow) renderPixelSpriteEditorWindow();
+                if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) renderPixelSpriteEditorWindow();
                 if (showProjectBrowser) renderProjectBrowserPanel();
+                if (showRegistryPackagesWindow) renderRegistryPackagesWindow();
             }
 
             if (showBuildSettings) renderBuildSettingsWindow();
-            renderScriptEditorWindows();
-            renderViewport();
-            if (showGameViewport) renderGameViewportWindow();
-            if (showConsole) renderConsolePanel();
+            if (!skipDockedWindowsThisFrame) {
+                renderScriptEditorWindows();
+                renderViewport();
+                if (showGameViewport) renderGameViewportWindow();
+                if (showConsole) renderConsolePanel();
+            }
             renderLatestErrorBar();
         } else {
             mainDockspaceId = 0;
@@ -3161,6 +3255,7 @@ void Engine::run() {
 void Engine::shutdown() {
     ImGuiContext* mainContext = ImGui::GetCurrentContext();
     if (mainContext && !playerMode && projectManager.currentProject.isLoaded && !showLauncher) {
+        saveEditorUserSettings();
         saveWorkspaceLayout(currentWorkspace);
     }
 
@@ -5934,6 +6029,8 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     projectManager.currentProject = std::move(result.project);
     projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
     vulkanMaterialFeatureWarningShown = false;
+    packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+    clampOptionalPackageState(true);
 
     if (projectManager.currentProject.rendererBackend != graphicsBackend) {
         const Modularity::GraphicsBackend targetBackend = projectManager.currentProject.rendererBackend;
@@ -5961,8 +6058,6 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     if (!fs::exists(projectManager.currentProject.scenesPath)) {
         fs::create_directories(projectManager.currentProject.scenesPath);
     }
-
-    packageManager.setProjectRoot(projectManager.currentProject.projectPath);
 
     if (!initRenderer()) {
         addConsoleMessage("Error: Failed to initialize renderer!", ConsoleMessageType::Error);
@@ -6165,6 +6260,7 @@ void Engine::applyAutoStartMode() {
     showFileBrowser = false;
     showConsole = false;
     showProjectBrowser = false;
+    showRegistryPackagesWindow = false;
     showMeshBuilder = false;
     showEnvironmentWindow = false;
     showCameraWindow = false;
@@ -7274,6 +7370,7 @@ void Engine::createNewProject(const char* name, const char* location) {
                                           (newProject.projectPath / "project.modu").string());
 
         packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+        clampOptionalPackageState(false);
 
         if (!initRenderer()) {
             logToConsole("Error: Failed to initialize renderer!");
@@ -8455,6 +8552,7 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     showCompilePopup = true;
     compilePopupHideTime = 0.0;
     lastCompileLog.clear();
+    lastCompileDiagnostics.clear();
     lastCompileStatus = "Compiling " + scriptPath.filename().string();
     lastCompileSuccess = false;
     if (audio.isReady()) {
@@ -8521,6 +8619,13 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
                 }
             }
         }
+        result.diagnostics = Modularity::collectScriptDiagnostics(
+            result.scriptPath,
+            result.error,
+            result.compileLog,
+            result.linkLog,
+            result.isManaged);
+
         std::lock_guard<std::mutex> lock(compileMutex);
         compileResult = std::move(result);
         compileResultReady = true;
@@ -8554,7 +8659,23 @@ void Engine::compileManagedScripts() {
             setupError = "Managed project setup failed: engine root not found.";
         }
         if (!setupError.empty()) {
-            addConsoleMessage(setupError, ConsoleMessageType::Error);
+            lastCompileLog = setupError;
+            lastCompileDiagnostics = Modularity::collectScriptDiagnostics(
+                projectManagedProject,
+                setupError,
+                {},
+                {},
+                true);
+            lastCompileStatus = "Compile failed";
+            showCompilePopup = true;
+            compilePopupHideTime = glfwGetTime() + 1.5;
+            if (!lastCompileDiagnostics.empty()) {
+                addConsoleMessage(
+                    Modularity::formatScriptDiagnostic(lastCompileDiagnostics.front()),
+                    DiagnosticConsoleType(lastCompileDiagnostics.front().severity));
+            } else {
+                addConsoleMessage(setupError, ConsoleMessageType::Error);
+            }
         }
     }
 
@@ -8562,13 +8683,31 @@ void Engine::compileManagedScripts() {
         ? projectManagedProject
         : getManagedProjectPath();
     if (!fs::exists(managedProject)) {
-        addConsoleMessage("Managed project not found: " + managedProject.string(), ConsoleMessageType::Error);
+        const std::string managedProjectError = "Managed project not found: " + managedProject.string();
+        lastCompileLog = managedProjectError;
+        lastCompileDiagnostics = Modularity::collectScriptDiagnostics(
+            managedProject,
+            managedProjectError,
+            {},
+            {},
+            true);
+        lastCompileStatus = "Compile failed";
+        showCompilePopup = true;
+        compilePopupHideTime = glfwGetTime() + 1.5;
+        if (!lastCompileDiagnostics.empty()) {
+            addConsoleMessage(
+                Modularity::formatScriptDiagnostic(lastCompileDiagnostics.front()),
+                DiagnosticConsoleType(lastCompileDiagnostics.front().severity));
+        } else {
+            addConsoleMessage("Managed project not found: " + managedProject.string(), ConsoleMessageType::Error);
+        }
         return;
     }
 
     showCompilePopup = true;
     compilePopupHideTime = 0.0;
     lastCompileLog.clear();
+    lastCompileDiagnostics.clear();
     lastCompileStatus = "Compiling managed scripts";
     lastCompileSuccess = false;
     if (audio.isReady()) {
@@ -8632,6 +8771,13 @@ void Engine::compileManagedScripts() {
             setProgress(0.85f, "Reloading");
         }
 
+        result.diagnostics = Modularity::collectScriptDiagnostics(
+            result.scriptPath,
+            result.error,
+            result.compileLog,
+            result.linkLog,
+            result.isManaged);
+
         std::lock_guard<std::mutex> lock(compileMutex);
         compileResult = std::move(result);
         compileResultReady = true;
@@ -8651,30 +8797,44 @@ void Engine::updateCompileJob() {
             compileResultReady = false;
         }
 
+        lastCompileDiagnostics = result.diagnostics;
+
+        auto logDiagnostic = [&](const Modularity::ScriptDiagnostic& diagnostic) {
+            addConsoleMessage(Modularity::formatScriptDiagnostic(diagnostic),
+                              DiagnosticConsoleType(diagnostic.severity));
+        };
+
         if (!result.success) {
             lastCompileSuccess = false;
             lastCompileStatus = "Compile failed";
             lastCompileLog = result.compileLog + result.linkLog + result.error;
-            if (!result.error.empty()) {
-                addConsoleMessage("Compile failed: " + result.error, ConsoleMessageType::Error);
+            if (lastCompileDiagnostics.empty()) {
+                if (!result.error.empty()) {
+                    addConsoleMessage("Compile failed: " + result.error, ConsoleMessageType::Error);
+                } else {
+                    addConsoleMessage("Compile failed", ConsoleMessageType::Error);
+                }
             } else {
-                addConsoleMessage("Compile failed", ConsoleMessageType::Error);
+                for (const auto& diagnostic : lastCompileDiagnostics) {
+                    logDiagnostic(diagnostic);
+                }
             }
-            if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
-            if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
         } else {
             // Ensure every runtime/script instance is rebuilt against freshly compiled binaries.
             resetScriptRuntimeStateForReload(true);
 
             lastCompileSuccess = true;
-            lastCompileStatus = "Reloading scripts";
             lastCompileLog = result.compileLog + result.linkLog;
             if (audio.isReady()) {
                 audio.playPreview("Resources/Sounds/Success Script.mp3", 0.95f, false);
             }
             addConsoleMessage("Compiled script -> " + result.binaryPath.string(), ConsoleMessageType::Success);
-            if (!result.compileLog.empty()) addConsoleMessage(result.compileLog, ConsoleMessageType::Info);
-            if (!result.linkLog.empty()) addConsoleMessage(result.linkLog, ConsoleMessageType::Info);
+            for (const auto& diagnostic : lastCompileDiagnostics) {
+                if (diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Info) {
+                    continue;
+                }
+                logDiagnostic(diagnostic);
+            }
 
             if (result.isManaged) {
                 for (auto& obj : sceneObjects) {
@@ -8739,6 +8899,14 @@ void Engine::updateCompileJob() {
 
             scriptEditorWindowsDirty = true;
             refreshScriptEditorWindows();
+
+            const int warningCount = static_cast<int>(std::count_if(
+                lastCompileDiagnostics.begin(),
+                lastCompileDiagnostics.end(),
+                [](const Modularity::ScriptDiagnostic& diagnostic) {
+                    return diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Warning;
+                }));
+            lastCompileStatus = warningCount > 0 ? "Compile finished with warnings" : "Compile succeeded";
         }
 
         {
@@ -9129,6 +9297,7 @@ void Engine::autosaveWorkspaceLayout() {
         countDockState("Pixel Sprite Editor", showPixelSpriteEditorWindow);
         countDockState("Scripting", showScriptingWindow);
         countDockState("Project Settings", showProjectBrowser);
+        countDockState("Modupak Manager", showRegistryPackagesWindow);
 
         if (trackedWindows >= 4) {
             if (undockedWindows >= 2) {
@@ -9215,6 +9384,7 @@ void Engine::loadEditorUserSettings() {
         s = s.substr(start, end - start + 1);
     };
 
+    loadedWorkspaceLayoutVersion = 0;
     fileBrowserFavorites.clear();
     workspaceTabVisible = { true, true, true };
     std::vector<ImVec4> loadedColors(ImGuiCol_COUNT);
@@ -9259,6 +9429,12 @@ void Engine::loadEditorUserSettings() {
             } else {
                 currentWorkspace = WorkspaceMode::Default;
             }
+        } else if (key == "workspaceLayoutVersion") {
+            try {
+                loadedWorkspaceLayoutVersion = std::max(0, std::stoi(value));
+            } catch (...) {
+                loadedWorkspaceLayoutVersion = 0;
+            }
         } else if (key == "workspaceTab.Default") {
             workspaceTabVisible[0] = (value == "1" || value == "true" || value == "yes");
         } else if (key == "workspaceTab.Animation") {
@@ -9291,6 +9467,10 @@ void Engine::loadEditorUserSettings() {
             showAIPathfindingWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showPixelSpriteEditorWindow") {
             showPixelSpriteEditorWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showProjectBrowser") {
+            showProjectBrowser = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showRegistryPackagesWindow") {
+            showRegistryPackagesWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGizmos") {
             showSceneGizmos = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowCameraOverlays") {
@@ -9305,6 +9485,8 @@ void Engine::loadEditorUserSettings() {
             showViewportHintOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showLight2DStatsOverlay") {
             showLight2DStatsOverlay = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "light2DLightingBufferScale") {
+            try { light2DLightingBufferScale = std::clamp(std::stof(value), 0.5f, 1.0f); } catch (...) {}
         } else if (key == "gizmoShowLight2DBounds") {
             gizmoShowLight2DBounds = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowLight2DShapes") {
@@ -9405,6 +9587,7 @@ void Engine::loadEditorUserSettings() {
     gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
     gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
     gameViewportZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
+    light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
 
@@ -9428,6 +9611,8 @@ void Engine::loadEditorUserSettings() {
             currentWorkspace = WorkspaceMode::Scripting;
         }
     }
+
+    clampOptionalPackageState(false);
 
     applyUIStylePresetByName(uiStylePresetName);
     ImGuiStyle& style = ImGui::GetStyle();
@@ -9479,6 +9664,7 @@ void Engine::saveEditorUserSettings() const {
         workspaceName = "Scripting";
     }
     file << "workspace=" << workspaceName << "\n";
+    file << "workspaceLayoutVersion=" << kWorkspaceLayoutVersion << "\n";
     file << "workspaceTab.Default=" << (workspaceTabVisible[0] ? "1" : "0") << "\n";
     file << "workspaceTab.Animation=" << (workspaceTabVisible[1] ? "1" : "0") << "\n";
     file << "workspaceTab.Scripting=" << (workspaceTabVisible[2] ? "1" : "0") << "\n";
@@ -9490,6 +9676,8 @@ void Engine::saveEditorUserSettings() const {
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
     file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
     file << "showPixelSpriteEditorWindow=" << (showPixelSpriteEditorWindow ? "1" : "0") << "\n";
+    file << "showProjectBrowser=" << (showProjectBrowser ? "1" : "0") << "\n";
+    file << "showRegistryPackagesWindow=" << (showRegistryPackagesWindow ? "1" : "0") << "\n";
     file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
     file << "gizmoShowCameraOverlays=" << (gizmoShowCameraOverlays ? "1" : "0") << "\n";
     file << "gizmoShowCameraFrustumLabels=" << (gizmoShowCameraFrustumLabels ? "1" : "0") << "\n";
@@ -9497,6 +9685,7 @@ void Engine::saveEditorUserSettings() const {
     file << "gizmoShowLightIntensityLabels=" << (gizmoShowLightIntensityLabels ? "1" : "0") << "\n";
     file << "showViewportHintOverlay=" << (showViewportHintOverlay ? "1" : "0") << "\n";
     file << "showLight2DStatsOverlay=" << (showLight2DStatsOverlay ? "1" : "0") << "\n";
+    file << "light2DLightingBufferScale=" << std::clamp(light2DLightingBufferScale, 0.5f, 1.0f) << "\n";
     file << "gizmoShowLight2DBounds=" << (gizmoShowLight2DBounds ? "1" : "0") << "\n";
     file << "gizmoShowLight2DShapes=" << (gizmoShowLight2DShapes ? "1" : "0") << "\n";
     file << "gizmoShowShadowCaster2DBounds=" << (gizmoShowShadowCaster2DBounds ? "1" : "0") << "\n";

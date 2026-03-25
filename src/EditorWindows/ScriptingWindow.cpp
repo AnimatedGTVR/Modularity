@@ -213,6 +213,20 @@ namespace {
         editor.SetSmartTabDelete(true);
     }
 
+    static bool openPathInDefaultEditor(const fs::path& path) {
+#ifdef _WIN32
+        std::wstring widePath = path.wstring();
+        HINSTANCE result = ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(result) > 32;
+#elif __linux__
+        std::string cmd = "xdg-open \"" + path.string() + "\"";
+        return std::system(cmd.c_str()) == 0;
+#else
+        (void)path;
+        return false;
+#endif
+    }
+
     static TextEditor::LanguageDefinition buildLanguageDefinition(ScriptEditorLanguage language,
                                                                   const std::vector<std::string>& functions,
                                                                   const std::vector<std::string>& defines) {
@@ -612,6 +626,14 @@ void Engine::openScriptInEditor(const fs::path& path) {
     fs::path absPath = fs::absolute(path, ec);
     fs::path normalized = (ec ? path : absPath).lexically_normal();
 
+    if (!hasScriptingWindowPackage()) {
+        if (!openPathInDefaultEditor(normalized)) {
+            addConsoleMessage("Failed to open script in the system editor: " + normalized.string(),
+                              ConsoleMessageType::Error);
+        }
+        return;
+    }
+
     std::ifstream file(normalized);
     std::stringstream buffer;
     if (file.is_open()) {
@@ -642,6 +664,10 @@ void Engine::openScriptInEditor(const fs::path& path) {
 
 void Engine::renderScriptingWindow() {
     if (!showScriptingWindow) return;
+    if (!hasScriptingWindowPackage()) {
+        showScriptingWindow = false;
+        return;
+    }
 
     bool listRefreshedThisFrame = false;
     if (scriptingFilesDirty) {
@@ -686,8 +712,6 @@ void Engine::renderScriptingWindow() {
     static float filePaneWidth = 240.0f;
     static float detailsPaneWidth = 250.0f;
     static float diagnosticsPaneHeight = 160.0f;
-    static uint64_t diagnosticsHash = 0;
-    static std::vector<std::string> cachedDiagnostics;
 
     if (listRefreshedThisFrame) {
         completionPoolDirty = true;
@@ -1063,36 +1087,69 @@ void Engine::renderScriptingWindow() {
                             std::max(100.0f, availHeight - minEditorHeight - paneSplitter));
                     }
 
-                    uint64_t diagLogHash = hashBuffer(lastCompileLog);
-                    if (diagLogHash != diagnosticsHash) {
-                        diagnosticsHash = diagLogHash;
-                        cachedDiagnostics.clear();
-                        std::istringstream lines(lastCompileLog);
-                        std::string line;
-                        while (std::getline(lines, line)) {
-                            std::string lower = toLowerCopy(line);
-                            if (lower.find("error") != std::string::npos ||
-                                lower.find("warning") != std::string::npos ||
-                                lower.find("fatal") != std::string::npos) {
-                                cachedDiagnostics.push_back(line);
-                            }
-                        }
-                    }
-
                     ImGui::BeginChild("ScriptDiagnosticsPane", ImVec2(0.0f, diagnosticsPaneHeight), true);
                     if (ImGui::BeginTabBar("ScriptDiagnosticsTabs")) {
                         if (ImGui::BeginTabItem("Diagnostics")) {
+                            int errorCount = 0;
+                            int warningCount = 0;
+                            int infoCount = 0;
+                            for (const auto& diagnostic : lastCompileDiagnostics) {
+                                if (diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Error) {
+                                    ++errorCount;
+                                } else if (diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Warning) {
+                                    ++warningCount;
+                                } else {
+                                    ++infoCount;
+                                }
+                            }
+
                             ImGui::Text("Status: %s", lastCompileStatus.empty() ? "Idle" : lastCompileStatus.c_str());
+                            ImGui::Text("Errors: %d  Warnings: %d  Info: %d", errorCount, warningCount, infoCount);
                             ImGui::Separator();
-                            if (cachedDiagnostics.empty()) {
+                            if (lastCompileDiagnostics.empty()) {
                                 ImGui::TextDisabled("No diagnostics.");
                             } else {
-                                for (const auto& line : cachedDiagnostics) {
-                                    std::string lower = toLowerCopy(line);
-                                    ImVec4 color = (lower.find("error") != std::string::npos || lower.find("fatal") != std::string::npos)
-                                        ? ImVec4(0.94f, 0.45f, 0.45f, 1.0f)
-                                        : ImVec4(0.95f, 0.79f, 0.40f, 1.0f);
-                                    ImGui::TextColored(color, "%s", line.c_str());
+                                for (size_t index = 0; index < lastCompileDiagnostics.size(); ++index) {
+                                    const auto& diagnostic = lastCompileDiagnostics[index];
+                                    const ImVec4 color =
+                                        diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Error
+                                            ? ImVec4(0.94f, 0.45f, 0.45f, 1.0f)
+                                            : diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Warning
+                                                ? ImVec4(0.95f, 0.79f, 0.40f, 1.0f)
+                                                : ImVec4(0.55f, 0.78f, 0.95f, 1.0f);
+
+                                    ImGui::PushID(static_cast<int>(index));
+                                    ImGui::TextColored(
+                                        color,
+                                        "[%s][%s] %s",
+                                        Modularity::scriptDiagnosticSeverityToString(diagnostic.severity),
+                                        diagnostic.code.c_str(),
+                                        diagnostic.message.c_str());
+                                    if (!diagnostic.hint.empty()) {
+                                        ImGui::TextWrapped("Hint: %s", diagnostic.hint.c_str());
+                                    }
+                                    if (!diagnostic.source.empty()) {
+                                        ImGui::TextDisabled("Source: %s", diagnostic.source.c_str());
+                                    }
+                                    if (diagnostic.line > 0) {
+                                        ImGui::TextDisabled("Line: %d", diagnostic.line);
+                                    }
+                                    if (!diagnostic.rawDetails.empty() && ImGui::TreeNode("Raw Details")) {
+                                        ImGui::TextDisabled("Origin: %s", Modularity::scriptDiagnosticOriginToString(diagnostic.origin));
+                                        if (diagnostic.column > 0) {
+                                            ImGui::TextDisabled("Column: %d", diagnostic.column);
+                                        }
+                                        if (!diagnostic.sourceLine.empty()) {
+                                            ImGui::TextWrapped("Code: %s", diagnostic.sourceLine.c_str());
+                                        }
+                                        ImGui::Separator();
+                                        ImGui::TextWrapped("%s", diagnostic.rawDetails.c_str());
+                                        ImGui::TreePop();
+                                    }
+                                    if (index + 1 < lastCompileDiagnostics.size()) {
+                                        ImGui::Separator();
+                                    }
+                                    ImGui::PopID();
                                 }
                             }
                             ImGui::EndTabItem();

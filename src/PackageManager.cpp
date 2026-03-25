@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdio>
 #include <chrono>
+#include <cstdlib>
 #include <sstream>
 
 #pragma region Local Path Helpers
@@ -205,6 +206,93 @@ bool parseExternalManifestPackage(const fs::path& projectRoot,
     }
     return true;
 }
+
+std::string stripLineComment(const std::string& line) {
+    bool inString = false;
+    for (size_t i = 0; i + 1 < line.size(); ++i) {
+        if (line[i] == '"' && (i == 0 || line[i - 1] != '\\')) {
+            inString = !inString;
+        }
+        if (!inString && line[i] == '/' && line[i + 1] == '/') {
+            return line.substr(0, i);
+        }
+    }
+    return line;
+}
+
+std::string unquoteValue(std::string value) {
+    value = trimCopy(value);
+    if (!value.empty() && value.back() == ';') {
+        value.pop_back();
+        value = trimCopy(value);
+    }
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+bool parseAssignment(const std::string& line, std::string& outKey, std::string& outValue) {
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) {
+        return false;
+    }
+    outKey = trimCopy(line.substr(0, eq));
+    outValue = unquoteValue(line.substr(eq + 1));
+    return !outKey.empty();
+}
+
+bool lineContainsBlockHeader(const std::string& line, const std::string& header) {
+    return trimCopy(line).find(header) != std::string::npos;
+}
+
+int countChar(const std::string& line, char target) {
+    return static_cast<int>(std::count(line.begin(), line.end(), target));
+}
+
+std::string normalizeVersionToken(std::string value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+bool startsWithInsensitive(const std::string& value, const std::string& prefix) {
+    if (value.size() < prefix.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isHttpUrl(const std::string& value) {
+    return startsWithInsensitive(value, "http://") || startsWithInsensitive(value, "https://");
+}
+
+std::string joinUrl(std::string base, const std::string& tail) {
+    if (tail.empty()) {
+        return base;
+    }
+    if (isHttpUrl(tail)) {
+        return tail;
+    }
+    while (!base.empty() && base.back() == '/') {
+        base.pop_back();
+    }
+    if (!tail.empty() && tail.front() == '/') {
+        return base + tail;
+    }
+    return base + "/" + tail;
+}
 } // namespace
 #pragma endregion
 
@@ -219,11 +307,51 @@ void PackageManager::setProjectRoot(const fs::path& root) {
     manifestPath = projectRoot / "packages.modu";
     loadManifest();
 }
+
+void PackageManager::refreshRegistry() {
+    buildRegistry();
+    if (!projectRoot.empty()) {
+        manifestPath = projectRoot / "packages.modu";
+        loadManifest();
+    }
+}
 #pragma endregion
 
 #pragma region Install / Remove
 bool PackageManager::isInstalled(const std::string& id) const {
     return std::find(installedIds.begin(), installedIds.end(), id) != installedIds.end();
+}
+
+bool PackageManager::hasProjectInstallPayload(const std::string& id) const {
+    const PackageInfo* pkg = findPackage(id);
+    return pkg && pkg->registryPackage && hasVersionedPackageAt(packagesFolder(), *pkg);
+}
+
+bool PackageManager::isGloballyInstalled(const std::string& id) const {
+    const PackageInfo* pkg = findPackage(id);
+    return pkg && pkg->registryPackage && hasVersionedPackageAt(globalPackagesFolder() / currentEngineVersion() / pkg->author, *pkg);
+}
+
+bool PackageManager::hasUpdateAvailable(const std::string& id) const {
+    const PackageInfo* pkg = findPackage(id);
+    if (!pkg || !pkg->registryPackage) {
+        return false;
+    }
+    const bool hasProjectLegacy = hasLegacyVersionedPackageAt(packagesFolder(), *pkg);
+    const bool hasGlobalLegacy = hasLegacyVersionedPackageAt(globalPackagesFolder() / currentEngineVersion() / pkg->author, *pkg);
+    return hasProjectLegacy || hasGlobalLegacy;
+}
+
+bool PackageManager::isCompatible(const std::string& id) const {
+    const PackageInfo* pkg = findPackage(id);
+    return pkg && isCompatible(*pkg);
+}
+
+bool PackageManager::isCompatible(const PackageInfo& pkg) const {
+    if (!pkg.registryPackage) {
+        return true;
+    }
+    return isCompatibleVersionString(pkg.compatibleModuEngineVersion, currentEngineVersion());
 }
 
 bool PackageManager::install(const std::string& id) {
@@ -241,6 +369,83 @@ bool PackageManager::install(const std::string& id) {
     return true;
 }
 
+bool PackageManager::installRegistryPackageToProject(const std::string& id) {
+    lastError.clear();
+    if (!ensureProjectRoot()) {
+        lastError = "Project root not set.";
+        return false;
+    }
+
+    const PackageInfo* pkg = findPackage(id);
+    if (!pkg || !pkg->registryPackage) {
+        lastError = "Package is not available in the ModuEngine registry: " + id;
+        return false;
+    }
+    if (!isCompatible(*pkg)) {
+        lastError = "Package is incompatible with ModuEngine " + currentEngineVersion() + ": " + id;
+        return false;
+    }
+
+    const fs::path destination = projectRegistryPackagePath(*pkg);
+    if (!fs::exists(destination)) {
+        fs::path source = isGloballyInstalled(id) ? globalRegistryPackagePath(*pkg) : resolveRegistrySourcePath(*pkg);
+        if ((source.empty() || !fs::exists(source)) && !pkg->downloadUrl.empty()) {
+            if (!downloadRegistryPackageToCache(*pkg, source)) {
+                return false;
+            }
+        }
+        if (source.empty() || !fs::exists(source)) {
+            lastError = "Package files were not found for " + id + ".";
+            return false;
+        }
+
+        std::string copyError;
+        if (!copyDirectoryRecursive(source, destination, copyError)) {
+            lastError = copyError;
+            return false;
+        }
+    }
+
+    return install(id);
+}
+
+bool PackageManager::installRegistryPackageGlobally(const std::string& id) {
+    lastError.clear();
+
+    const PackageInfo* pkg = findPackage(id);
+    if (!pkg || !pkg->registryPackage) {
+        lastError = "Package is not available in the ModuEngine registry: " + id;
+        return false;
+    }
+    if (!isCompatible(*pkg)) {
+        lastError = "Package is incompatible with ModuEngine " + currentEngineVersion() + ": " + id;
+        return false;
+    }
+
+    const fs::path destination = globalRegistryPackagePath(*pkg);
+    if (fs::exists(destination)) {
+        return true;
+    }
+
+    fs::path source = resolveRegistrySourcePath(*pkg);
+    if ((source.empty() || !fs::exists(source)) && !pkg->downloadUrl.empty()) {
+        if (!downloadRegistryPackageToCache(*pkg, source)) {
+            return false;
+        }
+    }
+    if (source.empty() || !fs::exists(source)) {
+        lastError = "Package files were not found for " + id + ".";
+        return false;
+    }
+
+    std::string copyError;
+    if (!copyDirectoryRecursive(source, destination, copyError)) {
+        lastError = copyError;
+        return false;
+    }
+    return true;
+}
+
 bool PackageManager::remove(const std::string& id) {
     lastError.clear();
     const PackageInfo* pkg = findPackage(id);
@@ -252,7 +457,24 @@ bool PackageManager::remove(const std::string& id) {
         lastError = "Cannot remove built-in packages.";
         return false;
     }
-    if (pkg->external) {
+    if (pkg->registryPackage) {
+        const fs::path root = packagesFolder();
+        std::error_code ec;
+        fs::remove_all(projectRegistryPackagePath(*pkg), ec);
+        if (fs::exists(root, ec) && fs::is_directory(root, ec)) {
+            const std::string prefix = pkg->id + "-";
+            for (const auto& entry : fs::directory_iterator(root, ec)) {
+                if (ec || !entry.is_directory()) {
+                    continue;
+                }
+                const std::string folder = entry.path().filename().string();
+                if (folder.rfind(prefix, 0) == 0) {
+                    std::error_code removeEc;
+                    fs::remove_all(entry.path(), removeEc);
+                }
+            }
+        }
+    } else if (pkg->external) {
         std::string log;
         const bool isGitExternal = !pkg->gitUrl.empty();
         if (isGitExternal && isGitRepo(projectRoot)) {
@@ -285,6 +507,37 @@ bool PackageManager::remove(const std::string& id) {
         [&](const PackageInfo& p){ return p.id == id && p.external; }), registry.end());
 
     saveManifest();
+    return true;
+}
+
+bool PackageManager::removeRegistryPackageGlobally(const std::string& id) {
+    lastError.clear();
+    const PackageInfo* pkg = findPackage(id);
+    if (!pkg || !pkg->registryPackage) {
+        lastError = "Package is not available in the ModuEngine registry: " + id;
+        return false;
+    }
+
+    const fs::path authorRoot = globalPackagesFolder() / currentEngineVersion() / pkg->author;
+    std::error_code ec;
+    fs::remove_all(globalRegistryPackagePath(*pkg), ec);
+    if (ec) {
+        lastError = "Failed to remove global package folder: " + ec.message();
+        return false;
+    }
+    if (fs::exists(authorRoot, ec) && fs::is_directory(authorRoot, ec)) {
+        const std::string prefix = pkg->id + "-";
+        for (const auto& entry : fs::directory_iterator(authorRoot, ec)) {
+            if (ec || !entry.is_directory()) {
+                continue;
+            }
+            const std::string folder = entry.path().filename().string();
+            if (folder.rfind(prefix, 0) == 0) {
+                std::error_code removeEc;
+                fs::remove_all(entry.path(), removeEc);
+            }
+        }
+    }
     return true;
 }
 #pragma endregion
@@ -326,6 +579,11 @@ void PackageManager::applyToBuildConfig(ScriptBuildConfig& config) const {
 #pragma region Registry
 void PackageManager::buildRegistry() {
     registry.clear();
+    registryAvailable = false;
+    registryStatus.clear();
+    registryLastUpdated.clear();
+    registryUpdatedBy.clear();
+    registryRoot.clear();
     fs::path engineRoot = fs::current_path();
 
     auto add = [this](PackageInfo info) {
@@ -385,6 +643,602 @@ void PackageManager::buildRegistry() {
     miniaudio.builtIn = false;
     miniaudio.includeDirs = { engineRoot / "include/ThirdParty" };
     add(miniaudio);
+
+    auto addOptionalEnginePackage = [&](const char* id,
+                                        const char* name,
+                                        const char* description) {
+        PackageInfo pkg;
+        pkg.id = id;
+        pkg.name = name;
+        pkg.description = description;
+        pkg.builtIn = false;
+        add(std::move(pkg));
+    };
+
+    addOptionalEnginePackage("moduengine.sprite-editor",
+                             "Pixel Sprite Editor",
+                             "Optional sprite editing window and tools.");
+    addOptionalEnginePackage("moduengine.spritesheet",
+                             "Spritesheet Tools",
+                             "Optional spritesheet import and sidecar tooling.");
+    addOptionalEnginePackage("moduengine.2d-world",
+                             "2D World Essentials",
+                             "Optional 2D world rendering and Light2D tooling.");
+    addOptionalEnginePackage("moduengine.mesh-builder",
+                             "Mesh Builder",
+                             "Optional mesh builder and mesh editing tools.");
+    addOptionalEnginePackage("moduengine.scripting-window",
+                             "Scripting Window",
+                             "Optional in-editor scripting window.");
+    addOptionalEnginePackage("moduengine.vulkan-pipeline",
+                             "Vulkan Pipeline",
+                             "Optional experimental Vulkan rendering pipeline.");
+
+    loadRegistryMetadata(engineRoot);
+}
+
+bool PackageManager::loadRegistryMetadata(const fs::path& engineRoot) {
+    const std::string engineVersion = currentEngineVersion();
+    registryRoot = findRegistryRoot(engineRoot);
+
+    fs::path listingPath;
+    bool usingRemoteListing = false;
+    std::string remoteLog;
+    if (downloadRemoteRegistryListing(listingPath, remoteLog)) {
+        usingRemoteListing = true;
+    } else if (!registryRoot.empty() && fs::exists(registryRoot / "PackageManagerInfo.modu")) {
+        listingPath = registryRoot / "PackageManagerInfo.modu";
+    } else {
+        registryStatus = "Registry unavailable. Remote fetch failed";
+        if (!remoteLog.empty()) {
+            registryStatus += " (" + remoteLog + ")";
+        }
+        registryStatus += ", and no local registry checkout was found.";
+        return false;
+    }
+
+    std::ifstream file(listingPath);
+    if (!file.is_open()) {
+        registryStatus = "Failed to open registry metadata: " + listingPath.string();
+        return false;
+    }
+
+    int braceDepth = 0;
+    int versionDepth = -1;
+    int packageDepth = -1;
+    bool pendingVersionBlock = false;
+    bool inVersionBlock = false;
+    bool pendingPackageBlock = false;
+    bool inPackageBlock = false;
+    const std::string versionHeader = "ModuEngineVersion(\"" + engineVersion + "\")";
+    PackageInfo currentPackage;
+
+    auto finalizePackage = [&]() {
+        if (currentPackage.id.empty()) {
+            currentPackage = PackageInfo{};
+            return;
+        }
+
+        currentPackage.registryPackage = true;
+        currentPackage.registryEngineVersion = engineVersion;
+        currentPackage.registrySourcePath = resolveRegistrySourcePath(currentPackage);
+
+        auto existing = std::find_if(registry.begin(), registry.end(), [&](const PackageInfo& entry) {
+            return entry.id == currentPackage.id;
+        });
+
+        if (existing != registry.end()) {
+            if (!currentPackage.name.empty()) existing->name = currentPackage.name;
+            if (!currentPackage.description.empty()) existing->description = currentPackage.description;
+            existing->author = currentPackage.author;
+            existing->packageType = currentPackage.packageType;
+            existing->subsystem = currentPackage.subsystem;
+            existing->version = currentPackage.version;
+            existing->compatibleModuEngineVersion = currentPackage.compatibleModuEngineVersion;
+            existing->registryEngineVersion = currentPackage.registryEngineVersion;
+            existing->downloadUrl = currentPackage.downloadUrl;
+            existing->archiveType = currentPackage.archiveType;
+            existing->checksum = currentPackage.checksum;
+            existing->registryPackage = true;
+            existing->registrySourcePath = currentPackage.registrySourcePath;
+        } else {
+            registry.push_back(currentPackage);
+        }
+
+        currentPackage = PackageInfo{};
+    };
+
+    std::string rawLine;
+    while (std::getline(file, rawLine)) {
+        const std::string line = trim(stripLineComment(rawLine));
+        if (line.empty()) {
+            continue;
+        }
+
+        std::string key;
+        std::string value;
+        if (!inVersionBlock && parseAssignment(line, key, value)) {
+            if (key == "PackageInfoLastUpdated") {
+                registryLastUpdated = value;
+            } else if (key == "UpdatedBy") {
+                registryUpdatedBy = value;
+            }
+        }
+
+        if (!inVersionBlock && lineContainsBlockHeader(line, versionHeader)) {
+            pendingVersionBlock = true;
+        } else if (inVersionBlock && !inPackageBlock && lineContainsBlockHeader(line, "Package()")) {
+            pendingPackageBlock = true;
+            currentPackage = PackageInfo{};
+        }
+
+        const int opens = countChar(line, '{');
+        const int closes = countChar(line, '}');
+
+        if (pendingVersionBlock && opens > 0) {
+            inVersionBlock = true;
+            pendingVersionBlock = false;
+            versionDepth = braceDepth + 1;
+        }
+        if (inVersionBlock && pendingPackageBlock && opens > 0) {
+            inPackageBlock = true;
+            pendingPackageBlock = false;
+            packageDepth = braceDepth + 1;
+        }
+
+        if (inPackageBlock && parseAssignment(line, key, value)) {
+            if (key == "PackageID") currentPackage.id = value;
+            else if (key == "Name") currentPackage.name = value;
+            else if (key == "Author") currentPackage.author = value;
+            else if (key == "Description") currentPackage.description = value;
+            else if (key == "PackageType") currentPackage.packageType = value;
+            else if (key == "Subsystem") currentPackage.subsystem = value;
+            else if (key == "Version") currentPackage.version = value;
+            else if (key == "CompatibleModuEngineVersion") currentPackage.compatibleModuEngineVersion = value;
+            else if (key == "DownloadURL") currentPackage.downloadUrl = joinUrl(configuredRegistryBaseUrl(), value);
+            else if (key == "ArchiveType") currentPackage.archiveType = value;
+            else if (key == "Checksum") currentPackage.checksum = value;
+        }
+
+        braceDepth += opens - closes;
+
+        if (inPackageBlock && braceDepth < packageDepth) {
+            finalizePackage();
+            inPackageBlock = false;
+            packageDepth = -1;
+        }
+        if (inVersionBlock && braceDepth < versionDepth) {
+            inVersionBlock = false;
+            versionDepth = -1;
+        }
+    }
+
+    if (inPackageBlock) {
+        finalizePackage();
+    }
+
+    size_t registryPackageCount = 0;
+    for (const auto& pkg : registry) {
+        if (pkg.registryPackage) {
+            ++registryPackageCount;
+        }
+    }
+
+    registryAvailable = registryPackageCount > 0;
+    if (registryAvailable) {
+        registryStatus = "Loaded " + std::to_string(registryPackageCount) +
+                         " registry package" + (registryPackageCount == 1 ? "" : "s") +
+                         " for ModuEngine " + engineVersion +
+                         (usingRemoteListing ? " from the online registry." : " from the local registry.");
+        if (!usingRemoteListing && !remoteLog.empty()) {
+            registryStatus += " Remote fetch failed: " + remoteLog;
+        }
+    } else {
+        registryStatus = "Registry metadata loaded, but no packages were found for ModuEngine " + engineVersion + ".";
+    }
+    return registryAvailable;
+}
+
+fs::path PackageManager::findRegistryRoot(const fs::path& start) const {
+    std::vector<fs::path> candidates;
+
+    if (const char* envRoot = std::getenv("MODUENGINE_PACKAGE_REGISTRY_ROOT")) {
+        if (*envRoot) {
+            candidates.emplace_back(envRoot);
+        }
+    }
+
+    const fs::path normalizedStart = normalizePath(start.empty() ? fs::current_path() : start);
+    fs::path current = normalizedStart;
+    for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
+        candidates.push_back(current);
+        candidates.push_back(current / "Modu-Package-Manager");
+        candidates.push_back(current.parent_path() / "Modu-Package-Manager");
+        const fs::path parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = parent;
+    }
+
+#ifdef _WIN32
+    if (const char* appdata = std::getenv("APPDATA")) {
+        candidates.emplace_back(fs::path(appdata) / ".Modularity" / "PackageRegistry");
+    }
+#else
+    if (const char* home = std::getenv("HOME")) {
+        candidates.emplace_back(fs::path(home) / ".Modularity" / "PackageRegistry");
+    }
+#endif
+
+    std::unordered_set<std::string> seen;
+    for (const fs::path& candidate : candidates) {
+        if (candidate.empty()) {
+            continue;
+        }
+        const fs::path normalized = normalizePath(candidate);
+        if (!seen.insert(normalized.string()).second) {
+            continue;
+        }
+        if (fs::exists(normalized / "PackageManagerInfo.modu") &&
+            fs::exists(normalized / "Packages")) {
+            return normalized;
+        }
+    }
+
+    return {};
+}
+
+fs::path PackageManager::resolveRegistrySourcePath(const PackageInfo& pkg) const {
+    if (!pkg.registryPackage || registryRoot.empty()) {
+        return {};
+    }
+
+    const fs::path packagesRoot = registryRoot / "Packages" / currentEngineVersion();
+    const fs::path packageFolder = registryPackageFolderName(pkg);
+    if (packageFolder.empty()) {
+        return {};
+    }
+
+    if (!pkg.author.empty()) {
+        const fs::path direct = packagesRoot / pkg.author / packageFolder;
+        if (fs::exists(direct)) {
+            return normalizePath(direct);
+        }
+    }
+
+    std::error_code ec;
+    if (fs::exists(packagesRoot, ec) && fs::is_directory(packagesRoot, ec)) {
+        for (const auto& authorDir : fs::directory_iterator(packagesRoot, ec)) {
+            if (ec || !authorDir.is_directory()) {
+                continue;
+            }
+            const fs::path candidate = authorDir.path() / packageFolder;
+            if (fs::exists(candidate)) {
+                return normalizePath(candidate);
+            }
+        }
+    }
+
+    return {};
+}
+
+fs::path PackageManager::projectRegistryPackagePath(const PackageInfo& pkg) const {
+    if (projectRoot.empty()) {
+        return {};
+    }
+    return normalizePath(packagesFolder() / registryPackageFolderName(pkg));
+}
+
+fs::path PackageManager::globalPackagesFolder() const {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata && *appdata) {
+        return normalizePath(fs::path(appdata) / ".Modularity" / "Packages");
+    }
+#else
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        return normalizePath(fs::path(home) / ".Modularity" / "Packages");
+    }
+#endif
+    return normalizePath(fs::current_path() / ".Modularity" / "Packages");
+}
+
+fs::path PackageManager::packageCacheFolder() const {
+    return normalizePath(globalPackagesFolder().parent_path() / "Cache" / "PackageRegistry");
+}
+
+fs::path PackageManager::globalRegistryPackagePath(const PackageInfo& pkg) const {
+    return normalizePath(globalPackagesFolder() / currentEngineVersion() / pkg.author / registryPackageFolderName(pkg));
+}
+
+fs::path PackageManager::registryPackageFolderName(const PackageInfo& pkg) const {
+    if (pkg.id.empty() || pkg.version.empty()) {
+        return {};
+    }
+    return fs::path(pkg.id + "-" + pkg.version);
+}
+
+bool PackageManager::hasVersionedPackageAt(const fs::path& root, const PackageInfo& pkg) const {
+    const fs::path folder = root / registryPackageFolderName(pkg);
+    std::error_code ec;
+    return fs::exists(folder, ec) && fs::is_directory(folder, ec);
+}
+
+bool PackageManager::hasLegacyVersionedPackageAt(const fs::path& root, const PackageInfo& pkg) const {
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+        return false;
+    }
+    const std::string expected = registryPackageFolderName(pkg).string();
+    const std::string prefix = pkg.id + "-";
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (ec || !entry.is_directory()) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (name == expected) {
+            continue;
+        }
+        if (name.rfind(prefix, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fs::path PackageManager::registryPackageCachePath(const PackageInfo& pkg) const {
+    return normalizePath(packageCacheFolder() / "Extracted" / registryPackageFolderName(pkg));
+}
+
+std::string PackageManager::configuredRegistryBaseUrl() const {
+    if (const char* envUrl = std::getenv("MODUENGINE_PACKAGE_REGISTRY_URL")) {
+        if (*envUrl) {
+            return trim(envUrl);
+        }
+    }
+    return "https://pak.moduengine.xyz";
+}
+
+std::string PackageManager::configuredRegistryMetadataUrl() const {
+    if (const char* envUrl = std::getenv("MODUENGINE_PACKAGE_REGISTRY_METADATA_URL")) {
+        if (*envUrl) {
+            return trim(envUrl);
+        }
+    }
+    return "https://pak.moduengine.xyz/Tareno-Labs-LLC/Modu-Package-Manager/raw/branch/main/PackageManagerInfo.modu";
+}
+
+bool PackageManager::downloadRemoteRegistryListing(fs::path& outListingPath, std::string& outLog) const {
+    outListingPath.clear();
+    outLog.clear();
+
+    const fs::path cacheDir = packageCacheFolder() / "Metadata";
+    std::error_code ec;
+    fs::create_directories(cacheDir, ec);
+    if (ec) {
+        outLog = "failed to create registry cache folder";
+        return false;
+    }
+
+    const fs::path listingPath = cacheDir / "PackageManagerInfo.modu";
+    const std::string url = configuredRegistryMetadataUrl();
+    if (!downloadFile(url, listingPath, outLog)) {
+        return false;
+    }
+
+    outListingPath = listingPath;
+    return true;
+}
+
+bool PackageManager::downloadFile(const std::string& url, const fs::path& destination, std::string& outLog) const {
+    outLog.clear();
+    std::error_code ec;
+    fs::create_directories(destination.parent_path(), ec);
+    if (ec) {
+        outLog = "failed to create download folder";
+        return false;
+    }
+
+    std::string escapedUrl = url;
+    std::string escapedDestination = destination.string();
+    const std::string command =
+        "curl -fsSL --retry 2 --connect-timeout 10 \"" + escapedUrl + "\" -o \"" + escapedDestination + "\" 2>&1";
+    if (!runCommand(command, outLog)) {
+        if (outLog.empty()) {
+            outLog = "curl download failed";
+        }
+        return false;
+    }
+    return fs::exists(destination);
+}
+
+bool PackageManager::downloadRegistryPackageToCache(const PackageInfo& pkg, fs::path& outSourcePath) {
+    lastError.clear();
+    outSourcePath.clear();
+
+    if (pkg.downloadUrl.empty()) {
+        lastError = "Package is missing a DownloadURL: " + pkg.id;
+        return false;
+    }
+
+    fs::path extractedRoot = registryPackageCachePath(pkg);
+    fs::path resolvedCachedRoot = resolveExtractedPackageRoot(extractedRoot);
+    if (!resolvedCachedRoot.empty()) {
+        outSourcePath = resolvedCachedRoot;
+        return true;
+    }
+
+    const fs::path archiveDir = packageCacheFolder() / "Archives";
+    std::error_code ec;
+    fs::create_directories(archiveDir, ec);
+    if (ec) {
+        lastError = "Failed to create package cache folder: " + ec.message();
+        return false;
+    }
+
+    std::string archiveExtension = ".pkg";
+    if (!pkg.archiveType.empty()) {
+        if (pkg.archiveType == "modupak") archiveExtension = ".modupak";
+        else if (pkg.archiveType == "tar.gz" || pkg.archiveType == "tgz") archiveExtension = ".tar.gz";
+        else if (pkg.archiveType == "tar") archiveExtension = ".tar";
+        else if (pkg.archiveType == "zip") archiveExtension = ".zip";
+    } else {
+        const fs::path urlPath(pkg.downloadUrl);
+        if (urlPath.has_extension()) {
+            archiveExtension = urlPath.extension().string();
+        }
+    }
+
+    const fs::path archivePath = archiveDir / (registryPackageFolderName(pkg).string() + archiveExtension);
+    std::string downloadLog;
+    if (!downloadFile(pkg.downloadUrl, archivePath, downloadLog)) {
+        lastError = "Download failed for " + pkg.id + ". " + downloadLog;
+        return false;
+    }
+
+    if (!pkg.checksum.empty()) {
+        std::string checksumError;
+        if (!verifyChecksum(archivePath, pkg.checksum, checksumError)) {
+            lastError = "Checksum mismatch for " + pkg.id + ". " + checksumError;
+            return false;
+        }
+    }
+
+    fs::remove_all(extractedRoot, ec);
+    fs::create_directories(extractedRoot, ec);
+    if (ec) {
+        lastError = "Failed to prepare extraction folder: " + ec.message();
+        return false;
+    }
+
+    std::string extractLog;
+    if (!extractArchive(archivePath, pkg.archiveType, extractedRoot, extractLog)) {
+        lastError = "Extraction failed for " + pkg.id + ". " + extractLog;
+        return false;
+    }
+
+    resolvedCachedRoot = resolveExtractedPackageRoot(extractedRoot);
+    if (resolvedCachedRoot.empty()) {
+        lastError = "Downloaded archive for " + pkg.id + " did not contain a valid package root.";
+        return false;
+    }
+
+    outSourcePath = resolvedCachedRoot;
+    return true;
+}
+
+bool PackageManager::extractArchive(const fs::path& archivePath,
+                                    const std::string& archiveType,
+                                    const fs::path& destinationRoot,
+                                    std::string& outLog) const {
+    outLog.clear();
+    const std::string normalizedType = trimCopy(archiveType);
+    std::string command;
+
+    if (normalizedType.empty() || normalizedType == "modupak" || normalizedType == "tar" ||
+        normalizedType == "tar.gz" || normalizedType == "tgz") {
+        command = "tar -xf \"" + archivePath.string() + "\" -C \"" + destinationRoot.string() + "\" 2>&1";
+    } else if (normalizedType == "zip") {
+#ifdef _WIN32
+        command = "powershell -NoProfile -Command \"Expand-Archive -Force '"
+                  + archivePath.string() + "' '" + destinationRoot.string() + "'\" 2>&1";
+#else
+        command = "unzip -oq \"" + archivePath.string() + "\" -d \"" + destinationRoot.string() + "\" 2>&1";
+#endif
+    } else {
+        outLog = "unsupported archive type: " + normalizedType;
+        return false;
+    }
+
+    if (!runCommand(command, outLog)) {
+        if (outLog.empty()) {
+            outLog = "archive extraction command failed";
+        }
+        return false;
+    }
+    return true;
+}
+
+fs::path PackageManager::resolveExtractedPackageRoot(const fs::path& extractedRoot) const {
+    std::error_code ec;
+    if (fs::exists(extractedRoot / "Manifest.modu", ec) || fs::exists(extractedRoot / "manifest.modu", ec)) {
+        return normalizePath(extractedRoot);
+    }
+    if (!fs::exists(extractedRoot, ec) || !fs::is_directory(extractedRoot, ec)) {
+        return {};
+    }
+    for (const auto& entry : fs::directory_iterator(extractedRoot, ec)) {
+        if (ec || !entry.is_directory()) {
+            continue;
+        }
+        const fs::path candidate = entry.path();
+        if (fs::exists(candidate / "Manifest.modu", ec) || fs::exists(candidate / "manifest.modu", ec)) {
+            return normalizePath(candidate);
+        }
+    }
+    return {};
+}
+
+bool PackageManager::verifyChecksum(const fs::path& filePath, const std::string& checksum, std::string& outError) const {
+    outError.clear();
+    if (checksum.empty()) {
+        return true;
+    }
+
+    std::string expected = trim(checksum);
+    if (startsWithInsensitive(expected, "sha256:")) {
+        expected = expected.substr(7);
+    }
+
+    std::string output;
+    std::string command;
+#ifdef _WIN32
+    command = "certutil -hashfile \"" + filePath.string() + "\" SHA256 2>&1";
+#else
+    command = "sha256sum \"" + filePath.string() + "\" 2>&1";
+#endif
+    if (!runCommand(command, output)) {
+        outError = "failed to compute SHA-256";
+        return false;
+    }
+
+    std::string actual;
+#ifdef _WIN32
+    std::istringstream lines(output);
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::string cleaned = trim(line);
+        if (cleaned.empty()) continue;
+        if (cleaned.find("SHA256") != std::string::npos) continue;
+        if (cleaned.find("CertUtil:") != std::string::npos) continue;
+        actual = cleaned;
+        break;
+    }
+#else
+    std::istringstream lines(output);
+    lines >> actual;
+#endif
+
+    actual = trim(actual);
+    expected = trim(expected);
+    std::transform(actual.begin(), actual.end(), actual.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (actual.empty()) {
+        outError = "checksum output was empty";
+        return false;
+    }
+    if (actual != expected) {
+        outError = "expected " + expected + " but got " + actual;
+        return false;
+    }
+    return true;
 }
 #pragma endregion
 
@@ -392,7 +1246,7 @@ void PackageManager::buildRegistry() {
 void PackageManager::loadManifest() {
     installedIds.clear();
     for (const auto& pkg : registry) {
-        if (!isInstalled(pkg.id)) {
+        if (pkg.builtIn && !isInstalled(pkg.id)) {
             installedIds.push_back(pkg.id);
         }
     }
@@ -514,6 +1368,58 @@ bool PackageManager::isBuiltIn(const std::string& id) const {
 #pragma endregion
 
 #pragma region Utility Helpers
+std::string PackageManager::currentEngineVersion() {
+    return "6.5";
+}
+
+bool PackageManager::isCompatibleVersionString(const std::string& rule, const std::string& currentVersion) {
+    const std::string trimmedRule = trim(rule);
+    if (trimmedRule.empty()) {
+        return true;
+    }
+
+    const bool allowNewer = trimmedRule.find('+') != std::string::npos;
+    const std::string normalizedRule = normalizeVersionToken(trimmedRule);
+    const std::string normalizedCurrent = normalizeVersionToken(currentVersion);
+    if (normalizedRule.empty() || normalizedCurrent.empty()) {
+        return true;
+    }
+
+    if (!allowNewer) {
+        return normalizedRule == normalizedCurrent;
+    }
+
+    auto parseParts = [](const std::string& version) {
+        std::vector<int> parts;
+        std::stringstream ss(version);
+        std::string token;
+        while (std::getline(ss, token, '.')) {
+            try {
+                parts.push_back(std::stoi(token));
+            } catch (...) {
+                parts.push_back(0);
+            }
+        }
+        return parts;
+    };
+
+    std::vector<int> requiredParts = parseParts(normalizedRule);
+    std::vector<int> currentParts = parseParts(normalizedCurrent);
+    const size_t count = std::max(requiredParts.size(), currentParts.size());
+    requiredParts.resize(count, 0);
+    currentParts.resize(count, 0);
+
+    for (size_t i = 0; i < count; ++i) {
+        if (currentParts[i] > requiredParts[i]) {
+            return true;
+        }
+        if (currentParts[i] < requiredParts[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string PackageManager::trim(const std::string& value) {
     size_t start = 0;
     while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) start++;

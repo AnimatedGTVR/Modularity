@@ -16,9 +16,6 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <optional>
-#include <future>
-#include <chrono>
-#include <future>
 
 #ifdef _WIN32
 #include <shlobj.h>
@@ -133,6 +130,61 @@ namespace {
             }
         }
         return IM_COL32(130, 150, 170, 220);
+    }
+
+    struct HierarchyFrameCache {
+        std::unordered_map<int, size_t> visibleIndex;
+        std::unordered_set<int> selectedIds;
+    };
+
+    struct ConsoleRowMetrics {
+        std::string header;
+        ImVec2 headerSize = ImVec2(0.0f, 0.0f);
+        ImVec2 messageSize = ImVec2(0.0f, 0.0f);
+        float rowWidth = 0.0f;
+        float rowHeight = 0.0f;
+        float textWidth = 0.0f;
+    };
+
+    struct ConsolePanelCache {
+        size_t entryCount = 0;
+        bool wrapText = false;
+        bool iconsAvailable = false;
+        float contentWidth = 0.0f;
+        uint64_t fingerprint = 0;
+        std::vector<ConsoleRowMetrics> rows;
+    };
+
+    HierarchyFrameCache gHierarchyFrameCache;
+    ConsolePanelCache gConsolePanelCache;
+
+    uint64_t hashCombine64(uint64_t seed, uint64_t value) {
+        return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+    }
+
+    template <typename Entry>
+    uint64_t hashConsoleEntryFingerprint(const Entry& entry) {
+        uint64_t hash = std::hash<std::string>{}(entry.timestamp);
+        hash = hashCombine64(hash, std::hash<std::string>{}(entry.message));
+        hash = hashCombine64(hash, static_cast<uint64_t>(entry.type));
+        return hash;
+    }
+
+    template <typename Entry>
+    uint64_t computeConsoleLogFingerprint(const std::vector<Entry>& log) {
+        uint64_t fingerprint = hashCombine64(0x6d6f64756c617265ULL, static_cast<uint64_t>(log.size()));
+        if (log.empty()) {
+            return fingerprint;
+        }
+
+        fingerprint = hashCombine64(fingerprint, hashConsoleEntryFingerprint(log.front()));
+        if (log.size() > 1) {
+            fingerprint = hashCombine64(fingerprint, hashConsoleEntryFingerprint(log.back()));
+        }
+        if (log.size() > 2) {
+            fingerprint = hashCombine64(fingerprint, hashConsoleEntryFingerprint(log[log.size() / 2]));
+        }
+        return fingerprint;
     }
 
     void UpdateLegacyTypeFromComponents(SceneObject& target) {
@@ -733,45 +785,29 @@ void Engine::renderHierarchyPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 2.0f));
     ImGui::BeginChild("HierarchyList", ImVec2(0, 0), true);
 
+    gHierarchyFrameCache.visibleIndex.clear();
+    gHierarchyFrameCache.visibleIndex.reserve(sceneObjects.size());
+    gHierarchyFrameCache.selectedIds.clear();
+    gHierarchyFrameCache.selectedIds.reserve(selectedObjectIds.size());
+    for (int id : selectedObjectIds) {
+        gHierarchyFrameCache.selectedIds.insert(id);
+    }
+
+    refreshSceneObjectIndexCache();
     std::vector<size_t> rootIndices;
     rootIndices.reserve(sceneObjects.size());
-    std::unordered_set<int> knownIds;
-    knownIds.reserve(sceneObjects.size());
-    for (const auto& obj : sceneObjects) {
-        knownIds.insert(obj.id);
-    }
     for (size_t i = 0; i < sceneObjects.size(); i++) {
         int parentId = sceneObjects[i].parentId;
-        if (parentId == -1 || knownIds.find(parentId) == knownIds.end()) {
+        if (parentId == -1 || sceneObjectIndexById.find(parentId) == sceneObjectIndexById.end()) {
             rootIndices.push_back(i);
         }
     }
 
     hierarchyVisibleOrder.clear();
     hierarchyVisibleOrder.reserve(sceneObjects.size());
-    std::function<void(const SceneObject&)> gatherVisibleOrder = [&](const SceneObject& current) {
-        std::string currentLower = current.name;
-        std::transform(currentLower.begin(), currentLower.end(), currentLower.begin(), ::tolower);
-        if (!filter.empty() && currentLower.find(filter) == std::string::npos) {
-            return;
-        }
-
-        hierarchyVisibleOrder.push_back(current.id);
-        for (int childId : current.childIds) {
-            auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-                [childId](const SceneObject& o) { return o.id == childId; });
-            if (it != sceneObjects.end()) {
-                gatherVisibleOrder(*it);
-            }
-        }
-    };
-    for (size_t index : rootIndices) {
-        gatherVisibleOrder(sceneObjects[index]);
-    }
-
     std::vector<bool> ancestorHasNext;
     for (size_t i = 0; i < rootIndices.size(); ++i) {
-        bool isLastRoot = (i + 1 == rootIndices.size());
+        const bool isLastRoot = (i + 1 == rootIndices.size());
         renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0, animStep);
     }
 
@@ -850,36 +886,38 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Point Light"))       addObject(ObjectType::PointLight, "Point Light");
                 if (ImGui::MenuItem("Spot Light"))        addObject(ObjectType::SpotLight, "Spot Light");
                 if (ImGui::MenuItem("Area Light"))        addObject(ObjectType::AreaLight, "Area Light");
-                ImGui::Separator();
-                if (ImGui::MenuItem("2D Point Light"))    addObject(ObjectType::Light2D, "2D Point Light");
-                if (ImGui::MenuItem("2D Spot Light")) {
-                    addObject(ObjectType::Light2D, "2D Spot Light");
-                    if (!sceneObjects.empty()) {
-                        sceneObjects.back().light2D.type = Light2DType::Spot;
+                if (has2DWorldPackage()) {
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("2D Point Light"))    addObject(ObjectType::Light2D, "2D Point Light");
+                    if (ImGui::MenuItem("2D Spot Light")) {
+                        addObject(ObjectType::Light2D, "2D Spot Light");
+                        if (!sceneObjects.empty()) {
+                            sceneObjects.back().light2D.type = Light2DType::Spot;
+                        }
                     }
-                }
-                if (ImGui::MenuItem("2D Freeform Light")) {
-                    addObject(ObjectType::Light2D, "2D Freeform Light");
-                    if (!sceneObjects.empty()) {
-                        sceneObjects.back().light2D.type = Light2DType::Freeform;
-                        sceneObjects.back().light2D.shapePoints = {
-                            glm::vec2(-2.0f, -1.5f),
-                            glm::vec2(2.0f, -1.5f),
-                            glm::vec2(2.5f, 1.0f),
-                            glm::vec2(0.0f, 2.5f),
-                            glm::vec2(-2.5f, 1.0f)
-                        };
+                    if (ImGui::MenuItem("2D Freeform Light")) {
+                        addObject(ObjectType::Light2D, "2D Freeform Light");
+                        if (!sceneObjects.empty()) {
+                            sceneObjects.back().light2D.type = Light2DType::Freeform;
+                            sceneObjects.back().light2D.shapePoints = {
+                                glm::vec2(-2.0f, -1.5f),
+                                glm::vec2(2.0f, -1.5f),
+                                glm::vec2(2.5f, 1.0f),
+                                glm::vec2(0.0f, 2.5f),
+                                glm::vec2(-2.5f, 1.0f)
+                            };
+                        }
                     }
-                }
-                if (ImGui::MenuItem("2D Global Light")) {
-                    addObject(ObjectType::Light2D, "2D Global Light");
-                    if (!sceneObjects.empty()) {
-                        sceneObjects.back().light2D.type = Light2DType::Global;
-                        sceneObjects.back().light2D.intensity = 0.35f;
-                        sceneObjects.back().light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+                    if (ImGui::MenuItem("2D Global Light")) {
+                        addObject(ObjectType::Light2D, "2D Global Light");
+                        if (!sceneObjects.empty()) {
+                            sceneObjects.back().light2D.type = Light2DType::Global;
+                            sceneObjects.back().light2D.intensity = 0.35f;
+                            sceneObjects.back().light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+                        }
                     }
+                    if (ImGui::MenuItem("2D Shadow Caster")) addObject(ObjectType::ShadowCaster2D, "2D Shadow Caster");
                 }
-                if (ImGui::MenuItem("2D Shadow Caster")) addObject(ObjectType::ShadowCaster2D, "2D Shadow Caster");
                 ImGui::EndMenu();
             }
 
@@ -897,7 +935,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("UI Slider")) createUIWithCanvas(ObjectType::UISlider, "UI Slider");
                 if (ImGui::MenuItem("UI Button")) createUIWithCanvas(ObjectType::UIButton, "UI Button");
                 if (ImGui::MenuItem("UI Text")) createUIWithCanvas(ObjectType::UIText, "UI Text");
-                if (ImGui::MenuItem("Sprite2D")) createUIWithCanvas(ObjectType::Sprite2D, "Sprite2D");
+                if (has2DWorldPackage() && ImGui::MenuItem("Sprite2D")) createUIWithCanvas(ObjectType::Sprite2D, "Sprite2D");
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
@@ -916,15 +954,19 @@ void Engine::renderHierarchyPanel() {
 
 void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                               std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep) {
-    std::string nameLower = obj.name;
-    std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
-
-    if (!filter.empty() && nameLower.find(filter) == std::string::npos) {
-        return;
+    if (!filter.empty()) {
+        std::string nameLower = obj.name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower.find(filter) == std::string::npos) {
+            return;
+        }
     }
 
+    hierarchyVisibleOrder.push_back(obj.id);
+    gHierarchyFrameCache.visibleIndex[obj.id] = hierarchyVisibleOrder.size() - 1;
+
     bool hasChildren = !obj.childIds.empty();
-    bool isSelected = std::find(selectedObjectIds.begin(), selectedObjectIds.end(), obj.id) != selectedObjectIds.end();
+    bool isSelected = gHierarchyFrameCache.selectedIds.find(obj.id) != gHierarchyFrameCache.selectedIds.end();
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
@@ -984,6 +1026,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     if (obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled) {
         std::string badgeText = "L" + std::to_string(obj.parallaxLayer2D.order);
         ImVec2 badgeTextSize = ImGui::CalcTextSize(badgeText.c_str());
+        ImVec2 labelTextSize = ImGui::CalcTextSize(obj.name.c_str());
         float badgePadX = 6.0f;
         float badgePadY = 2.0f;
         float rightEdge = itemMax.x - 8.0f;
@@ -994,7 +1037,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         ImVec2 badgeMin(rightEdge - badgeTextSize.x - badgePadX * 2.0f,
                         itemMin.y + (lineHeight - (badgeTextSize.y + badgePadY * 2.0f)) * 0.5f);
         ImVec2 badgeMax(rightEdge, badgeMin.y + badgeTextSize.y + badgePadY * 2.0f);
-        float minAllowedX = textPos.x + ImGui::CalcTextSize(obj.name.c_str()).x + 8.0f;
+        float minAllowedX = textPos.x + labelTextSize.x + 8.0f;
         if (badgeMin.x > minAllowedX) {
             ImU32 badgeBg = ImGui::GetColorU32(ImVec4(0.20f, 0.40f, 0.62f, 0.78f));
             ImU32 badgeBorder = ImGui::GetColorU32(ImVec4(0.52f, 0.74f, 0.96f, 0.88f));
@@ -1017,9 +1060,9 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
             }
 
             auto findOrderIndex = [&](int id) -> int {
-                auto it = std::find(hierarchyVisibleOrder.begin(), hierarchyVisibleOrder.end(), id);
-                if (it == hierarchyVisibleOrder.end()) return -1;
-                return static_cast<int>(std::distance(hierarchyVisibleOrder.begin(), it));
+                auto it = gHierarchyFrameCache.visibleIndex.find(id);
+                if (it == gHierarchyFrameCache.visibleIndex.end()) return -1;
+                return static_cast<int>(it->second);
             };
 
             const int anchorIndex = findOrderIndex(anchorId);
@@ -1288,8 +1331,13 @@ void Engine::renderInspectorPanel() {
         }
         if (cat == FileCategory::Audio) {
             selectedAudioPath = entry.path();
-            browserHasAudio = true;
-            selectedAudioPreview = audio.getPreview(selectedAudioPath.string());
+            selectedAudioPreview = nullptr;
+            browserHasAudio = false;
+
+            if (!selectedAudioPath.empty()) {
+                selectedAudioPreview = audio.getPreview(selectedAudioPath.string());
+                browserHasAudio = (selectedAudioPreview != nullptr);
+            }
         }
         if (cat == FileCategory::Texture) {
             selectedTexturePath = entry.path();
@@ -1367,6 +1415,157 @@ void Engine::renderInspectorPanel() {
             ratio = std::clamp(ratio, 0.0f, 1.0f);
             *seekRatioOut = ratio;
         }
+    };
+
+    struct AudioPlayerUiIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
+    };
+
+    const bool hasVulkanUiImages = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
+    auto resolveAudioPlayerIcon = [&](const char* iconPath) -> AudioPlayerUiIcon {
+        if (!iconPath || !*iconPath) {
+            return {};
+        }
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+                icon && icon->GetID()) {
+                return { static_cast<ImTextureID>(icon->GetID()), true };
+            }
+        }
+        if (hasVulkanUiImages && vulkanRenderer) {
+            ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (icon != static_cast<ImTextureID>(0)) {
+                return { icon, false };
+            }
+        }
+        return {};
+    };
+
+    auto formatAudioClock = [](double seconds, bool roundUp) -> std::string {
+        if (!std::isfinite(seconds) || seconds <= 0.0) {
+            return "0:00";
+        }
+
+        const double quantized = roundUp
+            ? std::ceil(std::max(0.0, seconds) - 0.0001)
+            : std::floor(std::max(0.0, seconds) + 0.0001);
+        const long long totalSeconds = static_cast<long long>(std::max(0.0, quantized));
+        const long long hours = totalSeconds / 3600;
+        const long long minutes = (totalSeconds / 60) % 60;
+        const long long secs = totalSeconds % 60;
+
+        std::ostringstream out;
+        out << std::setfill('0');
+        if (hours > 0) {
+            out << hours << ':' << std::setw(2) << minutes << ':' << std::setw(2) << secs;
+        } else {
+            out << (totalSeconds / 60) << ':' << std::setw(2) << secs;
+        }
+        return out.str();
+    };
+
+    auto drawAudioTimeReadout = [&](double cursorSeconds, double durationSeconds) {
+        const double safeCursor = std::max(0.0, cursorSeconds);
+        const double safeDuration = std::max(0.0, durationSeconds);
+        const std::string currentClock = formatAudioClock(safeCursor, false);
+        const std::string durationClock = formatAudioClock(safeDuration, true);
+        ImGui::TextColored(ImVec4(0.98f, 0.82f, 0.55f, 1.0f), "%s / %s", currentClock.c_str(), durationClock.c_str());
+        ImGui::TextDisabled("Timing: %.2fs / %.2fs", safeCursor, safeDuration);
+    };
+
+    auto drawTrimmedPathText = [&](const std::string& path, const ImVec4& color) {
+        const float maxWidth = std::max(32.0f, ImGui::GetContentRegionAvail().x);
+        std::string display = path;
+        if (ImGui::CalcTextSize(display.c_str()).x > maxWidth) {
+            constexpr const char* kEllipsis = "...";
+            std::string suffix = path;
+            while (!suffix.empty()) {
+                std::string candidate = std::string(kEllipsis) + suffix;
+                if (ImGui::CalcTextSize(candidate.c_str()).x <= maxWidth) {
+                    display = std::move(candidate);
+                    break;
+                }
+                suffix.erase(suffix.begin());
+            }
+            if (suffix.empty()) {
+                display = kEllipsis;
+            }
+        }
+
+        ImGui::TextColored(color, "%s", display.c_str());
+        if (display != path && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", path.c_str());
+        }
+    };
+
+    auto drawAudioPlayerIconButton = [&](const char* id,
+                                         const char* iconPath,
+                                         const char* fallbackText,
+                                         const char* tooltip,
+                                         bool active,
+                                         bool disabled,
+                                         const ImVec2& size,
+                                         const ImVec4& accentColor) -> bool {
+        if (disabled) {
+            ImGui::BeginDisabled();
+        }
+
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton(id, size);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool held = ImGui::IsItemActive();
+        const ImVec2 max(pos.x + size.x, pos.y + size.y);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const float rounding = 10.0f;
+
+        ImVec4 bg = active
+            ? ImVec4(accentColor.x * 0.70f, accentColor.y * 0.70f, accentColor.z * 0.70f, 0.95f)
+            : hovered
+                ? ImVec4(0.24f, 0.27f, 0.35f, 0.95f)
+                : ImVec4(0.15f, 0.17f, 0.22f, 0.92f);
+        ImVec4 border = active
+            ? ImVec4(accentColor.x, accentColor.y, accentColor.z, 1.0f)
+            : hovered
+                ? ImVec4(0.58f, 0.66f, 0.78f, 0.95f)
+                : ImVec4(0.28f, 0.32f, 0.41f, 0.92f);
+        if (held) {
+            bg = ImVec4(bg.x + 0.05f, bg.y + 0.05f, bg.z + 0.05f, bg.w);
+        }
+
+        if (disabled) {
+            bg.w *= 0.55f;
+            border.w *= 0.45f;
+        }
+
+        drawList->AddRectFilled(pos, max, ImGui::ColorConvertFloat4ToU32(bg), rounding);
+        drawList->AddRect(pos, max, ImGui::ColorConvertFloat4ToU32(border), rounding, 0, active ? 2.0f : 1.0f);
+
+        const AudioPlayerUiIcon icon = resolveAudioPlayerIcon(iconPath);
+        const float inset = size.x >= 40.0f ? 8.0f : 6.0f;
+        const ImVec2 iconMin(pos.x + inset, pos.y + inset);
+        const ImVec2 iconMax(max.x - inset, max.y - inset);
+        const int alpha = disabled ? 110 : active ? 255 : hovered ? 240 : 215;
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            drawList->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax, IM_COL32(255, 255, 255, alpha));
+        } else if (fallbackText && *fallbackText) {
+            const ImVec2 textSize = ImGui::CalcTextSize(fallbackText);
+            drawList->AddText(
+                ImVec2(pos.x + (size.x - textSize.x) * 0.5f, pos.y + (size.y - textSize.y) * 0.5f),
+                IM_COL32(255, 255, 255, alpha),
+                fallbackText);
+        }
+
+        if (hovered && tooltip && *tooltip) {
+            ImGui::SetTooltip("%s", tooltip);
+        }
+
+        if (disabled) {
+            ImGui::EndDisabled();
+        }
+        return !disabled && pressed;
     };
 
     auto drawMaterialPreview = [&](const char* idSuffix,
@@ -1913,36 +2112,23 @@ void Engine::renderInspectorPanel() {
 
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.4f, 0.25f, 1.0f));
         if (ImGui::CollapsingHeader(headerTitle, ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Indent(8.0f);
-            ImGui::TextDisabled("%s", selectedAudioPath.filename().string().c_str());
-            ImGui::TextColored(ImVec4(0.8f, 0.9f, 1.0f, 1.0f), "%s", selectedAudioPath.string().c_str());
-            ImGui::Spacing();
-
-            if (selectedAudioPreview) {
-                double cur = 0.0;
-                double dur = 0.0;
-                float progress = -1.0f;
-                if (audio.getPreviewTime(selectedAudioPath.string(), cur, dur) && dur > 0.0001) {
-                    progress = static_cast<float>(cur / dur);
-                }
-                ImGui::Text("Format: %u ch @ %u Hz", selectedAudioPreview->channels, selectedAudioPreview->sampleRate);
-                ImGui::Text("Length: %.2f s", selectedAudioPreview->durationSeconds);
-                ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 96.0f);
-                float seekRatio = -1.0f;
-                drawWaveform("##AudioWaveAsset", selectedAudioPreview, waveSize, progress, &seekRatio);
-                if (seekRatio >= 0.0f && dur > 0.0) {
-                    audio.seekPreview(selectedAudioPath.string(), seekRatio * dur);
-                }
-                if (dur > 0.0) {
-                    ImGui::TextDisabled("Time: %0.2f / %0.2f", cur, dur);
-                }
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f), "Unable to decode audio preview.");
-            }
-
-            ImGui::Spacing();
             bool isPlayingPreview = audio.isPreviewing(selectedAudioPath.string());
-            if (ImGui::Button(isPlayingPreview ? "Stop" : "Play", ImVec2(72, 0))) {
+
+            ImGui::TextDisabled("%s", selectedAudioPath.filename().string().c_str());
+            drawTrimmedPathText(selectedAudioPath.string(), ImVec4(0.78f, 0.88f, 1.0f, 1.0f));
+            ImGui::Spacing();
+
+            if (drawAudioPlayerIconButton(
+                    "##AudioPreviewPlayButton",
+                    isPlayingPreview
+                        ? "Resources/Engine-Root/Audio Player/Play Button Toggled On.png"
+                        : "Resources/Engine-Root/Audio Player/Play Button Toggled Off.png",
+                    "Play",
+                    isPlayingPreview ? "Stop preview" : "Play preview",
+                    isPlayingPreview,
+                    false,
+                    ImVec2(42.0f, 42.0f),
+                    ImVec4(0.92f, 0.55f, 0.30f, 1.0f))) {
                 if (isPlayingPreview) {
                     audio.stopPreview();
                 } else {
@@ -1950,21 +2136,73 @@ void Engine::renderInspectorPanel() {
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Checkbox("Loop##AudioPreview", &audioPreviewLoop)) {
+            if (drawAudioPlayerIconButton(
+                    "##AudioPreviewLoopButton",
+                    audioPreviewLoop
+                        ? "Resources/Engine-Root/Audio Player/Loop Toggled On.png"
+                        : "Resources/Engine-Root/Audio Player/Loop Toggled Off.png",
+                    "Loop",
+                    audioPreviewLoop ? "Disable loop" : "Enable loop",
+                    audioPreviewLoop,
+                    false,
+                    ImVec2(36.0f, 36.0f),
+                    ImVec4(0.42f, 0.76f, 1.0f, 1.0f))) {
+                audioPreviewLoop = !audioPreviewLoop;
                 if (isPlayingPreview) {
                     audio.setPreviewLoop(audioPreviewLoop);
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Checkbox("Auto Play##AudioPreview", &audioPreviewAutoPlay)) {
+            if (drawAudioPlayerIconButton(
+                    "##AudioPreviewAutoplayButton",
+                    audioPreviewAutoPlay
+                        ? "Resources/Engine-Root/Audio Player/Auto Play Toggled On.png"
+                        : "Resources/Engine-Root/Audio Player/Auto Play Toggled Off.png",
+                    "Auto",
+                    audioPreviewAutoPlay ? "Disable auto play" : "Enable auto play",
+                    audioPreviewAutoPlay,
+                    false,
+                    ImVec2(36.0f, 36.0f),
+                    ImVec4(0.45f, 0.88f, 0.76f, 1.0f))) {
+                audioPreviewAutoPlay = !audioPreviewAutoPlay;
                 if (audioPreviewAutoPlay && !selectedAudioPath.empty() && !isPlayingPreview) {
                     audio.playPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop);
                 }
             }
 
+            if (selectedAudioPreview) {
+                double cur = 0.0;
+                double dur = selectedAudioPreview->durationSeconds;
+                float progress = -1.0f;
+                if (audio.getPreviewTime(selectedAudioPath.string(), cur, dur) && dur > 0.0001) {
+                    progress = static_cast<float>(cur / dur);
+                }
+                ImGui::TextDisabled("%u channels  |  %u Hz  |  %.2fs",
+                    selectedAudioPreview->channels,
+                    selectedAudioPreview->sampleRate,
+                    selectedAudioPreview->durationSeconds);
+                ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 80.0f);
+                float seekRatio = -1.0f;
+                drawWaveform("##AudioWaveAsset", selectedAudioPreview, waveSize, progress, &seekRatio);
+                if (seekRatio >= 0.0f && dur > 0.0) {
+                    audio.seekPreview(selectedAudioPath.string(), seekRatio * dur);
+                }
+                ImGui::Spacing();
+                drawAudioTimeReadout(cur, dur);
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.55f, 1.0f), "Unable to decode audio preview.");
+            }
+
             if (target) {
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Assign to Selection")) {
+                const float buttonWidth = 146.0f;
+                const float rightEdge = ImGui::GetWindowContentRegionMax().x;
+                const float cursorX = ImGui::GetCursorPosX();
+                if (rightEdge - buttonWidth > cursorX) {
+                    ImGui::SameLine(rightEdge - buttonWidth);
+                } else {
+                    ImGui::SameLine();
+                }
+                if (ImGui::Button("Assign to Selection", ImVec2(buttonWidth, 0.0f))) {
                     if (!target->hasAudioSource) {
                         target->hasAudioSource = true;
                         target->audioSource = AudioSourceComponent{};
@@ -1973,8 +2211,6 @@ void Engine::renderInspectorPanel() {
                     projectManager.currentProject.hasUnsavedChanges = true;
                 }
             }
-
-            ImGui::Unindent(8.0f);
         }
         ImGui::PopStyleColor();
     };
@@ -2671,7 +2907,7 @@ void Engine::renderInspectorPanel() {
 
                 if (!obj.albedoTexturePath.empty()) {
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("Import Sheet##UISpriteSheet")) {
+                    if (hasSpritesheetPackage() && ImGui::SmallButton("Import Sheet##UISpriteSheet")) {
                         pendingSpriteSheetPath = obj.albedoTexturePath;
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
                         importSpriteSheetAsSprite2D = (obj.ui.type == UIElementType::Sprite2D);
@@ -2705,7 +2941,8 @@ void Engine::renderInspectorPanel() {
                     }
                 }
 
-                if (ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (hasSpritesheetPackage() &&
+                    ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
                     if (ImGui::Checkbox("Enable Sprite Sheet", &obj.ui.spriteSheetEnabled)) {
                         changed = true;
                     }
@@ -3318,6 +3555,10 @@ void Engine::renderInspectorPanel() {
             if (ImGui::Checkbox("Repeat Y", &obj.parallaxLayer2D.repeatY)) {
                 changed = true;
             }
+            if (ImGui::Checkbox("Disable Culling", &obj.parallaxLayer2D.disableCulling)) {
+                changed = true;
+            }
+            ImGui::TextDisabled("Keeps this parallax object rendering even when it moves outside the current world overlay.");
             if (ImGui::DragFloat2("Repeat Spacing", &obj.parallaxLayer2D.repeatSpacing.x, 0.1f, 0.0f, 10000.0f, "%.1f")) {
                 obj.parallaxLayer2D.repeatSpacing.x = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.x);
                 obj.parallaxLayer2D.repeatSpacing.y = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.y);
@@ -3381,15 +3622,6 @@ void Engine::renderInspectorPanel() {
             ImGui::EndDisabled();
 
             ImGui::Spacing();
-            bool previewPlaying = !src.clipPath.empty() && audio.isPreviewing(src.clipPath);
-            if (ImGui::Button(previewPlaying ? "Stop Preview" : "Play Preview")) {
-                if (previewPlaying) {
-                    audio.stopPreview();
-                } else if (!src.clipPath.empty()) {
-                    audio.playPreview(src.clipPath, src.volume, src.loop);
-                }
-            }
-            ImGui::SameLine();
             ImGui::TextDisabled("%s", src.clipPath.empty() ? "No clip selected" : fs::path(src.clipPath).filename().string().c_str());
 
             if (ImGui::SliderFloat("Volume", &src.volume, 0.0f, 1.5f, "%.2f")) {
@@ -3442,8 +3674,56 @@ void Engine::renderInspectorPanel() {
 
             const AudioClipPreview* clipPreview = audio.getPreview(src.clipPath);
             ImGui::Separator();
-            ImGui::TextDisabled("Waveform");
-            ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 80.0f);
+            const bool previewPlaying = !src.clipPath.empty() && audio.isPreviewing(src.clipPath);
+            ImGui::TextDisabled("%s", src.clipPath.empty() ? "No clip selected" : fs::path(src.clipPath).filename().string().c_str());
+
+            if (clipPreview) {
+                ImGui::TextDisabled("%u channels  |  %u Hz  |  %.2fs",
+                    clipPreview->channels,
+                    clipPreview->sampleRate,
+                    clipPreview->durationSeconds);
+            } else {
+                ImGui::TextDisabled("Load an audio clip to preview timing and waveform.");
+            }
+
+            ImGui::Spacing();
+            if (drawAudioPlayerIconButton(
+                    "##AudioSourcePlayButton",
+                    previewPlaying
+                        ? "Resources/Engine-Root/Audio Player/Play Button Toggled On.png"
+                        : "Resources/Engine-Root/Audio Player/Play Button Toggled Off.png",
+                    "Play",
+                    previewPlaying ? "Stop preview" : "Play preview",
+                    previewPlaying,
+                    src.clipPath.empty(),
+                    ImVec2(42.0f, 42.0f),
+                    ImVec4(0.92f, 0.55f, 0.30f, 1.0f))) {
+                if (previewPlaying) {
+                    audio.stopPreview();
+                } else {
+                    audio.playPreview(src.clipPath, src.volume, src.loop);
+                }
+            }
+            ImGui::SameLine();
+            if (drawAudioPlayerIconButton(
+                    "##AudioSourceLoopButton",
+                    src.loop
+                        ? "Resources/Engine-Root/Audio Player/Loop Toggled On.png"
+                        : "Resources/Engine-Root/Audio Player/Loop Toggled Off.png",
+                    "Loop",
+                    src.loop ? "Disable loop" : "Enable loop",
+                    src.loop,
+                    src.clipPath.empty(),
+                    ImVec2(36.0f, 36.0f),
+                    ImVec4(0.42f, 0.76f, 1.0f, 1.0f))) {
+                src.loop = !src.loop;
+                changed = true;
+                if (previewPlaying) {
+                    audio.setPreviewLoop(src.loop);
+                }
+            }
+
+            ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 64.0f);
             double cur = 0.0;
             double dur = clipPreview ? clipPreview->durationSeconds : 0.0;
             float progress = -1.0f;
@@ -3455,15 +3735,9 @@ void Engine::renderInspectorPanel() {
             if (seekRatio >= 0.0f && dur > 0.0) {
                 audio.seekPreview(src.clipPath, seekRatio * dur);
             }
-            if (dur > 0.0) {
-                ImGui::TextDisabled("Time: %0.2f / %0.2f", cur, dur);
-            }
-            if (clipPreview) {
-                ImGui::TextDisabled("Length: %.2fs | %u channels @ %u Hz",
-                    clipPreview->durationSeconds,
-                    clipPreview->channels,
-                    clipPreview->sampleRate);
-            }
+
+            ImGui::Spacing();
+            drawAudioTimeReadout(cur, dur);
 
             ImGui::Unindent(10.0f);
             ImGui::PopID();
@@ -4494,7 +4768,7 @@ void Engine::renderInspectorPanel() {
 
                 if (!obj.albedoTexturePath.empty()) {
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("Import Sheet##WorldSpriteSheet")) {
+                    if (hasSpritesheetPackage() && ImGui::SmallButton("Import Sheet##WorldSpriteSheet")) {
                         pendingSpriteSheetPath = obj.albedoTexturePath;
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
                         importSpriteSheetAsSprite2D = false;
@@ -4502,7 +4776,8 @@ void Engine::renderInspectorPanel() {
                     }
                 }
 
-                if (ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (hasSpritesheetPackage() &&
+                    ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
                     if (ImGui::Checkbox("Enable Sprite Sheet", &obj.ui.spriteSheetEnabled)) {
                         materialChanged = true;
                     }
@@ -4970,7 +5245,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
-    if (obj.hasLight2D && sharedLight2D) {
+    if (has2DWorldPackage() && obj.hasLight2D && sharedLight2D) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.62f, 0.54f, 0.18f, 1.0f));
         bool changed = false;
@@ -5868,63 +6143,65 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("Lights/2D Point", !obj.hasLight2D, [&]() {
-            obj.hasLight2D = true;
-            obj.light2D = Light2DComponent{};
-            obj.light2D.type = Light2DType::Point;
-            obj.light2D.radius = 5.0f;
-            obj.light2D.outerRadius = 5.0f;
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
-        addEntry("Lights/2D Spot", !obj.hasLight2D, [&]() {
-            obj.hasLight2D = true;
-            obj.light2D = Light2DComponent{};
-            obj.light2D.type = Light2DType::Spot;
-            obj.light2D.radius = 7.0f;
-            obj.light2D.outerRadius = 7.0f;
-            obj.light2D.innerSpotAngle = 22.0f;
-            obj.light2D.outerSpotAngle = 48.0f;
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
-        addEntry("Lights/2D Freeform", !obj.hasLight2D, [&]() {
-            obj.hasLight2D = true;
-            obj.light2D = Light2DComponent{};
-            obj.light2D.type = Light2DType::Freeform;
-            obj.light2D.shapePoints = {
-                glm::vec2(-2.0f, -1.5f),
-                glm::vec2(2.0f, -1.5f),
-                glm::vec2(2.5f, 1.0f),
-                glm::vec2(0.0f, 2.5f),
-                glm::vec2(-2.5f, 1.0f)
-            };
-            obj.light2D.radius = 4.0f;
-            obj.light2D.outerRadius = 4.0f;
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
-        addEntry("Lights/2D Global", !obj.hasLight2D, [&]() {
-            obj.hasLight2D = true;
-            obj.light2D = Light2DComponent{};
-            obj.light2D.type = Light2DType::Global;
-            obj.light2D.intensity = 0.35f;
-            obj.light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
-        addEntry("Lights/2D Shadow Caster", !obj.hasShadowCaster2D, [&]() {
-            obj.hasShadowCaster2D = true;
-            obj.shadowCaster2D = ShadowCaster2DComponent{};
-            obj.shadowCaster2D.points = {
-                glm::vec2(-1.0f, -1.0f),
-                glm::vec2(1.0f, -1.0f),
-                glm::vec2(1.0f, 1.0f),
-                glm::vec2(-1.0f, 1.0f)
-            };
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
+        if (has2DWorldPackage()) {
+            addEntry("Lights/2D Point", !obj.hasLight2D, [&]() {
+                obj.hasLight2D = true;
+                obj.light2D = Light2DComponent{};
+                obj.light2D.type = Light2DType::Point;
+                obj.light2D.radius = 5.0f;
+                obj.light2D.outerRadius = 5.0f;
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+            addEntry("Lights/2D Spot", !obj.hasLight2D, [&]() {
+                obj.hasLight2D = true;
+                obj.light2D = Light2DComponent{};
+                obj.light2D.type = Light2DType::Spot;
+                obj.light2D.radius = 7.0f;
+                obj.light2D.outerRadius = 7.0f;
+                obj.light2D.innerSpotAngle = 22.0f;
+                obj.light2D.outerSpotAngle = 48.0f;
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+            addEntry("Lights/2D Freeform", !obj.hasLight2D, [&]() {
+                obj.hasLight2D = true;
+                obj.light2D = Light2DComponent{};
+                obj.light2D.type = Light2DType::Freeform;
+                obj.light2D.shapePoints = {
+                    glm::vec2(-2.0f, -1.5f),
+                    glm::vec2(2.0f, -1.5f),
+                    glm::vec2(2.5f, 1.0f),
+                    glm::vec2(0.0f, 2.5f),
+                    glm::vec2(-2.5f, 1.0f)
+                };
+                obj.light2D.radius = 4.0f;
+                obj.light2D.outerRadius = 4.0f;
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+            addEntry("Lights/2D Global", !obj.hasLight2D, [&]() {
+                obj.hasLight2D = true;
+                obj.light2D = Light2DComponent{};
+                obj.light2D.type = Light2DType::Global;
+                obj.light2D.intensity = 0.35f;
+                obj.light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+            addEntry("Lights/2D Shadow Caster", !obj.hasShadowCaster2D, [&]() {
+                obj.hasShadowCaster2D = true;
+                obj.shadowCaster2D = ShadowCaster2DComponent{};
+                obj.shadowCaster2D.points = {
+                    glm::vec2(-1.0f, -1.0f),
+                    glm::vec2(1.0f, -1.0f),
+                    glm::vec2(1.0f, 1.0f),
+                    glm::vec2(-1.0f, 1.0f)
+                };
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+        }
         addEntry("Renderer/Cube", true, [&]() {
             obj.hasRenderer = true;
             obj.renderType = RenderType::Cube;
@@ -6008,12 +6285,14 @@ void Engine::renderInspectorPanel() {
             UpdateLegacyTypeFromComponents(obj);
             componentChanged = true;
         });
-        addEntry("UI/Sprite2D", true, [&]() {
-            obj.hasUI = true;
-            applyUiDefaults(obj, UIElementType::Sprite2D);
-            UpdateLegacyTypeFromComponents(obj);
-            componentChanged = true;
-        });
+        if (has2DWorldPackage()) {
+            addEntry("UI/Sprite2D", true, [&]() {
+                obj.hasUI = true;
+                applyUiDefaults(obj, UIElementType::Sprite2D);
+                UpdateLegacyTypeFromComponents(obj);
+                componentChanged = true;
+            });
+        }
         addEntry("Collider/Box Collider", !obj.hasCollider, [&]() {
             obj.hasCollider = true;
             obj.collider = ColliderComponent{};
@@ -6710,40 +6989,69 @@ void Engine::renderConsolePanel() {
     ImGui::BeginChild("ConsoleOutput", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
     const bool shouldScroll = autoScroll && (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.0f);
+    const float contentWidth = ImGui::GetContentRegionAvail().x;
+    const uint64_t logFingerprint = computeConsoleLogFingerprint(consoleLog);
+    const bool cacheNeedsRefresh =
+        gConsolePanelCache.entryCount != consoleLog.size() ||
+        gConsolePanelCache.wrapText != consoleWrapText ||
+        gConsolePanelCache.iconsAvailable != rendererInitialized ||
+        std::abs(gConsolePanelCache.contentWidth - contentWidth) > 0.5f ||
+        gConsolePanelCache.fingerprint != logFingerprint;
+
+    if (cacheNeedsRefresh) {
+        gConsolePanelCache.entryCount = consoleLog.size();
+        gConsolePanelCache.wrapText = consoleWrapText;
+        gConsolePanelCache.iconsAvailable = rendererInitialized;
+        gConsolePanelCache.contentWidth = contentWidth;
+        gConsolePanelCache.fingerprint = logFingerprint;
+        gConsolePanelCache.rows.clear();
+        gConsolePanelCache.rows.resize(consoleLog.size());
+
+        const float topPad = 4.0f;
+        const float bottomPad = 4.0f;
+        const float lineGap = 2.0f;
+        const float minTextWidth = 32.0f;
+
+        for (size_t i = 0; i < consoleLog.size(); ++i) {
+            const ConsoleEntry& log = consoleLog[i];
+            ConsoleRowMetrics& row = gConsolePanelCache.rows[i];
+            row.header = "[" + log.timestamp + "] " + typeLabel(log.type);
+
+            const bool hasIcon = rendererInitialized;
+            const float textLeft = hasIcon ? 36.0f : 10.0f;
+            row.textWidth = ImMax(minTextWidth, contentWidth - textLeft - 10.0f);
+            row.headerSize = ImGui::CalcTextSize(row.header.c_str(), nullptr, false, FLT_MAX);
+
+            if (consoleWrapText) {
+                row.messageSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, row.textWidth);
+                row.rowWidth = ImMax(contentWidth, textLeft + row.textWidth + 10.0f);
+            } else {
+                row.messageSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, FLT_MAX);
+                row.rowWidth = ImMax(contentWidth, textLeft + ImMax(row.headerSize.x, row.messageSize.x) + 10.0f);
+                row.textWidth = ImMax(minTextWidth, row.rowWidth - textLeft - 10.0f);
+            }
+
+            row.rowHeight = ImMax(26.0f, topPad + ImGui::GetTextLineHeight() + lineGap + row.messageSize.y + bottomPad);
+        }
+    }
 
     if (consoleLog.empty()) {
         ImGui::TextDisabled("No console messages yet.");
     } else {
+        const float iconSize = 16.0f;
+        const float topPad = 4.0f;
+        const float lineGap = 2.0f;
         for (size_t i = 0; i < consoleLog.size(); ++i) {
             const ConsoleEntry& log = consoleLog[i];
+            const ConsoleRowMetrics& row = gConsolePanelCache.rows[i];
             ImGui::PushID(static_cast<int>(i));
 
             Texture* icon = typeIcon(log.type);
             const bool hasIcon = icon && icon->GetID();
-            const float iconSize = 16.0f;
-            float rowWidth = ImGui::GetContentRegionAvail().x;
+            float rowWidth = row.rowWidth;
             const float textLeft = hasIcon ? 36.0f : 10.0f;
-            const std::string header = "[" + log.timestamp + "] " + typeLabel(log.type);
-
-            const float minTextWidth = 32.0f;
-            float textWidth = ImMax(minTextWidth, rowWidth - textLeft - 10.0f);
-
-            ImVec2 headerSize = ImGui::CalcTextSize(header.c_str(), nullptr, false, FLT_MAX);
-            ImVec2 msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false,
-                                                 consoleWrapText ? textWidth : FLT_MAX);
-            if (!consoleWrapText) {
-                float requiredWidth = textLeft + ImMax(headerSize.x, msgSize.x) + 10.0f;
-                rowWidth = ImMax(rowWidth, requiredWidth);
-                textWidth = ImMax(minTextWidth, rowWidth - textLeft - 10.0f);
-                msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, FLT_MAX);
-            } else {
-                msgSize = ImGui::CalcTextSize(log.message.c_str(), nullptr, false, textWidth);
-            }
-
-            const float topPad = 4.0f;
-            const float bottomPad = 4.0f;
-            const float lineGap = 2.0f;
-            const float rowHeight = ImMax(26.0f, topPad + ImGui::GetTextLineHeight() + lineGap + msgSize.y + bottomPad);
+            const float textWidth = row.textWidth;
+            const float rowHeight = row.rowHeight;
 
             const ImVec2 rowMin = ImGui::GetCursorScreenPos();
             ImGui::Dummy(ImVec2(rowWidth, rowHeight));
@@ -6763,7 +7071,7 @@ void Engine::renderConsolePanel() {
             const float textX = rowMin.x + textLeft;
             draw->AddText(ImVec2(textX, rowMin.y + topPad),
                           ImGui::ColorConvertFloat4ToU32(typeColor(log.type)),
-                          header.c_str());
+                          row.header.c_str());
             draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                           ImVec2(textX, rowMin.y + topPad + ImGui::GetTextLineHeight() + lineGap),
                           withScaledAlphaU32(ImGui::GetColorU32(ImGuiCol_Text)),
@@ -6927,6 +7235,10 @@ void Engine::renderLatestErrorBar() {
 
 #pragma region Mesh Builder Panel
 void Engine::renderMeshBuilderPanel() {
+    if (!hasMeshBuilderPackage()) {
+        showMeshBuilder = false;
+        return;
+    }
     ImGui::Begin("Mesh Builder (Legacy)", &showMeshBuilder);
     ImGui::TextDisabled("Primary workflow moved to the viewport toolbar RMesh edit mode.");
     ImGui::Separator();
@@ -7274,7 +7586,7 @@ void Engine::renderDialogs() {
         ImGui::End();
     }
 
-    if (showImportSpriteSheetDialog) {
+    if (showImportSpriteSheetDialog && hasSpritesheetPackage()) {
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -7308,7 +7620,14 @@ void Engine::renderDialogs() {
             importSpriteSheetRows = std::max(1, importSpriteSheetRows);
             ImGui::DragFloat("FPS", &importSpriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f");
             importSpriteSheetFps = std::clamp(importSpriteSheetFps, 1.0f, 120.0f);
-            ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
+            if (!has2DWorldPackage()) {
+                importSpriteSheetAsSprite2D = false;
+                ImGui::BeginDisabled();
+                ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
+                ImGui::EndDisabled();
+            } else {
+                ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
+            }
 
             ImGui::Spacing();
             ImGui::Separator();

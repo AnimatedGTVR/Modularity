@@ -422,6 +422,12 @@ glm::ivec4 FindConnectedRegionBounds(const std::vector<unsigned char>& pixels, i
 }
 
 bool Engine::loadPixelSpriteDocument(const fs::path& imagePath) {
+    if (!hasSpriteEditorPackage()) {
+        addConsoleMessage("Pixel Sprite Editor is unavailable because moduengine.sprite-editor is not installed.",
+                          ConsoleMessageType::Warning);
+        return false;
+    }
+
     int width = 0;
     int height = 0;
     int channels = 0;
@@ -617,6 +623,10 @@ bool Engine::savePixelSpriteDocument() {
 
 void Engine::renderPixelSpriteEditorWindow() {
     if (!showPixelSpriteEditorWindow) return;
+    if (!hasSpriteEditorPackage()) {
+        showPixelSpriteEditorWindow = false;
+        return;
+    }
 
     if (!pixelSpriteDocument.loaded) {
         pixelSpriteDocument = PixelSpriteDocument{};

@@ -18,12 +18,18 @@ Use the provided scripts for a full editor + player build:
   - Builds the editor in `build/`.
   - Builds a player-only target in `build/player-cache/`.
   - Copies built libraries into `Packages/Engine` and `Packages/ThirdParty` inside each build folder.
+- `build.sh --Windows` cross-builds a Windows target from Linux using MinGW-w64.
+  - Requires `x86_64-w64-mingw32-g++` or `x86_64-w64-mingw32-clang++` plus `windres`.
+  - Uses the vendored GLFW MinGW toolchain file.
+  - Disables Mono, PhysX, Vulkan, and libsndfile for the cross build unless you wire in Windows-target dependencies yourself.
 
 ### CMake options
 These options are defined in `CMakeLists.txt`:
 - `MODULARITY_BUILD_EDITOR` (default ON): build the editor target.
 - `MODULARITY_ENABLE_PHYSX` (default ON): enable PhysX integration.
 - `MODULARITY_USE_MONO` (default ON): enable Mono embedding for managed scripts.
+- `MODULARITY_ENABLE_VULKAN` (default ON): enable the experimental Vulkan backend when the SDK is available.
+- `MODULARITY_ENABLE_SNDFILE` (default ON): enable libsndfile-based audio import support.
 - `MONO_ROOT`: explicit Mono runtime path if not using the bundled one.
 
 ### Entry points

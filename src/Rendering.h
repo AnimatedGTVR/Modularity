@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <cstdint>
+#include <limits>
 
 // Cube vertex data (position + normal + texcoord)
 extern float vertices[];
@@ -181,12 +182,14 @@ private:
     };
     std::unordered_map<std::string, CachedTextureEntry> textureCacheBilinear;
     std::unordered_map<std::string, CachedTextureEntry> textureCachePoint;
+    std::unordered_map<std::string, double> missingTextureRetryAfter;
     struct ShaderEntry {
         std::unique_ptr<Shader> shader;
         fs::file_time_type vertTime;
         fs::file_time_type fragTime;
         std::string vertPath;
         std::string fragPath;
+        double nextReloadCheckTime = 0.0;
     };
     std::unordered_map<std::string, ShaderEntry> shaderCache;
     std::string defaultVertPath = "Resources/Shaders/vert.glsl";
@@ -217,6 +220,8 @@ private:
     size_t textureCacheBudgetBytes = 384ull * 1024ull * 1024ull;
     size_t textureCacheUsageBytes = 0;
     uint64_t staticMergeSceneSignature = 0;
+    uint64_t frameSerial = 0;
+    uint64_t lastStaticMergeCheckFrameSerial = std::numeric_limits<uint64_t>::max();
     std::unordered_map<int, ShadowCubeMap> shadowCubeMaps;
     std::unordered_map<int, RenderTarget> mirrorTargets;
     std::unordered_map<int, MirrorUpdateState> mirrorUpdateStates;
@@ -272,6 +277,7 @@ public:
     void resize(int w, int h);
     int getWidth() const { return currentWidth; }
     int getHeight() const { return currentHeight; }
+    void setFrameSerial(uint64_t serial) { frameSerial = serial; }
 
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);

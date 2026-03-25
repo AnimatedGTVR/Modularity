@@ -3,8 +3,12 @@ set -euo pipefail
 
 start_time="$(date +%s)"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+build_platform="native"
+build_platform_label="Linux"
 build_dir="${script_dir}/build"
 player_cache_dir="${build_dir}/player-cache"
+windows_toolchain_file=""
+cmake_platform_args=()
 last_step="bootstrap"
 current_step=0
 total_steps=0
@@ -331,6 +335,7 @@ usage() {
 Usage: ./build.sh [options]
 Options:
   --clean                 Remove existing build directories first
+  --Windows               Cross-build a Windows target with MinGW-w64
   --build-type=<type>     CMake build type (default: Release)
   --generator=<name>      Force CMake generator (e.g. Ninja, "Unix Makefiles")
   --skip-deps             Skip automatic dependency checks/install
@@ -350,6 +355,12 @@ for arg in "$@"; do
         --clean)
             clean_build=1
             ;;
+        --Windows|--windows|--platform=Windows|--platform=windows)
+            build_platform="windows"
+            ;;
+        --platform=native|--platform=Linux|--platform=linux)
+            build_platform="native"
+            ;;
         --build-type=*)
             build_type="${arg#*=}"
             ;;
@@ -367,9 +378,32 @@ for arg in "$@"; do
             log_warn "Unknown argument: ${arg}"
             usage
             exit 1
-            ;;
+        ;;
     esac
 done
+
+if [[ "${build_platform}" == "windows" ]]; then
+    build_platform_label="Windows cross-build"
+    build_dir="${script_dir}/build/windows"
+    player_cache_dir="${build_dir}/player-cache"
+    cmake_platform_args=(-DMODULARITY_USE_MONO=OFF -DMODULARITY_ENABLE_PHYSX=OFF -DMODULARITY_ENABLE_VULKAN=OFF -DMODULARITY_ENABLE_SNDFILE=OFF)
+
+    if command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1 && \
+       command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && \
+       command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
+        windows_toolchain_file="${script_dir}/src/ThirdParty/glfw/CMake/x86_64-w64-mingw32.cmake"
+    elif command -v x86_64-w64-mingw32-clang++ >/dev/null 2>&1 && \
+         command -v x86_64-w64-mingw32-clang >/dev/null 2>&1 && \
+         command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
+        windows_toolchain_file="${script_dir}/src/ThirdParty/glfw/CMake/x86_64-w64-mingw32-clang.cmake"
+    else
+        log_error "Windows cross-build requested, but no x86_64-w64-mingw32 toolchain was found."
+        log_error "Install MinGW-w64 (gcc or clang variant) before using --Windows."
+        exit 1
+    fi
+
+    cmake_platform_args+=(-DCMAKE_TOOLCHAIN_FILE="${windows_toolchain_file}")
+fi
 
 pkg_manager=""
 pkg_prefix=()
@@ -646,7 +680,10 @@ configure_editor_build() {
     if [[ ! -f "${build_dir}/CMakeCache.txt" && -n "${cmake_generator}" ]]; then
         generator_args=(-G "${cmake_generator}")
     fi
-    cmake "${generator_args[@]}" -S "${script_dir}" -B "${build_dir}" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="${build_type}"
+    cmake "${generator_args[@]}" -S "${script_dir}" -B "${build_dir}" \
+        "${cmake_platform_args[@]}" \
+        -DMONO_ROOT=/usr \
+        -DCMAKE_BUILD_TYPE="${build_type}"
 }
 
 build_editor_targets() {
@@ -661,8 +698,13 @@ copy_third_party_libraries() {
     local target_dir="$1"
 
     mkdir -p "${target_dir}/Packages/ThirdParty"
-    find "${target_dir}" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
-        -not -path "${target_dir}/Packages/*" -exec cp -f {} "${target_dir}/Packages/ThirdParty/" \;
+    if [[ "${build_platform}" == "windows" ]]; then
+        find "${target_dir}" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" -o -name "*.dll" -o -name "*.dll.a" \) \
+            -not -path "${target_dir}/Packages/*" -exec cp -f {} "${target_dir}/Packages/ThirdParty/" \;
+    else
+        find "${target_dir}" -type f \( -name "*.a" -o -name "*.so" -o -name "*.dylib" -o -name "*.lib" \) \
+            -not -path "${target_dir}/Packages/*" -exec cp -f {} "${target_dir}/Packages/ThirdParty/" \;
+    fi
 }
 
 copy_engine_libraries() {
@@ -678,7 +720,11 @@ configure_player_build() {
     if [[ ! -f "${player_cache_dir}/CMakeCache.txt" && -n "${cmake_generator}" ]]; then
         generator_args=(-G "${cmake_generator}")
     fi
-    cmake "${generator_args[@]}" -S "${script_dir}" -B "${player_cache_dir}" -DMONO_ROOT=/usr -DCMAKE_BUILD_TYPE="${build_type}" -DMODULARITY_BUILD_EDITOR=OFF
+    cmake "${generator_args[@]}" -S "${script_dir}" -B "${player_cache_dir}" \
+        "${cmake_platform_args[@]}" \
+        -DMONO_ROOT=/usr \
+        -DCMAKE_BUILD_TYPE="${build_type}" \
+        -DMODULARITY_BUILD_EDITOR=OFF
 }
 
 build_player_target() {
@@ -703,7 +749,7 @@ finalize_packaging() {
 show_stage_hierarchy() {
     local -a stages=()
 
-    if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+    if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
         stages+=("Check/install system dependencies")
     fi
     if [[ "${clean_build}" -eq 1 ]]; then
@@ -741,25 +787,28 @@ total_steps="${base_steps}"
 if [[ "${clean_build}" -eq 1 ]]; then
     total_steps=$((total_steps + 2))
 fi
-if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
     total_steps=$((total_steps + 1))
 fi
 
 build_started=1
 detect_cmake_generator
 printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
-printf "%s   Modularity - Native Linux Builder%s\n" "${C_BOLD}" "${C_RESET}"
+printf "%s   Modularity - %s%s\n" "${C_BOLD}" "${build_platform_label}" "${C_RESET}"
 printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
 log_info "Build type: ${build_type} | Jobs: ${jobs}"
 if [[ -n "${cmake_generator}" ]]; then
     log_info "CMake generator: ${cmake_generator}"
 fi
+if [[ "${build_platform}" == "windows" && -n "${windows_toolchain_file}" ]]; then
+    log_info "Windows toolchain: ${windows_toolchain_file}"
+fi
 show_stage_hierarchy
 
-if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
     run_step "Checking and installing system dependencies (Vulkan/OpenGL/X11/toolchain)" ensure_linux_dependencies
 elif [[ "${skip_deps}" -eq 0 ]]; then
-    log_warn "Auto dependency install is only implemented for Linux."
+    log_warn "Auto dependency install is only implemented for native Linux builds."
 fi
 
 configure_ccache

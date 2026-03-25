@@ -138,18 +138,6 @@ bool ProgressCircle(const char* label, float radius, float thickness, float valu
 
 #pragma region Package Task State
 namespace {
-struct PackageTaskResult {
-    bool success = false;
-    std::string message;
-};
-
-struct PackageTaskState {
-    bool active = false;
-    float startTime = 0.0f;
-    std::string label;
-    std::future<PackageTaskResult> future;
-};
-
 static void ComputeCoverUV(int texW, int texH, const ImVec2& targetSize, ImVec2& uv0, ImVec2& uv1) {
     uv0 = ImVec2(0.0f, 0.0f);
     uv1 = ImVec2(1.0f, 1.0f);
@@ -342,14 +330,6 @@ static LauncherIntroState EvaluateLauncherIntro(double now,
     state.contentRevealT = ImClamp((state.elapsed - (driftStart - timings.hold * 0.55f)) / contentWindow, 0.0f, 1.0f);
     state.finished = forceFinished || state.driftT >= 1.0f;
     return state;
-}
-
-static const PackageInfo* FindRegistryPackageById(const std::vector<PackageInfo>& registry,
-                                                  const std::string& id) {
-    auto it = std::find_if(registry.begin(), registry.end(), [&](const PackageInfo& pkg) {
-        return pkg.id == id;
-    });
-    return it != registry.end() ? &(*it) : nullptr;
 }
 
 struct LauncherPackageSnapshot {
@@ -1566,6 +1546,11 @@ void Engine::renderLauncher() {
                     projectManager.newProjectRendererMode = 0;
                     ImGui::TextDisabled("Vulkan is unavailable in this build.");
                 }
+#else
+                if (projectManager.newProjectRendererMode == 1 && !hasVulkanPipelinePackage()) {
+                    projectManager.newProjectRendererMode = 0;
+                    ImGui::TextDisabled("Install moduengine.vulkan-pipeline to enable Vulkan.");
+                }
 #endif
 
                 ImGui::TextDisabled("Project location is set in Settings.");
@@ -2021,6 +2006,11 @@ void Engine::renderNewProjectDialog() {
             projectManager.newProjectRendererMode = 0;
             ImGui::TextDisabled("Vulkan is unavailable in this build.");
         }
+#else
+        if (projectManager.newProjectRendererMode == 1 && !hasVulkanPipelinePackage()) {
+            projectManager.newProjectRendererMode = 0;
+            ImGui::TextDisabled("Install moduengine.vulkan-pipeline to enable Vulkan.");
+        }
 #endif
         ImGui::TextDisabled("OpenGL is default. Renderer selection applies after restart.");
 
@@ -2170,11 +2160,15 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
 
+    const bool wasOpen = showProjectBrowser;
     ImGui::Begin("Project Settings", &showProjectBrowser);
 
     if (!projectManager.currentProject.isLoaded) {
         ImGui::TextDisabled("No project loaded");
         ImGui::End();
+        if (wasOpen != showProjectBrowser) {
+            saveEditorUserSettings();
+        }
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(3);
         return;
@@ -2187,9 +2181,15 @@ void Engine::renderProjectBrowserPanel() {
     }
 
     ImGui::Separator();
+    ImGui::TextDisabled("Packages are managed in Modupak Manager.");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Open Modupak Manager")) {
+        showRegistryPackagesWindow = true;
+        saveEditorUserSettings();
+    }
 
     static int selectedTab = 0;
-    const char* tabs[] = { "Scenes", "Packages", "Assets", "Editor", "Build", "Compilation" };
+    const char* tabs[] = { "Scenes", "Assets", "Editor", "Build", "Compilation" };
     constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
     if (selectedTab < 0 || selectedTab >= tabCount) {
         selectedTab = 0;
@@ -2251,194 +2251,6 @@ void Engine::renderProjectBrowserPanel() {
             ImGui::TextDisabled("No scenes yet");
         }
     } else if (selectedTab == 1) {
-        static PackageTaskState packageTask;
-        static std::string packageStatus;
-        static char gitUrlBuf[256] = "";
-        static char gitNameBuf[128] = "";
-        static char gitIncludeBuf[128] = "include";
-        static char moduPakPathBuf[512] = "";
-
-        auto pollPackageTask = [&]() {
-            if (!packageTask.active) return;
-            if (!packageTask.future.valid()) {
-                packageTask.active = false;
-                return;
-            }
-            auto state = packageTask.future.wait_for(std::chrono::milliseconds(0));
-            if (state == std::future_status::ready) {
-                PackageTaskResult result = packageTask.future.get();
-                packageStatus = result.message;
-                packageTask.active = false;
-                packageTask.future = std::future<PackageTaskResult>();
-            }
-        };
-
-        auto startPackageTask = [&](const char* label, std::function<PackageTaskResult()> fn) {
-            if (packageTask.active) return;
-            packageTask.active = true;
-            packageTask.label = label;
-            packageTask.startTime = static_cast<float>(ImGui::GetTime());
-            packageTask.future = std::async(std::launch::async, std::move(fn));
-        };
-
-        pollPackageTask();
-
-        if (!packageStatus.empty()) {
-            ImGui::TextWrapped("%s", packageStatus.c_str());
-        }
-
-        if (packageTask.active) {
-            const ImU32 col = ImGui::GetColorU32(ImGuiCol_ButtonHovered);
-            const ImU32 bg = ImGui::GetColorU32(ImGuiCol_Button);
-            float elapsed = static_cast<float>(ImGui::GetTime()) - packageTask.startTime;
-            float phase = std::fmod(elapsed * 0.25f, 1.0f);
-
-            ImGui::Separator();
-            ImGui::Text("%s", packageTask.label.c_str());
-            ImGui::BufferingBar("##pkg_buffer", phase, ImVec2(ImGui::GetContentRegionAvail().x, 6.0f), bg, col);
-            ImGui::Spinner("##pkg_spinner", 10.0f, 4, col);
-        }
-
-        ImGui::BeginDisabled(packageTask.active);
-        ImGui::TextDisabled("Add package from Git");
-        ImGui::InputTextWithHint("URL", "https://github.com/user/repo.git", gitUrlBuf, sizeof(gitUrlBuf));
-        ImGui::InputTextWithHint("Name (optional)", "use repo name", gitNameBuf, sizeof(gitNameBuf));
-        ImGui::InputTextWithHint("Include dir", "include", gitIncludeBuf, sizeof(gitIncludeBuf));
-        if (ImGui::Button("Add as submodule")) {
-            std::string url = gitUrlBuf;
-            std::string name = gitNameBuf;
-            std::string include = gitIncludeBuf;
-            startPackageTask("Installing package...", [this, url, name, include]() {
-                PackageTaskResult result;
-                std::string newId;
-                if (packageManager.installGitPackage(url, name, include, newId)) {
-                    result.success = true;
-                    result.message = "Installed package: " + newId;
-                } else {
-                    result.message = packageManager.getLastError();
-                }
-                return result;
-            });
-        }
-
-        ImGui::Spacing();
-        ImGui::TextDisabled("Install from .modupak");
-        ImGui::InputTextWithHint("Bundle path", "/path/to/package.modupak", moduPakPathBuf, sizeof(moduPakPathBuf));
-        if (ImGui::Button("Install .modupak")) {
-            const std::string bundlePath = TrimCopy(moduPakPathBuf);
-            startPackageTask("Importing .modupak...", [this, bundlePath]() {
-                PackageTaskResult result;
-                std::string newId;
-                if (packageManager.installModuPak(fs::path(bundlePath), newId)) {
-                    result.success = true;
-                    result.message = "Installed .modupak package: " + newId;
-                } else {
-                    result.message = packageManager.getLastError();
-                }
-                return result;
-            });
-        }
-        ImGui::TextDisabled("Expected bundle layout: manifest.modu + payload/ (tar archive or .modupak folder).");
-
-        ImGui::EndDisabled();
-        ImGui::Separator();
-        ImGui::TextDisabled("Installed packages");
-        if (packageTask.active) {
-            ImGui::TextDisabled("Working...");
-        } else {
-            const auto& registry = packageManager.getRegistry();
-            const auto& installedIds = packageManager.getInstalled();
-            if (installedIds.empty()) {
-                ImGui::TextDisabled("None installed");
-            } else {
-                for (const auto& id : installedIds) {
-                    const PackageInfo* pkg = FindRegistryPackageById(registry, id);
-                    if (!pkg) continue;
-
-                    ImGui::PushID(pkg->id.c_str());
-                    ImGui::Separator();
-                    ImGui::Text("%s", pkg->name.c_str());
-                    ImGui::TextDisabled("%s", pkg->description.c_str());
-
-                    const char* sourceBadge = "[bundled]";
-                    ImVec4 badgeColor = ImVec4(0.4f, 0.7f, 0.95f, 1.0f);
-                    if (pkg->modupak) {
-                        sourceBadge = "[.modupak]";
-                        badgeColor = ImVec4(0.62f, 0.86f, 0.68f, 1.0f);
-                    } else if (pkg->external) {
-                        sourceBadge = "[git]";
-                        badgeColor = ImVec4(0.96f, 0.79f, 0.49f, 1.0f);
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextColored(badgeColor, "%s", sourceBadge);
-
-                    if (pkg->external) {
-                        ImGui::TextDisabled("Path: %s", pkg->localPath.string().c_str());
-                    }
-                    if (pkg->modupak && !pkg->modupakSourcePath.empty()) {
-                        ImGui::TextDisabled("Bundle: %s", pkg->modupakSourcePath.string().c_str());
-                    } else if (pkg->external && !pkg->gitUrl.empty()) {
-                        ImGui::TextDisabled("Git: %s", pkg->gitUrl.c_str());
-                    }
-                    if (pkg->builtIn) {
-                        ImGui::TextDisabled("Required package.");
-                        ImGui::PopID();
-                        continue;
-                    }
-
-                    if (pkg->external && !pkg->gitUrl.empty()) {
-                        if (ImGui::Button("Check updates")) {
-                            std::string id = pkg->id;
-                            startPackageTask("Checking package status...", [this, id]() {
-                                PackageTaskResult result;
-                                std::string status;
-                                if (packageManager.checkGitStatus(id, status)) {
-                                    result.success = true;
-                                    result.message = status;
-                                } else {
-                                    result.message = packageManager.getLastError();
-                                }
-                                return result;
-                            });
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Update")) {
-                            std::string id = pkg->id;
-                            std::string name = pkg->name;
-                            startPackageTask("Updating package...", [this, id, name]() {
-                                PackageTaskResult result;
-                                std::string log;
-                                if (packageManager.updateGitPackage(id, log)) {
-                                    result.success = true;
-                                    result.message = "Updated " + name + "\n" + log;
-                                } else {
-                                    result.message = packageManager.getLastError();
-                                }
-                                return result;
-                            });
-                        }
-                        ImGui::SameLine();
-                    }
-
-                    if (ImGui::Button("Uninstall")) {
-                        std::string id = pkg->id;
-                        std::string name = pkg->name;
-                        startPackageTask("Removing package...", [this, id, name]() {
-                            PackageTaskResult result;
-                            if (packageManager.remove(id)) {
-                                result.success = true;
-                                result.message = "Removed " + name;
-                            } else {
-                                result.message = packageManager.getLastError();
-                            }
-                            return result;
-                        });
-                    }
-                    ImGui::PopID();
-                }
-            }
-        }
-    } else if (selectedTab == 2) {
         ImGui::TextDisabled("Loaded OBJ Meshes");
         const auto& meshesObj = g_objLoader.getAllMeshes();
         if (meshesObj.empty()) {
@@ -2491,7 +2303,7 @@ void Engine::renderProjectBrowserPanel() {
                 }
             }
         }
-    } else if (selectedTab == 3) {
+    } else if (selectedTab == 2) {
         bool editorSettingsChanged = false;
         bool buildSettingsChanged = false;
 
@@ -2512,6 +2324,12 @@ void Engine::renderProjectBrowserPanel() {
                 if (rendererIndex == 1) {
                     rendererIndex = 0;
                     addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
+                                      ConsoleMessageType::Warning);
+                }
+#else
+                if (rendererIndex == 1 && !hasVulkanPipelinePackage()) {
+                    rendererIndex = 0;
+                    addConsoleMessage("Install moduengine.vulkan-pipeline to enable Vulkan. Keeping OpenGL.",
                                       ConsoleMessageType::Warning);
                 }
 #endif
@@ -2577,6 +2395,10 @@ void Engine::renderProjectBrowserPanel() {
             if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
             if (ImGui::Checkbox("Viewport Hint Overlay", &showViewportHintOverlay)) editorSettingsChanged = true;
             if (ImGui::Checkbox("2D Light Stats Overlay", &showLight2DStatsOverlay)) editorSettingsChanged = true;
+            if (ImGui::SliderFloat("2D Light Buffer Scale", &light2DLightingBufferScale, 0.5f, 1.0f, "%.2fx")) {
+                light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
+                editorSettingsChanged = true;
+            }
         }
 
         if (ImGui::CollapsingHeader("Renderer##ProjectRendererSection", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2663,7 +2485,7 @@ void Engine::renderProjectBrowserPanel() {
         if (buildSettingsChanged) {
             saveBuildSettings();
         }
-    } else if (selectedTab == 4) {
+    } else if (selectedTab == 3) {
         bool changed = false;
 
         if (ImGui::CollapsingHeader("Build Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2760,7 +2582,7 @@ void Engine::renderProjectBrowserPanel() {
         if (changed) {
             saveBuildSettings();
         }
-    } else if (selectedTab == 5) {
+    } else if (selectedTab == 4) {
         struct CompilationUiState {
             fs::path configPath;
             ScriptBuildConfig config;
@@ -2953,6 +2775,9 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::EndChild();
 
     ImGui::End();
+    if (wasOpen != showProjectBrowser) {
+        saveEditorUserSettings();
+    }
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(3);
 }

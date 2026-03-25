@@ -1162,6 +1162,13 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
     bool point = (filter == MaterialProperties::TextureFilter::Point);
     auto& cache = point ? textureCachePoint : textureCacheBilinear;
     const double nowSec = glfwGetTime();
+    auto missingIt = missingTextureRetryAfter.find(path);
+    if (missingIt != missingTextureRetryAfter.end()) {
+        if (nowSec < missingIt->second) {
+            return nullptr;
+        }
+        missingTextureRetryAfter.erase(missingIt);
+    }
     auto it = cache.find(path);
     if (it != cache.end()) {
         it->second.lastUsedTime = nowSec;
@@ -1172,6 +1179,7 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
     GLenum magFilter = point ? GL_NEAREST : GL_LINEAR;
     auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter);
     if (!tex->GetID()) {
+        missingTextureRetryAfter[path] = nowSec + 1.0;
         return nullptr;
     }
     CachedTextureEntry entry;
@@ -1187,6 +1195,7 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
 
 void Renderer::invalidateTexture(const std::string& path) {
     if (path.empty()) return;
+    missingTextureRetryAfter.erase(path);
     auto eraseFromCache = [this, &path](auto& cache) {
         auto it = cache.find(path);
         if (it == cache.end()) return;
@@ -1250,6 +1259,19 @@ void Renderer::purgeTextureCacheIfNeeded() {
 }
 
 void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneObjects) {
+    if (lastStaticMergeCheckFrameSerial == frameSerial) {
+        return;
+    }
+    lastStaticMergeCheckFrameSerial = frameSerial;
+
+    constexpr size_t kMinSceneObjectsForStaticMerge = 8;
+    if (sceneObjects.size() < kMinSceneObjectsForStaticMerge) {
+        staticMergeSceneSignature = 0;
+        staticMergeBatches.clear();
+        staticMergeSourceIds.clear();
+        return;
+    }
+
     uint64_t signature = 1469598103934665603ull;
     size_t candidateCount = 0;
     for (const auto& obj : sceneObjects) {
@@ -1285,6 +1307,13 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
         signature = HashCombine64(signature, static_cast<uint64_t>(obj.useOverlay ? 1 : 0));
     }
     signature = HashCombine64(signature, static_cast<uint64_t>(candidateCount));
+
+    if (candidateCount < 2) {
+        staticMergeSceneSignature = 0;
+        staticMergeBatches.clear();
+        staticMergeSourceIds.clear();
+        return;
+    }
 
     if (signature == staticMergeSceneSignature) {
         return;
@@ -1405,6 +1434,7 @@ void Renderer::initialize() {
     entry.shader.reset(defaultShader);
     entry.vertPath = defaultVertPath;
     entry.fragPath = defaultFragPath;
+    entry.nextReloadCheckTime = glfwGetTime() + 0.5;
     if (fs::exists(defaultVertPath)) entry.vertTime = fs::last_write_time(defaultVertPath);
     if (fs::exists(defaultFragPath)) entry.fragTime = fs::last_write_time(defaultFragPath);
     shaderCache[defaultVertPath + "|" + defaultFragPath] = std::move(entry);
@@ -1501,17 +1531,21 @@ Shader* Renderer::getShader(const std::string& vert, const std::string& frag) {
     if (it != shaderCache.end()) {
         ShaderEntry& entry = it->second;
         if (autoReloadShaders) {
-            bool changed = false;
-            if (fs::exists(vPath)) {
-                auto t = fs::last_write_time(vPath);
-                if (t != entry.vertTime) { changed = true; entry.vertTime = t; }
-            }
-            if (fs::exists(fPath)) {
-                auto t = fs::last_write_time(fPath);
-                if (t != entry.fragTime) { changed = true; entry.fragTime = t; }
-            }
-            if (changed) {
-                return reloadEntry(entry);
+            const double nowSec = glfwGetTime();
+            if (nowSec >= entry.nextReloadCheckTime) {
+                entry.nextReloadCheckTime = nowSec + 0.5;
+                bool changed = false;
+                if (fs::exists(vPath)) {
+                    auto t = fs::last_write_time(vPath);
+                    if (t != entry.vertTime) { changed = true; entry.vertTime = t; }
+                }
+                if (fs::exists(fPath)) {
+                    auto t = fs::last_write_time(fPath);
+                    if (t != entry.fragTime) { changed = true; entry.fragTime = t; }
+                }
+                if (changed) {
+                    return reloadEntry(entry);
+                }
             }
         }
         return entry.shader ? entry.shader.get() : defaultShader;
@@ -1520,6 +1554,7 @@ Shader* Renderer::getShader(const std::string& vert, const std::string& frag) {
     ShaderEntry entry;
     entry.vertPath = vPath;
     entry.fragPath = fPath;
+    entry.nextReloadCheckTime = glfwGetTime() + 0.5;
     if (fs::exists(vPath)) entry.vertTime = fs::last_write_time(vPath);
     if (fs::exists(fPath)) entry.fragTime = fs::last_write_time(fPath);
     entry.shader = std::make_unique<Shader>(vPath.c_str(), fPath.c_str());
@@ -1544,6 +1579,7 @@ bool Renderer::forceReloadShader(const std::string& vert, const std::string& fra
     ShaderEntry entry;
     entry.vertPath = vPath;
     entry.fragPath = fPath;
+    entry.nextReloadCheckTime = glfwGetTime() + 0.5;
     if (fs::exists(vPath)) entry.vertTime = fs::last_write_time(vPath);
     if (fs::exists(fPath)) entry.fragTime = fs::last_write_time(fPath);
     entry.shader = std::make_unique<Shader>(vPath.c_str(), fPath.c_str());
@@ -1934,26 +1970,15 @@ void Renderer::resize(int w, int h) {
 }
 
 void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos) {
+    (void)view;
+    (void)proj;
+    (void)cameraPos;
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     Runtime2DCountStateBind();
     glViewport(0, 0, currentWidth, currentHeight);
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     displayTexture = viewportTexture;
-
-    shader->use();
-    Runtime2DCountStateBind();
-    shader->setMat4("view", view);
-    shader->setMat4("projection", proj);
-    shader->setVec3("viewPos", cameraPos);
-    shader->setFloat("uTime", static_cast<float>(glfwGetTime()));
-    texture1->Bind(GL_TEXTURE0);
-    texture2->Bind(GL_TEXTURE1);
-    Runtime2DCountTextureBind();
-    Runtime2DCountTextureBind();
-    shader->setInt("texture1", 0);
-    shader->setInt("overlayTex", 1);
-    shader->setInt("normalMap", 2);
 }
 
 void Renderer::renderSkybox(const glm::mat4& view, const glm::mat4& proj) {
@@ -2622,25 +2647,27 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         classifyAlphaBehavior(item);
     }
 
-    std::stable_sort(drawItems.begin(), drawItems.end(),
-                     [](const RenderItem& a, const RenderItem& b) {
-                         if (a.sortOpaque != b.sortOpaque) return a.sortOpaque > b.sortOpaque;
-                         if (!a.sortOpaque) {
-                             if (a.cameraDepth != b.cameraDepth) {
-                                 return a.cameraDepth > b.cameraDepth;
+    if (drawItems.size() > 1) {
+        std::stable_sort(drawItems.begin(), drawItems.end(),
+                         [](const RenderItem& a, const RenderItem& b) {
+                             if (a.sortOpaque != b.sortOpaque) return a.sortOpaque > b.sortOpaque;
+                             if (!a.sortOpaque) {
+                                 if (a.cameraDepth != b.cameraDepth) {
+                                     return a.cameraDepth > b.cameraDepth;
+                                 }
+                                 if (a.cameraDistanceSq != b.cameraDistanceSq) {
+                                     return a.cameraDistanceSq > b.cameraDistanceSq;
+                                 }
+                                 int aId = a.obj ? a.obj->id : -1;
+                                 int bId = b.obj ? b.obj->id : -1;
+                                 return aId < bId;
                              }
-                             if (a.cameraDistanceSq != b.cameraDistanceSq) {
-                                 return a.cameraDistanceSq > b.cameraDistanceSq;
-                             }
+                             if (a.opaqueSortKey != b.opaqueSortKey) return a.opaqueSortKey < b.opaqueSortKey;
                              int aId = a.obj ? a.obj->id : -1;
                              int bId = b.obj ? b.obj->id : -1;
                              return aId < bId;
-                         }
-                         if (a.opaqueSortKey != b.opaqueSortKey) return a.opaqueSortKey < b.opaqueSortKey;
-                         int aId = a.obj ? a.obj->id : -1;
-                         int bId = b.obj ? b.obj->id : -1;
-                         return aId < bId;
-                     });
+                         });
+    }
 
     GLint currentActiveTexture = GL_TEXTURE0;
     std::array<GLuint, 8> boundTexture2D = {

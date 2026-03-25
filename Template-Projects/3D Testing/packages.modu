@@ -1,7 +1,2 @@
 # Modularity package manifest
 # Add optional script-time dependencies here
-package=glm
-package=imgui
-package=imguizmo
-package=miniaudio
-git=soft-chimp-locomotion|Soft Chimp Locomotion|https://github.com/darkresident55/Soft-Chimp-Locomotion.git|Packages/soft-chimp-locomotion|Packages/soft-chimp-locomotion/.git|||

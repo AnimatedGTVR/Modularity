@@ -16,8 +16,6 @@ constexpr int kMaxFreeformPoints = 64;
 
 struct ScopedLighting2DState {
     GLint framebuffer = 0;
-    GLint readFramebuffer = 0;
-    GLint drawFramebuffer = 0;
     GLint viewport[4] = {0, 0, 0, 0};
     GLint currentProgram = 0;
     GLint vertexArray = 0;
@@ -40,8 +38,6 @@ struct ScopedLighting2DState {
 
     ScopedLighting2DState() {
         glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
-        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
         glGetIntegerv(GL_VIEWPORT, viewport);
         glGetIntegerv(GL_CURRENT_PROGRAM, &currentProgram);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
@@ -68,8 +64,6 @@ struct ScopedLighting2DState {
     }
 
     ~ScopedLighting2DState() {
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFramebuffer);
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
@@ -521,6 +515,7 @@ void Lighting2DRenderer::ensureGeometry() {
         glBindVertexArray(spriteVao);
         glBindBuffer(GL_ARRAY_BUFFER, spriteVbo);
         glBufferData(GL_ARRAY_BUFFER, sizeof(SpriteGpuVertex) * 1024, nullptr, GL_DYNAMIC_DRAW);
+        spriteVboCapacity = 1024;
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(SpriteGpuVertex),
                               reinterpret_cast<void*>(offsetof(SpriteGpuVertex, position)));
@@ -576,35 +571,62 @@ void Lighting2DRenderer::drawUnitQuad() const {
     drawFullscreenQuad();
 }
 
+void Lighting2DRenderer::clearTarget(RenderTarget& target, const glm::vec4& color) const {
+    if (target.fbo == 0 || target.width <= 0 || target.height <= 0) {
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+    glViewport(0, 0, target.width, target.height);
+    const GLfloat clearColor[4] = { color.r, color.g, color.b, color.a };
+    glClearBufferfv(GL_COLOR, 0, clearColor);
+}
+
+float Lighting2DRenderer::resolveLightingBufferScale(const Light2DRenderRequest& request) const {
+    float scale = (request.lightingBufferScale > 0.0f)
+        ? std::clamp(request.lightingBufferScale, 0.25f, 1.0f)
+        : std::clamp(lightingBufferScale, 0.25f, 1.0f);
+    const int maxDimension = std::max(request.width, request.height);
+    const size_t movingCosts = request.lights.size() + request.shadowCasters.size();
+
+    if (maxDimension >= 2560) {
+        scale *= 0.75f;
+    } else if (maxDimension >= 1920) {
+        scale *= 0.85f;
+    }
+    if (movingCosts > 24) {
+        scale *= 0.80f;
+    } else if (movingCosts > 12) {
+        scale *= 0.90f;
+    }
+
+    return std::clamp(scale, 0.5f, 1.0f);
+}
+
 void Lighting2DRenderer::clearLightTargets() {
     glDisable(GL_BLEND);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, additiveTarget.fbo);
-    glViewport(0, 0, additiveTarget.width, additiveTarget.height);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, multiplyTarget.fbo);
-    glViewport(0, 0, multiplyTarget.width, multiplyTarget.height);
-    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, subtractiveTarget.fbo);
-    glViewport(0, 0, subtractiveTarget.width, subtractiveTarget.height);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    clearTarget(additiveTarget, glm::vec4(0.0f));
+    clearTarget(multiplyTarget, glm::vec4(1.0f));
+    clearTarget(subtractiveTarget, glm::vec4(0.0f));
 }
 
 void Lighting2DRenderer::renderLightPass(const Light2DRenderRequest& request,
                                          Renderer& renderer,
                                          int layer,
-                                         const std::vector<const Light2DScreenLight*>& lights) {
+                                         const std::vector<const Light2DScreenLight*>& lights,
+                                         float lightingScale) {
     (void)renderer;
     if (lights.empty() || !lightQuadShader || !lightFreeformShader) {
         return;
     }
 
-    const glm::vec2 viewportSize(static_cast<float>(request.width), static_cast<float>(request.height));
+    const glm::vec2 scaleVec(lightingScale);
+    Shader* activeShader = nullptr;
+    RenderTarget* activeTarget = nullptr;
+    GLuint activeVao = 0;
+    unsigned int currentCookieTexture = 0;
+    Light2DBlendMode lastBlendMode = static_cast<Light2DBlendMode>(-1);
+    Light2DOverlapOperation lastOverlapOp = static_cast<Light2DOverlapOperation>(-1);
+    bool blendStateInitialized = false;
 
     for (const Light2DScreenLight* light : lights) {
         if (!light || !light->enabled) {
@@ -623,26 +645,42 @@ void Lighting2DRenderer::renderLightPass(const Light2DRenderRequest& request,
             case Light2DBlendMode::Subtractive: target = &subtractiveTarget; break;
         }
 
-        glBindFramebuffer(GL_FRAMEBUFFER, target->fbo);
-        glViewport(0, 0, target->width, target->height);
-        SetBlendStateForLight(blendStyle.mode, light->overlapOperation);
+        const bool targetChanged = (activeTarget != target);
+        if (targetChanged) {
+            activeTarget = target;
+            glBindFramebuffer(GL_FRAMEBUFFER, target->fbo);
+            glViewport(0, 0, target->width, target->height);
+        }
+        if (!blendStateInitialized || lastBlendMode != blendStyle.mode || lastOverlapOp != light->overlapOperation) {
+            SetBlendStateForLight(blendStyle.mode, light->overlapOperation);
+            lastBlendMode = blendStyle.mode;
+            lastOverlapOp = light->overlapOperation;
+            blendStateInitialized = true;
+        }
 
         Shader* shader = (light->type == Light2DType::Freeform) ? lightFreeformShader.get() : lightQuadShader.get();
-        shader->use();
-        shader->setVec2("u_viewportSize", viewportSize);
+        const bool shaderChanged = (activeShader != shader);
+        if (shaderChanged) {
+            activeShader = shader;
+            activeShader->use();
+        }
+        if (targetChanged || shaderChanged) {
+            shader->setVec2("u_viewportSize", glm::vec2(static_cast<float>(target->width),
+                                                        static_cast<float>(target->height)));
+        }
         shader->setVec4("u_lightColor", light->color * blendStyle.modulate);
         shader->setFloat("u_intensity", light->intensity * blendStyle.intensityScale);
-        shader->setFloat("u_radius", light->radius);
-        shader->setFloat("u_innerRadius", light->innerRadius);
-        shader->setFloat("u_outerRadius", light->outerRadius);
+        shader->setFloat("u_radius", light->radius * lightingScale);
+        shader->setFloat("u_innerRadius", light->innerRadius * lightingScale);
+        shader->setFloat("u_outerRadius", light->outerRadius * lightingScale);
         shader->setFloat("u_falloffStrength", light->falloffStrength);
         shader->setFloat("u_innerSpotAngle", glm::radians(std::clamp(light->innerSpotAngle, 0.0f, 360.0f)));
         shader->setFloat("u_outerSpotAngle", glm::radians(std::clamp(light->outerSpotAngle, 0.0f, 360.0f)));
         shader->setFloat("u_rotation", light->rotationRad);
-        shader->setVec2("u_lightPos", light->position);
-        shader->setVec2("u_boundsMin", light->boundsMin);
-        shader->setVec2("u_boundsMax", light->boundsMax);
-        shader->setFloat("u_freeformFeather", light->freeformFeatherPx);
+        shader->setVec2("u_lightPos", light->position * scaleVec);
+        shader->setVec2("u_boundsMin", light->boundsMin * scaleVec);
+        shader->setVec2("u_boundsMax", light->boundsMax * scaleVec);
+        shader->setFloat("u_freeformFeather", light->freeformFeatherPx * lightingScale);
         shader->setFloat("u_freeformEdgeFalloff", light->freeformEdgeFalloff);
         shader->setInt("u_blendMode", static_cast<int>(blendStyle.mode));
         shader->setInt("u_lightType", static_cast<int>(light->type));
@@ -652,30 +690,39 @@ void Lighting2DRenderer::renderLightPass(const Light2DRenderRequest& request,
         shader->setBool("u_shadowEnabled", false);
 
         if (light->cookieTextureId != 0) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, light->cookieTextureId);
+            if (currentCookieTexture != light->cookieTextureId) {
+                currentCookieTexture = light->cookieTextureId;
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, light->cookieTextureId);
+            }
             shader->setInt("u_cookieTex", 0);
         }
 
         if (light->type == Light2DType::Freeform) {
             const int pointCount = std::min(static_cast<int>(light->polygon.size()), kMaxFreeformPoints);
             shader->setInt("u_polygonPointCount", pointCount);
+            polygonVerticesScratch.clear();
+            polygonVerticesScratch.reserve(static_cast<size_t>(pointCount));
             for (int i = 0; i < pointCount; ++i) {
-                shader->setVec2("u_polygonPoints[" + std::to_string(i) + "]", light->polygon[static_cast<size_t>(i)]);
+                const glm::vec2 point = light->polygon[static_cast<size_t>(i)] * scaleVec;
+                polygonVerticesScratch.push_back(point);
+                shader->setVec2("u_polygonPoints[" + std::to_string(i) + "]", point);
             }
 
-            polygonVerticesScratch.assign(light->polygon.begin(), light->polygon.end());
             if (!Light2DValidatePolygon(polygonVerticesScratch, nullptr)) {
                 lastStats.triangulationFailures += 1;
                 continue;
             }
 
-            const glm::vec2 polygonCenter = ComputePolygonCentroid(polygonVerticesScratch, light->position);
+            const glm::vec2 polygonCenter = ComputePolygonCentroid(polygonVerticesScratch,
+                                                                   light->position * scaleVec);
             shader->setVec2("u_lightPos", polygonCenter);
 
-            const float outerExtent = std::max(light->outerRadius, light->radius);
-            const glm::vec2 expandedMin = light->boundsMin - glm::vec2(outerExtent);
-            const glm::vec2 expandedMax = light->boundsMax + glm::vec2(outerExtent);
+            const glm::vec2 scaledBoundsMin = light->boundsMin * scaleVec;
+            const glm::vec2 scaledBoundsMax = light->boundsMax * scaleVec;
+            const float outerExtent = std::max(light->outerRadius, light->radius) * lightingScale;
+            const glm::vec2 expandedMin = scaledBoundsMin - glm::vec2(outerExtent);
+            const glm::vec2 expandedMax = scaledBoundsMax + glm::vec2(outerExtent);
             const std::array<glm::vec2, 4> quadVertices = {{
                 glm::vec2(expandedMin.x, expandedMin.y),
                 glm::vec2(expandedMax.x, expandedMin.y),
@@ -684,21 +731,21 @@ void Lighting2DRenderer::renderLightPass(const Light2DRenderRequest& request,
             }};
             static constexpr std::array<unsigned int, 6> quadIndices = {{ 0u, 1u, 2u, 0u, 2u, 3u }};
 
-            glBindVertexArray(polygonVao);
+            if (activeVao != polygonVao) {
+                activeVao = polygonVao;
+                glBindVertexArray(polygonVao);
+            }
             glBindBuffer(GL_ARRAY_BUFFER, polygonVbo);
-            glBufferData(GL_ARRAY_BUFFER,
-                         sizeof(glm::vec2) * quadVertices.size(),
-                         quadVertices.data(),
-                         GL_DYNAMIC_DRAW);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(glm::vec2) * quadVertices.size(), quadVertices.data());
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, polygonEbo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                         sizeof(unsigned int) * quadIndices.size(),
-                         quadIndices.data(),
-                         GL_DYNAMIC_DRAW);
+            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(unsigned int) * quadIndices.size(), quadIndices.data());
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(quadIndices.size()), GL_UNSIGNED_INT, nullptr);
-            glBindVertexArray(0);
         } else {
-            drawUnitQuad();
+            if (activeVao != quadVao) {
+                activeVao = quadVao;
+                glBindVertexArray(quadVao);
+            }
+            glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
         lastStats.drawCalls += 1;
@@ -707,11 +754,15 @@ void Lighting2DRenderer::renderLightPass(const Light2DRenderRequest& request,
 
 void Lighting2DRenderer::renderSpritePass(const Light2DRenderRequest& request,
                                          int layer,
-                                         const std::vector<const Light2DScreenSprite*>& sprites) {
+                                         size_t spriteBegin,
+                                         size_t spriteEnd) {
+    (void)request;
     (void)layer;
-    if (sprites.empty() || !spriteShader) {
+    if (!spriteShader || spriteBegin >= spriteEnd || spriteBegin >= orderedSpritesScratch.size()) {
         return;
     }
+
+    spriteEnd = std::min(spriteEnd, orderedSpritesScratch.size());
 
     glBindFramebuffer(GL_FRAMEBUFFER, finalTarget.fbo);
     glViewport(0, 0, finalTarget.width, finalTarget.height);
@@ -720,23 +771,13 @@ void Lighting2DRenderer::renderSpritePass(const Light2DRenderRequest& request,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     spriteShader->use();
-    spriteShader->setVec2("u_viewportSize", glm::vec2(static_cast<float>(finalTarget.width),
-                                                       static_cast<float>(finalTarget.height)));
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, additiveTarget.texture);
-    spriteShader->setInt("u_additiveLightTex", 1);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, multiplyTarget.texture);
-    spriteShader->setInt("u_multiplyLightTex", 2);
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, subtractiveTarget.texture);
-    spriteShader->setInt("u_subtractiveLightTex", 3);
-    spriteShader->setVec3("u_baseAmbient", request.baseAmbient);
-
     spriteVertices.clear();
-    spriteVertices.reserve(sprites.size() * 6);
+    spriteVertices.reserve((spriteEnd - spriteBegin) * 6);
 
     unsigned int currentTexture = 0;
+    glBindVertexArray(spriteVao);
+    glBindBuffer(GL_ARRAY_BUFFER, spriteVbo);
+
     auto flush = [&]() {
         if (spriteVertices.empty() || currentTexture == 0) {
             spriteVertices.clear();
@@ -744,21 +785,26 @@ void Lighting2DRenderer::renderSpritePass(const Light2DRenderRequest& request,
         }
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, currentTexture);
-        spriteShader->setInt("u_spriteTex", 0);
 
-        glBindVertexArray(spriteVao);
-        glBindBuffer(GL_ARRAY_BUFFER, spriteVbo);
-        glBufferData(GL_ARRAY_BUFFER,
-                     sizeof(SpriteGpuVertex) * spriteVertices.size(),
-                     spriteVertices.data(),
-                     GL_DYNAMIC_DRAW);
+        const size_t vertexCount = spriteVertices.size();
+        if (vertexCount > spriteVboCapacity) {
+            spriteVboCapacity = std::max(vertexCount, std::max<size_t>(spriteVboCapacity * 2, 1024));
+            glBufferData(GL_ARRAY_BUFFER,
+                         sizeof(SpriteGpuVertex) * spriteVboCapacity,
+                         nullptr,
+                         GL_DYNAMIC_DRAW);
+        }
+        glBufferSubData(GL_ARRAY_BUFFER,
+                        0,
+                        sizeof(SpriteGpuVertex) * vertexCount,
+                        spriteVertices.data());
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(spriteVertices.size()));
-        glBindVertexArray(0);
         lastStats.drawCalls += 1;
         spriteVertices.clear();
     };
 
-    for (const Light2DScreenSprite* sprite : sprites) {
+    for (size_t index = spriteBegin; index < spriteEnd; ++index) {
+        const Light2DScreenSprite* sprite = orderedSpritesScratch[index];
         if (!sprite || sprite->textureId == 0) {
             flush();
             currentTexture = 0;
@@ -796,12 +842,11 @@ void Lighting2DRenderer::renderSpritePass(const Light2DRenderRequest& request,
 
 void Lighting2DRenderer::renderLayer(const Light2DRenderRequest& request,
                                      Renderer& renderer,
-                                     int layer,
-                                     const std::vector<const Light2DScreenSprite*>& sprites,
-                                     const std::vector<const Light2DScreenLight*>& lights) {
+                                     const LayerBatch& batch,
+                                     float lightingScale) {
     clearLightTargets();
-    renderLightPass(request, renderer, layer, lights);
-    renderSpritePass(request, layer, sprites);
+    renderLightPass(request, renderer, batch.layer, batch.lights, lightingScale);
+    renderSpritePass(request, batch.layer, batch.spriteBegin, batch.spriteEnd);
 }
 
 unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Renderer& renderer) {
@@ -816,12 +861,13 @@ unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Ren
     const auto start = std::chrono::steady_clock::now();
 
     ensureTarget(finalTarget, request.width, request.height);
-    ensureTarget(additiveTarget, request.width, request.height);
-    ensureTarget(multiplyTarget, request.width, request.height);
-    ensureTarget(subtractiveTarget, request.width, request.height);
-    if (finalTarget.fbo == 0 || additiveTarget.fbo == 0 || multiplyTarget.fbo == 0 || subtractiveTarget.fbo == 0) {
+    if (finalTarget.fbo == 0) {
         return 0;
     }
+
+    const float lightingScale = resolveLightingBufferScale(request);
+    const int lightingWidth = std::max(1, static_cast<int>(std::ceil(static_cast<float>(request.width) * lightingScale)));
+    const int lightingHeight = std::max(1, static_cast<int>(std::ceil(static_cast<float>(request.height) * lightingScale)));
 
     glBindFramebuffer(GL_FRAMEBUFFER, finalTarget.fbo);
     glViewport(0, 0, finalTarget.width, finalTarget.height);
@@ -832,66 +878,118 @@ unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Ren
     glClearColor(request.clearColor.r, request.clearColor.g, request.clearColor.b, request.clearColor.a);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    std::vector<const Light2DScreenSprite*> orderedSprites;
-    orderedSprites.reserve(request.sprites.size());
+    ensureTarget(additiveTarget, lightingWidth, lightingHeight);
+    ensureTarget(multiplyTarget, lightingWidth, lightingHeight);
+    ensureTarget(subtractiveTarget, lightingWidth, lightingHeight);
+    if (additiveTarget.fbo == 0 || multiplyTarget.fbo == 0 || subtractiveTarget.fbo == 0) {
+        return 0;
+    }
+
+    orderedSpritesScratch.clear();
+    orderedSpritesScratch.reserve(request.sprites.size());
     for (const Light2DScreenSprite& sprite : request.sprites) {
-        orderedSprites.push_back(&sprite);
+        orderedSpritesScratch.push_back(&sprite);
     }
-    std::stable_sort(orderedSprites.begin(), orderedSprites.end(),
-                     [](const Light2DScreenSprite* a, const Light2DScreenSprite* b) {
-                         if (a->layer != b->layer) return a->layer < b->layer;
-                         return a->drawOrder < b->drawOrder;
+    std::sort(orderedSpritesScratch.begin(), orderedSpritesScratch.end(),
+              [](const Light2DScreenSprite* a, const Light2DScreenSprite* b) {
+                  if (a->layer != b->layer) return a->layer < b->layer;
+                  if (a->drawOrder != b->drawOrder) return a->drawOrder < b->drawOrder;
+                  return a->objectId < b->objectId;
                      });
 
-    std::vector<const Light2DScreenLight*> orderedLights;
-    orderedLights.reserve(request.lights.size());
+    orderedLightsScratch.clear();
+    orderedLightsScratch.reserve(request.lights.size());
     for (const Light2DScreenLight& light : request.lights) {
-        orderedLights.push_back(&light);
-    }
-    std::stable_sort(orderedLights.begin(), orderedLights.end(),
-                     [](const Light2DScreenLight* a, const Light2DScreenLight* b) {
-                         return a->lightOrder < b->lightOrder;
-                     });
-
-    std::vector<int> layers;
-    layers.reserve(orderedSprites.size());
-    for (const Light2DScreenSprite* sprite : orderedSprites) {
-        if (!sprite) continue;
-        if (layers.empty() || layers.back() != sprite->layer) {
-            layers.push_back(sprite->layer);
+        if (light.enabled) {
+            orderedLightsScratch.push_back(&light);
         }
     }
+    std::sort(orderedLightsScratch.begin(), orderedLightsScratch.end(),
+              [](const Light2DScreenLight* a, const Light2DScreenLight* b) {
+                  if (a->lightOrder != b->lightOrder) return a->lightOrder < b->lightOrder;
+                  return a->objectId < b->objectId;
+              });
 
-    lastStats.visibleSprites = static_cast<int>(orderedSprites.size());
-    lastStats.visibleLights = static_cast<int>(orderedLights.size());
+    layerBatchesScratch.clear();
+    layerBatchesScratch.reserve(orderedSpritesScratch.size());
+    layerToBatchIndexScratch.clear();
+    layerToBatchIndexScratch.reserve(orderedSpritesScratch.size());
+
+    size_t spriteBegin = 0;
+    while (spriteBegin < orderedSpritesScratch.size()) {
+        const int layer = orderedSpritesScratch[spriteBegin]->layer;
+        size_t spriteEnd = spriteBegin + 1;
+        while (spriteEnd < orderedSpritesScratch.size() &&
+               orderedSpritesScratch[spriteEnd]->layer == layer) {
+            ++spriteEnd;
+        }
+
+        LayerBatch batch;
+        batch.layer = layer;
+        batch.spriteBegin = spriteBegin;
+        batch.spriteEnd = spriteEnd;
+        layerToBatchIndexScratch[layer] = layerBatchesScratch.size();
+        layerBatchesScratch.push_back(std::move(batch));
+        spriteBegin = spriteEnd;
+    }
+
+    const size_t estimatedLightsPerBatch = layerBatchesScratch.empty()
+        ? 0
+        : std::max<size_t>(1, orderedLightsScratch.size() / layerBatchesScratch.size());
+    for (LayerBatch& batch : layerBatchesScratch) {
+        batch.lights.reserve(estimatedLightsPerBatch);
+    }
+
     lastStats.shadowCasters = static_cast<int>(request.shadowCasters.size());
-    for (const Light2DScreenLight* light : orderedLights) {
+    for (const Light2DScreenLight* light : orderedLightsScratch) {
         if (light && light->type == Light2DType::Freeform) {
             lastStats.freeformLights += 1;
         }
     }
 
-    size_t spriteStart = 0;
-    for (const int layer : layers) {
-        std::vector<const Light2DScreenSprite*> layerSprites;
-        while (spriteStart < orderedSprites.size() && orderedSprites[spriteStart]->layer == layer) {
-            layerSprites.push_back(orderedSprites[spriteStart]);
-            ++spriteStart;
+    for (const Light2DScreenLight* light : orderedLightsScratch) {
+        if (!light || !light->enabled) {
+            continue;
         }
-
-        std::vector<const Light2DScreenLight*> layerLights;
-        layerLights.reserve(orderedLights.size());
-        for (const Light2DScreenLight* light : orderedLights) {
-            if (!light) continue;
-            if (light->targetAllLayers || Light2DLayerMaskContains(light->targetLayerMask, layer)) {
-                layerLights.push_back(light);
+        if (light->targetAllLayers) {
+            for (LayerBatch& batch : layerBatchesScratch) {
+                batch.lights.push_back(light);
+            }
+            continue;
+        }
+        for (int bit = 0; bit < 32; ++bit) {
+            if ((light->targetLayerMask & (1u << static_cast<uint32_t>(bit))) == 0u) {
+                continue;
+            }
+            auto batchIt = layerToBatchIndexScratch.find(bit);
+            if (batchIt != layerToBatchIndexScratch.end()) {
+                layerBatchesScratch[batchIt->second].lights.push_back(light);
             }
         }
+    }
 
-        renderLayer(request, renderer, layer, layerSprites, layerLights);
+    spriteShader->use();
+    spriteShader->setVec2("u_viewportSize", glm::vec2(static_cast<float>(finalTarget.width),
+                                                       static_cast<float>(finalTarget.height)));
+    spriteShader->setVec3("u_baseAmbient", request.baseAmbient);
+    spriteShader->setInt("u_spriteTex", 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, additiveTarget.texture);
+    spriteShader->setInt("u_additiveLightTex", 1);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, multiplyTarget.texture);
+    spriteShader->setInt("u_multiplyLightTex", 2);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, subtractiveTarget.texture);
+    spriteShader->setInt("u_subtractiveLightTex", 3);
+
+    for (const LayerBatch& batch : layerBatchesScratch) {
+        renderLayer(request, renderer, batch, lightingScale);
         lastStats.renderedLayers += 1;
     }
 
+    lastStats.visibleSprites = static_cast<int>(orderedSpritesScratch.size());
+    lastStats.visibleLights = static_cast<int>(orderedLightsScratch.size());
     const auto end = std::chrono::steady_clock::now();
     lastStats.cpuBuildMs =
         std::chrono::duration<float, std::milli>(end - start).count();

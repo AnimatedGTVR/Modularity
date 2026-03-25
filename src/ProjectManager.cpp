@@ -526,6 +526,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "parallax2dFactor=" << obj.parallaxLayer2D.factor << "\n";
                 file << "parallax2dRepeatX=" << (obj.parallaxLayer2D.repeatX ? 1 : 0) << "\n";
                 file << "parallax2dRepeatY=" << (obj.parallaxLayer2D.repeatY ? 1 : 0) << "\n";
+                file << "parallax2dDisableCulling=" << (obj.parallaxLayer2D.disableCulling ? 1 : 0) << "\n";
                 file << "parallax2dSpacing=" << obj.parallaxLayer2D.repeatSpacing.x << "," << obj.parallaxLayer2D.repeatSpacing.y << "\n";
             }
             file << "hasCameraFollow2D=" << (obj.hasCameraFollow2D ? 1 : 0) << "\n";
@@ -1215,6 +1216,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"parallax2dFactor", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.factor = std::stof(value); }},
         {"parallax2dRepeatX", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.repeatX = std::stoi(value) != 0; }},
         {"parallax2dRepeatY", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.repeatY = std::stoi(value) != 0; }},
+        {"parallax2dDisableCulling", +[](SceneObject& obj, const std::string& value) { obj.parallaxLayer2D.disableCulling = std::stoi(value) != 0; }},
         {"parallax2dSpacing", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.parallaxLayer2D.repeatSpacing); }},
         {"hasCameraFollow2D", +[](SceneObject& obj, const std::string& value) { obj.hasCameraFollow2D = std::stoi(value) != 0; }},
         {"cameraFollow2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.cameraFollow2D.enabled = std::stoi(value) != 0; }},

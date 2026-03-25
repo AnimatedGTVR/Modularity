@@ -28,6 +28,56 @@ void ModuRuntime2DProfiler_RecordUiRuntime(double uiRuntimeMs,
                                            uint32_t visibleObjectCount);
 
 namespace {
+bool layoutFileNeedsUtilityDockMigration(const fs::path& layoutPath,
+                                         bool projectSettingsVisible,
+                                         bool modupakVisible) {
+    std::ifstream in(layoutPath);
+    if (!in.is_open()) {
+        return false;
+    }
+
+    std::string currentWindow;
+    std::string projectDockId;
+    std::string projectSettingsDockId;
+    bool hasModupakWindow = false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("[Window][", 0) == 0) {
+            const size_t close = line.find(']', 9);
+            currentWindow = (close == std::string::npos) ? std::string() : line.substr(9, close - 9);
+            if (currentWindow == "Modupak Manager") {
+                hasModupakWindow = true;
+            }
+            continue;
+        }
+
+        if (line.rfind("DockId=", 0) != 0) {
+            continue;
+        }
+
+        const std::string dockId = line.substr(7, line.find(',') == std::string::npos ? std::string::npos
+                                                                                       : line.find(',') - 7);
+        if (currentWindow == "Project" && projectDockId.empty()) {
+            projectDockId = dockId;
+        } else if (currentWindow == "Project Settings" && projectSettingsDockId.empty()) {
+            projectSettingsDockId = dockId;
+        }
+    }
+
+        if (projectSettingsVisible &&
+        !projectDockId.empty() &&
+        !projectSettingsDockId.empty() &&
+        projectDockId == projectSettingsDockId) {
+        return true;
+    }
+
+    if (modupakVisible && !hasModupakWindow) {
+        return true;
+    }
+
+    return false;
+}
+
 constexpr int kRuntimeInternalWidth = 1280;
 constexpr int kRuntimeInternalHeight = 720;
 
@@ -2070,18 +2120,7 @@ void Engine::renderGameViewportWindow() {
         if (texId != static_cast<ImTextureID>(0)) {
             if (rendererInitialized) {
                 const GLuint tex = static_cast<GLuint>(texId);
-                if (tex != 0 && glfwGetCurrentContext() != nullptr) {
-                    GLint previousTexture = 0;
-                    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
-                    glBindTexture(GL_TEXTURE_2D, tex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
-                }
+                ApplyNearestTextureSampling(tex);
             }
 
             const ImVec2 uvFullMin(0.0f, rendererInitialized ? 1.0f : 0.0f);
@@ -2470,13 +2509,23 @@ void Engine::renderGameViewportWindow() {
         int litWorldImageCount = 0;
         bool lightBufferHadContent = false;
         std::unordered_map<int, std::string> light2DRoutingReasons;
-        light2DRoutingReasons.reserve(uiDrawList.size());
+        SceneObject* selectedForRoutingReasons = showInspector ? getSelectedObject() : nullptr;
+        const bool captureLight2DRoutingReasons = selectedForRoutingReasons && selectedForRoutingReasons->hasUI;
+        if (captureLight2DRoutingReasons) {
+            light2DRoutingReasons.reserve(uiDrawList.size());
+        }
+        auto setLight2DRoutingReason = [&](int objectId, const char* reason) {
+            if (captureLight2DRoutingReasons) {
+                light2DRoutingReasons[objectId] = reason;
+            }
+        };
         if (rendererInitialized) {
             Light2DRenderRequest lightRequest;
             lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
             lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.lightingBufferScale = light2DLightingBufferScale;
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -2496,30 +2545,31 @@ void Engine::renderGameViewportWindow() {
                     continue;
                 }
                 if (obj.ui.nineSliceEnabled) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: nine-slice sprites are not routed through Light2D yet.");
                     continue;
                 }
                 if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.");
                     continue;
                 }
 
                 const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+                const bool disableCulling = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
 
                 ImVec2 rectMin, rectMax;
                 if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: failed to resolve a world-space sprite rect for the active viewport.");
                     continue;
                 }
-                if (!repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
-                    light2DRoutingReasons[obj.id] = "Skipped Light2D: object is outside the visible 2D world overlay.";
+                if (!disableCulling && !repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
+                    setLight2DRoutingReason(obj.id, "Skipped Light2D: object is outside the visible 2D world overlay.");
                     continue;
                 }
 
                 Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
                 if (!spriteTex || spriteTex->GetID() == 0) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: no sprite texture is bound for this object.");
                     continue;
                 }
 
@@ -2530,7 +2580,7 @@ void Engine::renderGameViewportWindow() {
                 ImVec2 maskMin, maskMax;
                 const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
                 auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
-                    if (rectOutsideOverlay(quadMin, quadMax)) {
+                    if (!disableCulling && rectOutsideOverlay(quadMin, quadMax)) {
                         return false;
                     }
                     if (hasMaskRect) {
@@ -2611,9 +2661,9 @@ void Engine::renderGameViewportWindow() {
                 }
 
                 if (!addedAnySprite) {
-                    light2DRoutingReasons[obj.id] = hasMaskRect
+                    setLight2DRoutingReason(obj.id, hasMaskRect
                         ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
-                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.");
                     continue;
                 }
 
@@ -2626,13 +2676,13 @@ void Engine::renderGameViewportWindow() {
                     ++litWorldImageCount;
                 }
                 if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                    setLight2DRoutingReason(obj.id, repeatX || repeatY
                         ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
-                        : "Lit path: routed through the Light2D compositor.";
+                        : "Lit path: routed through the Light2D compositor.");
                 } else if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Force Unlit is enabled.");
                 } else {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Receive Lighting is disabled.");
                 }
             }
 
@@ -2744,13 +2794,13 @@ void Engine::renderGameViewportWindow() {
                     light2DStats = lighting2DRenderer.getLastStats();
                 } else {
                     for (int objectId : light2DRenderedObjectIds) {
-                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                        setLight2DRoutingReason(objectId, "Legacy path: Light2D compositor did not produce a valid output texture this frame.");
                     }
                     light2DRenderedObjectIds.clear();
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -2766,7 +2816,9 @@ void Engine::renderGameViewportWindow() {
             }
             ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
             if (rectSize.x <= 1.0f || rectSize.y <= 1.0f) continue;
-            if (rectOutsideOverlay(rectMin, rectMax)) continue;
+            const bool disableCulling =
+                obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
+            if (!disableCulling && rectOutsideOverlay(rectMin, rectMax)) continue;
 
             ImGuiStyle savedStyle = ImGui::GetStyle();
             bool styleApplied = false;
@@ -3149,7 +3201,9 @@ void Engine::renderGameViewportWindow() {
             light2DActiveCountLastFrame = activeLight2DCount;
             light2DLitSprite2DCountLastFrame = litSprite2DCount;
             light2DLitWorldImageCountLastFrame = litWorldImageCount;
-            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            if (captureLight2DRoutingReasons) {
+                light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            }
         }
 
         bool pseudoPanelInteracting = false;
@@ -3459,6 +3513,8 @@ void Engine::renderGameViewportWindow() {
                     ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
                     if (mCurrentGizmoOperation == ImGuizmo::SCALE) {
                         op = ImGuizmo::SCALE;
+                    } else if (mCurrentGizmoOperation == ImGuizmo::BOUNDS) {
+                        op = ImGuizmo::BOUNDS;
                     } else if (mCurrentGizmoOperation == ImGuizmo::ROTATE) {
                         op = ImGuizmo::ROTATE;
                     }
@@ -3480,15 +3536,23 @@ void Engine::renderGameViewportWindow() {
                         pivotScreen = ImVec2(anchorPoint.x + selected->ui.position.x * uiScaleX,
                                              anchorPoint.y + selected->ui.position.y * uiScaleY);
                     }
-                    ImVec2 rectCenter(pivotScreen.x - imageMin.x, pivotScreen.y - imageMin.y);
+                    ImVec2 rectCenter = (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS)
+                        ? ImVec2((rectMin.x + rectMax.x) * 0.5f - imageMin.x,
+                                 (rectMin.y + rectMax.y) * 0.5f - imageMin.y)
+                        : ImVec2(pivotScreen.x - imageMin.x, pivotScreen.y - imageMin.y);
                     glm::vec3 gizmoScale(1.0f, 1.0f, 1.0f);
-                    if (op == ImGuizmo::SCALE) {
+                    if (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS) {
                         gizmoScale = glm::vec3(rectSize.x, rectSize.y, 1.0f);
                     }
                     glm::mat4 model(1.0f);
                     model = glm::translate(model, glm::vec3(rectCenter.x, rectCenter.y, 0.0f));
                     model = glm::rotate(model, glm::radians(selected->ui.rotation), glm::vec3(0.0f, 0.0f, 1.0f));
                     model = glm::scale(model, gizmoScale);
+                    const bool stableRectScale = (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS);
+                    if (stableRectScale && gameUiGizmoHistoryCaptured &&
+                        gameUiRectGizmoOperation == op && !gameUiRectGizmoSnapshots.empty()) {
+                        model = gameUiRectGizmoModel;
+                    }
                     const glm::mat4 originalModel = model;
 
                     ImGuizmo::BeginFrame();
@@ -3497,12 +3561,37 @@ void Engine::renderGameViewportWindow() {
                     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
                     ImGuizmo::SetRect(imageMin.x, imageMin.y, imageMax.x - imageMin.x, imageMax.y - imageMin.y);
                     glm::mat4 delta(1.0f);
-                    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::LOCAL, glm::value_ptr(model), glm::value_ptr(delta));
+                    float bounds[6] = { -0.5f, -0.5f, 0.0f, 0.5f, 0.5f, 0.0f };
+                    const float* boundsPtr = (op == ImGuizmo::BOUNDS) ? bounds : nullptr;
+                    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::LOCAL,
+                                         glm::value_ptr(model), glm::value_ptr(delta), nullptr, boundsPtr, nullptr);
                     if (ImGuizmo::IsUsing()) {
                         if (!gameUiGizmoHistoryCaptured) {
                             recordState("gameUiGizmo");
+                            gameUiRectGizmoOperation = op;
+                            gameUiRectGizmoModel = originalModel;
+                            gameUiRectGizmoStartMouse = ImGui::GetIO().MousePos;
+                            gameUiRectGizmoSnapshots.clear();
+                            for (int id : worldUiRoots) {
+                                SceneObject* target = findObjectById(id);
+                                if (!target) continue;
+                                ImVec2 targetMin, targetMax;
+                                if (!resolveUIRectWorld(*target, targetMin, targetMax)) continue;
+                                gameUiRectGizmoSnapshots.push_back(UiRectGizmoSnapshot{
+                                    id,
+                                    target->ui.position,
+                                    target->ui.size,
+                                    target->ui.rotation,
+                                    targetMin,
+                                    targetMax
+                                });
+                            }
                             gameUiGizmoHistoryCaptured = true;
                         }
+                        const float scaleDragDx = ImGui::GetIO().MousePos.x - gameUiRectGizmoStartMouse.x;
+                        const float scaleDragDy = ImGui::GetIO().MousePos.y - gameUiRectGizmoStartMouse.y;
+                        const bool allowScaleApply = !stableRectScale ||
+                                                     ((scaleDragDx * scaleDragDx + scaleDragDy * scaleDragDy) >= 9.0f);
                         const bool applyPixelSnap = pixelGridSnapEnabled;
                         const float pixelStep = static_cast<float>(std::max(1, pixelGridSnapStep));
                         auto snapScreenToPixel = [&](ImVec2 p) {
@@ -3510,9 +3599,37 @@ void Engine::renderGameViewportWindow() {
                             p.y = imageMin.y + std::round((p.y - imageMin.y) / pixelStep) * pixelStep;
                             return p;
                         };
+                        auto findRectSnapshot = [&](int id) -> const UiRectGizmoSnapshot* {
+                            for (const UiRectGizmoSnapshot& snapshot : gameUiRectGizmoSnapshots) {
+                                if (snapshot.objectId == id) return &snapshot;
+                            }
+                            return nullptr;
+                        };
+                        auto extractRectFromModel = [](const glm::mat4& rectModel, ImVec2& outCenter, ImVec2& outSize) {
+                            const glm::vec4 corners[4] = {
+                                glm::vec4(-0.5f, -0.5f, 0.0f, 1.0f),
+                                glm::vec4( 0.5f, -0.5f, 0.0f, 1.0f),
+                                glm::vec4( 0.5f,  0.5f, 0.0f, 1.0f),
+                                glm::vec4(-0.5f,  0.5f, 0.0f, 1.0f)
+                            };
+                            ImVec2 pts[4];
+                            for (int i = 0; i < 4; ++i) {
+                                const glm::vec4 p = rectModel * corners[i];
+                                pts[i] = ImVec2(p.x, p.y);
+                            }
+                            outCenter = ImVec2((pts[0].x + pts[1].x + pts[2].x + pts[3].x) * 0.25f,
+                                               (pts[0].y + pts[1].y + pts[2].y + pts[3].y) * 0.25f);
+                            auto distance = [](const ImVec2& a, const ImVec2& b) {
+                                const float dx = b.x - a.x;
+                                const float dy = b.y - a.y;
+                                return std::sqrt(dx * dx + dy * dy);
+                            };
+                            outSize = ImVec2(std::max(0.01f, distance(pts[0], pts[1])),
+                                             std::max(0.01f, distance(pts[0], pts[3])));
+                        };
 
                         if (useWorldUi && !worldUiRoots.empty()) {
-                            const glm::mat4 gizmoDelta = model * glm::inverse(originalModel);
+                            const glm::mat4 gizmoDelta = model * glm::inverse(stableRectScale ? gameUiRectGizmoModel : originalModel);
                             const bool groupRotate = (op == ImGuizmo::ROTATE && worldUiRoots.size() > 1);
 
                             for (int id : worldUiRoots) {
@@ -3520,7 +3637,16 @@ void Engine::renderGameViewportWindow() {
                                 if (!target) continue;
 
                                 ImVec2 targetMin, targetMax;
-                                if (!resolveUIRectWorld(*target, targetMin, targetMax)) continue;
+                                float targetRotation = target->ui.rotation;
+                                if (stableRectScale) {
+                                    const UiRectGizmoSnapshot* snapshot = findRectSnapshot(id);
+                                    if (!snapshot) continue;
+                                    targetMin = snapshot->rectMin;
+                                    targetMax = snapshot->rectMax;
+                                    targetRotation = snapshot->rotation;
+                                } else {
+                                    if (!resolveUIRectWorld(*target, targetMin, targetMax)) continue;
+                                }
                                 ImVec2 targetSize(targetMax.x - targetMin.x, targetMax.y - targetMin.y);
                                 if (targetSize.x <= 0.01f || targetSize.y <= 0.01f) continue;
                                 ImVec2 targetCenter((targetMin.x + targetMax.x) * 0.5f - imageMin.x,
@@ -3528,7 +3654,7 @@ void Engine::renderGameViewportWindow() {
 
                                 glm::mat4 targetModel(1.0f);
                                 targetModel = glm::translate(targetModel, glm::vec3(targetCenter.x, targetCenter.y, 0.0f));
-                                targetModel = glm::rotate(targetModel, glm::radians(target->ui.rotation), glm::vec3(0.0f, 0.0f, 1.0f));
+                                targetModel = glm::rotate(targetModel, glm::radians(targetRotation), glm::vec3(0.0f, 0.0f, 1.0f));
                                 targetModel = glm::scale(targetModel, glm::vec3(targetSize.x, targetSize.y, 1.0f));
 
                                 glm::mat4 targetNewModel = gizmoDelta * targetModel;
@@ -3536,6 +3662,12 @@ void Engine::renderGameViewportWindow() {
                                 DecomposeMatrix(targetNewModel, pos, rot, scl);
                                 glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(rot));
                                 ImVec2 targetNewCenter(imageMin.x + pos.x, imageMin.y + pos.y);
+                                ImVec2 targetNewScreenSize(targetSize.x, targetSize.y);
+                                if (stableRectScale) {
+                                    extractRectFromModel(targetNewModel, targetNewCenter, targetNewScreenSize);
+                                    targetNewCenter.x += imageMin.x;
+                                    targetNewCenter.y += imageMin.y;
+                                }
                                 if (applyPixelSnap && op == ImGuizmo::TRANSLATE) {
                                     targetNewCenter = snapScreenToPixel(targetNewCenter);
                                 }
@@ -3558,12 +3690,20 @@ void Engine::renderGameViewportWindow() {
                                     glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
                                     glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
                                     target->ui.position = worldPivot - targetParentOffset - parallaxOffset(*target);
-                                } else if (op == ImGuizmo::SCALE) {
+                                } else if (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS) {
+                                    if (allowScaleApply) {
                                     const float minUiSize = (target->ui.type == UIElementType::Image ||
                                                              target->ui.type == UIElementType::Sprite2D)
                                         ? 0.01f
                                         : 1.0f;
-                                    ImVec2 newSize(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
+                                    ImVec2 newSize = stableRectScale
+                                        ? ImVec2(std::max(minUiSize, targetNewScreenSize.x), std::max(minUiSize, targetNewScreenSize.y))
+                                        : ImVec2(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
+                                    if (stableRectScale) {
+                                        constexpr float kRectScaleDeadZonePx = 0.1f;
+                                        if (std::abs(newSize.x - targetSize.x) < kRectScaleDeadZonePx) newSize.x = targetSize.x;
+                                        if (std::abs(newSize.y - targetSize.y) < kRectScaleDeadZonePx) newSize.y = targetSize.y;
+                                    }
                                     if (applyPixelSnap) {
                                         newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
                                         newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
@@ -3574,6 +3714,7 @@ void Engine::renderGameViewportWindow() {
                                     glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
                                     target->ui.position = worldPivot - targetParentOffset - parallaxOffset(*target);
                                     target->ui.size = worldSize;
+                                    }
                                 }
                             }
                         } else {
@@ -3581,6 +3722,13 @@ void Engine::renderGameViewportWindow() {
                             DecomposeMatrix(model, pos, rot, scl);
                             glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(rot));
                             ImVec2 newPivot(imageMin.x + pos.x, imageMin.y + pos.y);
+                            ImVec2 newScaleCenter = newPivot;
+                            ImVec2 newScaleScreenSize(std::max(0.01f, scl.x), std::max(0.01f, scl.y));
+                            if (stableRectScale) {
+                                extractRectFromModel(model, newScaleCenter, newScaleScreenSize);
+                                newScaleCenter.x += imageMin.x;
+                                newScaleCenter.y += imageMin.y;
+                            }
                             if (applyPixelSnap && op == ImGuizmo::TRANSLATE) {
                                 newPivot = snapScreenToPixel(newPivot);
                             }
@@ -3597,24 +3745,45 @@ void Engine::renderGameViewportWindow() {
                                     selected->ui.position = glm::vec2((newPivot.x - anchorPoint.x) * invScaleX,
                                                                      (newPivot.y - anchorPoint.y) * invScaleY);
                                 }
-                            } else if (op == ImGuizmo::SCALE) {
+                            } else if (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS) {
+                                if (allowScaleApply) {
                                 const float minUiSize = (selected->ui.type == UIElementType::Image ||
                                                          selected->ui.type == UIElementType::Sprite2D)
                                     ? 0.01f
                                     : 1.0f;
-                                ImVec2 newSize(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
+                                ImVec2 newSize = stableRectScale
+                                    ? ImVec2(std::max(minUiSize, newScaleScreenSize.x), std::max(minUiSize, newScaleScreenSize.y))
+                                    : ImVec2(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
+                                if (stableRectScale) {
+                                    constexpr float kRectScaleDeadZonePx = 0.1f;
+                                    if (std::abs(newSize.x - rectSize.x) < kRectScaleDeadZonePx) newSize.x = rectSize.x;
+                                    if (std::abs(newSize.y - rectSize.y) < kRectScaleDeadZonePx) newSize.y = rectSize.y;
+                                }
                                 if (applyPixelSnap) {
                                     newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
                                     newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
                                 }
                                 if (useWorldUi) {
                                     glm::vec2 worldSize = glm::vec2(newSize.x, newSize.y) / uiWorldCamera.zoom;
-                                    selected->ui.position = pivotWorld - parentOffset - parallaxOffset(*selected);
+                                    glm::vec2 worldCenter = screenToWorld(newScaleCenter);
+                                    ImVec2 pivotOffset = anchorToPivotUI(selected->ui.anchor, ImVec2(worldSize.x, worldSize.y));
+                                    glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
+                                    glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
+                                    selected->ui.position = worldPivot - parentOffset - parallaxOffset(*selected);
                                     selected->ui.size = worldSize;
                                 } else {
                                     float invScaleX = (uiScaleX > 0.0f) ? 1.0f / uiScaleX : 1.0f;
                                     float invScaleY = (uiScaleY > 0.0f) ? 1.0f / uiScaleY : 1.0f;
-                                    selected->ui.size = glm::vec2(newSize.x * invScaleX, newSize.y * invScaleY);
+                                    glm::vec2 uiSize(newSize.x * invScaleX, newSize.y * invScaleY);
+                                    ImVec2 anchorPoint = anchorToPoint(selected->ui.anchor, parentMin, parentMax);
+                                    ImVec2 pivotOffset = anchorToPivotUI(selected->ui.anchor, ImVec2(uiSize.x, uiSize.y));
+                                    ImVec2 screenMin(newScaleCenter.x - newSize.x * 0.5f, newScaleCenter.y - newSize.y * 0.5f);
+                                    ImVec2 screenPivot(screenMin.x + pivotOffset.x * uiScaleX,
+                                                       screenMin.y + pivotOffset.y * uiScaleY);
+                                    selected->ui.position = glm::vec2((screenPivot.x - anchorPoint.x) * invScaleX,
+                                                                     (screenPivot.y - anchorPoint.y) * invScaleY);
+                                    selected->ui.size = uiSize;
+                                    }
                                 }
                             }
                         }
@@ -3622,13 +3791,22 @@ void Engine::renderGameViewportWindow() {
                         gizmoUsed = true;
                     } else {
                         gameUiGizmoHistoryCaptured = false;
+                        gameUiRectGizmoSnapshots.clear();
+                        gameUiRectGizmoModel = glm::mat4(1.0f);
+                        gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
                     }
                 }
             } else {
                 gameUiGizmoHistoryCaptured = false;
+                gameUiRectGizmoSnapshots.clear();
+                gameUiRectGizmoModel = glm::mat4(1.0f);
+                gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
             }
         } else {
             gameUiGizmoHistoryCaptured = false;
+            gameUiRectGizmoSnapshots.clear();
+            gameUiRectGizmoModel = glm::mat4(1.0f);
+            gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
         }
 
         uiInteracting = ImGui::IsAnyItemActive() || gizmoUsed || uiWorldCameraActive || pseudoPanelInteracting;
@@ -4529,9 +4707,22 @@ void Engine::renderMainMenuBar() {
             ImGui::MenuItem("Inspector", nullptr, &showInspector);
             ImGui::MenuItem("File Browser", nullptr, &showFileBrowser);
             ImGui::MenuItem("Console", nullptr, &showConsole);
-            ImGui::MenuItem("Scripting", nullptr, &showScriptingWindow);
-            ImGui::MenuItem("Project Manager", nullptr, &showProjectBrowser);
-            ImGui::MenuItem("Mesh Builder (Legacy Window)", nullptr, &showMeshBuilder);
+            if (hasScriptingWindowPackage()) {
+                ImGui::MenuItem("Scripting", nullptr, &showScriptingWindow);
+            }
+            bool prevProjectBrowser = showProjectBrowser;
+            ImGui::MenuItem("Project Settings", nullptr, &showProjectBrowser);
+            if (prevProjectBrowser != showProjectBrowser) {
+                saveEditorUserSettings();
+            }
+            bool prevRegistryPackages = showRegistryPackagesWindow;
+            ImGui::MenuItem("Modupak Manager", nullptr, &showRegistryPackagesWindow);
+            if (prevRegistryPackages != showRegistryPackagesWindow) {
+                saveEditorUserSettings();
+            }
+            if (hasMeshBuilderPackage()) {
+                ImGui::MenuItem("Mesh Builder (Legacy Window)", nullptr, &showMeshBuilder);
+            }
             ImGui::MenuItem("Environment", nullptr, &showEnvironmentWindow);
             ImGui::MenuItem("Camera", nullptr, &showCameraWindow);
             bool prevAnimationWindow = showAnimationWindow;
@@ -4544,10 +4735,12 @@ void Engine::renderMainMenuBar() {
             if (prevAIPathWindow != showAIPathfindingWindow) {
                 saveEditorUserSettings();
             }
-            bool prevPixelSpriteEditor = showPixelSpriteEditorWindow;
-            ImGui::MenuItem("Pixel Sprite Editor", nullptr, &showPixelSpriteEditorWindow);
-            if (prevPixelSpriteEditor != showPixelSpriteEditorWindow) {
-                saveEditorUserSettings();
+            if (hasSpriteEditorPackage()) {
+                bool prevPixelSpriteEditor = showPixelSpriteEditorWindow;
+                ImGui::MenuItem("Pixel Sprite Editor", nullptr, &showPixelSpriteEditorWindow);
+                if (prevPixelSpriteEditor != showPixelSpriteEditorWindow) {
+                    saveEditorUserSettings();
+                }
             }
             ImGui::MenuItem("View Output", nullptr, &showViewOutput);
             ImGui::Separator();
@@ -4701,6 +4894,9 @@ void Engine::renderMainMenuBar() {
             int canCloseCount = visibleWorkspaceCount();
             for (const WorkspaceTabConfig& tab : workspaceTabs) {
                 const int idx = workspaceToIndex(tab.mode);
+                if (tab.mode == WorkspaceMode::Scripting && !hasScriptingWindowPackage()) {
+                    continue;
+                }
                 if (!workspaceTabVisible[idx]) {
                     continue;
                 }
@@ -4747,6 +4943,9 @@ void Engine::renderMainMenuBar() {
         if (ImGui::BeginPopup("WorkspaceTabsAddPopup")) {
             for (const WorkspaceTabConfig& tab : workspaceTabs) {
                 const int idx = workspaceToIndex(tab.mode);
+                if (tab.mode == WorkspaceMode::Scripting && !hasScriptingWindowPackage()) {
+                    continue;
+                }
                 if (workspaceTabVisible[idx]) {
                     continue;
                 }
@@ -4837,15 +5036,25 @@ void Engine::renderMainMenuBar() {
             const bool hasMatchingDockspace =
                 hasLayoutFile && layoutFileHasDockNodesForDockspace(pendingWorkspaceIniPath, mainDockspaceId);
             if (hasMatchingDockspace) {
+                ImGui::ClearIniSettings();
                 ImGui::LoadIniSettingsFromDisk(pendingWorkspaceIniPath.string().c_str());
+                workspaceLayoutSettlingFrame = true;
                 if (ImGui::DockBuilderGetNode(mainDockspaceId) == nullptr) {
                     ImGui::DockBuilderRemoveNode(mainDockspaceId);
                     workspaceLayoutDirty = true;
+                    workspaceLayoutAutoRepairPending = true;
+                } else {
+                    // A valid persisted layout should win over the default workspace
+                    // repair path instead of being rebuilt a frame later.
+                    workspaceLayoutAutoRepairPending = false;
                 }
             } else {
                 // No persisted layout to load (or stale DockSpace ID): force deterministic rebuild.
+                ImGui::ClearIniSettings();
                 ImGui::DockBuilderRemoveNode(mainDockspaceId);
                 workspaceLayoutDirty = true;
+                workspaceLayoutAutoRepairPending = true;
+                workspaceLayoutSettlingFrame = true;
             }
             pendingWorkspaceReload = false;
             workspaceLayoutSavePending = false;
@@ -4854,7 +5063,10 @@ void Engine::renderMainMenuBar() {
     }
 
     if (!pendingWorkspaceReload && workspaceLayoutDirty) {
+        ImGui::ClearIniSettings();
         buildWorkspaceLayout(currentWorkspace);
+        workspaceLayoutSavePending = true;
+        workspaceLayoutSettlingFrame = true;
     }
 
     if (showStyleEditor) {
@@ -4911,7 +5123,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
             showInspector = true;
             showFileBrowser = true;
             showConsole = true;
-            showScriptingWindow = true;
+            showScriptingWindow = hasScriptingWindowPackage();
             showAnimationWindow = false;
             showAIPathfindingWindow = false;
             showEnvironmentWindow = false;
@@ -4933,7 +5145,7 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
         return;
     }
 
-    auto layoutFileIsUsable = [](const fs::path& layoutPath) {
+    auto layoutFileIsUsable = [&](const fs::path& layoutPath) {
         std::ifstream in(layoutPath);
         if (!in.is_open()) return false;
 
@@ -4953,7 +5165,16 @@ void Engine::applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout) {
                 hasDockspace = true;
             }
         }
-        return hasDockingData && hasDockNodes && hasDockspace;
+        if (!(hasDockingData && hasDockNodes && hasDockspace)) {
+            return false;
+        }
+
+        if (loadedWorkspaceLayoutVersion < kWorkspaceLayoutVersion &&
+            layoutFileNeedsUtilityDockMigration(layoutPath, showProjectBrowser, showRegistryPackagesWindow)) {
+            return false;
+        }
+
+        return true;
     };
 
     fs::path layoutPath = getWorkspaceLayoutPath(mode);
@@ -5004,22 +5225,27 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
     ImGuiID dockMain = dockspaceId;
     if (mode == WorkspaceMode::Default) {
         ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.20f, nullptr, &dockMain);
-        ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.26f, nullptr, &dockMain);
+        ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.28f, nullptr, &dockMain);
         ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.28f, nullptr, &dockMain);
+        ImGuiID dockUtility = ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Down, 0.42f, nullptr, &dockRight);
 
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
-        ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
-        ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        ImGui::DockBuilderDockWindow("Project Settings", dockUtility);
+        ImGui::DockBuilderDockWindow("Modupak Manager", dockUtility);
+        if (hasSpriteEditorPackage()) {
+            ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        }
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     } else if (mode == WorkspaceMode::Animation) {
         ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.20f, nullptr, &dockMain);
-        ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.25f, nullptr, &dockMain);
+        ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.27f, nullptr, &dockMain);
         ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.35f, nullptr, &dockMain);
+        ImGuiID dockUtility = ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Down, 0.42f, nullptr, &dockRight);
 
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
@@ -5028,21 +5254,30 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
         ImGui::DockBuilderDockWindow("Animation", dockBottom);
         ImGui::DockBuilderDockWindow("AI Pathfinding", dockBottom);
         ImGui::DockBuilderDockWindow("Project", dockBottom);
-        ImGui::DockBuilderDockWindow("Project Settings", dockBottom);
-        ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        ImGui::DockBuilderDockWindow("Project Settings", dockUtility);
+        ImGui::DockBuilderDockWindow("Modupak Manager", dockUtility);
+        if (hasSpriteEditorPackage()) {
+            ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        }
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
     } else {
         ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.25f, nullptr, &dockMain);
         ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.35f, nullptr, &dockMain);
+        ImGuiID dockUtility = ImGui::DockBuilderSplitNode(dockRight, ImGuiDir_Down, 0.42f, nullptr, &dockRight);
 
         ImGui::DockBuilderDockWindow("Project", dockLeft);
         ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
         ImGui::DockBuilderDockWindow("Camera", dockLeft);
-        ImGui::DockBuilderDockWindow("Scripting", dockRight);
+        if (hasScriptingWindowPackage()) {
+            ImGui::DockBuilderDockWindow("Scripting", dockRight);
+        }
         ImGui::DockBuilderDockWindow("Inspector", dockRight);
         ImGui::DockBuilderDockWindow("Environment", dockRight);
-        ImGui::DockBuilderDockWindow("Project Settings", dockRight);
-        ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        ImGui::DockBuilderDockWindow("Project Settings", dockUtility);
+        ImGui::DockBuilderDockWindow("Modupak Manager", dockUtility);
+        if (hasSpriteEditorPackage()) {
+            ImGui::DockBuilderDockWindow("Pixel Sprite Editor", dockMain);
+        }
         ImGui::DockBuilderDockWindow("Viewport", dockMain);
         ImGui::DockBuilderDockWindow("Game Viewport", dockMain);
     }
@@ -5989,13 +6224,23 @@ void Engine::renderViewport() {
         int litWorldImageCount = 0;
         bool lightBufferHadContent = false;
         std::unordered_map<int, std::string> light2DRoutingReasons;
-        light2DRoutingReasons.reserve(uiDrawList.size());
+        SceneObject* selectedForRoutingReasons = showInspector ? getSelectedObject() : nullptr;
+        const bool captureLight2DRoutingReasons = selectedForRoutingReasons && selectedForRoutingReasons->hasUI;
+        if (captureLight2DRoutingReasons) {
+            light2DRoutingReasons.reserve(uiDrawList.size());
+        }
+        auto setLight2DRoutingReason = [&](int objectId, const char* reason) {
+            if (captureLight2DRoutingReasons) {
+                light2DRoutingReasons[objectId] = reason;
+            }
+        };
         if (rendererInitialized) {
             Light2DRenderRequest lightRequest;
             lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
             lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.lightingBufferScale = light2DLightingBufferScale;
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -6015,30 +6260,31 @@ void Engine::renderViewport() {
                     continue;
                 }
                 if (obj.ui.nineSliceEnabled) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: nine-slice sprites are not routed through Light2D yet.");
                     continue;
                 }
                 if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.");
                     continue;
                 }
 
                 const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+                const bool disableCulling = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
 
                 ImVec2 rectMin, rectMax;
                 if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: failed to resolve a world-space sprite rect for the active viewport.");
                     continue;
                 }
-                if (!repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
-                    light2DRoutingReasons[obj.id] = "Skipped Light2D: object is outside the visible 2D world overlay.";
+                if (!disableCulling && !repeatX && !repeatY && rectOutsideOverlay(rectMin, rectMax)) {
+                    setLight2DRoutingReason(obj.id, "Skipped Light2D: object is outside the visible 2D world overlay.");
                     continue;
                 }
 
                 Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
                 if (!spriteTex || spriteTex->GetID() == 0) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: no sprite texture is bound for this object.");
                     continue;
                 }
 
@@ -6049,7 +6295,7 @@ void Engine::renderViewport() {
                 ImVec2 maskMin, maskMax;
                 const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
                 auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
-                    if (rectOutsideOverlay(quadMin, quadMax)) {
+                    if (!disableCulling && rectOutsideOverlay(quadMin, quadMax)) {
                         return false;
                     }
                     if (hasMaskRect) {
@@ -6130,9 +6376,9 @@ void Engine::renderViewport() {
                 }
 
                 if (!addedAnySprite) {
-                    light2DRoutingReasons[obj.id] = hasMaskRect
+                    setLight2DRoutingReason(obj.id, hasMaskRect
                         ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
-                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.");
                     continue;
                 }
 
@@ -6145,13 +6391,13 @@ void Engine::renderViewport() {
                     ++litWorldImageCount;
                 }
                 if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                    setLight2DRoutingReason(obj.id, repeatX || repeatY
                         ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
-                        : "Lit path: routed through the Light2D compositor.";
+                        : "Lit path: routed through the Light2D compositor.");
                 } else if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Force Unlit is enabled.");
                 } else {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Receive Lighting is disabled.");
                 }
             }
 
@@ -6263,13 +6509,13 @@ void Engine::renderViewport() {
                     light2DStats = lighting2DRenderer.getLastStats();
                 } else {
                     for (int objectId : light2DRenderedObjectIds) {
-                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                        setLight2DRoutingReason(objectId, "Legacy path: Light2D compositor did not produce a valid output texture this frame.");
                     }
                     light2DRenderedObjectIds.clear();
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -6281,7 +6527,9 @@ void Engine::renderViewport() {
             if (!resolveUIRectWorld(obj, rectMin, rectMax)) continue;
             ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
             if (rectSize.x <= 1.0f || rectSize.y <= 1.0f) continue;
-            if (rectOutsideOverlay(rectMin, rectMax)) continue;
+            const bool disableCulling =
+                obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
+            if (!disableCulling && rectOutsideOverlay(rectMin, rectMax)) continue;
             resolvedUiRects[obj.id] = ResolvedUiRect{rectMin, rectMax};
             drawnUiObjects.push_back(&obj);
 
@@ -6669,7 +6917,9 @@ void Engine::renderViewport() {
             light2DActiveCountLastFrame = activeLight2DCount;
             light2DLitSprite2DCountLastFrame = litSprite2DCount;
             light2DLitWorldImageCountLastFrame = litWorldImageCount;
-            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            if (captureLight2DRoutingReasons) {
+                light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            }
         }
         if (renderedLight2DComposite && showLight2DStatsOverlay) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -6988,8 +7238,51 @@ void Engine::renderViewport() {
         drawSelectedCollider2DWorldOutlines();
 
         bool gizmoUsed = false;
+        bool mouseBlockedBySelectedGizmo = false;
+        if (worldUiEditing && uiWorldHover) {
+            SceneObject* selectedForGizmoHit = getSelectedObject();
+            if (selectedForGizmoHit && isUIType(*selectedForGizmoHit)) {
+                std::vector<int> selectedIdsForBounds;
+                if (!selectedObjectIds.empty()) {
+                    selectedIdsForBounds = selectedObjectIds;
+                } else if (selectedObjectId >= 0) {
+                    selectedIdsForBounds.push_back(selectedObjectId);
+                } else {
+                    selectedIdsForBounds.push_back(selectedForGizmoHit->id);
+                }
+
+                ImVec2 selectedBoundsMin(FLT_MAX, FLT_MAX);
+                ImVec2 selectedBoundsMax(-FLT_MAX, -FLT_MAX);
+                for (int id : selectedIdsForBounds) {
+                    SceneObject* target = findObjectById(id);
+                    if (!target || !IsObjectEnabledInHierarchy(*target) || !isUIType(*target)) continue;
+                    ImVec2 targetMin, targetMax;
+                    auto rectIt = resolvedUiRects.find(id);
+                    if (rectIt != resolvedUiRects.end()) {
+                        targetMin = rectIt->second.min;
+                        targetMax = rectIt->second.max;
+                    } else if (!resolveUIRectWorld(*target, targetMin, targetMax)) {
+                        continue;
+                    }
+                    selectedBoundsMin.x = std::min(selectedBoundsMin.x, targetMin.x);
+                    selectedBoundsMin.y = std::min(selectedBoundsMin.y, targetMin.y);
+                    selectedBoundsMax.x = std::max(selectedBoundsMax.x, targetMax.x);
+                    selectedBoundsMax.y = std::max(selectedBoundsMax.y, targetMax.y);
+                }
+
+                if (selectedBoundsMin.x != FLT_MAX && selectedBoundsMin.y != FLT_MAX) {
+                    const float gizmoHitPadding = 18.0f;
+                    ImVec2 mouse = ImGui::GetIO().MousePos;
+                    mouseBlockedBySelectedGizmo =
+                        mouse.x >= selectedBoundsMin.x - gizmoHitPadding &&
+                        mouse.x <= selectedBoundsMax.x + gizmoHitPadding &&
+                        mouse.y >= selectedBoundsMin.y - gizmoHitPadding &&
+                        mouse.y <= selectedBoundsMax.y + gizmoHitPadding;
+                }
+            }
+        }
         if (worldUiEditing && uiWorldHover && !uiWorldCameraActive && !light2DHandleUsed && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-            !ImGuizmo::IsUsing() && !ImGuizmo::IsOver()) {
+            !ImGuizmo::IsUsing() && !ImGuizmo::IsOver() && !mouseBlockedBySelectedGizmo) {
             ImVec2 mouse = ImGui::GetIO().MousePos;
             bool additive = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
             int hitId = -1;
@@ -7109,6 +7402,8 @@ void Engine::renderViewport() {
                 ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
                 if (mCurrentGizmoOperation == ImGuizmo::SCALE) {
                     op = ImGuizmo::SCALE;
+                } else if (mCurrentGizmoOperation == ImGuizmo::BOUNDS) {
+                    op = ImGuizmo::BOUNDS;
                 } else if (mCurrentGizmoOperation == ImGuizmo::ROTATE) {
                     op = ImGuizmo::ROTATE;
                 }
@@ -7118,13 +7413,18 @@ void Engine::renderViewport() {
                 ImVec2 rectCenter((boundsMin.x + boundsMax.x) * 0.5f - imageMin.x,
                                   (boundsMin.y + boundsMax.y) * 0.5f - imageMin.y);
                 glm::vec3 gizmoScale(1.0f, 1.0f, 1.0f);
-                if (op == ImGuizmo::SCALE) {
+                if (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS) {
                     gizmoScale = glm::vec3(rectSize.x, rectSize.y, 1.0f);
                 }
                 glm::mat4 model(1.0f);
                 model = glm::translate(model, glm::vec3(rectCenter.x, rectCenter.y, 0.0f));
                 model = glm::rotate(model, glm::radians(selected->ui.rotation), glm::vec3(0.0f, 0.0f, 1.0f));
                 model = glm::scale(model, gizmoScale);
+                const bool stableRectScale = (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS);
+                if (stableRectScale && worldUiGizmoHistoryCaptured &&
+                    worldUiRectGizmoOperation == op && !worldUiRectGizmoSnapshots.empty()) {
+                    model = worldUiRectGizmoModel;
+                }
                 const glm::mat4 originalModel = model;
 
                 ImGuizmo::BeginFrame();
@@ -7133,12 +7433,37 @@ void Engine::renderViewport() {
                 ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
                 ImGuizmo::SetRect(imageMin.x, imageMin.y, imageMax.x - imageMin.x, imageMax.y - imageMin.y);
                 glm::mat4 delta(1.0f);
-                ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::LOCAL, glm::value_ptr(model), glm::value_ptr(delta));
+                float bounds[6] = { -0.5f, -0.5f, 0.0f, 0.5f, 0.5f, 0.0f };
+                const float* boundsPtr = (op == ImGuizmo::BOUNDS) ? bounds : nullptr;
+                ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), op, ImGuizmo::LOCAL,
+                                     glm::value_ptr(model), glm::value_ptr(delta), nullptr, boundsPtr, nullptr);
                 if (ImGuizmo::IsUsing()) {
                     if (!worldUiGizmoHistoryCaptured) {
                         recordState("worldUiGizmo");
+                        worldUiRectGizmoOperation = op;
+                        worldUiRectGizmoModel = originalModel;
+                        worldUiRectGizmoStartMouse = ImGui::GetIO().MousePos;
+                        worldUiRectGizmoSnapshots.clear();
+                        for (int id : gizmoRoots) {
+                            SceneObject* target = findObjectById(id);
+                            if (!target) continue;
+                            ImVec2 targetMin, targetMax;
+                            if (!resolveUiRectCached(*target, targetMin, targetMax)) continue;
+                            worldUiRectGizmoSnapshots.push_back(UiRectGizmoSnapshot{
+                                id,
+                                target->ui.position,
+                                target->ui.size,
+                                target->ui.rotation,
+                                targetMin,
+                                targetMax
+                            });
+                        }
                         worldUiGizmoHistoryCaptured = true;
                     }
+                    const float scaleDragDx = ImGui::GetIO().MousePos.x - worldUiRectGizmoStartMouse.x;
+                    const float scaleDragDy = ImGui::GetIO().MousePos.y - worldUiRectGizmoStartMouse.y;
+                    const bool allowScaleApply = !stableRectScale ||
+                                                 ((scaleDragDx * scaleDragDx + scaleDragDy * scaleDragDy) >= 9.0f);
                     const bool applyPixelSnap = pixelGridSnapEnabled;
                     const float pixelStep = static_cast<float>(std::max(1, pixelGridSnapStep));
                     auto snapScreenToPixel = [&](ImVec2 p) {
@@ -7146,8 +7471,36 @@ void Engine::renderViewport() {
                         p.y = imageMin.y + std::round((p.y - imageMin.y) / pixelStep) * pixelStep;
                         return p;
                     };
+                    auto findRectSnapshot = [&](int id) -> const UiRectGizmoSnapshot* {
+                        for (const UiRectGizmoSnapshot& snapshot : worldUiRectGizmoSnapshots) {
+                            if (snapshot.objectId == id) return &snapshot;
+                        }
+                        return nullptr;
+                    };
+                    auto extractRectFromModel = [](const glm::mat4& rectModel, ImVec2& outCenter, ImVec2& outSize) {
+                        const glm::vec4 corners[4] = {
+                            glm::vec4(-0.5f, -0.5f, 0.0f, 1.0f),
+                            glm::vec4( 0.5f, -0.5f, 0.0f, 1.0f),
+                            glm::vec4( 0.5f,  0.5f, 0.0f, 1.0f),
+                            glm::vec4(-0.5f,  0.5f, 0.0f, 1.0f)
+                        };
+                        ImVec2 pts[4];
+                        for (int i = 0; i < 4; ++i) {
+                            const glm::vec4 p = rectModel * corners[i];
+                            pts[i] = ImVec2(p.x, p.y);
+                        }
+                        outCenter = ImVec2((pts[0].x + pts[1].x + pts[2].x + pts[3].x) * 0.25f,
+                                           (pts[0].y + pts[1].y + pts[2].y + pts[3].y) * 0.25f);
+                        auto distance = [](const ImVec2& a, const ImVec2& b) {
+                            const float dx = b.x - a.x;
+                            const float dy = b.y - a.y;
+                            return std::sqrt(dx * dx + dy * dy);
+                        };
+                        outSize = ImVec2(std::max(0.01f, distance(pts[0], pts[1])),
+                                         std::max(0.01f, distance(pts[0], pts[3])));
+                    };
 
-                    const glm::mat4 gizmoDelta = model * glm::inverse(originalModel);
+                    const glm::mat4 gizmoDelta = model * glm::inverse(stableRectScale ? worldUiRectGizmoModel : originalModel);
                     const bool groupRotate = (op == ImGuizmo::ROTATE && gizmoRoots.size() > 1);
 
                     for (int id : gizmoRoots) {
@@ -7155,7 +7508,16 @@ void Engine::renderViewport() {
                         if (!target) continue;
 
                         ImVec2 targetMin, targetMax;
-                        if (!resolveUiRectCached(*target, targetMin, targetMax)) continue;
+                        float targetRotation = target->ui.rotation;
+                        if (stableRectScale) {
+                            const UiRectGizmoSnapshot* snapshot = findRectSnapshot(id);
+                            if (!snapshot) continue;
+                            targetMin = snapshot->rectMin;
+                            targetMax = snapshot->rectMax;
+                            targetRotation = snapshot->rotation;
+                        } else {
+                            if (!resolveUiRectCached(*target, targetMin, targetMax)) continue;
+                        }
                         ImVec2 targetSize(targetMax.x - targetMin.x, targetMax.y - targetMin.y);
                         if (targetSize.x <= 0.01f || targetSize.y <= 0.01f) continue;
                         ImVec2 targetCenter((targetMin.x + targetMax.x) * 0.5f - imageMin.x,
@@ -7163,7 +7525,7 @@ void Engine::renderViewport() {
 
                         glm::mat4 targetModel(1.0f);
                         targetModel = glm::translate(targetModel, glm::vec3(targetCenter.x, targetCenter.y, 0.0f));
-                        targetModel = glm::rotate(targetModel, glm::radians(target->ui.rotation), glm::vec3(0.0f, 0.0f, 1.0f));
+                        targetModel = glm::rotate(targetModel, glm::radians(targetRotation), glm::vec3(0.0f, 0.0f, 1.0f));
                         targetModel = glm::scale(targetModel, glm::vec3(targetSize.x, targetSize.y, 1.0f));
 
                         glm::mat4 targetNewModel = gizmoDelta * targetModel;
@@ -7171,6 +7533,12 @@ void Engine::renderViewport() {
                         DecomposeMatrix(targetNewModel, pos, rot, scl);
                         glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(rot));
                         ImVec2 targetNewCenter(imageMin.x + pos.x, imageMin.y + pos.y);
+                        ImVec2 targetNewScreenSize(targetSize.x, targetSize.y);
+                        if (stableRectScale) {
+                            extractRectFromModel(targetNewModel, targetNewCenter, targetNewScreenSize);
+                            targetNewCenter.x += imageMin.x;
+                            targetNewCenter.y += imageMin.y;
+                        }
                         if (applyPixelSnap && op == ImGuizmo::TRANSLATE) {
                             targetNewCenter = snapScreenToPixel(targetNewCenter);
                         }
@@ -7193,22 +7561,31 @@ void Engine::renderViewport() {
                             glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
                             glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
                             target->ui.position = worldPivot - parentOffset - parallaxOffset(*target);
-                        } else if (op == ImGuizmo::SCALE) {
-                            const float minUiSize = (target->ui.type == UIElementType::Image ||
-                                                     target->ui.type == UIElementType::Sprite2D)
-                                ? 0.01f
-                                : 1.0f;
-                            ImVec2 newSize(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
-                            if (applyPixelSnap) {
-                                newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
-                                newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
+                        } else if (op == ImGuizmo::SCALE || op == ImGuizmo::BOUNDS) {
+                            if (allowScaleApply) {
+                                const float minUiSize = (target->ui.type == UIElementType::Image ||
+                                                         target->ui.type == UIElementType::Sprite2D)
+                                    ? 0.01f
+                                    : 1.0f;
+                                ImVec2 newSize = stableRectScale
+                                    ? ImVec2(std::max(minUiSize, targetNewScreenSize.x), std::max(minUiSize, targetNewScreenSize.y))
+                                    : ImVec2(std::max(minUiSize, scl.x), std::max(minUiSize, scl.y));
+                                if (stableRectScale) {
+                                    constexpr float kRectScaleDeadZonePx = 0.1f;
+                                    if (std::abs(newSize.x - targetSize.x) < kRectScaleDeadZonePx) newSize.x = targetSize.x;
+                                    if (std::abs(newSize.y - targetSize.y) < kRectScaleDeadZonePx) newSize.y = targetSize.y;
+                                }
+                                if (applyPixelSnap) {
+                                    newSize.x = std::max(pixelStep, std::round(newSize.x / pixelStep) * pixelStep);
+                                    newSize.y = std::max(pixelStep, std::round(newSize.y / pixelStep) * pixelStep);
+                                }
+                                glm::vec2 worldSize = glm::vec2(newSize.x, newSize.y) / uiWorldCamera.zoom;
+                                ImVec2 pivotOffset = anchorToPivotUI(target->ui.anchor, ImVec2(worldSize.x, worldSize.y));
+                                glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
+                                glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
+                                target->ui.position = worldPivot - parentOffset - parallaxOffset(*target);
+                                target->ui.size = worldSize;
                             }
-                            glm::vec2 worldSize = glm::vec2(newSize.x, newSize.y) / uiWorldCamera.zoom;
-                            ImVec2 pivotOffset = anchorToPivotUI(target->ui.anchor, ImVec2(worldSize.x, worldSize.y));
-                            glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
-                            glm::vec2 worldPivot = worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
-                            target->ui.position = worldPivot - parentOffset - parallaxOffset(*target);
-                            target->ui.size = worldSize;
                         }
                     }
 
@@ -7216,10 +7593,16 @@ void Engine::renderViewport() {
                     gizmoUsed = true;
                 } else {
                     worldUiGizmoHistoryCaptured = false;
+                    worldUiRectGizmoSnapshots.clear();
+                    worldUiRectGizmoModel = glm::mat4(1.0f);
+                    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
                 }
             }
         } else {
             worldUiGizmoHistoryCaptured = false;
+            worldUiRectGizmoSnapshots.clear();
+            worldUiRectGizmoModel = glm::mat4(1.0f);
+            worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
         }
 
         ImGui::EndChild();
@@ -10467,7 +10850,8 @@ void Engine::renderViewport() {
             }
             if (mCurrentGizmoOperation != ImGuizmo::TRANSLATE &&
                 mCurrentGizmoOperation != ImGuizmo::ROTATE &&
-                mCurrentGizmoOperation != ImGuizmo::SCALE) {
+                mCurrentGizmoOperation != ImGuizmo::SCALE &&
+                mCurrentGizmoOperation != ImGuizmo::BOUNDS) {
                 mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
             }
             mCurrentGizmoMode = ImGuizmo::LOCAL;
@@ -10478,13 +10862,17 @@ void Engine::renderViewport() {
         gizmoButton("##gizmo_rotate", GizmoToolbar::Icon::Rotate, ImGuizmo::ROTATE, "Rotate");
         ImGui::SameLine(0.0f, toolbarSpacing);
         gizmoButton("##gizmo_scale", GizmoToolbar::Icon::Scale, ImGuizmo::SCALE, "Scale");
+        if (use2DGizmos) {
+            ImGui::SameLine(0.0f, toolbarSpacing);
+            gizmoButton("##gizmo_bounds_2d", GizmoToolbar::Icon::Bounds, ImGuizmo::BOUNDS, "Rect scale");
+        }
         if (!use2DGizmos) {
             ImGui::SameLine(0.0f, toolbarSpacing);
-            bool canMeshEdit = false;
+            bool canMeshEdit = hasMeshBuilderPackage();
             if (selectedObj) {
                 std::string ext = fs::path(selectedObj->meshPath).extension().string();
                 std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                canMeshEdit = ext == ".rmesh";
+                canMeshEdit = canMeshEdit && ext == ".rmesh";
             }
             ImGui::BeginDisabled(!canMeshEdit);
             if (GizmoToolbar::IconButton("##gizmo_mesh_edit", GizmoToolbar::Icon::Mesh, meshEditMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
@@ -12370,13 +12758,23 @@ void Engine::renderPlayerViewport() {
         int litWorldImageCount = 0;
         bool lightBufferHadContent = false;
         std::unordered_map<int, std::string> light2DRoutingReasons;
-        light2DRoutingReasons.reserve(uiDrawList.size());
+        SceneObject* selectedForRoutingReasons = showInspector ? getSelectedObject() : nullptr;
+        const bool captureLight2DRoutingReasons = selectedForRoutingReasons && selectedForRoutingReasons->hasUI;
+        if (captureLight2DRoutingReasons) {
+            light2DRoutingReasons.reserve(uiDrawList.size());
+        }
+        auto setLight2DRoutingReason = [&](int objectId, const char* reason) {
+            if (captureLight2DRoutingReasons) {
+                light2DRoutingReasons[objectId] = reason;
+            }
+        };
         if (useWorldUi && rendererInitialized) {
             Light2DRenderRequest lightRequest;
             lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
             lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
+            lightRequest.lightingBufferScale = light2DLightingBufferScale;
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -12394,25 +12792,26 @@ void Engine::renderPlayerViewport() {
                 SceneObject& obj = *objPtr;
                 if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) continue;
                 if (obj.ui.nineSliceEnabled) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: nine-slice sprites are not routed through Light2D yet.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: nine-slice sprites are not routed through Light2D yet.");
                     continue;
                 }
                 if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: Force Unlit keeps this sprite on the legacy 2D renderer.");
                     continue;
                 }
                 const bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
                 const bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
+                const bool disableCulling = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
 
                 ImVec2 rectMin, rectMax;
                 if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: failed to resolve a world-space sprite rect for the active viewport.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: failed to resolve a world-space sprite rect for the active viewport.");
                     continue;
                 }
 
                 Texture* spriteTex = spriteTextureResolver.resolveTexture(obj);
                 if (!spriteTex || spriteTex->GetID() == 0) {
-                    light2DRoutingReasons[obj.id] = "Legacy path: no sprite texture is bound for this object.";
+                    setLight2DRoutingReason(obj.id, "Legacy path: no sprite texture is bound for this object.");
                     continue;
                 }
 
@@ -12427,7 +12826,7 @@ void Engine::renderPlayerViewport() {
                            quadMax.y < overlayPos.y || quadMin.y > overlayPos.y + overlaySize.y;
                 };
                 auto appendSpriteQuad = [&](const ImVec2& quadMin, const ImVec2& quadMax) {
-                    if (quadOutsideOverlay(quadMin, quadMax)) {
+                    if (!disableCulling && quadOutsideOverlay(quadMin, quadMax)) {
                         return false;
                     }
                     if (hasMaskRect) {
@@ -12501,9 +12900,9 @@ void Engine::renderPlayerViewport() {
                 }
 
                 if (!addedAnySprite) {
-                    light2DRoutingReasons[obj.id] = hasMaskRect
+                    setLight2DRoutingReason(obj.id, hasMaskRect
                         ? "Legacy path: repeating or masked tiles still use legacy rendering when the canvas clip cuts the visible tile."
-                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.";
+                        : "Skipped Light2D: object has no visible tiles inside the current 2D world overlay.");
                     continue;
                 }
 
@@ -12516,13 +12915,13 @@ void Engine::renderPlayerViewport() {
                     ++litWorldImageCount;
                 }
                 if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = repeatX || repeatY
+                    setLight2DRoutingReason(obj.id, repeatX || repeatY
                         ? "Lit path: repeating parallax tiles are routed through the Light2D compositor."
-                        : "Lit path: routed through the Light2D compositor.";
+                        : "Lit path: routed through the Light2D compositor.");
                 } else if (obj.ui.unlitLighting2D) {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Force Unlit is enabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Force Unlit is enabled.");
                 } else {
-                    light2DRoutingReasons[obj.id] = "Lit compositor path: object is routed, but Receive Lighting is disabled.";
+                    setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, but Receive Lighting is disabled.");
                 }
             }
 
@@ -12633,13 +13032,13 @@ void Engine::renderPlayerViewport() {
                     renderedLight2DComposite = true;
                 } else {
                     for (int objectId : light2DRenderedObjectIds) {
-                        light2DRoutingReasons[objectId] = "Legacy path: Light2D compositor did not produce a valid output texture this frame.";
+                        setLight2DRoutingReason(objectId, "Legacy path: Light2D compositor did not produce a valid output texture this frame.");
                     }
                     light2DRenderedObjectIds.clear();
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    light2DRoutingReasons[objectId] = "Legacy path: no active Light2D or Global Light2D affected this frame.";
+                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -12953,7 +13352,9 @@ void Engine::renderPlayerViewport() {
             light2DActiveCountLastFrame = activeLight2DCount;
             light2DLitSprite2DCountLastFrame = litSprite2DCount;
             light2DLitWorldImageCountLastFrame = litWorldImageCount;
-            light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            if (captureLight2DRoutingReasons) {
+                light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
+            }
         }
 
         bool pseudoPanelInteracting = false;

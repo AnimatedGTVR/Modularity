@@ -1152,7 +1152,11 @@ void Engine::renderFileBrowserPanel() {
             return;
         }
         if (fileBrowser.isTextureFile(entry)) {
-            loadPixelSpriteDocument(entry.path());
+            if (hasSpriteEditorPackage()) {
+                loadPixelSpriteDocument(entry.path());
+            } else {
+                openPathInShell(entry.path());
+            }
             return;
         }
         if (fileBrowser.isModelFile(entry)) {
@@ -2125,10 +2129,10 @@ void Engine::renderFileBrowserPanel() {
                         }
                     }
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
-                        if (ImGui::MenuItem("Open in Pixel Sprite Editor")) {
+                        if (hasSpriteEditorPackage() && ImGui::MenuItem("Open in Pixel Sprite Editor")) {
                             loadPixelSpriteDocument(entry.path());
                         }
-                        if (ImGui::MenuItem("Create Sprite2D")) {
+                        if (has2DWorldPackage() && ImGui::MenuItem("Create Sprite2D")) {
                             int canvasId = -1;
                             for (const auto& obj : sceneObjects) {
                                 if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
@@ -2159,7 +2163,7 @@ void Engine::renderFileBrowserPanel() {
                                 projectManager.currentProject.hasUnsavedChanges = true;
                             }
                         }
-                        if (ImGui::MenuItem("Import Sprite Sheet...")) {
+                        if (hasSpritesheetPackage() && ImGui::MenuItem("Import Sprite Sheet...")) {
                             pendingSpriteSheetPath = entry.path().string();
                             std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
                                           entry.path().stem().string().c_str());
@@ -2434,10 +2438,10 @@ void Engine::renderFileBrowserPanel() {
                     }
                 }
                 if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
-                    if (ImGui::MenuItem("Open in Pixel Sprite Editor")) {
+                    if (hasSpriteEditorPackage() && ImGui::MenuItem("Open in Pixel Sprite Editor")) {
                         loadPixelSpriteDocument(entry.path());
                     }
-                    if (ImGui::MenuItem("Create Sprite2D")) {
+                    if (has2DWorldPackage() && ImGui::MenuItem("Create Sprite2D")) {
                         int canvasId = -1;
                         for (const auto& obj : sceneObjects) {
                             if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
@@ -2468,7 +2472,7 @@ void Engine::renderFileBrowserPanel() {
                             projectManager.currentProject.hasUnsavedChanges = true;
                         }
                     }
-                    if (ImGui::MenuItem("Import Sprite Sheet...")) {
+                    if (hasSpritesheetPackage() && ImGui::MenuItem("Import Sprite Sheet...")) {
                         pendingSpriteSheetPath = entry.path().string();
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
                                       entry.path().stem().string().c_str());

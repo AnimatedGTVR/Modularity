@@ -58,6 +58,8 @@ struct ClassSpec {
     std::string passthroughCode;
 };
 
+size_t findTopLevelChar(const std::string& text, char needle);
+
 std::string trimCopy(const std::string& value) {
     size_t start = 0;
     while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
@@ -68,6 +70,135 @@ std::string trimCopy(const std::string& value) {
         --end;
     }
     return value.substr(start, end - start);
+}
+
+size_t lineStartFromOffset(const std::string& text, size_t offset) {
+    if (text.empty()) {
+        return 0;
+    }
+    const size_t clamped = std::min(offset, text.size());
+    const size_t lineBreak = text.rfind('\n', clamped == 0 ? 0 : clamped - 1);
+    return lineBreak == std::string::npos ? 0 : lineBreak + 1;
+}
+
+size_t lineEndFromOffset(const std::string& text, size_t offset) {
+    const size_t clamped = std::min(offset, text.size());
+    const size_t lineBreak = text.find('\n', clamped);
+    return lineBreak == std::string::npos ? text.size() : lineBreak;
+}
+
+size_t firstNonWhitespaceFrom(const std::string& text, size_t offset) {
+    size_t pos = std::min(offset, text.size());
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+        ++pos;
+    }
+    return pos;
+}
+
+size_t previousStatementEnd(const std::string& text, size_t offset) {
+    size_t pos = std::min(offset, text.size());
+    while (pos > 0) {
+        const unsigned char c = static_cast<unsigned char>(text[pos - 1]);
+        if (c == '\n') {
+            break;
+        }
+        if (std::isspace(c) == 0) {
+            return pos;
+        }
+        --pos;
+    }
+
+    const size_t lineStart = lineStartFromOffset(text, offset);
+    const size_t lineEnd = lineEndFromOffset(text, lineStart);
+    size_t linePos = lineEnd;
+    while (linePos > lineStart) {
+        const unsigned char c = static_cast<unsigned char>(text[linePos - 1]);
+        if (std::isspace(c) == 0) {
+            return linePos;
+        }
+        --linePos;
+    }
+    return firstNonWhitespaceFrom(text, lineStart);
+}
+
+bool startsWithAccessModifier(const std::string& text, size_t offset) {
+    if (offset >= text.size()) {
+        return false;
+    }
+    return text.compare(offset, 7, "public ") == 0 ||
+           text.compare(offset, 8, "private ") == 0 ||
+           text.compare(offset, 7, "public:") == 0 ||
+           text.compare(offset, 8, "private:") == 0;
+}
+
+std::optional<size_t> findSecondAccessModifierBoundary(const std::string& text) {
+    bool foundAccessModifier = false;
+    size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+        const size_t lineFirstToken = firstNonWhitespaceFrom(text, lineStart);
+        if (startsWithAccessModifier(text, lineFirstToken)) {
+            if (foundAccessModifier) {
+                return previousStatementEnd(text, lineStart);
+            }
+            foundAccessModifier = true;
+        }
+
+        const size_t lineBreak = text.find('\n', lineStart);
+        if (lineBreak == std::string::npos) {
+            break;
+        }
+        lineStart = lineBreak + 1;
+    }
+    return std::nullopt;
+}
+
+int lineNumberForOffset(const std::string& text, size_t offset) {
+    const size_t clamped = std::min(offset, text.size());
+    int line = 1;
+    for (size_t i = 0; i < clamped; ++i) {
+        if (text[i] == '\n') {
+            ++line;
+        }
+    }
+    return line;
+}
+
+int columnNumberForOffset(const std::string& text, size_t offset) {
+    const size_t clamped = std::min(offset, text.size());
+    const size_t lineStart = lineStartFromOffset(text, clamped);
+    return static_cast<int>(clamped - lineStart) + 1;
+}
+
+std::string formatLocatedParseError(const std::string& message,
+                                    const std::string& sourceText,
+                                    size_t offset) {
+    const size_t clamped = std::min(offset, sourceText.size());
+    const int line = lineNumberForOffset(sourceText, clamped);
+    const int column = columnNumberForOffset(sourceText, clamped);
+    std::ostringstream out;
+    out << message << " at line " << line << ", column " << column << ".";
+    return out.str();
+}
+
+std::optional<size_t> findLikelyMissingSemicolonInFieldDecl(const std::string& fieldDecl) {
+    if (std::optional<size_t> boundary = findSecondAccessModifierBoundary(fieldDecl)) {
+        return boundary;
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> findLikelyMissingSemicolonBeforeMethod(const std::string& declaration) {
+    if (std::optional<size_t> boundary = findSecondAccessModifierBoundary(declaration)) {
+        return boundary;
+    }
+
+    const size_t eqPos = findTopLevelChar(declaration, '=');
+    const size_t openParenPos = findTopLevelChar(declaration, '(');
+    if (eqPos == std::string::npos || openParenPos == std::string::npos || eqPos > openParenPos) {
+        return std::nullopt;
+    }
+
+    return previousStatementEnd(declaration, eqPos + 1);
 }
 
 std::string toLowerCopy(std::string value) {
@@ -1091,13 +1222,22 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
 
         if (nextOpenBrace != std::string::npos &&
             (nextSemicolon == std::string::npos || nextOpenBrace < nextSemicolon)) {
+            const std::string signatureDecl = bodyRaw.substr(i, nextOpenBrace - i);
+            if (std::optional<size_t> missingSemicolonOffset =
+                    findLikelyMissingSemicolonBeforeMethod(signatureDecl)) {
+                error = formatLocatedParseError(
+                    "Missing ';'",
+                    sourceText,
+                    bodyStart + i + *missingSemicolonOffset);
+                return false;
+            }
+
             const size_t methodCloseBrace = findMatchingBrace(bodyClean, nextOpenBrace);
             if (methodCloseBrace == std::string::npos) {
                 error = "Method body has unmatched '{' in class: " + outClass.name;
                 return false;
             }
 
-            std::string signatureDecl = bodyRaw.substr(i, nextOpenBrace - i);
             std::string methodBody = bodyRaw.substr(nextOpenBrace + 1, methodCloseBrace - nextOpenBrace - 1);
             const std::string signatureTrimmed = trimCopy(signatureDecl);
             if (signatureTrimmed == "inspector") {
@@ -1127,6 +1267,13 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
         }
 
         std::string fieldDecl = bodyRaw.substr(i, nextSemicolon - i + 1);
+        if (std::optional<size_t> missingSemicolonOffset = findLikelyMissingSemicolonInFieldDecl(fieldDecl)) {
+            error = formatLocatedParseError(
+                "Missing ';'",
+                sourceText,
+                bodyStart + i + *missingSemicolonOffset);
+            return false;
+        }
         FieldSpec field;
         if (parseFieldDecl(fieldDecl, field, error)) {
             if (!fieldNames.insert(field.name).second) {

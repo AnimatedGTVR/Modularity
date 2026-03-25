@@ -9,6 +9,7 @@
 #include "EditorUI.h"
 #include "MeshBuilder.h"
 #include "ScriptCompiler.h"
+#include "ScriptDiagnostics.h"
 #include "ScriptRuntime.h"
 #include "PhysicsSystem.h"
 #include "AudioSystem.h"
@@ -55,6 +56,22 @@ private:
     bool gizmoHistoryCaptured = false;
     bool worldUiGizmoHistoryCaptured = false;
     bool gameUiGizmoHistoryCaptured = false;
+    struct UiRectGizmoSnapshot {
+        int objectId = -1;
+        glm::vec2 position = glm::vec2(0.0f);
+        glm::vec2 size = glm::vec2(0.0f);
+        float rotation = 0.0f;
+        ImVec2 rectMin = ImVec2(0.0f, 0.0f);
+        ImVec2 rectMax = ImVec2(0.0f, 0.0f);
+    };
+    ImGuizmo::OPERATION worldUiRectGizmoOperation = ImGuizmo::TRANSLATE;
+    glm::mat4 worldUiRectGizmoModel = glm::mat4(1.0f);
+    std::vector<UiRectGizmoSnapshot> worldUiRectGizmoSnapshots;
+    ImVec2 worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    ImGuizmo::OPERATION gameUiRectGizmoOperation = ImGuizmo::TRANSLATE;
+    glm::mat4 gameUiRectGizmoModel = glm::mat4(1.0f);
+    std::vector<UiRectGizmoSnapshot> gameUiRectGizmoSnapshots;
+    ImVec2 gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
     // Standalone material inspection cache
     std::string inspectedMaterialPath;
     MaterialProperties inspectedMaterial;
@@ -111,6 +128,7 @@ private:
     bool showFileBrowser = true;
     bool showConsole = true;
     bool showProjectBrowser = true;  // Now merged into file browser
+    bool showRegistryPackagesWindow = false;
     bool showMeshBuilder = false;
     bool showBuildSettings = false;
     bool showStyleEditor = false;
@@ -196,13 +214,16 @@ private:
         Animation = 1,
         Scripting = 2
     };
+    static constexpr int kWorkspaceLayoutVersion = 2;
     UIAnimationMode uiAnimationMode = UIAnimationMode::Fluid;
     WorkspaceMode currentWorkspace = WorkspaceMode::Default;
+    int loadedWorkspaceLayoutVersion = 0;
     std::array<bool, 3> workspaceTabVisible = { true, true, true };
     bool workspaceLayoutDirty = false;
     bool pendingWorkspaceReload = false;
     bool workspaceLayoutSavePending = false;
     bool workspaceLayoutAutoRepairPending = false;
+    bool workspaceLayoutSettlingFrame = false;
     double workspaceLayoutStabilizeUntil = 0.0;
     double workspaceSwitchLockUntil = 0.0;
     fs::path pendingWorkspaceIniPath;
@@ -213,6 +234,14 @@ private:
     bool showAnimationWindow = false;
     bool showAIPathfindingWindow = false;
     bool showPixelSpriteEditorWindow = false;
+    char registryPackageSearch[256] = "";
+    std::string registryPackageSelectedId;
+    int registryPackageView = 0;
+    int registryPackageSubsystemFilter = 0;
+    int registryPackageTypeFilter = 0;
+    int registryPackageSort = 0;
+    bool registryPackageLastActionSucceeded = true;
+    std::string registryPackageFeedback;
     bool pixelSpriteOpenImagePopupOpen = false;
     bool pixelSpriteOpenImagePopupTrigger = false;
     FileBrowser pixelSpriteOpenImageBrowser;
@@ -443,6 +472,7 @@ private:
     int light2DActiveCountLastFrame = 0;
     int light2DLitSprite2DCountLastFrame = 0;
     int light2DLitWorldImageCountLastFrame = 0;
+    float light2DLightingBufferScale = 0.75f;
     std::unordered_map<int, std::string> light2DObjectRoutingReasonsLastFrame;
     bool light2DShapeEditMode = false;
     int light2DShapeEditingObjectId = -1;
@@ -474,6 +504,7 @@ private:
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
     std::string lastCompileLog;
+    std::vector<Modularity::ScriptDiagnostic> lastCompileDiagnostics;
     float compileProgress = 0.0f;
     std::string compileStage;
     enum class BuildPlatform {
@@ -549,6 +580,7 @@ private:
         std::string compileLog;
         std::string linkLog;
         std::string error;
+        std::vector<Modularity::ScriptDiagnostic> diagnostics;
     };
     std::atomic<bool> compileInProgress = false;
     std::atomic<bool> compileResultReady = false;
@@ -600,6 +632,7 @@ private:
     bool collisionWireframe = false;
     bool fpsCapEnabled = false;
     float fpsCap = 120.0f;
+    uint64_t renderFrameSerial = 0;
     struct UIStylePreset {
         std::string name;
         ImGuiStyle style;
@@ -705,6 +738,7 @@ private:
     void renderDialogs();
     void updateCompileJob();
     void renderProjectBrowserPanel();
+    void renderRegistryPackagesWindow();
     void renderScriptEditorWindows();
     void refreshScriptEditorWindows();
     void refreshScriptingFileList();
@@ -824,6 +858,14 @@ private:
                           const std::string& normal, bool useOverlay,
                           const std::string& vertexShader,
                           const std::string& fragmentShader);
+    bool hasInstalledPackage(const char* id) const;
+    bool hasSpriteEditorPackage() const;
+    bool hasSpritesheetPackage() const;
+    bool has2DWorldPackage() const;
+    bool hasMeshBuilderPackage() const;
+    bool hasScriptingWindowPackage() const;
+    bool hasVulkanPipelinePackage() const;
+    void clampOptionalPackageState(bool logMissingRenderer = false);
     
     // ImGui setup
     void setupImGui();

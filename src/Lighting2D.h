@@ -3,9 +3,10 @@
 #include "Common.h"
 #include "../include/Shaders/Shader.h"
 #include <array>
+#include <algorithm>
 #include <memory>
-#include <string>
 #include <unordered_map>
+#include <string>
 #include <vector>
 
 class Renderer;
@@ -162,6 +163,7 @@ struct Light2DRenderRequest {
     int height = 0;
     glm::vec4 clearColor = glm::vec4(0.0f);
     glm::vec3 baseAmbient = glm::vec3(0.15f);
+    float lightingBufferScale = 0.0f;
     std::array<Light2DBlendStyleDefinition, 4> blendStyles = {};
     std::vector<Light2DScreenSprite> sprites;
     std::vector<Light2DScreenLight> lights;
@@ -197,6 +199,8 @@ public:
 
     void shutdown();
     unsigned int render(const Light2DRenderRequest& request, Renderer& renderer);
+    void setLightingBufferScale(float scale) { lightingBufferScale = std::clamp(scale, 0.25f, 1.0f); }
+    float getLightingBufferScale() const { return lightingBufferScale; }
 
     const Light2DDebugStats& getLastStats() const { return lastStats; }
     const Light2DPolygonCache* getPolygonCache(int objectId) const;
@@ -209,6 +213,13 @@ private:
         unsigned int texture = 0;
         int width = 0;
         int height = 0;
+    };
+
+    struct LayerBatch {
+        int layer = 0;
+        size_t spriteBegin = 0;
+        size_t spriteEnd = 0;
+        std::vector<const Light2DScreenLight*> lights;
     };
 
     struct SpriteGpuVertex {
@@ -230,9 +241,15 @@ private:
     unsigned int polygonVao = 0;
     unsigned int polygonVbo = 0;
     unsigned int polygonEbo = 0;
+    size_t spriteVboCapacity = 0;
     std::unique_ptr<Shader> lightQuadShader;
     std::unique_ptr<Shader> lightFreeformShader;
     std::unique_ptr<Shader> spriteShader;
+    float lightingBufferScale = 1.0f;
+    std::vector<const Light2DScreenSprite*> orderedSpritesScratch;
+    std::vector<const Light2DScreenLight*> orderedLightsScratch;
+    std::vector<LayerBatch> layerBatchesScratch;
+    std::unordered_map<int, size_t> layerToBatchIndexScratch;
     std::vector<SpriteGpuVertex> spriteVertices;
     std::vector<glm::vec2> polygonVerticesScratch;
     std::unordered_map<int, Light2DPolygonCache> polygonCache;
@@ -243,19 +260,22 @@ private:
     void ensureTarget(RenderTarget& target, int width, int height);
     void ensureGeometry();
     void ensureShaders();
+    void clearTarget(RenderTarget& target, const glm::vec4& color) const;
+    float resolveLightingBufferScale(const Light2DRenderRequest& request) const;
     void renderLayer(const Light2DRenderRequest& request,
                      Renderer& renderer,
-                     int layer,
-                     const std::vector<const Light2DScreenSprite*>& sprites,
-                     const std::vector<const Light2DScreenLight*>& lights);
+                     const LayerBatch& batch,
+                     float lightingScale);
     void clearLightTargets();
     void renderLightPass(const Light2DRenderRequest& request,
                          Renderer& renderer,
                          int layer,
-                         const std::vector<const Light2DScreenLight*>& lights);
+                         const std::vector<const Light2DScreenLight*>& lights,
+                         float lightingScale);
     void renderSpritePass(const Light2DRenderRequest& request,
                           int layer,
-                          const std::vector<const Light2DScreenSprite*>& sprites);
+                          size_t spriteBegin,
+                          size_t spriteEnd);
     void drawFullscreenQuad() const;
     void drawUnitQuad() const;
 };

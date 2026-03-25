@@ -563,6 +563,7 @@ struct ParallaxLayer2DComponent {
     float factor = 1.0f; // 1 = world locked, 0 = camera locked
     bool repeatX = false;
     bool repeatY = false;
+    bool disableCulling = false;
     glm::vec2 repeatSpacing = glm::vec2(0.0f);
 };
 

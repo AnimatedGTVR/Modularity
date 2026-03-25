@@ -727,9 +727,8 @@ void updateTouchSwipeScrolling() {
         }
     }
 
-    // On non-touch platforms, skip traversal when there is no input and no
-    // residual smoothing/inertia to process.
-    if (!touchScreenMode && !hasWheelInput && runtime.activeWindowId == 0) {
+    const bool pointerActive = io.MouseDown[0] || io.MouseClicked[0] || runtime.dragging || runtime.activeWindowId != 0;
+    if (!hasWheelInput && !pointerActive) {
         bool hasResidualMotion = false;
         for (const auto& [id, state] : runtime.windowStates) {
             (void)id;
