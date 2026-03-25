@@ -16,6 +16,9 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <optional>
+#include <future>
+#include <chrono>
+#include <future>
 
 #ifdef _WIN32
 #include <shlobj.h>
