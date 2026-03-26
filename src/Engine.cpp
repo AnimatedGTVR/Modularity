@@ -3690,10 +3690,7 @@ void Engine::createRMeshPrimitive(const std::string& primitiveName) {
 #pragma region Mesh Editing
 bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     if (!obj) return false;
-    fs::path ext = fs::path(obj->meshPath).extension();
-    std::string extLower = ext.string();
-    std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
-    if (extLower != ".rmesh") return false;
+    if (!IsRawMeshPath(obj->meshPath)) return false;
 
     if (meshEditLoaded && meshEditPath == obj->meshPath) {
         if (meshEditAsset.materialSlots.empty()) {

@@ -734,6 +734,17 @@ inline bool HasRendererComponent(const SceneObject& obj) {
     return obj.hasRenderer && obj.renderType != RenderType::None;
 }
 
+inline bool IsRawMeshPath(const fs::path& path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".rmesh";
+}
+
+inline bool IsRawMeshPath(const std::string& path) {
+    if (path.empty()) return false;
+    return IsRawMeshPath(fs::path(path));
+}
+
 inline bool IsObjectEnabledInHierarchy(const SceneObject& obj) {
     return obj.enabled && obj.hierarchyEnabled;
 }

@@ -2469,7 +2469,7 @@ void Engine::renderInspectorPanel() {
                 case RenderType::Sphere: typeLabel = "Sphere"; break;
                 case RenderType::Capsule: typeLabel = "Capsule"; break;
                 case RenderType::OBJMesh: typeLabel = "OBJ Mesh"; break;
-                case RenderType::Model: typeLabel = "Model"; break;
+                case RenderType::Model: typeLabel = IsRawMeshPath(obj.meshPath) ? "RMesh" : "Model"; break;
                 case RenderType::Sprite: typeLabel = "Sprite"; break;
                 case RenderType::Mirror: typeLabel = "Mirror"; break;
                 case RenderType::Plane: typeLabel = "Plane"; break;
@@ -4647,7 +4647,7 @@ void Engine::renderInspectorPanel() {
                 case RenderType::Sphere: renderLabel = "Sphere"; break;
                 case RenderType::Capsule: renderLabel = "Capsule"; break;
                 case RenderType::OBJMesh: renderLabel = "OBJ Mesh"; break;
-                case RenderType::Model: renderLabel = "Model"; break;
+                case RenderType::Model: renderLabel = IsRawMeshPath(obj.meshPath) ? "RMesh" : "Model"; break;
                 case RenderType::Mirror: renderLabel = "Mirror"; break;
                 case RenderType::Plane: renderLabel = "Plane"; break;
                 case RenderType::Torus: renderLabel = "Torus"; break;
@@ -5049,10 +5049,10 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (obj.renderType == RenderType::Model) {
+            if (obj.renderType == RenderType::Model || IsRawMeshPath(obj.meshPath)) {
                 ImGui::Spacing();
                 ImGui::Separator();
-                ImGui::TextDisabled("Model Info");
+                ImGui::TextDisabled(IsRawMeshPath(obj.meshPath) ? "RMesh Info" : "Model Info");
 
                 const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
                 if (meshInfo) {
@@ -5068,7 +5068,7 @@ void Engine::renderInspectorPanel() {
 
                     ImGui::Spacing();
 
-                    if (ImGui::Button("Reload Model", ImVec2(-1, 0))) {
+                    if (ImGui::Button(IsRawMeshPath(obj.meshPath) ? "Reload RMesh" : "Reload Model", ImVec2(-1, 0))) {
                         bool reloaded = false;
                         if (obj.meshSourceIndex >= 0) {
                             ModelSceneData sceneData;
@@ -7284,7 +7284,7 @@ void Engine::renderMeshBuilderPanel() {
     }
 
     if (ImGui::Button("Load Selected File")) {
-        if (!fileBrowser.selectedFile.empty() && fs::path(fileBrowser.selectedFile).extension() == ".rmesh") {
+        if (!fileBrowser.selectedFile.empty() && IsRawMeshPath(fileBrowser.selectedFile)) {
             strncpy(meshBuilderPath, fileBrowser.selectedFile.string().c_str(), sizeof(meshBuilderPath) - 1);
             meshBuilderPath[sizeof(meshBuilderPath) - 1] = '\0';
             std::string err;

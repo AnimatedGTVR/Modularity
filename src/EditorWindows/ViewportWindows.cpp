@@ -10870,9 +10870,7 @@ void Engine::renderViewport() {
             ImGui::SameLine(0.0f, toolbarSpacing);
             bool canMeshEdit = hasMeshBuilderPackage();
             if (selectedObj) {
-                std::string ext = fs::path(selectedObj->meshPath).extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                canMeshEdit = canMeshEdit && ext == ".rmesh";
+                canMeshEdit = canMeshEdit && IsRawMeshPath(selectedObj->meshPath);
             }
             ImGui::BeginDisabled(!canMeshEdit);
             if (GizmoToolbar::IconButton("##gizmo_mesh_edit", GizmoToolbar::Icon::Mesh, meshEditMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
@@ -11534,7 +11532,9 @@ void Engine::renderViewport() {
         selectedObj = getSelectedObject();
         const bool selectedMeshContextObject = selectedObj &&
             selectedObj->hasRenderer &&
-            (selectedObj->renderType == RenderType::Model || selectedObj->renderType == RenderType::OBJMesh) &&
+            (selectedObj->renderType == RenderType::Model ||
+             selectedObj->renderType == RenderType::OBJMesh ||
+             IsRawMeshPath(selectedObj->meshPath)) &&
             (!meshEditMode || meshEditSelectionMode == MeshEditSelectionMode::Object);
         const bool meshObjectContextMode =
             selectedMeshContextObject;
@@ -11596,9 +11596,7 @@ void Engine::renderViewport() {
                     }
                 }
                 if (ImGui::MenuItem("Rebuild Mesh Data")) {
-                    std::string ext = fs::path(selectedObj->meshPath).extension().string();
-                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                    if (ext == ".rmesh" && !selectedObj->meshPath.empty()) {
+                    if (IsRawMeshPath(selectedObj->meshPath)) {
                         RawMeshAsset rebuilt;
                         std::string err;
                         if (getModelLoader().loadRawMesh(selectedObj->meshPath, rebuilt, err)) {

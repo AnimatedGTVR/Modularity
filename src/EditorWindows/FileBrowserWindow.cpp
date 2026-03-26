@@ -2398,9 +2398,7 @@ void Engine::renderFileBrowserPanel() {
                 }
                 if (fileBrowser.isModelFile(entry)) {
                     bool isObj = fileBrowser.isOBJFile(entry);
-                    std::string ext = entry.path().extension().string();
-                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-                    bool isRaw = ext == ".rmesh";
+                    bool isRaw = IsRawMeshPath(entry.path());
                     if (ImGui::MenuItem("Import to Scene")) {
                         std::string defaultName = entry.path().stem().string();
                         if (isObj) {
