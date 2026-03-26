@@ -7,6 +7,10 @@
 #include <unordered_set>
 #include <unordered_map>
 
+#if defined(_WIN32)
+#include <shellapi.h>
+#endif
+
 namespace {
     enum class ScriptEditorLanguage {
         Cpp,
