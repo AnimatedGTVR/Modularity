@@ -10868,10 +10868,8 @@ void Engine::renderViewport() {
         }
         if (!use2DGizmos) {
             ImGui::SameLine(0.0f, toolbarSpacing);
-            bool canMeshEdit = hasMeshBuilderPackage();
-            if (selectedObj) {
-                canMeshEdit = canMeshEdit && IsRawMeshPath(selectedObj->meshPath);
-            }
+            // In-viewport RMesh editing is not tied to the legacy Mesh Builder package.
+            bool canMeshEdit = selectedObj && IsRawMeshPath(selectedObj->meshPath);
             ImGui::BeginDisabled(!canMeshEdit);
             if (GizmoToolbar::IconButton("##gizmo_mesh_edit", GizmoToolbar::Icon::Mesh, meshEditMode, gizmoIconButtonSize, baseBtn, hoverBtn, activeBtn, accent, iconColor)) {
                 meshEditMode = !meshEditMode;
