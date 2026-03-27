@@ -724,6 +724,7 @@ namespace {
 
     enum class CreateKind {
         Folder,
+        ModuCppScript,
         CppScript,
         CScript,
         Header,
@@ -1196,6 +1197,7 @@ void Engine::renderFileBrowserPanel() {
         fs::path target = baseDir / name;
         if (kind != CreateKind::Folder && target.extension().empty()) {
             switch (kind) {
+                case CreateKind::ModuCppScript: target += ".moducpp"; break;
                 case CreateKind::CppScript: target += ".cpp"; break;
                 case CreateKind::CScript: target += ".c"; break;
                 case CreateKind::Header: target += ".h"; break;
@@ -1222,7 +1224,47 @@ void Engine::renderFileBrowserPanel() {
             created = fs::create_directories(target, ec);
         } else {
             std::string contents;
+            auto sanitizeIdentifier = [](std::string value) {
+                if (value.empty()) {
+                    return std::string("NewScript");
+                }
+                for (size_t i = 0; i < value.size(); ++i) {
+                    unsigned char c = static_cast<unsigned char>(value[i]);
+                    if (i == 0) {
+                        if (!std::isalpha(c) && c != '_') {
+                            value[i] = '_';
+                        }
+                    } else if (!std::isalnum(c) && c != '_') {
+                        value[i] = '_';
+                    }
+                }
+                return value;
+            };
+            const std::string scriptClassName = sanitizeIdentifier(target.stem().string());
             switch (kind) {
+                case CreateKind::ModuCppScript:
+                    contents =
+                        "#include \"ModuCPP\"\n"
+                        "\n"
+                        "public class " + scriptClassName + " : ModuBehaviour {\n"
+                        "    public float interval = 1.0f @range(0.0f, 60.0f) @step(0.05f);\n"
+                        "    private float timer = 0.0f;\n"
+                        "\n"
+                        "    void Begin(MODU_obj, float dt) {\n"
+                        "        (void)dt;\n"
+                        "        timer = 0.0f;\n"
+                        "    }\n"
+                        "\n"
+                        "    void TickUpdate(MODU_obj, float dt) {\n"
+                        "        if (!obj || dt <= 0.0f) return;\n"
+                        "\n"
+                        "        timer += dt;\n"
+                        "        if (timer < interval) return;\n"
+                        "\n"
+                        "        timer = 0.0f;\n"
+                        "    }\n"
+                        "}\n";
+                    break;
                 case CreateKind::CppScript:
                     contents =
                         "#include \"ScriptRuntime.h\"\n"
@@ -1291,6 +1333,79 @@ void Engine::renderFileBrowserPanel() {
                               ConsoleMessageType::Error);
         }
         return false;
+    };
+
+    auto drawCreateMenu = [&](const fs::path& dir) {
+        if (ImGui::MenuItem("Folder")) {
+            createEntry(dir, CreateKind::Folder, "New Folder");
+        }
+
+        if (ImGui::BeginMenu("Scripts")) {
+            if (ImGui::MenuItem("ModuCPP Script")) {
+                createEntry(dir, CreateKind::ModuCppScript, "NewScript.moducpp");
+            }
+            if (ImGui::MenuItem("C++ Script")) {
+                createEntry(dir, CreateKind::CppScript, "NewScript.cpp");
+            }
+            if (ImGui::MenuItem("C Script")) {
+                createEntry(dir, CreateKind::CScript, "NewScript.c");
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Code")) {
+            if (ImGui::MenuItem("Header")) {
+                createEntry(dir, CreateKind::Header, "NewHeader.h");
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Data")) {
+            if (ImGui::MenuItem("Text File")) {
+                createEntry(dir, CreateKind::Text, "NewFile.txt");
+            }
+            if (ImGui::MenuItem("JSON File")) {
+                createEntry(dir, CreateKind::Json, "NewData.json");
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Graphics")) {
+            if (ImGui::MenuItem("Shader")) {
+                createEntry(dir, CreateKind::Shader, "NewShader.glsl");
+            }
+            if (ImGui::MenuItem("Scrolling Shader Pair")) {
+                fs::path vertPath;
+                fs::path fragPath;
+                std::string error;
+                if (createScrollingShaderPair(dir, vertPath, fragPath, error)) {
+                    fileBrowser.needsRefresh = true;
+                    addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
+                                      ", " + fragPath.filename().string(),
+                                      ConsoleMessageType::Success);
+                } else {
+                    addConsoleMessage("Failed to create scrolling shaders in " +
+                                      dir.string() + " (" + error + ")",
+                                      ConsoleMessageType::Error);
+                }
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Assets")) {
+            if (ImGui::MenuItem("Material")) {
+                fs::path target = dir / "NewMaterial.mat";
+                int counter = 1;
+                while (fs::exists(target)) {
+                    target = dir / ("NewMaterial" + std::to_string(counter++) + ".mat");
+                }
+                SceneObject temp("Material", ObjectType::Cube, -1);
+                temp.materialPath = target.string();
+                saveMaterialToFile(temp);
+                fileBrowser.needsRefresh = true;
+            }
+            ImGui::EndMenu();
+        }
     };
 
     auto normalizePath = [](const fs::path& path) {
@@ -2022,53 +2137,7 @@ void Engine::renderFileBrowserPanel() {
                     }
                     #endif
                     if (entry.is_directory() && ImGui::BeginMenu("New")) {
-                        if (ImGui::MenuItem("Folder")) {
-                            createEntry(entry.path(), CreateKind::Folder, "New Folder");
-                        }
-                        if (ImGui::MenuItem("C++ Script")) {
-                            createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
-                        }
-                        if (ImGui::MenuItem("C Script")) {
-                            createEntry(entry.path(), CreateKind::CScript, "NewScript.c");
-                        }
-                        if (ImGui::MenuItem("Header")) {
-                            createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
-                        }
-                        if (ImGui::MenuItem("Text File")) {
-                            createEntry(entry.path(), CreateKind::Text, "NewFile.txt");
-                        }
-                        if (ImGui::MenuItem("JSON File")) {
-                            createEntry(entry.path(), CreateKind::Json, "NewData.json");
-                        }
-                        if (ImGui::MenuItem("Shader")) {
-                            createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
-                        }
-                        if (ImGui::MenuItem("Scrolling Shader Pair")) {
-                            fs::path vertPath;
-                            fs::path fragPath;
-                            std::string error;
-                            if (createScrollingShaderPair(entry.path(), vertPath, fragPath, error)) {
-                                fileBrowser.needsRefresh = true;
-                                addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
-                                                  ", " + fragPath.filename().string(),
-                                                  ConsoleMessageType::Success);
-                            } else {
-                                addConsoleMessage("Failed to create scrolling shaders in " +
-                                                  entry.path().string() + " (" + error + ")",
-                                                  ConsoleMessageType::Error);
-                            }
-                        }
-                        if (ImGui::MenuItem("Material")) {
-                            fs::path target = entry.path() / "NewMaterial.mat";
-                            int counter = 1;
-                            while (fs::exists(target)) {
-                                target = entry.path() / ("NewMaterial" + std::to_string(counter++) + ".mat");
-                            }
-                            SceneObject temp("Material", ObjectType::Cube, -1);
-                            temp.materialPath = target.string();
-                            saveMaterialToFile(temp);
-                            fileBrowser.needsRefresh = true;
-                        }
+                        drawCreateMenu(entry.path());
                         ImGui::EndMenu();
                     }
                     if (entry.is_directory() && ImGui::MenuItem("Import Assets Here...")) {
@@ -2328,53 +2397,7 @@ void Engine::renderFileBrowserPanel() {
                 }
                 #endif
                 if (entry.is_directory() && ImGui::BeginMenu("New")) {
-                    if (ImGui::MenuItem("Folder")) {
-                        createEntry(entry.path(), CreateKind::Folder, "New Folder");
-                    }
-                    if (ImGui::MenuItem("C++ Script")) {
-                        createEntry(entry.path(), CreateKind::CppScript, "NewScript.cpp");
-                    }
-                    if (ImGui::MenuItem("C Script")) {
-                        createEntry(entry.path(), CreateKind::CScript, "NewScript.c");
-                    }
-                    if (ImGui::MenuItem("Header")) {
-                        createEntry(entry.path(), CreateKind::Header, "NewHeader.h");
-                    }
-                    if (ImGui::MenuItem("Text File")) {
-                        createEntry(entry.path(), CreateKind::Text, "NewFile.txt");
-                    }
-                    if (ImGui::MenuItem("JSON File")) {
-                        createEntry(entry.path(), CreateKind::Json, "NewData.json");
-                    }
-                    if (ImGui::MenuItem("Shader")) {
-                        createEntry(entry.path(), CreateKind::Shader, "NewShader.glsl");
-                    }
-                    if (ImGui::MenuItem("Scrolling Shader Pair")) {
-                        fs::path vertPath;
-                        fs::path fragPath;
-                        std::string error;
-                        if (createScrollingShaderPair(entry.path(), vertPath, fragPath, error)) {
-                            fileBrowser.needsRefresh = true;
-                            addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
-                                              ", " + fragPath.filename().string(),
-                                              ConsoleMessageType::Success);
-                        } else {
-                            addConsoleMessage("Failed to create scrolling shaders in " +
-                                              entry.path().string() + " (" + error + ")",
-                                              ConsoleMessageType::Error);
-                        }
-                    }
-                    if (ImGui::MenuItem("Material")) {
-                        fs::path target = entry.path() / "NewMaterial.mat";
-                        int counter = 1;
-                        while (fs::exists(target)) {
-                            target = entry.path() / ("NewMaterial" + std::to_string(counter++) + ".mat");
-                        }
-                        SceneObject temp("Material", ObjectType::Cube, -1);
-                        temp.materialPath = target.string();
-                        saveMaterialToFile(temp);
-                        fileBrowser.needsRefresh = true;
-                    }
+                    drawCreateMenu(entry.path());
                     ImGui::EndMenu();
                 }
                 if (entry.is_directory() && ImGui::MenuItem("Import Assets Here...")) {
@@ -2549,53 +2572,7 @@ void Engine::renderFileBrowserPanel() {
         }
         ImGui::Separator();
         if (ImGui::BeginMenu("New")) {
-            if (ImGui::MenuItem("Folder")) {
-                createEntry(fileBrowser.currentPath, CreateKind::Folder, "New Folder");
-            }
-            if (ImGui::MenuItem("C++ Script")) {
-                createEntry(fileBrowser.currentPath, CreateKind::CppScript, "NewScript.cpp");
-            }
-            if (ImGui::MenuItem("C Script")) {
-                createEntry(fileBrowser.currentPath, CreateKind::CScript, "NewScript.c");
-            }
-            if (ImGui::MenuItem("Header")) {
-                createEntry(fileBrowser.currentPath, CreateKind::Header, "NewHeader.h");
-            }
-            if (ImGui::MenuItem("Text File")) {
-                createEntry(fileBrowser.currentPath, CreateKind::Text, "NewFile.txt");
-            }
-            if (ImGui::MenuItem("JSON File")) {
-                createEntry(fileBrowser.currentPath, CreateKind::Json, "NewData.json");
-            }
-            if (ImGui::MenuItem("Shader")) {
-                createEntry(fileBrowser.currentPath, CreateKind::Shader, "NewShader.glsl");
-            }
-            if (ImGui::MenuItem("Scrolling Shader Pair")) {
-                fs::path vertPath;
-                fs::path fragPath;
-                std::string error;
-                if (createScrollingShaderPair(fileBrowser.currentPath, vertPath, fragPath, error)) {
-                    fileBrowser.needsRefresh = true;
-                    addConsoleMessage("Created scrolling shaders: " + vertPath.filename().string() +
-                                      ", " + fragPath.filename().string(),
-                                      ConsoleMessageType::Success);
-                } else {
-                    addConsoleMessage("Failed to create scrolling shaders in " +
-                                      fileBrowser.currentPath.string() + " (" + error + ")",
-                                      ConsoleMessageType::Error);
-                }
-            }
-            if (ImGui::MenuItem("Material")) {
-                fs::path target = fileBrowser.currentPath / "NewMaterial.mat";
-                int counter = 1;
-                while (fs::exists(target)) {
-                    target = fileBrowser.currentPath / ("NewMaterial" + std::to_string(counter++) + ".mat");
-                }
-                SceneObject temp("Material", ObjectType::Cube, -1);
-                temp.materialPath = target.string();
-                saveMaterialToFile(temp);
-                fileBrowser.needsRefresh = true;
-            }
+            drawCreateMenu(fileBrowser.currentPath);
             ImGui::EndMenu();
         }
         ImGui::EndPopup();

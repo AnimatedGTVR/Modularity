@@ -1,6 +1,6 @@
 #include "ModuCPP"
 
-public class AutoEnableAndDisableListsOfObjectsAfterAmountOfTime : ModuBehaviour {
+public class # : ModuBehaviour {
     public List<SceneObj*> enable;
     public List<SceneObj*> disable;
     public float interval = 1.0f @range(0.0f, 60.0f) @step(0.05f);

@@ -7132,19 +7132,42 @@ void Engine::renderInspectorPanel() {
             cachedScriptSources.clear();
             cachedScriptBinaries.clear();
 
-            fs::path scriptsDir = projectManager.currentProject.projectPath / "Scripts";
             fs::path outDir;
             ScriptBuildConfig config;
             std::string error;
             fs::path cfgPath = resolveScriptsConfigPath(projectManager.currentProject);
             if (scriptCompiler.loadConfig(cfgPath, config, error)) {
-                scriptsDir = config.scriptsDir;
                 outDir = config.outDir;
             }
 
+            std::vector<fs::path> scriptRoots = {
+                config.scriptsDir,
+                projectManager.currentProject.projectPath / "Scripts",
+                projectManager.currentProject.projectPath / "Assets" / "Scripts"
+            };
+            std::unordered_set<std::string> seenRoots;
             std::error_code ec;
-            if (fs::exists(scriptsDir, ec)) {
-                for (auto it = fs::recursive_directory_iterator(scriptsDir, ec);
+            for (const auto& root : scriptRoots) {
+                fs::path resolvedRoot = root;
+                if (resolvedRoot.empty()) {
+                    continue;
+                }
+                if (!resolvedRoot.is_absolute()) {
+                    resolvedRoot = projectManager.currentProject.projectPath / resolvedRoot;
+                }
+                std::error_code rootEc;
+                fs::path normalizedRoot = fs::weakly_canonical(resolvedRoot, rootEc);
+                if (rootEc) {
+                    normalizedRoot = resolvedRoot.lexically_normal();
+                }
+                std::string rootKey = normalizedRoot.lexically_normal().string();
+                if (!seenRoots.insert(rootKey).second) {
+                    continue;
+                }
+                if (!fs::exists(normalizedRoot, ec) || !fs::is_directory(normalizedRoot, ec)) {
+                    continue;
+                }
+                for (auto it = fs::recursive_directory_iterator(normalizedRoot, ec);
                      it != fs::recursive_directory_iterator(); ++it) {
                     if (it->is_directory()) continue;
                     std::string ext = it->path().extension().string();

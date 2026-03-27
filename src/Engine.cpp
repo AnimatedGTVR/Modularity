@@ -4157,28 +4157,51 @@ void Engine::updateAutoCompileScripts() {
         }
     }
 
+    const fs::path projectRoot = projectManager.currentProject.projectPath;
+    std::unordered_set<std::string> scannedRoots;
+    auto scanScriptRoot = [&](const fs::path& root) {
+        if (root.empty()) return;
+
+        fs::path resolvedRoot = root;
+        if (!resolvedRoot.is_absolute()) {
+            resolvedRoot = projectRoot / resolvedRoot;
+        }
+
+        std::error_code rootEc;
+        fs::path normalizedRoot = fs::weakly_canonical(resolvedRoot, rootEc);
+        if (rootEc) {
+            normalizedRoot = resolvedRoot.lexically_normal();
+        }
+
+        std::string rootKey = normalizedRoot.lexically_normal().string();
+        if (!scannedRoots.insert(rootKey).second) {
+            return;
+        }
+
+        std::error_code existsEc;
+        if (!fs::exists(normalizedRoot, existsEc) || !fs::is_directory(normalizedRoot, existsEc)) {
+            return;
+        }
+
+        for (auto it = fs::recursive_directory_iterator(normalizedRoot, existsEc);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (it->is_directory()) continue;
+            std::string ext = it->path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" ||
+                ext == ".moducpp") {
+                addSourceTo(scriptAutoCompileDiscoveredSources, it->path());
+            }
+        }
+    };
+
     if (now - scriptAutoCompileLastDirectoryScan >= scriptAutoCompileDirectoryScanInterval) {
         scriptAutoCompileLastDirectoryScan = now;
         scriptAutoCompileDiscoveredSources.clear();
-
-        fs::path scriptsDir = config.scriptsDir;
-        if (!scriptsDir.is_absolute()) {
-            scriptsDir = projectManager.currentProject.projectPath / scriptsDir;
-        }
-        std::error_code dirEc;
-        if (fs::exists(scriptsDir, dirEc)) {
-            for (auto it = fs::recursive_directory_iterator(scriptsDir, dirEc);
-                 it != fs::recursive_directory_iterator(); ++it) {
-                if (it->is_directory()) continue;
-                std::string ext = it->path().extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" ||
-                    ext == ".moducpp") {
-                    addSourceTo(scriptAutoCompileDiscoveredSources, it->path());
-                }
-            }
-        }
+        scanScriptRoot(config.scriptsDir);
+        scanScriptRoot(projectRoot / "Scripts");
+        scanScriptRoot(projectRoot / "Assets" / "Scripts");
     }
 
     sources.insert(scriptAutoCompileDiscoveredSources.begin(), scriptAutoCompileDiscoveredSources.end());

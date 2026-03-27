@@ -578,24 +578,27 @@ void Engine::refreshScriptingFileList() {
     fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
     ScriptBuildConfig config;
     std::string error;
+    const fs::path projectRoot = projectManager.currentProject.projectPath;
     if (scriptCompiler.loadConfig(configPath, config, error)) {
-        fs::path scriptsRoot = config.scriptsDir;
-        if (!scriptsRoot.is_absolute()) {
-            scriptsRoot = projectManager.currentProject.projectPath / scriptsRoot;
-        }
-        roots.push_back(scriptsRoot);
+        roots.push_back(config.scriptsDir);
     } else {
         roots.push_back(projectManager.currentProject.assetsPath / "Scripts");
     }
+    roots.push_back(projectRoot / "Scripts");
+    roots.push_back(projectRoot / "Assets" / "Scripts");
     roots.push_back(projectManager.currentProject.assetsPath / "Shaders");
 
     std::unordered_set<std::string> uniquePaths;
     for (const auto& root : roots) {
         std::error_code ec;
-        if (root.empty() || !fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+        fs::path resolvedRoot = root;
+        if (!resolvedRoot.empty() && !resolvedRoot.is_absolute()) {
+            resolvedRoot = projectRoot / resolvedRoot;
+        }
+        if (resolvedRoot.empty() || !fs::exists(resolvedRoot, ec) || !fs::is_directory(resolvedRoot, ec)) {
             continue;
         }
-        for (auto it = fs::recursive_directory_iterator(root, ec);
+        for (auto it = fs::recursive_directory_iterator(resolvedRoot, ec);
              it != fs::recursive_directory_iterator(); ++it) {
             if (it->is_directory()) continue;
             std::string ext = extensionLower(it->path());
