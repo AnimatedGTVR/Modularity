@@ -889,20 +889,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         compileSourcePath = transpiledPath;
     }
 
-    auto hasExternCSymbol = [&](const std::string& symbol) {
-        try {
-            std::regex direct("extern\\s+\"C\"\\s+void\\s+" + symbol + "\\s*\\(");
-            if (std::regex_search(scriptSource, direct)) return true;
-            std::regex block("extern\\s+\"C\"\\s*\\{[\\s\\S]*?\\b" + symbol + "\\b");
-            return std::regex_search(scriptSource, block);
-        } catch (...) {
-            return false;
-        }
-    };
-
-    auto appendWindowsIncludesAndDefines = [&](std::ostringstream& cmd) {
-        for (const auto& inc : config.includeDirs) {
-            cmd << " /I\"" << inc.string() << "\"";
+        auto appendWindowsIncludesAndDefines = [&](std::ostringstream& cmd) {
+            for (const auto& inc : config.includeDirs) {
+                cmd << " /I\"" << inc.string() << "\"";
         }
         cmd << " /DMODULARITY_SCRIPT_IMPORTS";
         for (const auto& def : config.defines) {
@@ -1500,9 +1489,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         FunctionSpec editorRenderSpec = detectFunction(scriptSource, "RenderEditorWindow", cppContextPattern);
         FunctionSpec editorExitSpec = detectFunction(scriptSource, "ExitRenderEditorWindow", cppContextPattern);
 
-        bool needsInspectorWrap = inspectorSpec.present && !hasExternCSymbol("Script_OnInspector");
-        bool needsRenderWrap = editorRenderSpec.present && !hasExternCSymbol("RenderEditorWindow");
-        bool needsExitWrap = editorExitSpec.present && !hasExternCSymbol("ExitRenderEditorWindow");
+        bool needsInspectorWrap = inspectorSpec.present;
+        bool needsRenderWrap = editorRenderSpec.present;
+        bool needsExitWrap = editorExitSpec.present;
         useWrapper = beginSpec.present || specSpec.present || testEditorSpec.present ||
                      updateSpec.present || tickUpdateSpec.present ||
                      needsInspectorWrap || needsRenderWrap || needsExitWrap;
