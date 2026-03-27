@@ -2097,6 +2097,16 @@ Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     }
     return cam;
 }
+
+const SceneObject* Engine::findPlayerCameraObject() const {
+    for (const auto& obj : sceneObjects) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
+        if (obj.camera.type == SceneCameraType::Player) {
+            return &obj;
+        }
+    }
+    return nullptr;
+}
 #pragma endregion
 
 #pragma region Transform Helpers
@@ -2908,27 +2918,7 @@ void Engine::run() {
             syncPlayerCamera();
         }
 
-        auto pickRuntimeCameraObject = [this]() -> const SceneObject* {
-            const SceneObject* playerCam = nullptr;
-            const SceneObject* sceneCam = nullptr;
-            const SceneObject* anyCam = nullptr;
-            for (const auto& obj : sceneObjects) {
-                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
-                if (!anyCam) anyCam = &obj;
-                if (!sceneCam && obj.camera.type == SceneCameraType::Scene) {
-                    sceneCam = &obj;
-                }
-                if (obj.camera.type == SceneCameraType::Player) {
-                    playerCam = &obj;
-                    break;
-                }
-            }
-            if (playerCam) return playerCam;
-            if (sceneCam) return sceneCam;
-            return anyCam;
-        };
-
-        const SceneObject* runtimeCameraObject = pickRuntimeCameraObject();
+        const SceneObject* runtimeCameraObject = findPlayerCameraObject();
 
         if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
             if (!showLauncher && projectManager.currentProject.isLoaded) {
@@ -6145,22 +6135,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
 }
 
 void Engine::syncPlayerCamera() {
-    const SceneObject* playerCamObj = nullptr;
-    const SceneObject* sceneCamObj = nullptr;
-    const SceneObject* fallbackCamObj = nullptr;
-    for (const auto& obj : sceneObjects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
-        if (!fallbackCamObj) fallbackCamObj = &obj;
-        if (!sceneCamObj && obj.camera.type == SceneCameraType::Scene) {
-            sceneCamObj = &obj;
-        }
-        if (obj.camera.type == SceneCameraType::Player) {
-            playerCamObj = &obj;
-            break;
-        }
-    }
-
-    const SceneObject* activeCam = playerCamObj ? playerCamObj : (sceneCamObj ? sceneCamObj : fallbackCamObj);
+    const SceneObject* activeCam = findPlayerCameraObject();
     if (!activeCam) {
         return;
     }

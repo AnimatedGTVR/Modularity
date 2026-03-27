@@ -1050,7 +1050,7 @@ void ApplyLegacyTypePreset(SceneObject& obj, ObjectType legacyType) {
             break;
         case ObjectType::Camera:
             obj.hasCamera = true;
-            obj.camera.type = SceneCameraType::Scene;
+            obj.camera.type = SceneCameraType::Player;
             break;
         case ObjectType::PostFXNode:
             obj.hasPostFX = true;

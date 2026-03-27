@@ -12449,15 +12449,7 @@ void Engine::renderPlayerViewport() {
         float runtimeNear = buildSettings.editorCameraNear;
         float runtimeFar = buildSettings.editorCameraFar;
         if (playerMode) {
-            const SceneObject* runtimeCam = nullptr;
-            for (const auto& obj : sceneObjects) {
-                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
-                if (!runtimeCam) runtimeCam = &obj;
-                if (obj.camera.type == SceneCameraType::Player) {
-                    runtimeCam = &obj;
-                    break;
-                }
-            }
+            const SceneObject* runtimeCam = findPlayerCameraObject();
             if (runtimeCam) {
                 runtimeFov = runtimeCam->camera.fov;
                 runtimeNear = std::max(0.01f, runtimeCam->camera.nearClip);
@@ -12570,15 +12562,7 @@ void Engine::renderPlayerViewport() {
         bool useWorldUi = false;
         SpriteTextureResolver spriteTextureResolver(rendererInitialized ? &renderer : nullptr);
         if (playerMode) {
-            const SceneObject* runtimeCam = nullptr;
-            for (const auto& obj : sceneObjects) {
-                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
-                if (!runtimeCam) runtimeCam = &obj;
-                if (obj.camera.type == SceneCameraType::Player) {
-                    runtimeCam = &obj;
-                    break;
-                }
-            }
+            const SceneObject* runtimeCam = findPlayerCameraObject();
             useWorldUi = project2DPipeline || (runtimeCam && runtimeCam->camera.use2D);
             if (runtimeCam && useWorldUi) {
                 uiWorldCamera.position = glm::vec2(runtimeCam->position.x, runtimeCam->position.y);
@@ -12591,12 +12575,8 @@ void Engine::renderPlayerViewport() {
         }
         Camera projectedUiCamera = camera;
         if (playerMode) {
-            for (const auto& obj : sceneObjects) {
-                if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
-                if (obj.camera.type == SceneCameraType::Player) {
-                    projectedUiCamera = makeCameraFromObject(obj);
-                    break;
-                }
+            if (const SceneObject* runtimeCam = findPlayerCameraObject()) {
+                projectedUiCamera = makeCameraFromObject(*runtimeCam);
             }
         }
         glm::mat4 projectedUiView = projectedUiCamera.getViewMatrix();

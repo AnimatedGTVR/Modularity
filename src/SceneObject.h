@@ -345,7 +345,7 @@ enum class PostFXToneMapper {
 };
 
 struct CameraComponent {
-    SceneCameraType type = SceneCameraType::Scene;
+    SceneCameraType type = SceneCameraType::Player;
     float fov = FOV;
     float nearClip = NEAR_PLANE;
     float farClip = FAR_PLANE;

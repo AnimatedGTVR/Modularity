@@ -743,6 +743,7 @@ private:
     void refreshScriptEditorWindows();
     void refreshScriptingFileList();
     Camera makeCameraFromObject(const SceneObject& obj) const;
+    const SceneObject* findPlayerCameraObject() const;
     void compileScriptFile(const fs::path& scriptPath);
     void updateAutoCompileScripts();
     void processAutoCompileQueue();
