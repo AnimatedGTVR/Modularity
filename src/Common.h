@@ -16,6 +16,23 @@
 #include <memory>
 #include <type_traits>
 
+#ifdef _WIN32
+// Keep Win32 macros from leaking into public script-facing headers and helper code.
+// Windows headers must come before GLFW's APIENTRY definitions, otherwise MSVC
+// can report duplicate-scope errors from minwindef.h.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shlobj.h>
+#ifdef APIENTRY
+#undef APIENTRY
+#endif
+#endif
+
 #include <glad/glad.h>
 #include "ThirdParty/imgui/imgui.h"
 #include "ThirdParty/imgui/imgui_internal.h"
@@ -30,19 +47,6 @@
 #include "ThirdParty/glm/gtc/type_ptr.hpp"
 #include "ThirdParty/glm/gtc/quaternion.hpp"
 #include "../include/Graphics/GraphicsBackend.h"
-
-#ifdef _WIN32
-// Keep Win32 macros from leaking into public script-facing headers and helper code.
-// `ModuCPP` is included by scripts, so this must be as quiet as possible.
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <shlobj.h>
-#endif
 
 namespace fs = std::filesystem;
 
