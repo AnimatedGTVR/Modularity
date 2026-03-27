@@ -6841,6 +6841,35 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                 }
             }
         }
+
+        {
+            std::unordered_set<std::string> copiedDlls;
+            std::error_code dllEc;
+            const fs::path runtimeDllSourceDir = exePath.parent_path();
+            if (fs::exists(runtimeDllSourceDir, dllEc)) {
+                for (auto it = fs::recursive_directory_iterator(runtimeDllSourceDir, dllEc);
+                     it != fs::recursive_directory_iterator(); ++it) {
+                    if (dllEc) break;
+                    if (!it->is_regular_file()) continue;
+
+                    fs::path sourceDll = it->path();
+                    std::string ext = sourceDll.extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (ext != ".dll") continue;
+
+                    fs::path destinationDll = exportRoot / sourceDll.filename();
+                    std::string destinationKey = destinationDll.lexically_normal().string();
+                    if (!copiedDlls.insert(destinationKey).second) continue;
+
+                    fs::copy_file(sourceDll, destinationDll, fs::copy_options::overwrite_existing, ec);
+                    if (ec) {
+                        result.message = "Failed to copy runtime DLL: " + sourceDll.filename().string();
+                        return result;
+                    }
+                }
+            }
+        }
 #endif
 
         {
