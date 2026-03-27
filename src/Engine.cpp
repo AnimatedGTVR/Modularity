@@ -7211,6 +7211,10 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
         }
         if (fs::exists(compiledScriptsSrc)) {
+            if (!CopyDirectoryIntoRuntimeRoot(compiledScriptsSrc, exportRoot, compiledScriptsDstRelative, copyError)) {
+                result.message = copyError;
+                return result;
+            }
             if (!CopyDirectoryIntoRuntimeRoot(compiledScriptsSrc, runtimeStageRoot, compiledScriptsDstRelative, copyError)) {
                 result.message = copyError;
                 return result;

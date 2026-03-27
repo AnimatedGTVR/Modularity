@@ -823,7 +823,7 @@ namespace {
             "uniform mat4 model;\n"
             "uniform mat4 view;\n"
             "uniform mat4 projection;\n"
-            "uniform mat4 bones[256];\n"
+            "uniform mat4 bones[128];\n"
             "uniform int boneCount;\n"
             "uniform bool useSkinning;\n"
             "\n"

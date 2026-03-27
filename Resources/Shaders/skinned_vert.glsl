@@ -12,7 +12,7 @@ out vec2 TexCoord;
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
-uniform mat4 bones[256];
+uniform mat4 bones[128];
 uniform int boneCount;
 uniform bool useSkinning;
 uniform vec4 uvRect;
