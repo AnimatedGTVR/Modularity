@@ -6580,6 +6580,9 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     fs::path sourceRoot;
     {
         std::vector<fs::path> sourceCandidates;
+#ifdef MODULARITY_SOURCE_DIR
+        sourceCandidates.emplace_back(MODULARITY_SOURCE_DIR);
+#endif
         sourceCandidates.push_back(fs::current_path());
         fs::path exePath = resolveCurrentExecutablePath();
         if (!exePath.empty()) {

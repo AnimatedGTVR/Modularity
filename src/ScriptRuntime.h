@@ -14,8 +14,10 @@ class Engine;
     #else
         #define MODULARITY_SCRIPT_API
     #endif
+    #define MODULARITY_SCRIPT_EXPORT __declspec(dllexport)
 #else
     #define MODULARITY_SCRIPT_API
+    #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
 struct MODULARITY_SCRIPT_API ScriptContext {

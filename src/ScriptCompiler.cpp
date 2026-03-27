@@ -1391,7 +1391,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         auto emitScriptBridge = [&](const char* exportedName, const char* implName,
                                     const FunctionSpec& spec) {
             if (!spec.present) return;
-            wrapper << "void " << exportedName << "(ScriptContext& ctx, float deltaTime) {\n";
+            wrapper << "MODULARITY_SCRIPT_EXPORT void " << exportedName
+                    << "(ScriptContext& ctx, float deltaTime) {\n";
             wrapper << "    ModuScriptContext cctx{&ctx};\n";
             if (spec.takesContext && spec.takesDelta) {
                 wrapper << "    " << implName << "(&cctx, deltaTime);\n";
@@ -1411,7 +1412,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         auto emitEditorBridge = [&](const char* exportedName, const char* implName,
                                     const FunctionSpec& spec) {
             if (!spec.present) return;
-            wrapper << "void " << exportedName << "(ScriptContext& ctx) {\n";
+            wrapper << "MODULARITY_SCRIPT_EXPORT void " << exportedName
+                    << "(ScriptContext& ctx) {\n";
             wrapper << "    ModuScriptContext cctx{&ctx};\n";
             if (spec.takesContext) {
                 wrapper << "    " << implName << "(&cctx);\n";
@@ -1537,7 +1539,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             auto emitTickBridge = [&](const char* exportedName, const char* implName,
                                       const FunctionSpec& spec) {
                 if (!spec.present) return;
-                wrapper << "void " << exportedName << "(ScriptContext& ctx, float deltaTime) {\n";
+                wrapper << "MODULARITY_SCRIPT_EXPORT void " << exportedName
+                        << "(ScriptContext& ctx, float deltaTime) {\n";
                 if (spec.takesContext && spec.takesDelta) {
                     wrapper << "    " << implName << "(ctx, deltaTime);\n";
                 } else if (spec.takesContext) {
@@ -1557,7 +1560,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             auto emitEditorBridge = [&](const char* exportedName, const char* implName,
                                         const FunctionSpec& spec) {
                 if (!spec.present) return;
-                wrapper << "void " << exportedName << "(ScriptContext& ctx) {\n";
+                wrapper << "MODULARITY_SCRIPT_EXPORT void " << exportedName
+                        << "(ScriptContext& ctx) {\n";
                 if (spec.takesContext) {
                     wrapper << "    " << implName << "(ctx);\n";
                 } else if (spec.takesDelta) {

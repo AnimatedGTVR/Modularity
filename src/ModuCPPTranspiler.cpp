@@ -1650,7 +1650,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     }
 
     if (hasInspectorBlock) {
-        out << "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n";
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnInspector(ScriptContext& ctx) {\n";
         out << "    MODU_SCRIPT(ctx);\n";
         if (!spec.fields.empty()) {
             out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
@@ -2199,7 +2199,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         }
         out << "}\n\n";
     } else if (hasPublicFields && !hasInspectorMethod) {
-        out << "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n";
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnInspector(ScriptContext& ctx) {\n";
         out << "    MODU_SCRIPT(ctx);\n";
         out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
         out << "    " << supportNs << "::BindConfig(ctx, config);\n";
