@@ -33,62 +33,6 @@ std::string GetPlatformDefaultProjectsPath() {
     return (fs::current_path() / "Projects").string();
 }
 
-std::optional<fs::path> FindBundledScriptSdkRoot(const fs::path& start) {
-    if (start.empty()) return std::nullopt;
-
-    std::error_code ec;
-    fs::path candidate = start;
-    for (int depth = 0; depth < 6 && !candidate.empty(); ++depth) {
-        fs::path sdkRoot = candidate / "Resources" / "ScriptSDK";
-        if (fs::exists(sdkRoot / "src" / "ScriptRuntime.h", ec)) {
-            return sdkRoot;
-        }
-        fs::path parent = candidate.parent_path();
-        if (parent == candidate) break;
-        candidate = parent;
-    }
-    return std::nullopt;
-}
-
-std::optional<fs::path> FindEngineSourceRoot(const fs::path& start) {
-    if (start.empty()) return std::nullopt;
-
-    std::error_code ec;
-    fs::path candidate = start;
-    while (!candidate.empty()) {
-        if (fs::exists(candidate / "CMakeLists.txt", ec) &&
-            fs::exists(candidate / "src" / "ScriptCompiler.cpp", ec)) {
-            return candidate;
-        }
-        fs::path parent = candidate.parent_path();
-        if (parent == candidate) break;
-        candidate = parent;
-    }
-    return std::nullopt;
-}
-
-void WriteDefaultScriptIncludeDirs(std::ofstream& scriptCfg,
-                                   const fs::path& baseRoot,
-                                   bool bundledSdk) {
-    auto writeIfExists = [&](const fs::path& path) {
-        std::error_code ec;
-        if (path.empty() || !fs::exists(path, ec) || ec) return;
-        scriptCfg << "includeDir=" << path.string() << "\n";
-    };
-
-    writeIfExists(baseRoot / "src");
-    writeIfExists(baseRoot / "include");
-    writeIfExists(baseRoot / "src/ThirdParty");
-    writeIfExists(baseRoot / "src/ThirdParty/glm");
-    writeIfExists(baseRoot / "src/ThirdParty/glad");
-    writeIfExists(baseRoot / "src/ThirdParty/glfw/include");
-    writeIfExists(baseRoot / "src/ThirdParty/imgui");
-    writeIfExists(baseRoot / "src/ThirdParty/imgui/backends");
-    writeIfExists(baseRoot / "src/ThirdParty/assimp/include");
-    if (!bundledSdk) {
-        writeIfExists(baseRoot / "build/src/ThirdParty/assimp/include");
-    }
-}
 } // namespace
 
 // Project implementation
@@ -129,12 +73,6 @@ bool Project::create() {
         scriptCfg << "cppStandard=c++20\n";
         scriptCfg << "scriptsDir=Assets/Scripts\n";
         scriptCfg << "outDir=Library/CompiledScripts\n";
-        const fs::path runtimeRoot = fs::current_path();
-        if (auto bundledSdkRoot = FindBundledScriptSdkRoot(runtimeRoot)) {
-            WriteDefaultScriptIncludeDirs(scriptCfg, *bundledSdkRoot, true);
-        } else if (auto engineRoot = FindEngineSourceRoot(runtimeRoot)) {
-            WriteDefaultScriptIncludeDirs(scriptCfg, *engineRoot, false);
-        }
         scriptCfg << "define=MODU_SCRIPTING=1\n";
         scriptCfg << "define=MODU_PROJECT_NAME=\"" << name << "\"\n";
         scriptCfg << "linux.linkLib=pthread\n";
@@ -455,13 +393,15 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=20\n";
+        file << "version=21\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
 
-        for (const auto& obj : objects) {
+        for (const auto& sourceObj : objects) {
+            SceneObject obj = sourceObj;
+            EnsureInspectorComponentMetadata(obj);
             file << "[Object]\n";
             file << "id=" << obj.id << "\n";
             file << "name=" << obj.name << "\n";
@@ -714,9 +654,17 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             for (size_t mi = 0; mi < obj.additionalMaterialPaths.size(); ++mi) {
                 file << "additionalMaterial" << mi << "=" << obj.additionalMaterialPaths[mi] << "\n";
             }
+            file << "nextInspectorScriptId=" << obj.nextInspectorScriptId << "\n";
+            file << "componentOrder=";
+            for (size_t oi = 0; oi < obj.inspectorComponentOrder.size(); ++oi) {
+                if (oi > 0) file << ";";
+                file << obj.inspectorComponentOrder[oi];
+            }
+            file << "\n";
             file << "scripts=" << obj.scripts.size() << "\n";
             for (size_t si = 0; si < obj.scripts.size(); ++si) {
                 const auto& sc = obj.scripts[si];
+                file << "script" << si << "_id=" << sc.inspectorId << "\n";
                 file << "script" << si << "_path=" << sc.path << "\n";
                 file << "script" << si << "_lang=" << static_cast<int>(sc.language) << "\n";
                 file << "script" << si << "_type=" << sc.managedType << "\n";
@@ -1361,6 +1309,19 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
              int count = std::stoi(value);
              obj.additionalMaterialPaths.resize(std::max(0, count));
          }},
+        {"nextInspectorScriptId", +[](SceneObject& obj, const std::string& value) {
+             obj.nextInspectorScriptId = std::max(1, std::stoi(value));
+         }},
+        {"componentOrder", +[](SceneObject& obj, const std::string& value) {
+             obj.inspectorComponentOrder.clear();
+             std::stringstream ss(value);
+             std::string item;
+             while (std::getline(ss, item, ';')) {
+                 if (!item.empty()) {
+                     obj.inspectorComponentOrder.push_back(item);
+                 }
+             }
+         }},
         {"scripts", +[](SceneObject& obj, const std::string& value) {
              int count = std::stoi(value);
              obj.scripts.resize(std::max(0, count));
@@ -1895,6 +1856,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                             ScriptComponent& sc = currentObj->scripts[idx];
                             if (sub == "path") {
                                 sc.path = value;
+                            } else if (sub == "id") {
+                                sc.inspectorId = std::max(0, std::stoi(value));
                             } else if (sub == "lang" || sub == "language") {
                                 int langValue = std::stoi(value);
                                 if (langValue == static_cast<int>(ScriptLanguage::CSharp)) {
@@ -1934,6 +1897,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
 
         file.close();
         for (auto& obj : objects) {
+            EnsureInspectorComponentMetadata(obj);
             if (obj.hasAnimation) {
                 NormalizeAnimationClipSlots(obj.animation);
             }

@@ -14,6 +14,12 @@
 #include <unordered_set>
 #include <vector>
 #if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+    #define NOMINMAX
+    #endif
     #include <windows.h>
 #endif
 
@@ -1437,9 +1443,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
 
         std::ostringstream scriptRsp;
-        scriptRsp << "/nologo /TC /MD /Zi /Od";
+        scriptRsp << "/nologo /TP /std:" << config.cppStandard << " /MD /Zi /Od";
         appendWindowsIncludesAndDefines(scriptRsp);
-        scriptRsp << " /c \"" << scriptAbs.string() << "\" /Fo\"" << objectPath.string() << "\"";
+        scriptRsp << " /c \"" << compileSourcePath.string() << "\" /Fo\"" << objectPath.string() << "\"";
 
         std::ostringstream wrapperRsp;
         wrapperRsp << "/nologo /TP /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
@@ -1466,10 +1472,10 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         linkCmd << "link @\"" << linkRspPath.string() << "\"";
         buildSignaturePayload = scriptRsp.str() + "\n---rsp---\n" + wrapperRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
-        compileCmd << posixCompileDriver(false) << " -std=c11 -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
-        compileCmd << " -c \"" << scriptAbs.string() << "\" -o \"" << objectPath.string() << "\"";
+        compileCmd << " -c \"" << compileSourcePath.string() << "\" -o \"" << objectPath.string() << "\"";
         compileCmd << " && ";
         compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
@@ -1651,7 +1657,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.secondaryDependencyPath = secondaryDependencyPath;
     outCommands.binaryPath = binaryPath;
     outCommands.wrapperPath = wrapperPath.empty() ? transpiledPath : wrapperPath;
-    outCommands.sourcePath = scriptAbs;
+    outCommands.sourcePath = compileSourcePath;
     outCommands.signaturePath = config.outDir / relativeParent / (baseName + ".buildsig");
     outCommands.buildSignature = compileStr + "\n---link---\n" + linkStr +
                                  "\n---payload---\n" + buildSignaturePayload;

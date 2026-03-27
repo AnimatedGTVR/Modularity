@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
+#include <optional>
 #include <sstream>
 
 #pragma region Local Path Helpers
@@ -69,6 +70,61 @@ bool isGitRepo(const fs::path& root) {
         return true;
     }
     return false;
+}
+
+std::optional<fs::path> findEngineSourceRoot(const fs::path& start) {
+    if (start.empty()) return std::nullopt;
+
+    std::error_code ec;
+    fs::path candidate = start;
+    while (!candidate.empty()) {
+        if (fs::exists(candidate / "CMakeLists.txt", ec) &&
+            fs::exists(candidate / "src" / "ScriptRuntime.h", ec)) {
+            return candidate;
+        }
+        fs::path parent = candidate.parent_path();
+        if (parent == candidate) break;
+        candidate = parent;
+    }
+    return std::nullopt;
+}
+
+std::optional<fs::path> findBundledScriptSdkRoot(const fs::path& start) {
+    if (start.empty()) return std::nullopt;
+
+    std::error_code ec;
+    fs::path candidate = start;
+    for (int depth = 0; depth < 6 && !candidate.empty(); ++depth) {
+        const fs::path sdkRoot = candidate / "Resources" / "ScriptSDK";
+        if (fs::exists(sdkRoot / "src" / "ScriptRuntime.h", ec)) {
+            return sdkRoot;
+        }
+        fs::path parent = candidate.parent_path();
+        if (parent == candidate) break;
+        candidate = parent;
+    }
+    return std::nullopt;
+}
+
+void appendIfExists(std::vector<fs::path>& includeDirs, const fs::path& path) {
+    std::error_code ec;
+    if (path.empty() || !fs::exists(path, ec) || ec) {
+        return;
+    }
+    includeDirs.push_back(normalizePath(path));
+}
+
+void appendBundledScriptSdkIncludeDirs(std::vector<fs::path>& includeDirs, const fs::path& sdkRoot) {
+    appendIfExists(includeDirs, sdkRoot / "src");
+    appendIfExists(includeDirs, sdkRoot / "include");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glm");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glad");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glfw/include");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/imgui");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/imgui/backends");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/ImGuizmo");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/assimp/include");
 }
 
 fs::path guessIncludeDir(const fs::path& repoRoot, const std::string& includeRel) {
@@ -296,6 +352,9 @@ std::string joinUrl(std::string base, const std::string& tail) {
 } // namespace
 #pragma endregion
 
+bool hasVersionedPackageAtAnyVersion(const fs::path& root, const PackageInfo& pkg);
+std::optional<fs::path> findVersionedPackageAtAnyVersion(const fs::path& root, const PackageInfo& pkg);
+
 #pragma region Lifecycle
 PackageManager::PackageManager() {
     buildRegistry();
@@ -324,12 +383,15 @@ bool PackageManager::isInstalled(const std::string& id) const {
 
 bool PackageManager::hasProjectInstallPayload(const std::string& id) const {
     const PackageInfo* pkg = findPackage(id);
-    return pkg && pkg->registryPackage && hasVersionedPackageAt(packagesFolder(), *pkg);
+    return pkg && pkg->registryPackage && hasVersionedPackageAtAnyVersion(packagesFolder(), *pkg);
 }
 
 bool PackageManager::isGloballyInstalled(const std::string& id) const {
     const PackageInfo* pkg = findPackage(id);
-    return pkg && pkg->registryPackage && hasVersionedPackageAt(globalPackagesFolder() / currentEngineVersion() / pkg->author, *pkg);
+    if (!pkg || !pkg->registryPackage) {
+        return false;
+    }
+    return findVersionedPackageAtAnyVersion(globalPackagesFolder(), *pkg).has_value();
 }
 
 bool PackageManager::hasUpdateAvailable(const std::string& id) const {
@@ -338,7 +400,8 @@ bool PackageManager::hasUpdateAvailable(const std::string& id) const {
         return false;
     }
     const bool hasProjectLegacy = hasLegacyVersionedPackageAt(packagesFolder(), *pkg);
-    const bool hasGlobalLegacy = hasLegacyVersionedPackageAt(globalPackagesFolder() / currentEngineVersion() / pkg->author, *pkg);
+    const bool hasGlobalLegacy = hasLegacyVersionedPackageAt(globalPackagesFolder() / currentEngineVersion() / pkg->author, *pkg) ||
+                                 hasLegacyVersionedPackageAt(globalPackagesFolder(), *pkg);
     return hasProjectLegacy || hasGlobalLegacy;
 }
 
@@ -388,7 +451,8 @@ bool PackageManager::installRegistryPackageToProject(const std::string& id) {
 
     const fs::path destination = projectRegistryPackagePath(*pkg);
     if (!fs::exists(destination)) {
-        fs::path source = isGloballyInstalled(id) ? globalRegistryPackagePath(*pkg) : resolveRegistrySourcePath(*pkg);
+        fs::path source = isGloballyInstalled(id) ? findVersionedPackageAtAnyVersion(globalPackagesFolder(), *pkg).value_or(fs::path())
+                                                  : resolveRegistrySourcePath(*pkg);
         if ((source.empty() || !fs::exists(source)) && !pkg->downloadUrl.empty()) {
             if (!downloadRegistryPackageToCache(*pkg, source)) {
                 return false;
@@ -518,23 +582,45 @@ bool PackageManager::removeRegistryPackageGlobally(const std::string& id) {
         return false;
     }
 
-    const fs::path authorRoot = globalPackagesFolder() / currentEngineVersion() / pkg->author;
     std::error_code ec;
-    fs::remove_all(globalRegistryPackagePath(*pkg), ec);
-    if (ec) {
-        lastError = "Failed to remove global package folder: " + ec.message();
-        return false;
+    const fs::path globalRoot = globalPackagesFolder();
+    if (!fs::exists(globalRoot, ec) || !fs::is_directory(globalRoot, ec)) {
+        return true;
     }
-    if (fs::exists(authorRoot, ec) && fs::is_directory(authorRoot, ec)) {
-        const std::string prefix = pkg->id + "-";
-        for (const auto& entry : fs::directory_iterator(authorRoot, ec)) {
-            if (ec || !entry.is_directory()) {
+
+    const fs::path expected = registryPackageFolderName(*pkg);
+    if (!expected.empty()) {
+        for (const auto& versionDir : fs::directory_iterator(globalRoot, ec)) {
+            if (ec || !versionDir.is_directory()) {
+                ec.clear();
                 continue;
             }
-            const std::string folder = entry.path().filename().string();
-            if (folder.rfind(prefix, 0) == 0) {
-                std::error_code removeEc;
-                fs::remove_all(entry.path(), removeEc);
+
+            const fs::path direct = versionDir.path() / expected;
+            if (fs::exists(direct, ec) && fs::is_directory(direct, ec)) {
+                fs::remove_all(direct, ec);
+            }
+
+            if (pkg->author.empty()) {
+                continue;
+            }
+
+            const fs::path authorRoot = versionDir.path() / pkg->author;
+            if (!fs::exists(authorRoot, ec) || !fs::is_directory(authorRoot, ec)) {
+                ec.clear();
+                continue;
+            }
+
+            for (const auto& entry : fs::directory_iterator(authorRoot, ec)) {
+                if (ec || !entry.is_directory()) {
+                    ec.clear();
+                    continue;
+                }
+                const std::string folder = entry.path().filename().string();
+                if (folder == expected.filename().string() || folder.rfind(pkg->id + "-", 0) == 0) {
+                    std::error_code removeEc;
+                    fs::remove_all(entry.path(), removeEc);
+                }
             }
         }
     }
@@ -584,7 +670,12 @@ void PackageManager::buildRegistry() {
     registryLastUpdated.clear();
     registryUpdatedBy.clear();
     registryRoot.clear();
-    fs::path engineRoot = fs::current_path();
+    const fs::path runtimeRoot = fs::current_path();
+    const fs::path sdkRoot = findBundledScriptSdkRoot(runtimeRoot).value_or(fs::path());
+    const fs::path engineSourceRoot = !sdkRoot.empty()
+        ? fs::path()
+        : findEngineSourceRoot(runtimeRoot).value_or(fs::path());
+    const fs::path includeRoot = !sdkRoot.empty() ? sdkRoot : engineSourceRoot;
 
     auto add = [this](PackageInfo info) {
         for (auto& dir : info.includeDirs) {
@@ -598,13 +689,9 @@ void PackageManager::buildRegistry() {
     engineCore.name = "Engine Core";
     engineCore.description = "Modularity engine headers and common utilities";
     engineCore.builtIn = true;
-    engineCore.includeDirs = {
-        engineRoot / "src",
-        engineRoot / "include",
-        engineRoot / "src/ThirdParty",
-        engineRoot / "src/ThirdParty/glm",
-        engineRoot / "src/ThirdParty/glad"
-    };
+    if (!includeRoot.empty()) {
+        appendBundledScriptSdkIncludeDirs(engineCore.includeDirs, includeRoot);
+    }
     engineCore.linuxLibs = {"pthread", "dl"};
     engineCore.windowsLibs = {"User32.lib", "Advapi32.lib"};
     add(engineCore);
@@ -614,7 +701,9 @@ void PackageManager::buildRegistry() {
     glm.name = "GLM Math";
     glm.description = "Header-only GLM math library (bundled)";
     glm.builtIn = false; // Count as installed instead of hidden built-in
-    glm.includeDirs = { engineRoot / "src/ThirdParty/glm" };
+    if (!includeRoot.empty()) {
+        appendIfExists(glm.includeDirs, includeRoot / "src/ThirdParty/glm");
+    }
     add(glm);
 
     PackageInfo imgui;
@@ -622,10 +711,10 @@ void PackageManager::buildRegistry() {
     imgui.name = "Dear ImGui";
     imgui.description = "Immediate-mode UI helpers for editor-time tools";
     imgui.builtIn = false;
-    imgui.includeDirs = {
-        engineRoot / "src/ThirdParty/imgui",
-        engineRoot / "src/ThirdParty/imgui/backends"
-    };
+    if (!includeRoot.empty()) {
+        appendIfExists(imgui.includeDirs, includeRoot / "src/ThirdParty/imgui");
+        appendIfExists(imgui.includeDirs, includeRoot / "src/ThirdParty/imgui/backends");
+    }
     add(imgui);
 
     PackageInfo imguizmo;
@@ -633,7 +722,9 @@ void PackageManager::buildRegistry() {
     imguizmo.name = "ImGuizmo";
     imguizmo.description = "Gizmo/transform helpers used by the editor";
     imguizmo.builtIn = false;
-    imguizmo.includeDirs = { engineRoot / "src/ThirdParty/ImGuizmo" };
+    if (!includeRoot.empty()) {
+        appendIfExists(imguizmo.includeDirs, includeRoot / "src/ThirdParty/ImGuizmo");
+    }
     add(imguizmo);
 
     PackageInfo miniaudio;
@@ -641,7 +732,9 @@ void PackageManager::buildRegistry() {
     miniaudio.name = "miniaudio";
     miniaudio.description = "Single-header audio helpers (bundled)";
     miniaudio.builtIn = false;
-    miniaudio.includeDirs = { engineRoot / "include/ThirdParty" };
+    if (!includeRoot.empty()) {
+        appendIfExists(miniaudio.includeDirs, includeRoot / "include/ThirdParty");
+    }
     add(miniaudio);
 
     auto addOptionalEnginePackage = [&](const char* id,
@@ -674,7 +767,7 @@ void PackageManager::buildRegistry() {
                              "Vulkan Pipeline",
                              "Optional experimental Vulkan rendering pipeline.");
 
-    loadRegistryMetadata(engineRoot);
+    loadRegistryMetadata(!engineSourceRoot.empty() ? engineSourceRoot : runtimeRoot);
 }
 
 bool PackageManager::loadRegistryMetadata(const fs::path& engineRoot) {
@@ -710,8 +803,18 @@ bool PackageManager::loadRegistryMetadata(const fs::path& engineRoot) {
     bool inVersionBlock = false;
     bool pendingPackageBlock = false;
     bool inPackageBlock = false;
-    const std::string versionHeader = "ModuEngineVersion(\"" + engineVersion + "\")";
     PackageInfo currentPackage;
+
+    auto extractVersionBlock = [](const std::string& line) -> std::string {
+        const std::string marker = "ModuEngineVersion(";
+        const size_t start = line.find(marker);
+        if (start == std::string::npos) return {};
+        const size_t firstQuote = line.find('"', start + marker.size());
+        if (firstQuote == std::string::npos) return {};
+        const size_t secondQuote = line.find('"', firstQuote + 1);
+        if (secondQuote == std::string::npos || secondQuote <= firstQuote + 1) return {};
+        return trim(line.substr(firstQuote + 1, secondQuote - firstQuote - 1));
+    };
 
     auto finalizePackage = [&]() {
         if (currentPackage.id.empty()) {
@@ -765,8 +868,9 @@ bool PackageManager::loadRegistryMetadata(const fs::path& engineRoot) {
             }
         }
 
-        if (!inVersionBlock && lineContainsBlockHeader(line, versionHeader)) {
-            pendingVersionBlock = true;
+        if (!inVersionBlock && lineContainsBlockHeader(line, "ModuEngineVersion(")) {
+            const std::string versionToken = extractVersionBlock(line);
+            pendingVersionBlock = isCompatibleVersionString(versionToken, engineVersion);
         } else if (inVersionBlock && !inPackageBlock && lineContainsBlockHeader(line, "Package()")) {
             pendingPackageBlock = true;
             currentPackage = PackageInfo{};
@@ -894,28 +998,52 @@ fs::path PackageManager::resolveRegistrySourcePath(const PackageInfo& pkg) const
         return {};
     }
 
-    const fs::path packagesRoot = registryRoot / "Packages" / currentEngineVersion();
+    std::error_code ec;
     const fs::path packageFolder = registryPackageFolderName(pkg);
     if (packageFolder.empty()) {
         return {};
     }
 
-    if (!pkg.author.empty()) {
-        const fs::path direct = packagesRoot / pkg.author / packageFolder;
-        if (fs::exists(direct)) {
-            return normalizePath(direct);
+    const fs::path packagesRoot = registryRoot / "Packages";
+    const fs::path preferredRoot = packagesRoot / currentEngineVersion();
+    auto searchRoot = [&](const fs::path& versionRoot) -> fs::path {
+        if (!fs::exists(versionRoot, ec) || !fs::is_directory(versionRoot, ec)) {
+            ec.clear();
+            return {};
         }
-    }
-
-    std::error_code ec;
-    if (fs::exists(packagesRoot, ec) && fs::is_directory(packagesRoot, ec)) {
-        for (const auto& authorDir : fs::directory_iterator(packagesRoot, ec)) {
+        if (!pkg.author.empty()) {
+            const fs::path direct = versionRoot / pkg.author / packageFolder;
+            if (fs::exists(direct)) {
+                return normalizePath(direct);
+            }
+        }
+        for (const auto& authorDir : fs::directory_iterator(versionRoot, ec)) {
             if (ec || !authorDir.is_directory()) {
+                ec.clear();
                 continue;
             }
             const fs::path candidate = authorDir.path() / packageFolder;
             if (fs::exists(candidate)) {
                 return normalizePath(candidate);
+            }
+        }
+        ec.clear();
+        return {};
+    };
+
+    if (fs::path direct = searchRoot(preferredRoot); !direct.empty()) {
+        return direct;
+    }
+
+    if (fs::exists(packagesRoot, ec) && fs::is_directory(packagesRoot, ec)) {
+        for (const auto& versionDir : fs::directory_iterator(packagesRoot, ec)) {
+            if (ec || !versionDir.is_directory()) {
+                ec.clear();
+                continue;
+            }
+            const fs::path candidate = searchRoot(versionDir.path());
+            if (!candidate.empty()) {
+                return candidate;
             }
         }
     }
@@ -988,6 +1116,96 @@ bool PackageManager::hasLegacyVersionedPackageAt(const fs::path& root, const Pac
     return false;
 }
 
+bool hasVersionedPackageAtAnyVersion(const fs::path& root, const PackageInfo& pkg) {
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+        return false;
+    }
+
+    const fs::path expected = pkg.id.empty() || pkg.version.empty()
+        ? fs::path()
+        : fs::path(pkg.id + "-" + pkg.version);
+    if (!expected.empty() && fs::exists(root / expected, ec) && fs::is_directory(root / expected, ec)) {
+        return true;
+    }
+
+    for (const auto& versionDir : fs::directory_iterator(root, ec)) {
+        if (ec || !versionDir.is_directory()) {
+            ec.clear();
+            continue;
+        }
+        const fs::path candidate = versionDir.path() / expected;
+        if (!expected.empty() && fs::exists(candidate, ec) && fs::is_directory(candidate, ec)) {
+            return true;
+        }
+        if (pkg.author.empty()) {
+            continue;
+        }
+        const fs::path authorCandidate = versionDir.path() / pkg.author / expected;
+        if (!expected.empty() && fs::exists(authorCandidate, ec) && fs::is_directory(authorCandidate, ec)) {
+            return true;
+        }
+        ec.clear();
+    }
+    return false;
+}
+
+std::optional<fs::path> findVersionedPackageAtAnyVersion(const fs::path& root, const PackageInfo& pkg) {
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) {
+        return std::nullopt;
+    }
+
+    const fs::path expected = pkg.id.empty() || pkg.version.empty()
+        ? fs::path()
+        : fs::path(pkg.id + "-" + pkg.version);
+    if (!expected.empty() && fs::exists(root / expected, ec) && fs::is_directory(root / expected, ec)) {
+        return normalizePath(root / expected);
+    }
+
+    for (const auto& versionDir : fs::directory_iterator(root, ec)) {
+        if (ec || !versionDir.is_directory()) {
+            ec.clear();
+            continue;
+        }
+
+        const fs::path direct = versionDir.path() / expected;
+        if (!expected.empty() && fs::exists(direct, ec) && fs::is_directory(direct, ec)) {
+            return normalizePath(direct);
+        }
+
+        if (pkg.author.empty()) {
+            continue;
+        }
+
+        const fs::path authorRoot = versionDir.path() / pkg.author;
+        if (!fs::exists(authorRoot, ec) || !fs::is_directory(authorRoot, ec)) {
+            ec.clear();
+            continue;
+        }
+
+        const fs::path authorDirect = authorRoot / expected;
+        if (!expected.empty() && fs::exists(authorDirect, ec) && fs::is_directory(authorDirect, ec)) {
+            return normalizePath(authorDirect);
+        }
+
+        for (const auto& entry : fs::directory_iterator(authorRoot, ec)) {
+            if (ec || !entry.is_directory()) {
+                ec.clear();
+                continue;
+            }
+            const std::string folder = entry.path().filename().string();
+            if (folder == expected.filename().string() || folder.rfind(pkg.id + "-", 0) == 0) {
+                return normalizePath(entry.path());
+            }
+        }
+
+        ec.clear();
+    }
+
+    return std::nullopt;
+}
+
 fs::path PackageManager::registryPackageCachePath(const PackageInfo& pkg) const {
     return normalizePath(packageCacheFolder() / "Extracted" / registryPackageFolderName(pkg));
 }
@@ -998,7 +1216,7 @@ std::string PackageManager::configuredRegistryBaseUrl() const {
             return trim(envUrl);
         }
     }
-    return "https://pak.moduengine.xyz";
+    return "https://pak.moduengine.xyz/Tareno-Labs-LLC/Modu-Package-Manager";
 }
 
 std::string PackageManager::configuredRegistryMetadataUrl() const {
@@ -1369,7 +1587,7 @@ bool PackageManager::isBuiltIn(const std::string& id) const {
 
 #pragma region Utility Helpers
 std::string PackageManager::currentEngineVersion() {
-    return "6.5";
+    return "6.7";
 }
 
 bool PackageManager::isCompatibleVersionString(const std::string& rule, const std::string& currentVersion) {
@@ -1378,15 +1596,10 @@ bool PackageManager::isCompatibleVersionString(const std::string& rule, const st
         return true;
     }
 
-    const bool allowNewer = trimmedRule.find('+') != std::string::npos;
     const std::string normalizedRule = normalizeVersionToken(trimmedRule);
     const std::string normalizedCurrent = normalizeVersionToken(currentVersion);
     if (normalizedRule.empty() || normalizedCurrent.empty()) {
         return true;
-    }
-
-    if (!allowNewer) {
-        return normalizedRule == normalizedCurrent;
     }
 
     auto parseParts = [](const std::string& version) {

@@ -4848,7 +4848,7 @@ void Engine::renderMainMenuBar() {
 
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About")) {
-                logToConsole("Modularity Engine - Beta V6.3\nThis build is in beta and might have issues,\n\nif you'd like to report any bugs or missing features, feel free to contact us!");
+                logToConsole("Modularity Engine - Beta V6.7\nThis build is in beta and might have issues,\n\nif you'd like to report any bugs or missing features, feel free to contact us!");
             }
             ImGui::EndMenu();
         }

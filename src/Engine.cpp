@@ -6577,7 +6577,22 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         return;
     }
 
-    fs::path sourceRoot = findCMakeSourceRoot(fs::current_path());
+    fs::path sourceRoot;
+    {
+        std::vector<fs::path> sourceCandidates;
+        sourceCandidates.push_back(fs::current_path());
+        fs::path exePath = resolveCurrentExecutablePath();
+        if (!exePath.empty()) {
+            sourceCandidates.push_back(exePath.parent_path());
+            sourceCandidates.push_back(exePath.parent_path().parent_path());
+        }
+        for (const auto& candidate : sourceCandidates) {
+            sourceRoot = findCMakeSourceRoot(candidate);
+            if (!sourceRoot.empty()) {
+                break;
+            }
+        }
+    }
     if (sourceRoot.empty()) {
         addConsoleMessage("Export failed: could not locate CMakeLists.txt.", ConsoleMessageType::Error);
         return;
@@ -6803,7 +6818,10 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
 #endif
 
         {
-            const fs::path scriptSdkSource = buildRoot / "Resources" / "ScriptSDK";
+            fs::path scriptSdkSource = sourceRoot / "Resources" / "ScriptSDK";
+            if (!fs::exists(scriptSdkSource)) {
+                scriptSdkSource = buildRoot / "Resources" / "ScriptSDK";
+            }
             if (fs::exists(scriptSdkSource)) {
                 if (!CopyDirectoryIntoRuntimeRoot(scriptSdkSource,
                                                   exportRoot,

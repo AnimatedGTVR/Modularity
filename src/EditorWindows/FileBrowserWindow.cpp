@@ -1123,11 +1123,6 @@ namespace {
 // Uses FileBrowser state for navigation, selection, and drag-drop.
 void Engine::renderFileBrowserPanel() {
     ImGui::Begin("Project", &showFileBrowser);
-    ImGuiStyle& style = ImGui::GetStyle();
-    ImVec4 toolbarBg = style.Colors[ImGuiCol_MenuBarBg];
-    toolbarBg.x = std::min(toolbarBg.x + 0.02f, 1.0f);
-    toolbarBg.y = std::min(toolbarBg.y + 0.02f, 1.0f);
-    toolbarBg.z = std::min(toolbarBg.z + 0.02f, 1.0f);
 
     if (fileBrowser.needsRefresh) {
         fileBrowser.refresh();
@@ -1550,12 +1545,8 @@ void Engine::renderFileBrowserPanel() {
             default:                    return IM_COL32(150, 150, 150, 255);  // Dark gray
         }
     };
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, toolbarBg);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
-    ImGui::BeginChild("ProjectToolbar", ImVec2(0, 38), true, ImGuiWindowFlags_NoScrollbar);
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 2.0f));
     bool canGoBack = fileBrowser.historyIndex > 0;
@@ -1736,19 +1727,12 @@ void Engine::renderFileBrowserPanel() {
     }
     ImGui::TextDisabled("%s", itemCount.c_str());
 
-    ImGui::EndChild();
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
 
     ImGui::Dummy(ImVec2(0.0f, 3.0f));
 
     // === FILE CONTENT AREA ===
-    ImVec4 contentBg = style.Colors[ImGuiCol_WindowBg];
-    contentBg.x = std::min(contentBg.x + 0.01f, 1.0f);
-    contentBg.y = std::min(contentBg.y + 0.01f, 1.0f);
-    contentBg.z = std::min(contentBg.z + 0.01f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, contentBg);
-    ImGui::BeginChild("FileContent", ImVec2(0, 0), true);
+    ImGui::BeginChild("FileContent", ImVec2(0, 0), false);
 
     if (!pendingExternalFileDrops.empty()) {
         const ImVec2 contentMin = ImGui::GetWindowPos();
@@ -1770,7 +1754,7 @@ void Engine::renderFileBrowserPanel() {
         float maxSidebarWidth = std::max(minSidebarWidth, ImGui::GetContentRegionAvail().x * 0.5f);
         fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, minSidebarWidth, maxSidebarWidth);
 
-        ImGui::BeginChild("FileSidebar", ImVec2(fileBrowserSidebarWidth, 0), true);
+        ImGui::BeginChild("FileSidebar", ImVec2(fileBrowserSidebarWidth, 0), false);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
         ImGui::TextDisabled("Favorites");
@@ -2619,7 +2603,6 @@ void Engine::renderFileBrowserPanel() {
 
     ImGui::EndChild();
     ImGui::EndChild();
-    ImGui::PopStyleColor();
 
     if (settingsDirty) {
         saveEditorUserSettings();

@@ -717,7 +717,7 @@ void RunSpritesheetParserSelfTests() {
         "LinkedSpriteName = \"Assets/Sprites/sprite.png\";\n"
         "SpriteVersion = 1;\n"
         "LastSavedUtc = \"2026-03-02T06:09:00Z\"; // note\n"
-        "ExpectedMinimumModuEngineVersionOrHigher = \"ModuEngine V6.5\";\n"
+        "ExpectedMinimumModuEngineVersionOrHigher = \"ModuEngine V6.7\";\n"
         "Expect_Layers = 1;\n"
         "Expect_rects = 2;\n"
         "Confirmation.StrictValidation = false;\n"

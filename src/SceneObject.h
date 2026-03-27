@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "Lighting2D.h"
+#include <unordered_set>
 
 enum class ObjectType {
     Cube = 0,
@@ -412,6 +413,7 @@ struct ScriptComponent {
     ScriptLanguage language = ScriptLanguage::Cpp;
     std::string path;
     std::string managedType;
+    int inspectorId = 0;
     std::vector<ScriptSetting> settings;
     std::string lastBinaryPath;
     bool lastBinaryVerified = false;
@@ -716,6 +718,8 @@ public:
     bool hasSkeletalAnimation = false;
     SkeletalAnimationComponent skeletal;
     UIElementComponent ui;
+    std::vector<std::string> inspectorComponentOrder;
+    int nextInspectorScriptId = 1;
 
     SceneObject(const std::string& name, ObjectType type, int id)
         : name(name),
@@ -751,4 +755,121 @@ inline bool IsObjectEnabledInHierarchy(const SceneObject& obj) {
 
 inline bool HasUIComponent(const SceneObject& obj) {
     return obj.hasUI && obj.ui.type != UIElementType::None;
+}
+
+inline std::string MakeInspectorScriptComponentKey(int inspectorId) {
+    return "script:" + std::to_string(inspectorId);
+}
+
+inline bool IsInspectorScriptComponentKey(const std::string& key) {
+    return key.rfind("script:", 0) == 0;
+}
+
+inline int ParseInspectorScriptComponentId(const std::string& key) {
+    if (!IsInspectorScriptComponentKey(key)) return -1;
+    try {
+        return std::stoi(key.substr(7));
+    } catch (...) {
+        return -1;
+    }
+}
+
+inline const std::vector<std::string>& GetDefaultInspectorComponentOrderTemplate() {
+    static const std::vector<std::string> order = {
+        "ui",
+        "collider",
+        "player_controller",
+        "rigidbody3d",
+        "rigidbody2d",
+        "collider2d",
+        "parallax2d",
+        "audio_source",
+        "ground_baked",
+        "obstacle",
+        "ai_agent",
+        "animation",
+        "skeletal_animation",
+        "reverb_zone",
+        "camera",
+        "camera_follow2d",
+        "post_fx",
+        "script",
+        "renderer",
+        "light",
+        "light2d",
+        "shadow_caster2d"
+    };
+    return order;
+}
+
+inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
+    int nextScriptId = std::max(1, obj.nextInspectorScriptId);
+    std::unordered_set<int> usedScriptIds;
+    for (ScriptComponent& script : obj.scripts) {
+        if (script.inspectorId > 0 && usedScriptIds.insert(script.inspectorId).second) {
+            nextScriptId = std::max(nextScriptId, script.inspectorId + 1);
+            continue;
+        }
+        while (usedScriptIds.count(nextScriptId) > 0) {
+            ++nextScriptId;
+        }
+        script.inspectorId = nextScriptId++;
+        usedScriptIds.insert(script.inspectorId);
+    }
+    obj.nextInspectorScriptId = nextScriptId;
+
+    std::vector<std::string> presentKeys;
+    presentKeys.reserve(21 + obj.scripts.size());
+    if (HasUIComponent(obj)) presentKeys.push_back("ui");
+    if (obj.hasCollider) presentKeys.push_back("collider");
+    if (obj.hasPlayerController) presentKeys.push_back("player_controller");
+    if (obj.hasRigidbody) presentKeys.push_back("rigidbody3d");
+    if (obj.hasRigidbody2D) presentKeys.push_back("rigidbody2d");
+    if (obj.hasCollider2D) presentKeys.push_back("collider2d");
+    if (obj.hasParallaxLayer2D) presentKeys.push_back("parallax2d");
+    if (obj.hasAudioSource) presentKeys.push_back("audio_source");
+    if (obj.hasGroundBakedType) presentKeys.push_back("ground_baked");
+    if (obj.hasObsticleObject) presentKeys.push_back("obstacle");
+    if (obj.hasAIAgent) presentKeys.push_back("ai_agent");
+    if (obj.hasAnimation) presentKeys.push_back("animation");
+    if (obj.hasSkeletalAnimation) presentKeys.push_back("skeletal_animation");
+    if (obj.hasReverbZone) presentKeys.push_back("reverb_zone");
+    if (obj.hasCamera) presentKeys.push_back("camera");
+    if (obj.hasCameraFollow2D) presentKeys.push_back("camera_follow2d");
+    if (obj.hasPostFX) presentKeys.push_back("post_fx");
+    if (obj.hasRenderer) presentKeys.push_back("renderer");
+    if (obj.hasLight) presentKeys.push_back("light");
+    if (obj.hasLight2D) presentKeys.push_back("light2d");
+    if (obj.hasShadowCaster2D) presentKeys.push_back("shadow_caster2d");
+    for (const ScriptComponent& script : obj.scripts) {
+        presentKeys.push_back(MakeInspectorScriptComponentKey(script.inspectorId));
+    }
+
+    std::unordered_set<std::string> presentSet(presentKeys.begin(), presentKeys.end());
+    std::vector<std::string> sanitizedOrder;
+    sanitizedOrder.reserve(presentKeys.size());
+    std::unordered_set<std::string> seenKeys;
+    for (const std::string& key : obj.inspectorComponentOrder) {
+        if (presentSet.count(key) == 0) continue;
+        if (!seenKeys.insert(key).second) continue;
+        sanitizedOrder.push_back(key);
+    }
+
+    const auto appendIfMissing = [&](const std::string& key) {
+        if (presentSet.count(key) == 0) return;
+        if (!seenKeys.insert(key).second) return;
+        sanitizedOrder.push_back(key);
+    };
+
+    for (const std::string& templateKey : GetDefaultInspectorComponentOrderTemplate()) {
+        if (templateKey == "script") {
+            for (const ScriptComponent& script : obj.scripts) {
+                appendIfMissing(MakeInspectorScriptComponentKey(script.inspectorId));
+            }
+            continue;
+        }
+        appendIfMissing(templateKey);
+    }
+
+    obj.inspectorComponentOrder = std::move(sanitizedOrder);
 }

@@ -592,7 +592,7 @@ bool Engine::savePixelSpriteDocument() {
         }
         sidecarDocument.spriteVersion = 1;
         sidecarDocument.expectedMinimumModuEngineVersionOrHigher =
-            pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty() ? "ModuEngine V6.5" : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher;
+            pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty() ? "ModuEngine V6.7" : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher;
         sidecarDocument.expectLayers = std::max(1, static_cast<int>(pixelSpriteDocument.layers.size()));
         sidecarDocument.expectRects = static_cast<int>(pixelSpriteDocument.spriteFrames.size());
         sidecarDocument.strictValidation = pixelSpriteDocument.strictValidation;
@@ -2151,7 +2151,7 @@ void Engine::renderPixelSpriteEditorWindow() {
             char versionBuf[128];
             std::snprintf(versionBuf, sizeof(versionBuf), "%s",
                           pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty()
-                              ? "ModuEngine V6.5"
+                              ? "ModuEngine V6.7"
                               : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.c_str());
             if (ImGui::InputText("Engine Version", versionBuf, sizeof(versionBuf))) {
                 pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher = versionBuf;
