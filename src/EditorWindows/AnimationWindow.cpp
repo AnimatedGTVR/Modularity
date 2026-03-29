@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "AnimationBindingHelpers.h"
 #include "ThirdParty/imgui/imgui.h"
 
 #include <algorithm>
@@ -80,6 +81,7 @@ struct AnimBinding {
 struct AnimClip {
     std::string name = "Animation Clip";
     int rootObjectId = -1;
+    int fileVersion = 2;
     float duration = 5.0f;
     float sampleRate = 30.0f;
     std::vector<AnimBinding> bindings;
@@ -202,6 +204,8 @@ struct AnimationEditorState {
     TimelineTransform timeline;
     AnimationTab activeTab = AnimationTab::Dopesheet;
     float leftPaneWidth = 300.0f;
+    float synchronizedRowScrollY = 0.0f;
+    int synchronizedRowScrollSource = -1;
     float currentTime = 0.0f;
     bool previewEnabled = true;
     bool isPlaying = false;
@@ -392,241 +396,60 @@ static float ReadPropertyFromNode(const SceneNode& node, const std::string& prop
 }
 
 static bool IsLocalTransformProperty(const std::string& propertyId) {
-    return propertyId.rfind("localPosition.", 0) == 0 ||
-           propertyId.rfind("localRotation.", 0) == 0 ||
-           propertyId.rfind("localScale.", 0) == 0;
-}
-
-static bool TryParseFloatString(const std::string& text, float& outValue) {
-    const char* begin = text.c_str();
-    char* end = nullptr;
-    outValue = std::strtof(begin, &end);
-    if (end == begin) return false;
-    while (*end != '\0') {
-        if (!std::isspace(static_cast<unsigned char>(*end))) return false;
-        ++end;
-    }
-    return true;
+    return AnimationBinding::IsLocalTransformProperty(propertyId);
 }
 
 static bool ReadAnimatableProperty(const SceneObject& obj, const std::string& propertyId, float& outValue) {
-    if (propertyId == "localPosition.x") { outValue = obj.localPosition.x; return true; }
-    if (propertyId == "localPosition.y") { outValue = obj.localPosition.y; return true; }
-    if (propertyId == "localPosition.z") { outValue = obj.localPosition.z; return true; }
-    if (propertyId == "localRotation.x") { outValue = obj.localRotation.x; return true; }
-    if (propertyId == "localRotation.y") { outValue = obj.localRotation.y; return true; }
-    if (propertyId == "localRotation.z") { outValue = obj.localRotation.z; return true; }
-    if (propertyId == "localScale.x") { outValue = obj.localScale.x; return true; }
-    if (propertyId == "localScale.y") { outValue = obj.localScale.y; return true; }
-    if (propertyId == "localScale.z") { outValue = obj.localScale.z; return true; }
-    if (propertyId == "UI.Position.x" && obj.hasUI) { outValue = obj.ui.position.x; return true; }
-    if (propertyId == "UI.Position.y" && obj.hasUI) { outValue = obj.ui.position.y; return true; }
-    if (propertyId == "UI.Size.x" && obj.hasUI) { outValue = obj.ui.size.x; return true; }
-    if (propertyId == "UI.Size.y" && obj.hasUI) { outValue = obj.ui.size.y; return true; }
-    if (propertyId == "UI.Rotation" && obj.hasUI) { outValue = obj.ui.rotation; return true; }
-    if (propertyId == "UI.SliderValue" && obj.hasUI) { outValue = obj.ui.sliderValue; return true; }
-    if (propertyId == "UI.TextScale" && obj.hasUI) { outValue = obj.ui.textScale; return true; }
-    if (propertyId == "UI.SpriteFrame" && obj.hasUI) { outValue = static_cast<float>(obj.ui.spriteSheetFrame); return true; }
-    if (propertyId == "UI.SpriteSheetFPS" && obj.hasUI) { outValue = obj.ui.spriteSheetFps; return true; }
-    if (propertyId == "UI.SpriteSheetLoop" && obj.hasUI) { outValue = obj.ui.spriteSheetLoop ? 1.0f : 0.0f; return true; }
-
-    if (propertyId == "Light.Intensity" && obj.hasLight) { outValue = obj.light.intensity; return true; }
-    if (propertyId == "Light.Range" && obj.hasLight) { outValue = obj.light.range; return true; }
-    if (propertyId == "Light.InnerAngle" && obj.hasLight) { outValue = obj.light.innerAngle; return true; }
-    if (propertyId == "Light.OuterAngle" && obj.hasLight) { outValue = obj.light.outerAngle; return true; }
-    if (propertyId == "Light.Enabled" && obj.hasLight) { outValue = obj.light.enabled ? 1.0f : 0.0f; return true; }
-
-    if (propertyId == "Camera.FOV" && obj.hasCamera) { outValue = obj.camera.fov; return true; }
-    if (propertyId == "Camera.NearClip" && obj.hasCamera) { outValue = obj.camera.nearClip; return true; }
-    if (propertyId == "Camera.FarClip" && obj.hasCamera) { outValue = obj.camera.farClip; return true; }
-    if (propertyId == "Camera.PixelsPerUnit" && obj.hasCamera) { outValue = obj.camera.pixelsPerUnit; return true; }
-
-    if (propertyId == "PostFX.BloomIntensity" && obj.hasPostFX) { outValue = obj.postFx.bloomIntensity; return true; }
-    if (propertyId == "PostFX.Exposure" && obj.hasPostFX) { outValue = obj.postFx.exposure; return true; }
-    if (propertyId == "PostFX.Contrast" && obj.hasPostFX) { outValue = obj.postFx.contrast; return true; }
-    if (propertyId == "PostFX.Saturation" && obj.hasPostFX) { outValue = obj.postFx.saturation; return true; }
-
-    if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { outValue = obj.rigidbody.mass; return true; }
-
-    if (propertyId == "Audio.Volume" && obj.hasAudioSource) { outValue = obj.audioSource.volume; return true; }
-    if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { outValue = obj.audioSource.minDistance; return true; }
-    if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { outValue = obj.audioSource.maxDistance; return true; }
-    if (propertyId == "Audio.Loop" && obj.hasAudioSource) { outValue = obj.audioSource.loop ? 1.0f : 0.0f; return true; }
-    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { outValue = obj.audioSource.spatial ? 1.0f : 0.0f; return true; }
-
-    if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { outValue = obj.aiAgent.speed; return true; }
-    if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { outValue = obj.aiAgent.stoppingDistance; return true; }
-
-    int scriptIndex = -1;
-    int settingIndex = -1;
-    if (std::sscanf(propertyId.c_str(), "ScriptSetting.%d.%d", &scriptIndex, &settingIndex) == 2) {
-        if (scriptIndex >= 0 && scriptIndex < static_cast<int>(obj.scripts.size())) {
-            const auto& script = obj.scripts[scriptIndex];
-            if (settingIndex >= 0 && settingIndex < static_cast<int>(script.settings.size())) {
-                return TryParseFloatString(script.settings[settingIndex].value, outValue);
-            }
-        }
-    }
-
-    return false;
+    return AnimationBinding::ReadProperty(obj, propertyId, outValue);
 }
 
 static bool WriteAnimatableProperty(SceneObject& obj, const std::string& propertyId, float value) {
-    if (propertyId == "localPosition.x") { obj.localPosition.x = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localPosition.y") { obj.localPosition.y = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localPosition.z") { obj.localPosition.z = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.x") { obj.localRotation.x = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.y") { obj.localRotation.y = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.z") { obj.localRotation.z = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.x") { obj.localScale.x = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.y") { obj.localScale.y = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.z") { obj.localScale.z = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-    if (propertyId == "UI.Position.x" && obj.hasUI) { obj.ui.position.x = value; return true; }
-    if (propertyId == "UI.Position.y" && obj.hasUI) { obj.ui.position.y = value; return true; }
-    if ((propertyId == "UI.Size.x" || propertyId == "UI.Size.y") && obj.hasUI) {
-        const float minUiSize = (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)
-            ? 0.01f
-            : 1.0f;
-        if (propertyId == "UI.Size.x") {
-            obj.ui.size.x = std::max(minUiSize, value);
-        } else {
-            obj.ui.size.y = std::max(minUiSize, value);
-        }
-        return true;
-    }
-    if (propertyId == "UI.Rotation" && obj.hasUI) { obj.ui.rotation = value; return true; }
-    if (propertyId == "UI.SliderValue" && obj.hasUI) { obj.ui.sliderValue = std::clamp(value, obj.ui.sliderMin, obj.ui.sliderMax); return true; }
-    if (propertyId == "UI.TextScale" && obj.hasUI) { obj.ui.textScale = std::max(0.01f, value); return true; }
-    if (propertyId == "UI.SpriteFrame" && obj.hasUI) {
-        int frameCount = 1;
-        if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
-            frameCount = static_cast<int>(obj.ui.spriteCustomFrames.size());
-        } else {
-            frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
-        }
-        obj.ui.spriteSheetFrame = std::clamp(static_cast<int>(std::round(value)), 0, std::max(0, frameCount - 1));
-        return true;
-    }
-    if (propertyId == "UI.SpriteSheetFPS" && obj.hasUI) { obj.ui.spriteSheetFps = std::clamp(value, 1.0f, 120.0f); return true; }
-    if (propertyId == "UI.SpriteSheetLoop" && obj.hasUI) { obj.ui.spriteSheetLoop = value >= 0.5f; return true; }
-
-    if (propertyId == "Light.Intensity" && obj.hasLight) { obj.light.intensity = value; return true; }
-    if (propertyId == "Light.Range" && obj.hasLight) { obj.light.range = std::max(0.0f, value); return true; }
-    if (propertyId == "Light.InnerAngle" && obj.hasLight) { obj.light.innerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
-    if (propertyId == "Light.OuterAngle" && obj.hasLight) { obj.light.outerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
-    if (propertyId == "Light.Enabled" && obj.hasLight) { obj.light.enabled = value >= 0.5f; return true; }
-
-    if (propertyId == "Camera.FOV" && obj.hasCamera) { obj.camera.fov = std::clamp(value, 1.0f, 179.0f); return true; }
-    if (propertyId == "Camera.NearClip" && obj.hasCamera) { obj.camera.nearClip = std::max(0.001f, value); return true; }
-    if (propertyId == "Camera.FarClip" && obj.hasCamera) { obj.camera.farClip = std::max(obj.camera.nearClip + 0.01f, value); return true; }
-    if (propertyId == "Camera.PixelsPerUnit" && obj.hasCamera) { obj.camera.pixelsPerUnit = std::max(1.0f, value); return true; }
-
-    if (propertyId == "PostFX.BloomIntensity" && obj.hasPostFX) { obj.postFx.bloomIntensity = std::max(0.0f, value); return true; }
-    if (propertyId == "PostFX.Exposure" && obj.hasPostFX) { obj.postFx.exposure = value; return true; }
-    if (propertyId == "PostFX.Contrast" && obj.hasPostFX) { obj.postFx.contrast = std::max(0.0f, value); return true; }
-    if (propertyId == "PostFX.Saturation" && obj.hasPostFX) { obj.postFx.saturation = std::max(0.0f, value); return true; }
-
-    if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { obj.rigidbody.mass = std::max(0.001f, value); return true; }
-
-    if (propertyId == "Audio.Volume" && obj.hasAudioSource) { obj.audioSource.volume = std::clamp(value, 0.0f, 2.0f); return true; }
-    if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { obj.audioSource.minDistance = std::max(0.01f, value); return true; }
-    if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { obj.audioSource.maxDistance = std::max(obj.audioSource.minDistance + 0.01f, value); return true; }
-    if (propertyId == "Audio.Loop" && obj.hasAudioSource) { obj.audioSource.loop = value >= 0.5f; return true; }
-    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { obj.audioSource.spatial = value >= 0.5f; return true; }
-
-    if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { obj.aiAgent.speed = std::max(0.05f, value); return true; }
-    if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { obj.aiAgent.stoppingDistance = std::max(0.0f, value); return true; }
-
-    int scriptIndex = -1;
-    int settingIndex = -1;
-    if (std::sscanf(propertyId.c_str(), "ScriptSetting.%d.%d", &scriptIndex, &settingIndex) == 2) {
-        if (scriptIndex >= 0 && scriptIndex < static_cast<int>(obj.scripts.size())) {
-            auto& script = obj.scripts[scriptIndex];
-            if (settingIndex >= 0 && settingIndex < static_cast<int>(script.settings.size())) {
-                char buffer[64];
-                std::snprintf(buffer, sizeof(buffer), "%.6g", value);
-                script.settings[settingIndex].value = buffer;
-                return true;
-            }
-        }
-    }
-
-    return false;
+    return AnimationBinding::WriteProperty(obj, propertyId, value);
 }
 
 static std::vector<std::string> BuildAnimatablePropertiesForObject(const SceneObject& obj) {
-    std::vector<std::string> props;
-    props.reserve(32);
-    props.push_back("localPosition.x");
-    props.push_back("localPosition.y");
-    props.push_back("localPosition.z");
-    props.push_back("localRotation.x");
-    props.push_back("localRotation.y");
-    props.push_back("localRotation.z");
-    props.push_back("localScale.x");
-    props.push_back("localScale.y");
-    props.push_back("localScale.z");
-    if (obj.hasUI) {
-        props.push_back("UI.Position.x");
-        props.push_back("UI.Position.y");
-        props.push_back("UI.Size.x");
-        props.push_back("UI.Size.y");
-        props.push_back("UI.Rotation");
-        props.push_back("UI.SliderValue");
-        props.push_back("UI.TextScale");
-        if (obj.ui.spriteSheetEnabled || obj.ui.spriteCustomFramesEnabled || obj.ui.type == UIElementType::Sprite2D || obj.ui.type == UIElementType::Image) {
-            props.push_back("UI.SpriteFrame");
-            props.push_back("UI.SpriteSheetFPS");
-            props.push_back("UI.SpriteSheetLoop");
-        }
-    }
+    return AnimationBinding::EnumerateProperties(obj);
+}
 
-    if (obj.hasLight) {
-        props.push_back("Light.Intensity");
-        props.push_back("Light.Range");
-        props.push_back("Light.InnerAngle");
-        props.push_back("Light.OuterAngle");
-        props.push_back("Light.Enabled");
-    }
-    if (obj.hasCamera) {
-        props.push_back("Camera.FOV");
-        props.push_back("Camera.NearClip");
-        props.push_back("Camera.FarClip");
-        props.push_back("Camera.PixelsPerUnit");
-    }
-    if (obj.hasPostFX) {
-        props.push_back("PostFX.BloomIntensity");
-        props.push_back("PostFX.Exposure");
-        props.push_back("PostFX.Contrast");
-        props.push_back("PostFX.Saturation");
-    }
-    if (obj.hasRigidbody) {
-        props.push_back("Rigidbody.Mass");
-    }
-    if (obj.hasAudioSource) {
-        props.push_back("Audio.Volume");
-        props.push_back("Audio.MinDistance");
-        props.push_back("Audio.MaxDistance");
-        props.push_back("Audio.Loop");
-        props.push_back("Audio.Spatial");
-    }
-    if (obj.hasAIAgent) {
-        props.push_back("AIAgent.Speed");
-        props.push_back("AIAgent.StoppingDistance");
-    }
-    for (size_t scriptIndex = 0; scriptIndex < obj.scripts.size(); ++scriptIndex) {
-        const auto& script = obj.scripts[scriptIndex];
-        for (size_t settingIndex = 0; settingIndex < script.settings.size(); ++settingIndex) {
-            float parsed = 0.0f;
-            if (!TryParseFloatString(script.settings[settingIndex].value, parsed)) {
+static void UpgradeLegacyScriptSettingTracks(AnimClip& clip,
+                                             const std::unordered_map<int, SceneObject*>& objectById) {
+    for (AnimBinding& binding : clip.bindings) {
+        if (!binding.resolvedTarget) continue;
+
+        auto targetIt = objectById.find(binding.resolvedTarget->objectId);
+        if (targetIt == objectById.end() || !targetIt->second) continue;
+        const SceneObject& target = *targetIt->second;
+
+        for (AnimTrack& track : binding.tracks) {
+            int scriptId = -1;
+            bool legacyIndex = false;
+            int settingIndex = -1;
+            std::string settingKey;
+            if (!AnimationBinding::ParseScriptSettingPropertyId(track.propertyId,
+                                                                scriptId,
+                                                                legacyIndex,
+                                                                settingIndex,
+                                                                settingKey) || !legacyIndex) {
                 continue;
             }
-            char path[64];
-            std::snprintf(path, sizeof(path), "ScriptSetting.%zu.%zu", scriptIndex, settingIndex);
-            props.push_back(path);
+
+            if (scriptId < 0 || scriptId >= static_cast<int>(target.scripts.size())) {
+                continue;
+            }
+
+            const ScriptComponent& script = target.scripts[static_cast<size_t>(scriptId)];
+            if (settingIndex < 0 || settingIndex >= static_cast<int>(script.settings.size())) {
+                continue;
+            }
+
+            const std::string& key = script.settings[static_cast<size_t>(settingIndex)].key;
+            if (key.empty()) {
+                continue;
+            }
+
+            track.propertyId = AnimationBinding::MakeScriptSettingPropertyId(script.inspectorId, key);
         }
     }
-    return props;
 }
 
 static void SortTrackKeys(AnimTrack& track) {
@@ -932,6 +755,13 @@ static std::string TrackGroupPrefix(const std::string& propertyId) {
     return propertyId.substr(0, dot);
 }
 
+static bool IsRowScrollInteraction(const ImGuiIO& io) {
+    return std::abs(io.MouseWheel) > 0.0f ||
+           io.MouseDown[ImGuiMouseButton_Left] ||
+           io.MouseDown[ImGuiMouseButton_Middle] ||
+           io.MouseDown[ImGuiMouseButton_Right];
+}
+
 static void CollectVisibleRowsRecursive(const BindingTreeNode& node,
                                         AnimClip& clip,
                                         AnimationEditorState& state,
@@ -963,7 +793,7 @@ static void CollectVisibleRowsRecursive(const BindingTreeNode& node,
             row.depth = depth + 1;
             row.binding = bindingIndex;
             row.track = static_cast<int>(trackIndex);
-            row.label = binding.tracks[trackIndex].propertyId;
+            row.label = AnimationBinding::PrettyPropertyName(binding.tracks[trackIndex].propertyId);
             row.fullPath = binding.path;
             row.missing = binding.missingTarget;
             outRows.push_back(row);
@@ -1058,6 +888,8 @@ static void InitializeClipState(AnimationEditorState& state) {
     state.isPlaying = false;
     state.loopPlayback = true;
     state.leftPaneWidth = 300.0f;
+    state.synchronizedRowScrollY = 0.0f;
+    state.synchronizedRowScrollSource = -1;
     state.curveValueScale = 60.0f;
     state.curveValueOffset = 0.0f;
     state.activeTab = AnimationTab::Dopesheet;
@@ -1076,6 +908,7 @@ static void InitializeClipState(AnimationEditorState& state) {
 static void ResetClipData(AnimationEditorState& state) {
     state.clip = AnimClip{};
     state.clip.name = "New Animation";
+    state.clip.fileVersion = 2;
     state.clip.duration = 2.0f;
     state.clip.sampleRate = 30.0f;
     state.selection.keys.clear();
@@ -1085,6 +918,8 @@ static void ResetClipData(AnimationEditorState& state) {
     state.tree = BuildBindingTreeFromClip(state.clip);
     state.currentTime = 0.0f;
     state.timeline.timeOffset = 0.0f;
+    state.synchronizedRowScrollY = 0.0f;
+    state.synchronizedRowScrollSource = -1;
     state.recordLastValues.clear();
     state.clipDirty = false;
     state.renameClipSlotIndex = -1;
@@ -1097,8 +932,9 @@ static bool SaveClipToFile(const AnimClip& clip, const fs::path& path) {
     std::ofstream out(path, std::ios::trunc);
     if (!out.is_open()) return false;
 
-    out << "moduanimateVersion 1\n";
+    out << "moduanimateVersion 2\n";
     out << "name " << std::quoted(clip.name) << "\n";
+    out << "rootObjectId " << clip.rootObjectId << "\n";
     out << "duration " << clip.duration << "\n";
     out << "sampleRate " << clip.sampleRate << "\n";
     out << "bindingCount " << clip.bindings.size() << "\n";
@@ -1132,13 +968,17 @@ static bool LoadClipFromFile(AnimClip& clip, uint64_t& nextUid, const fs::path& 
     loaded.bindings.clear();
     std::string token;
     size_t expectedBindings = 0;
+    int fileVersion = 1;
     while (in >> token) {
         if (token == "moduanimateVersion") {
             int version = 0;
             in >> version;
-            if (version != 1) return false;
+            if (version < 1 || version > 2) return false;
+            fileVersion = version;
         } else if (token == "name") {
             in >> std::quoted(loaded.name);
+        } else if (token == "rootObjectId") {
+            in >> loaded.rootObjectId;
         } else if (token == "duration") {
             in >> loaded.duration;
         } else if (token == "sampleRate") {
@@ -1195,6 +1035,7 @@ static bool LoadClipFromFile(AnimClip& clip, uint64_t& nextUid, const fs::path& 
     if (!in.eof() && in.fail()) return false;
     loaded.duration = std::max(0.1f, loaded.duration);
     loaded.sampleRate = std::clamp(loaded.sampleRate, 1.0f, 240.0f);
+    loaded.fileVersion = fileVersion;
     clip = std::move(loaded);
     return true;
 }
@@ -1250,22 +1091,7 @@ static void KeyAllBoundTracksAtTime(AnimationEditorState& state,
 }
 
 static float RecordThresholdForProperty(const std::string& propertyId) {
-    if (propertyId == "Light.Enabled" ||
-        propertyId == "Audio.Loop" ||
-        propertyId == "Audio.Spatial") {
-        return 0.5f;
-    }
-    if (propertyId.rfind("ScriptSetting.", 0) == 0) {
-        return 0.0005f;
-    }
-    if (propertyId.rfind("localRotation.", 0) == 0) {
-        return 0.05f;
-    }
-    if (propertyId.rfind("localPosition.", 0) == 0 ||
-        propertyId.rfind("localScale.", 0) == 0) {
-        return 0.0005f;
-    }
-    return 0.001f;
+    return AnimationBinding::GetPropertyThreshold(propertyId);
 }
 
 static void RecordChangedProperties(AnimationEditorState& state,
@@ -1547,74 +1373,6 @@ static void DuplicateSelectionForDrag(AnimationEditorState& state) {
     }
 }
 
-static void DrawLeftPane(AnimationEditorState& state,
-                         std::vector<TimelineRow>& rows,
-                         float rowHeight,
-                         float height,
-                         float splitterPadding,
-                         bool& consumedWheel) {
-    ImGui::BeginChild("AnimBindingTreePane", ImVec2(state.leftPaneWidth - splitterPadding, height), true);
-
-    const ImVec2 base = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
-
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        TimelineRow& row = rows[i];
-        const ImVec2 rowMin(base.x, base.y + i * rowHeight);
-        const ImVec2 rowMax(base.x + width, rowMin.y + rowHeight);
-        const ImRect rowRect(rowMin, rowMax);
-
-        if (row.type == RowType::Track && state.focusedTrack.has_value() &&
-            state.focusedTrack->binding == row.binding && state.focusedTrack->track == row.track) {
-            ImGui::GetWindowDrawList()->AddRectFilled(rowRect.Min, rowRect.Max, IM_COL32(48, 94, 156, 115));
-        }
-
-        if (i % 2 == 1) {
-            ImGui::GetWindowDrawList()->AddRectFilled(rowRect.Min, rowRect.Max, IM_COL32(255, 255, 255, 10));
-        }
-
-        const float indent = 14.0f * static_cast<float>(row.depth);
-        float x = rowRect.Min.x + indent + 6.0f;
-
-        if (row.type == RowType::Path && row.expandable) {
-            const std::string expansionKey = row.fullPath.empty() ? "<root>" : row.fullPath;
-            const bool expanded = (state.expandedPaths.find(expansionKey) == state.expandedPaths.end())
-                ? true
-                : state.expandedPaths[expansionKey];
-            const char* arrow = expanded ? "v" : ">";
-            ImGui::GetWindowDrawList()->AddText(ImVec2(x, rowRect.Min.y + 2.0f), IM_COL32(220, 220, 220, 255), arrow);
-            x += 12.0f;
-        }
-
-        const ImU32 textColor = row.missing ? IM_COL32(255, 140, 140, 255) : IM_COL32(220, 220, 220, 255);
-        ImGui::GetWindowDrawList()->AddText(ImVec2(x, rowRect.Min.y + 2.0f), textColor, row.label.c_str());
-
-        ImGui::SetCursorScreenPos(rowRect.Min);
-        ImGui::PushID(i);
-        ImGui::InvisibleButton("##left_row", ImVec2(width, rowHeight));
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-            if (row.type == RowType::Path && row.expandable) {
-                const std::string expansionKey = row.fullPath.empty() ? "<root>" : row.fullPath;
-                const bool expanded = (state.expandedPaths.find(expansionKey) == state.expandedPaths.end())
-                    ? true
-                    : state.expandedPaths[expansionKey];
-                state.expandedPaths[expansionKey] = !expanded;
-            } else if (row.type == RowType::Track) {
-                state.focusedTrack = TrackHandle{row.binding, row.track};
-            }
-        }
-        ImGui::PopID();
-    }
-
-    const float requiredHeight = rows.empty() ? rowHeight : rowHeight * static_cast<float>(rows.size());
-    ImGui::Dummy(ImVec2(width, requiredHeight));
-
-    if (ImGui::IsWindowHovered() && std::abs(ImGui::GetIO().MouseWheel) > 0.0f) {
-        consumedWheel = true;
-    }
-    ImGui::EndChild();
-}
-
 static void DrawTimeRuler(ImDrawList* draw,
                           const ImRect& rulerRect,
                           const TimelineTransform& transform,
@@ -1735,33 +1493,47 @@ static void DrawDopesheet(AnimationEditorState& state,
     constexpr float kRulerHeight = 24.0f;
     constexpr float kRowHeight = 20.0f;
     constexpr float kDiamondSize = 6.0f;
+    constexpr float kLabelSplitterWidth = 6.0f;
 
     ImGui::BeginChild("AnimDopesheetPane", ImVec2(0.0f, height), true,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
+    ImGuiIO& io = ImGui::GetIO();
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const float width = ImMax(ImGui::GetContentRegionAvail().x, 100.0f);
     const float contentHeight = kRulerHeight + kRowHeight * static_cast<float>(rows.size());
+    const float minLabelWidth = 180.0f;
+    const float minTimelineWidth = 220.0f;
+    const float maxLabelWidth = std::max(minLabelWidth, width - minTimelineWidth - kLabelSplitterWidth);
+    state.leftPaneWidth = std::clamp(state.leftPaneWidth, minLabelWidth, maxLabelWidth);
+    const float labelWidth = state.leftPaneWidth;
 
     ImGui::InvisibleButton("##DopesheetCanvas", ImVec2(width, contentHeight),
                            ImGuiButtonFlags_MouseButtonLeft |
                            ImGuiButtonFlags_MouseButtonRight |
                            ImGuiButtonFlags_MouseButtonMiddle);
     const ImRect canvasRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    const ImRect rulerRect(canvasRect.Min, ImVec2(canvasRect.Max.x, canvasRect.Min.y + kRulerHeight));
+    const float timelineX0 = canvasRect.Min.x + labelWidth + kLabelSplitterWidth;
+    const ImRect rulerRect(ImVec2(timelineX0, canvasRect.Min.y), ImVec2(canvasRect.Max.x, canvasRect.Min.y + kRulerHeight));
 
     draw->AddRectFilled(canvasRect.Min, canvasRect.Max, IM_COL32(38, 38, 38, 255));
-    DrawTimeRuler(draw, rulerRect, state.timeline, canvasRect.Min.x, state.clip.sampleRate);
+    draw->AddRectFilled(ImVec2(canvasRect.Min.x, canvasRect.Min.y), ImVec2(timelineX0, canvasRect.Min.y + kRulerHeight), IM_COL32(43, 43, 47, 255));
+    draw->AddRectFilled(rulerRect.Min, rulerRect.Max, IM_COL32(46, 46, 46, 255));
+    DrawTimeRuler(draw, rulerRect, state.timeline, timelineX0, state.clip.sampleRate);
+    draw->AddText(ImVec2(canvasRect.Min.x + 8.0f, canvasRect.Min.y + 4.0f), IM_COL32(190, 190, 190, 255), "Object / Property");
+    draw->AddLine(ImVec2(timelineX0, canvasRect.Min.y), ImVec2(timelineX0, canvasRect.Max.y), IM_COL32(92, 92, 98, 255), 1.0f);
 
     const float majorStep = PickMajorTimeStep(state.timeline.pixelsPerSecond);
-    const float startTime = state.timeline.ScreenToTime(canvasRect.Min.x, canvasRect.Min.x);
-    const float endTime = state.timeline.ScreenToTime(canvasRect.Max.x, canvasRect.Min.x);
+    const float startTime = state.timeline.ScreenToTime(timelineX0, timelineX0);
+    const float endTime = state.timeline.ScreenToTime(canvasRect.Max.x, timelineX0);
     const float beginGrid = std::floor(startTime / majorStep) * majorStep;
 
     // I forgot I already had a helper for this in UltraTreronEngine... in freaking C#.
     for (float t = beginGrid; t <= endTime + majorStep; t += majorStep) {
-        const float x = state.timeline.TimeToScreen(t, canvasRect.Min.x);
-        draw->AddLine(ImVec2(x, rulerRect.Max.y), ImVec2(x, canvasRect.Max.y), IM_COL32(70, 70, 70, 180), 1.0f);
+        const float x = state.timeline.TimeToScreen(t, timelineX0);
+        if (x >= timelineX0 - 1.0f) {
+            draw->AddLine(ImVec2(x, rulerRect.Max.y), ImVec2(x, canvasRect.Max.y), IM_COL32(70, 70, 70, 180), 1.0f);
+        }
     }
 
     KeyHandle hoveredKey;
@@ -1775,65 +1547,90 @@ static void DrawDopesheet(AnimationEditorState& state,
         const float y0 = canvasRect.Min.y + kRulerHeight + i * kRowHeight;
         const float y1 = y0 + kRowHeight;
         const ImRect rowRect(ImVec2(canvasRect.Min.x, y0), ImVec2(canvasRect.Max.x, y1));
+        const bool hoveredRow =
+            ImGui::GetIO().MousePos.y >= rowRect.Min.y && ImGui::GetIO().MousePos.y <= rowRect.Max.y &&
+            ImGui::GetIO().MousePos.x >= rowRect.Min.x && ImGui::GetIO().MousePos.x <= rowRect.Max.x;
 
         if (i % 2 == 1) {
             draw->AddRectFilled(rowRect.Min, rowRect.Max, IM_COL32(255, 255, 255, 6));
         }
 
-        if (row.type != RowType::Track) {
-            draw->AddLine(ImVec2(rowRect.Min.x, rowRect.Max.y), ImVec2(rowRect.Max.x, rowRect.Max.y), IM_COL32(60, 60, 60, 255), 1.0f);
-            continue;
-        }
+        draw->AddLine(ImVec2(rowRect.Min.x, rowRect.Max.y), ImVec2(rowRect.Max.x, rowRect.Max.y), IM_COL32(60, 60, 60, 255), 1.0f);
 
-        hoveredTrack = std::nullopt;
-        if (ImGui::GetIO().MousePos.y >= rowRect.Min.y && ImGui::GetIO().MousePos.y <= rowRect.Max.y &&
-            ImGui::GetIO().MousePos.x >= rowRect.Min.x && ImGui::GetIO().MousePos.x <= rowRect.Max.x) {
+        if (row.type == RowType::Track && hoveredRow) {
             hoveredTrack = TrackHandle{row.binding, row.track};
         }
 
-        if (row.binding < 0 || row.binding >= static_cast<int>(state.clip.bindings.size())) continue;
-        AnimBinding& binding = state.clip.bindings[row.binding];
-        if (row.track < 0 || row.track >= static_cast<int>(binding.tracks.size())) continue;
-        AnimTrack& track = binding.tracks[row.track];
+        const float labelMaxX = timelineX0 - kLabelSplitterWidth - 4.0f;
+        draw->PushClipRect(rowRect.Min, ImVec2(labelMaxX, rowRect.Max.y), true);
+        const ImU32 textColor = row.missing ? IM_COL32(255, 140, 140, 255) : IM_COL32(220, 220, 220, 255);
+        const float indent = 14.0f * static_cast<float>(row.depth);
+        float x = rowRect.Min.x + indent + 6.0f;
 
-        for (const AnimKey& key : track.keys) {
-            const float x = state.timeline.TimeToScreen(key.time, canvasRect.Min.x);
-            const ImVec2 center(x, 0.5f * (rowRect.Min.y + rowRect.Max.y));
-            const bool selected = IsSelected(state.selection, KeyHandle{row.binding, row.track, key.uid});
-            const ImU32 col = selected ? IM_COL32(255, 206, 78, 255) : IM_COL32(220, 220, 220, 255);
-            draw->AddQuadFilled(
-                ImVec2(center.x, center.y - kDiamondSize),
-                ImVec2(center.x + kDiamondSize, center.y),
-                ImVec2(center.x, center.y + kDiamondSize),
-                ImVec2(center.x - kDiamondSize, center.y),
-                col
-            );
-            draw->AddQuad(
-                ImVec2(center.x, center.y - kDiamondSize),
-                ImVec2(center.x + kDiamondSize, center.y),
-                ImVec2(center.x, center.y + kDiamondSize),
-                ImVec2(center.x - kDiamondSize, center.y),
-                IM_COL32(20, 20, 20, 255)
-            );
+        if (row.type == RowType::Path && row.expandable) {
+            const std::string expansionKey = row.fullPath.empty() ? "<root>" : row.fullPath;
+            const bool expanded = (state.expandedPaths.find(expansionKey) == state.expandedPaths.end())
+                ? true
+                : state.expandedPaths[expansionKey];
+            const char* arrow = expanded ? "v" : ">";
+            draw->AddText(ImVec2(x, rowRect.Min.y + 2.0f), IM_COL32(220, 220, 220, 255), arrow);
+            x += 12.0f;
+        }
 
-            if (PointInDiamond(ImGui::GetIO().MousePos, center, kDiamondSize + 2.0f)) {
-                const float dist = std::abs(ImGui::GetIO().MousePos.x - center.x) + std::abs(ImGui::GetIO().MousePos.y - center.y);
-                if (!hasHoveredKey || dist < hoveredDistance) {
-                    hoveredDistance = dist;
-                    hoveredKey = KeyHandle{row.binding, row.track, key.uid};
-                    hasHoveredKey = true;
+        draw->AddText(ImVec2(x, rowRect.Min.y + 2.0f), textColor, row.label.c_str());
+        draw->PopClipRect();
+
+        if (row.type == RowType::Track) {
+            if (row.binding < 0 || row.binding >= static_cast<int>(state.clip.bindings.size())) continue;
+            AnimBinding& binding = state.clip.bindings[row.binding];
+            if (row.track < 0 || row.track >= static_cast<int>(binding.tracks.size())) continue;
+            AnimTrack& track = binding.tracks[row.track];
+
+            for (const AnimKey& key : track.keys) {
+                const float x = state.timeline.TimeToScreen(key.time, timelineX0);
+                const ImVec2 center(x, 0.5f * (rowRect.Min.y + rowRect.Max.y));
+                const bool selected = IsSelected(state.selection, KeyHandle{row.binding, row.track, key.uid});
+                const ImU32 col = selected ? IM_COL32(255, 206, 78, 255) : IM_COL32(220, 220, 220, 255);
+                draw->AddQuadFilled(
+                    ImVec2(center.x, center.y - kDiamondSize),
+                    ImVec2(center.x + kDiamondSize, center.y),
+                    ImVec2(center.x, center.y + kDiamondSize),
+                    ImVec2(center.x - kDiamondSize, center.y),
+                    col
+                );
+                draw->AddQuad(
+                    ImVec2(center.x, center.y - kDiamondSize),
+                    ImVec2(center.x + kDiamondSize, center.y),
+                    ImVec2(center.x, center.y + kDiamondSize),
+                    ImVec2(center.x - kDiamondSize, center.y),
+                    IM_COL32(20, 20, 20, 255)
+                );
+
+                if (PointInDiamond(ImGui::GetIO().MousePos, center, kDiamondSize + 2.0f)) {
+                    const float dist = std::abs(ImGui::GetIO().MousePos.x - center.x) + std::abs(ImGui::GetIO().MousePos.y - center.y);
+                    if (!hasHoveredKey || dist < hoveredDistance) {
+                        hoveredDistance = dist;
+                        hoveredKey = KeyHandle{row.binding, row.track, key.uid};
+                        hasHoveredKey = true;
+                    }
                 }
             }
         }
-
-        draw->AddLine(ImVec2(rowRect.Min.x, rowRect.Max.y), ImVec2(rowRect.Max.x, rowRect.Max.y), IM_COL32(60, 60, 60, 255), 1.0f);
     }
 
-    const float playheadX = state.timeline.TimeToScreen(state.currentTime, canvasRect.Min.x);
+    const float playheadX = state.timeline.TimeToScreen(state.currentTime, timelineX0);
     draw->AddLine(ImVec2(playheadX, canvasRect.Min.y), ImVec2(playheadX, canvasRect.Max.y), IM_COL32(255, 64, 64, 255), 1.5f);
+    draw->AddTriangleFilled(ImVec2(playheadX - 6.0f, rulerRect.Min.y + 1.0f),
+                            ImVec2(playheadX + 6.0f, rulerRect.Min.y + 1.0f),
+                            ImVec2(playheadX, rulerRect.Min.y + 11.0f),
+                            IM_COL32(255, 64, 64, 255));
 
     const bool hoveredCanvas = ImGui::IsItemHovered();
-    ImGuiIO& io = ImGui::GetIO();
+    if (hoveredCanvas && io.MouseDown[ImGuiMouseButton_Left] && io.MousePos.y <= rulerRect.Max.y + 6.0f) {
+        float current = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, timelineX0), 0.0f, state.clip.duration);
+        current = SnapTimeToFrames(state, current, state.timeline.pixelsPerSecond, false);
+        state.currentTime = std::clamp(current, 0.0f, state.clip.duration);
+    }
 
     if (hoveredCanvas) {
         if (io.MouseWheel != 0.0f && io.KeyCtrl) {
@@ -1851,8 +1648,8 @@ static void DrawDopesheet(AnimationEditorState& state,
             const bool shift = io.KeyShift;
             const bool alt = io.KeyAlt;
 
-            if (io.MousePos.y <= rulerRect.Max.y) {
-                float current = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, canvasRect.Min.x), 0.0f, state.clip.duration);
+            if (io.MousePos.y <= rulerRect.Max.y + 6.0f) {
+                float current = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, timelineX0), 0.0f, state.clip.duration);
                 current = SnapTimeToFrames(state, current, state.timeline.pixelsPerSecond, false);
                 state.currentTime = std::clamp(current, 0.0f, state.clip.duration);
             }
@@ -1877,18 +1674,37 @@ static void DrawDopesheet(AnimationEditorState& state,
                     BeginKeyDrag(state);
                 }
             } else if (io.MousePos.y > rulerRect.Max.y) {
-                if (!ctrl && !shift) {
-                    ClearSelection(state.selection);
+                const int clickedRowIndex = static_cast<int>(std::floor((io.MousePos.y - (canvasRect.Min.y + kRulerHeight)) / kRowHeight));
+                bool handledLabelClick = false;
+                if (clickedRowIndex >= 0 && clickedRowIndex < static_cast<int>(rows.size()) && io.MousePos.x < timelineX0) {
+                    TimelineRow& clickedRow = rows[static_cast<size_t>(clickedRowIndex)];
+                    if (clickedRow.type == RowType::Path && clickedRow.expandable) {
+                        const std::string expansionKey = clickedRow.fullPath.empty() ? "<root>" : clickedRow.fullPath;
+                        const bool expanded = (state.expandedPaths.find(expansionKey) == state.expandedPaths.end())
+                            ? true
+                            : state.expandedPaths[expansionKey];
+                        state.expandedPaths[expansionKey] = !expanded;
+                        handledLabelClick = true;
+                    } else if (clickedRow.type == RowType::Track) {
+                        state.focusedTrack = TrackHandle{clickedRow.binding, clickedRow.track};
+                        handledLabelClick = true;
+                    }
                 }
-                state.boxSelectActive = true;
-                state.boxSelectStart = io.MousePos;
-                state.boxSelectEnd = io.MousePos;
+
+                if (!handledLabelClick) {
+                    if (!ctrl && !shift) {
+                        ClearSelection(state.selection);
+                    }
+                    state.boxSelectActive = true;
+                    state.boxSelectStart = io.MousePos;
+                    state.boxSelectEnd = io.MousePos;
+                }
             }
         }
 
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             state.contextTrack = hoveredTrack;
-            state.contextTime = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, canvasRect.Min.x), 0.0f, state.clip.duration);
+            state.contextTime = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, timelineX0), 0.0f, state.clip.duration);
             ImGui::OpenPopup("DopesheetContextMenu");
         }
     }
@@ -1945,7 +1761,7 @@ static void DrawDopesheet(AnimationEditorState& state,
                 const float y1 = y0 + kRowHeight;
                 const float cy = 0.5f * (y0 + y1);
                 for (const AnimKey& key : track.keys) {
-                    const float cx = state.timeline.TimeToScreen(key.time, canvasRect.Min.x);
+                    const float cx = state.timeline.TimeToScreen(key.time, timelineX0);
                     if (box.Contains(ImVec2(cx, cy))) {
                         state.selection.keys.insert(KeyHandle{row.binding, row.track, key.uid});
                     }
@@ -2016,6 +1832,12 @@ static void DrawCurves(AnimationEditorState& state,
 
     ImGui::BeginChild("AnimCurvesPane", ImVec2(0.0f, height), true,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove);
+    ImGuiIO& io = ImGui::GetIO();
+    const bool wantsScrollSync = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                                 IsRowScrollInteraction(io);
+    if (state.synchronizedRowScrollSource != 2 && !wantsScrollSync) {
+        ImGui::SetScrollY(state.synchronizedRowScrollY);
+    }
 
     const std::vector<TrackHandle> group = BuildCurveTrackGroup(state.clip, state.focusedTrack);
     if (group.empty()) {
@@ -2024,7 +1846,6 @@ static void DrawCurves(AnimationEditorState& state,
         return;
     }
 
-    ImGuiIO& io = ImGui::GetIO();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const float width = ImMax(ImGui::GetContentRegionAvail().x, 100.0f);
     const float contentHeight = ImMax(height * 1.1f, 240.0f);
@@ -2137,8 +1958,18 @@ static void DrawCurves(AnimationEditorState& state,
 
     const float playheadX = state.timeline.TimeToScreen(state.currentTime, canvasRect.Min.x);
     draw->AddLine(ImVec2(playheadX, canvasRect.Min.y), ImVec2(playheadX, canvasRect.Max.y), IM_COL32(255, 64, 64, 255), 1.5f);
+    draw->AddTriangleFilled(ImVec2(playheadX - 6.0f, rulerRect.Min.y + 1.0f),
+                            ImVec2(playheadX + 6.0f, rulerRect.Min.y + 1.0f),
+                            ImVec2(playheadX, rulerRect.Min.y + 11.0f),
+                            IM_COL32(255, 64, 64, 255));
 
     const bool hoveredCanvas = ImGui::IsItemHovered();
+
+    if (hoveredCanvas && io.MouseDown[ImGuiMouseButton_Left] && io.MousePos.y <= rulerRect.Max.y + 6.0f) {
+        float current = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, canvasRect.Min.x), 0.0f, state.clip.duration);
+        current = SnapTimeToFrames(state, current, state.timeline.pixelsPerSecond, false);
+        state.currentTime = std::clamp(current, 0.0f, state.clip.duration);
+    }
 
     if (hoveredCanvas) {
         if (io.MouseWheel != 0.0f) {
@@ -2165,7 +1996,7 @@ static void DrawCurves(AnimationEditorState& state,
             const bool shift = io.KeyShift;
             const bool alt = io.KeyAlt;
 
-            if (io.MousePos.y <= rulerRect.Max.y) {
+            if (io.MousePos.y <= rulerRect.Max.y + 6.0f) {
                 float current = std::clamp(state.timeline.ScreenToTime(io.MousePos.x, canvasRect.Min.x), 0.0f, state.clip.duration);
                 current = SnapTimeToFrames(state, current, state.timeline.pixelsPerSecond, false);
                 state.currentTime = std::clamp(current, 0.0f, state.clip.duration);
@@ -2360,6 +2191,10 @@ static void DrawCurves(AnimationEditorState& state,
         ImGui::EndPopup();
     }
 
+    if (wantsScrollSync) {
+        state.synchronizedRowScrollY = ImGui::GetScrollY();
+        state.synchronizedRowScrollSource = 2;
+    }
     ImGui::EndChild();
 }
 
@@ -2456,10 +2291,6 @@ void Engine::renderAnimationWindow() {
     };
 
     SceneObject* rootObject = (state.clip.rootObjectId >= 0) ? findObjectById(state.clip.rootObjectId) : nullptr;
-    if (rootObject && !rootObject->hasAnimation) {
-        rootObject->hasAnimation = true;
-        projectManager.currentProject.hasUnsavedChanges = true;
-    }
     if (rootObject) {
         NormalizeAnimationClipSlots(rootObject->animation);
     }
@@ -2530,7 +2361,9 @@ void Engine::renderAnimationWindow() {
     bool saveClipPressed = ImGui::Button("Save");
     ImGui::PopStyleVar();
     if (saveClipPressed && rootObject && !desiredClipAssetPath.empty()) {
+        UpgradeLegacyScriptSettingTracks(state.clip, objectById);
         if (SaveClipToFile(state.clip, resolveClipPath(desiredClipAssetPath))) {
+            state.clip.fileVersion = 2;
             state.clipDirty = false;
         }
     }
@@ -2602,6 +2435,7 @@ void Engine::renderAnimationWindow() {
             AutoBindHierarchyTransformTracks(state, rootObject->id, objectById);
 
             if (SaveClipToFile(state.clip, absPath)) {
+                rootObject->hasAnimation = true;
                 int slotIndex = findClipSlotByPath(rootObject->animation, storedPath);
                 if (slotIndex < 0) {
                     AnimationClipSlot slot;
@@ -2649,6 +2483,7 @@ void Engine::renderAnimationWindow() {
                     rootObject->animation.clips.push_back(std::move(slot));
                     slotIndex = static_cast<int>(rootObject->animation.clips.size()) - 1;
                 }
+                rootObject->hasAnimation = true;
                 rootObject->animation.activeClipIndex = slotIndex;
                 NormalizeAnimationClipSlots(rootObject->animation);
                 state.loadedRootObjectId = -1;
@@ -2708,7 +2543,6 @@ void Engine::renderAnimationWindow() {
     const float transportHeight = ImGui::GetFrameHeightWithSpacing() * 1.8f + 8.0f;
     const float mainHeight = std::max(140.0f, ImGui::GetContentRegionAvail().y - transportHeight);
 
-    const float splitterWidth = 6.0f;
     bool consumedWheel = false;
 
     ImGui::BeginChild("AnimationMainArea",
@@ -2716,29 +2550,7 @@ void Engine::renderAnimationWindow() {
                       false,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-    const float minLeftWidth = 180.0f;
-    const float minRightWidth = 220.0f;
-    const float totalWidth = ImGui::GetContentRegionAvail().x;
-    const float maxLeftWidth = std::max(minLeftWidth, totalWidth - minRightWidth - splitterWidth);
-    state.leftPaneWidth = std::clamp(state.leftPaneWidth, minLeftWidth, maxLeftWidth);
-
     std::vector<TimelineRow> rows = BuildVisibleRows(state.clip, state.tree, state);
-
-    DrawLeftPane(state, rows, 20.0f, ImGui::GetContentRegionAvail().y, splitterWidth, consumedWheel);
-
-    ImGui::SameLine(0.0f, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(70, 70, 70, 255));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(88, 88, 88, 255));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(98, 98, 98, 255));
-    ImGui::Button("##AnimSplitter", ImVec2(splitterWidth, ImGui::GetContentRegionAvail().y));
-    if (ImGui::IsItemActive()) {
-        state.leftPaneWidth = std::clamp(state.leftPaneWidth + ImGui::GetIO().MouseDelta.x,
-                                         minLeftWidth,
-                                         maxLeftWidth);
-    }
-    ImGui::PopStyleColor(3);
-
-    ImGui::SameLine(0.0f, 0.0f);
     ImGui::BeginChild("AnimationTimelineArea",
                       ImVec2(0.0f, 0.0f),
                       false,
@@ -2823,7 +2635,9 @@ void Engine::renderAnimationWindow() {
             const AnimBinding& binding = state.clip.bindings[focused.binding];
             if (focused.track >= 0 && focused.track < static_cast<int>(binding.tracks.size())) {
                 const AnimTrack& track = binding.tracks[focused.track];
-                ImGui::TextDisabled("Focused Track: %s/%s", binding.path.empty() ? "(Root)" : binding.path.c_str(), track.propertyId.c_str());
+                ImGui::TextDisabled("Focused Track: %s / %s",
+                                    binding.path.empty() ? "(Root)" : binding.path.c_str(),
+                                    AnimationBinding::PrettyPropertyName(track.propertyId).c_str());
             }
         }
     }
@@ -2853,8 +2667,11 @@ void Engine::renderAnimationWindow() {
 
     const std::string activeClipPathForSave = rootObject ? AnimationGetActiveClipAssetPath(rootObject->animation) : std::string();
     if (state.clipDirty && !activeClipPathForSave.empty()) {
-        SaveClipToFile(state.clip, resolveClipPath(activeClipPathForSave));
-        state.clipDirty = false;
+        UpgradeLegacyScriptSettingTracks(state.clip, objectById);
+        if (SaveClipToFile(state.clip, resolveClipPath(activeClipPathForSave))) {
+            state.clip.fileVersion = 2;
+            state.clipDirty = false;
+        }
     }
 
     ImGui::End();

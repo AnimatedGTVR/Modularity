@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
 #include "ModelLoader.h"
 #include "RuntimeContent.h"
@@ -2520,6 +2521,18 @@ float Engine::getSceneTimeOfDay() {
     return sceneTimeOfDay;
 }
 
+void Engine::getSceneViewportInternalResolution(int& outWidth, int& outHeight) const {
+    outWidth = std::clamp(sceneViewportRenderWidth, 64, 8192);
+    outHeight = std::clamp(sceneViewportRenderHeight, 64, 8192);
+}
+
+float Engine::getSceneViewportInternalAspect() const {
+    int width = 1600;
+    int height = 900;
+    getSceneViewportInternalResolution(width, height);
+    return static_cast<float>(width) / static_cast<float>(std::max(1, height));
+}
+
 void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
     switch (gameViewportResolutionIndex) {
         case 1:
@@ -2566,7 +2579,12 @@ void Engine::onWindowResized(int width, int height) {
     }
 
     if (rendererInitialized) {
-        renderer.resize(width, height);
+        int targetWidth = width;
+        int targetHeight = height;
+        if (!playerMode) {
+            getSceneViewportInternalResolution(targetWidth, targetHeight);
+        }
+        renderer.resize(targetWidth, targetHeight);
     }
 }
 
@@ -5110,9 +5128,11 @@ bool Engine::loadRuntimeAnimationClipFile(const fs::path& path, RuntimeAnimation
         if (token == "moduanimateVersion") {
             int version = 0;
             in >> version;
-            if (version != 1) return false;
+            if (version < 1 || version > 2) return false;
         } else if (token == "name") {
             in >> std::quoted(loaded.name);
+        } else if (token == "rootObjectId") {
+            in >> loaded.rootObjectId;
         } else if (token == "duration") {
             in >> loaded.duration;
         } else if (token == "sampleRate") {
@@ -5225,87 +5245,7 @@ float Engine::getAnimationDurationForObject(const SceneObject& obj) const {
 }
 
 bool Engine::applyRuntimeAnimatedProperty(SceneObject& obj, const std::string& propertyId, float value) {
-    if (propertyId == "localPosition.x") { obj.localPosition.x = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localPosition.y") { obj.localPosition.y = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localPosition.z") { obj.localPosition.z = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.x") { obj.localRotation.x = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.y") { obj.localRotation.y = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localRotation.z") { obj.localRotation.z = value; obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.x") { obj.localScale.x = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.y") { obj.localScale.y = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-    if (propertyId == "localScale.z") { obj.localScale.z = std::max(0.0001f, value); obj.localInitialized = true; return true; }
-
-    if (propertyId == "UI.Position.x" && obj.hasUI) { obj.ui.position.x = value; return true; }
-    if (propertyId == "UI.Position.y" && obj.hasUI) { obj.ui.position.y = value; return true; }
-    if ((propertyId == "UI.Size.x" || propertyId == "UI.Size.y") && obj.hasUI) {
-        const float minUiSize = (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)
-            ? 0.01f
-            : 1.0f;
-        if (propertyId == "UI.Size.x") {
-            obj.ui.size.x = std::max(minUiSize, value);
-        } else {
-            obj.ui.size.y = std::max(minUiSize, value);
-        }
-        return true;
-    }
-    if (propertyId == "UI.Rotation" && obj.hasUI) { obj.ui.rotation = value; return true; }
-    if (propertyId == "UI.SliderValue" && obj.hasUI) { obj.ui.sliderValue = std::clamp(value, obj.ui.sliderMin, obj.ui.sliderMax); return true; }
-    if (propertyId == "UI.TextScale" && obj.hasUI) { obj.ui.textScale = std::max(0.01f, value); return true; }
-    if (propertyId == "UI.SpriteFrame" && obj.hasUI) {
-        int frameCount = 1;
-        if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
-            frameCount = static_cast<int>(obj.ui.spriteCustomFrames.size());
-        } else {
-            frameCount = std::max(1, obj.ui.spriteSheetColumns * obj.ui.spriteSheetRows);
-        }
-        obj.ui.spriteSheetFrame = std::clamp(static_cast<int>(std::round(value)), 0, std::max(0, frameCount - 1));
-        return true;
-    }
-    if (propertyId == "UI.SpriteSheetFPS" && obj.hasUI) { obj.ui.spriteSheetFps = std::clamp(value, 1.0f, 120.0f); return true; }
-    if (propertyId == "UI.SpriteSheetLoop" && obj.hasUI) { obj.ui.spriteSheetLoop = value >= 0.5f; return true; }
-
-    if (propertyId == "Light.Intensity" && obj.hasLight) { obj.light.intensity = value; return true; }
-    if (propertyId == "Light.Range" && obj.hasLight) { obj.light.range = std::max(0.0f, value); return true; }
-    if (propertyId == "Light.InnerAngle" && obj.hasLight) { obj.light.innerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
-    if (propertyId == "Light.OuterAngle" && obj.hasLight) { obj.light.outerAngle = std::clamp(value, 0.0f, 180.0f); return true; }
-    if (propertyId == "Light.Enabled" && obj.hasLight) { obj.light.enabled = value >= 0.5f; return true; }
-
-    if (propertyId == "Camera.FOV" && obj.hasCamera) { obj.camera.fov = std::clamp(value, 1.0f, 179.0f); return true; }
-    if (propertyId == "Camera.NearClip" && obj.hasCamera) { obj.camera.nearClip = std::max(0.001f, value); return true; }
-    if (propertyId == "Camera.FarClip" && obj.hasCamera) { obj.camera.farClip = std::max(obj.camera.nearClip + 0.01f, value); return true; }
-    if (propertyId == "Camera.PixelsPerUnit" && obj.hasCamera) { obj.camera.pixelsPerUnit = std::max(1.0f, value); return true; }
-
-    if (propertyId == "PostFX.BloomIntensity" && obj.hasPostFX) { obj.postFx.bloomIntensity = std::max(0.0f, value); return true; }
-    if (propertyId == "PostFX.Exposure" && obj.hasPostFX) { obj.postFx.exposure = value; return true; }
-    if (propertyId == "PostFX.Contrast" && obj.hasPostFX) { obj.postFx.contrast = std::max(0.0f, value); return true; }
-    if (propertyId == "PostFX.Saturation" && obj.hasPostFX) { obj.postFx.saturation = std::max(0.0f, value); return true; }
-
-    if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { obj.rigidbody.mass = std::max(0.001f, value); return true; }
-
-    if (propertyId == "Audio.Volume" && obj.hasAudioSource) { obj.audioSource.volume = std::clamp(value, 0.0f, 2.0f); return true; }
-    if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { obj.audioSource.minDistance = std::max(0.01f, value); return true; }
-    if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { obj.audioSource.maxDistance = std::max(obj.audioSource.minDistance + 0.01f, value); return true; }
-    if (propertyId == "Audio.Loop" && obj.hasAudioSource) { obj.audioSource.loop = value >= 0.5f; return true; }
-    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { obj.audioSource.spatial = value >= 0.5f; return true; }
-
-    if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { obj.aiAgent.speed = std::max(0.05f, value); return true; }
-    if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { obj.aiAgent.stoppingDistance = std::max(0.0f, value); return true; }
-
-    int scriptIndex = -1;
-    int settingIndex = -1;
-    if (std::sscanf(propertyId.c_str(), "ScriptSetting.%d.%d", &scriptIndex, &settingIndex) == 2) {
-        if (scriptIndex >= 0 && scriptIndex < static_cast<int>(obj.scripts.size())) {
-            auto& script = obj.scripts[scriptIndex];
-            if (settingIndex >= 0 && settingIndex < static_cast<int>(script.settings.size())) {
-                char buffer[64];
-                std::snprintf(buffer, sizeof(buffer), "%.6g", value);
-                script.settings[settingIndex].value = buffer;
-                return true;
-            }
-        }
-    }
-
-    return false;
+    return AnimationBinding::WriteProperty(obj, propertyId, value);
 }
 
 void Engine::evaluateRuntimeAnimationClip(const RuntimeAnimationClip& clip, float time, int rootObjectId) {
@@ -9584,6 +9524,30 @@ void Engine::loadEditorUserSettings() {
             gameViewportAutoFit = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gameViewportZoom") {
             try { gameViewportZoom = std::clamp(std::stof(value), 1.0f, 8.0f); } catch (...) {}
+        } else if (key == "sceneViewportRenderWidth") {
+            try { sceneViewportRenderWidth = std::clamp(std::stoi(value), 64, 8192); } catch (...) {}
+        } else if (key == "sceneViewportRenderHeight") {
+            try { sceneViewportRenderHeight = std::clamp(std::stoi(value), 64, 8192); } catch (...) {}
+        } else if (key == "sceneViewportDisplayMode") {
+            if (value == "Fit") {
+                sceneViewportDisplayMode = ViewportDisplayMode::Fit;
+            } else if (value == "Fill") {
+                sceneViewportDisplayMode = ViewportDisplayMode::Fill;
+            } else if (value == "IntegerScale") {
+                sceneViewportDisplayMode = ViewportDisplayMode::IntegerScale;
+            } else {
+                sceneViewportDisplayMode = ViewportDisplayMode::Stretch;
+            }
+        } else if (key == "gameViewportDisplayMode") {
+            if (value == "Stretch") {
+                gameViewportDisplayMode = ViewportDisplayMode::Stretch;
+            } else if (value == "Fill") {
+                gameViewportDisplayMode = ViewportDisplayMode::Fill;
+            } else if (value == "IntegerScale") {
+                gameViewportDisplayMode = ViewportDisplayMode::IntegerScale;
+            } else {
+                gameViewportDisplayMode = ViewportDisplayMode::Fit;
+            }
         } else if (key == "scriptAutoCompileInterval") {
             try { scriptAutoCompileInterval = std::clamp(std::stod(value), 0.1, 10.0); } catch (...) {}
         } else if (key == "scriptAutoCompileOnSave") {
@@ -9636,6 +9600,8 @@ void Engine::loadEditorUserSettings() {
     gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
     gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
     gameViewportZoom = std::clamp(gameViewportZoom, 1.0f, 8.0f);
+    sceneViewportRenderWidth = std::clamp(sceneViewportRenderWidth, 64, 8192);
+    sceneViewportRenderHeight = std::clamp(sceneViewportRenderHeight, 64, 8192);
     light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
@@ -9759,6 +9725,23 @@ void Engine::saveEditorUserSettings() const {
     file << "gameViewportCustomHeight=" << gameViewportCustomHeight << "\n";
     file << "gameViewportAutoFit=" << (gameViewportAutoFit ? "1" : "0") << "\n";
     file << "gameViewportZoom=" << gameViewportZoom << "\n";
+    file << "sceneViewportRenderWidth=" << sceneViewportRenderWidth << "\n";
+    file << "sceneViewportRenderHeight=" << sceneViewportRenderHeight << "\n";
+    auto writeViewportDisplayMode = [&file](const char* key, ViewportDisplayMode mode) {
+        const char* modeName = "Stretch";
+        switch (mode) {
+            case ViewportDisplayMode::Fit: modeName = "Fit"; break;
+            case ViewportDisplayMode::Fill: modeName = "Fill"; break;
+            case ViewportDisplayMode::IntegerScale: modeName = "IntegerScale"; break;
+            case ViewportDisplayMode::Stretch:
+            default:
+                modeName = "Stretch";
+                break;
+        }
+        file << key << "=" << modeName << "\n";
+    };
+    writeViewportDisplayMode("sceneViewportDisplayMode", sceneViewportDisplayMode);
+    writeViewportDisplayMode("gameViewportDisplayMode", gameViewportDisplayMode);
     file << "scriptAutoCompileInterval=" << scriptAutoCompileInterval << "\n";
     file << "scriptAutoCompileOnSave=" << (scriptEditorState.autoCompileOnSave ? "1" : "0") << "\n";
     const ImGuiStyle& style = ImGui::GetStyle();

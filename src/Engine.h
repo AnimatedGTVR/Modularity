@@ -37,6 +37,13 @@ struct PixelSpriteLayerState {
     std::vector<unsigned char> pixels;
 };
 
+enum class ViewportDisplayMode {
+    Stretch = 0,
+    Fit = 1,
+    Fill = 2,
+    IntegerScale = 3
+};
+
 class Engine {
     friend void window_size_callback(GLFWwindow* window, int width, int height);
 private:
@@ -406,6 +413,10 @@ private:
     int gameViewportCustomHeight = 1080;
     float gameViewportZoom = 1.0f;
     bool gameViewportAutoFit = true;
+    int sceneViewportRenderWidth = 1600;
+    int sceneViewportRenderHeight = 900;
+    ViewportDisplayMode sceneViewportDisplayMode = ViewportDisplayMode::Stretch;
+    ViewportDisplayMode gameViewportDisplayMode = ViewportDisplayMode::Fit;
     int gameViewportLastRenderWidth = 0;
     int gameViewportLastRenderHeight = 0;
     int activePlayerId = -1;
@@ -672,6 +683,7 @@ private:
     };
     struct RuntimeAnimationClip {
         std::string name;
+        int rootObjectId = -1;
         float duration = 2.0f;
         float sampleRate = 30.0f;
         std::vector<RuntimeAnimBinding> bindings;
@@ -749,6 +761,8 @@ private:
     void processAutoCompileQueue();
     void queueAutoCompile(const fs::path& scriptPath, const fs::file_time_type& sourceTime);
     void resetScriptRuntimeStateForReload(bool clearBinaryPaths);
+    void getSceneViewportInternalResolution(int& outWidth, int& outHeight) const;
+    float getSceneViewportInternalAspect() const;
     void getRuntimeInternalResolution(int& outWidth, int& outHeight) const;
     float getRuntimeInternalAspect() const;
     void startProjectLoad(const std::string& path);

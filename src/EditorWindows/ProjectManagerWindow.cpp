@@ -2357,7 +2357,7 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (ImGui::CollapsingHeader("Player / Viewport", ImGuiTreeNodeFlags_DefaultOpen)) {
-            const char* resolutionOptions[] = { "Window", "1080p", "720p", "1440p", "Custom" };
+            const char* resolutionOptions[] = { "Default (1280x720)", "1080p", "720p", "1440p", "Custom" };
 
             if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= static_cast<int>(IM_ARRAYSIZE(resolutionOptions))) {
                 gameViewportResolutionIndex = 0;

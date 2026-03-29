@@ -1251,29 +1251,34 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"aiAgentAlignToPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.alignToPath = std::stoi(value) != 0; }},
         {"aiAgentDebugDrawPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.debugDrawPath = std::stoi(value) != 0; }},
         {"hasAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = std::stoi(value) != 0; }},
-        {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.animation.enabled = std::stoi(value) != 0; }},
-        {"animClipAsset", +[](SceneObject& obj, const std::string& value) { obj.animation.clipAssetPath = value; }},
+        {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.enabled = std::stoi(value) != 0; }},
+        {"animClipAsset", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.clipAssetPath = value; }},
         {"animClipCount", +[](SceneObject& obj, const std::string& value) {
+             obj.hasAnimation = true;
              int count = std::stoi(value);
              obj.animation.clips.resize(std::max(0, count));
          }},
         {"animActiveClipIndex", +[](SceneObject& obj, const std::string& value) {
+             obj.hasAnimation = true;
              obj.animation.activeClipIndex = std::stoi(value);
          }},
-        {"animClipLength", +[](SceneObject& obj, const std::string& value) { obj.animation.clipLength = std::stof(value); }},
-        {"animPlaySpeed", +[](SceneObject& obj, const std::string& value) { obj.animation.playSpeed = std::stof(value); }},
-        {"animLoop", +[](SceneObject& obj, const std::string& value) { obj.animation.loop = std::stoi(value) != 0; }},
-        {"animPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.animation.playOnAwake = std::stoi(value) != 0; }},
-        {"animApplyOnScrub", +[](SceneObject& obj, const std::string& value) { obj.animation.applyOnScrub = std::stoi(value) != 0; }},
+        {"animClipLength", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.clipLength = std::stof(value); }},
+        {"animPlaySpeed", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.playSpeed = std::stof(value); }},
+        {"animLoop", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.loop = std::stoi(value) != 0; }},
+        {"animPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.playOnAwake = std::stoi(value) != 0; }},
+        {"animApplyOnScrub", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.applyOnScrub = std::stoi(value) != 0; }},
         {"animKeyCount", +[](SceneObject& obj, const std::string& value) {
+             obj.hasAnimation = true;
              int count = std::stoi(value);
              obj.animation.keyframes.resize(std::max(0, count));
          }},
         {"animEventCount", +[](SceneObject& obj, const std::string& value) {
+             obj.hasAnimation = true;
              int count = std::stoi(value);
              obj.animation.events.resize(std::max(0, count));
          }},
         {"animTrackCount", +[](SceneObject& obj, const std::string& value) {
+             obj.hasAnimation = true;
              int count = std::stoi(value);
              obj.animation.tracks.resize(std::max(0, count));
          }},
@@ -1727,6 +1732,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                 if (handlerIt != handlers.end()) {
                     handlerIt->second(*currentObj, value);
                 } else if (key.rfind("animClip", 0) == 0) {
+                    currentObj->hasAnimation = true;
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 8) {
                         int clipIdx = std::stoi(key.substr(8, underscore - 8));
@@ -1741,6 +1747,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                         }
                     }
                 } else if (key.rfind("animKey", 0) == 0) {
+                    currentObj->hasAnimation = true;
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 7) {
                         int idx = std::stoi(key.substr(7, underscore - 7));
@@ -1780,6 +1787,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                         }
                     }
                 } else if (key.rfind("animEvent", 0) == 0) {
+                    currentObj->hasAnimation = true;
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 9) {
                         int idx = std::stoi(key.substr(9, underscore - 9));
@@ -1796,6 +1804,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                         }
                     }
                 } else if (key.rfind("animTrack", 0) == 0) {
+                    currentObj->hasAnimation = true;
                     size_t underscore = key.find('_');
                     if (underscore != std::string::npos && underscore > 9) {
                         int trackIdx = std::stoi(key.substr(9, underscore - 9));
@@ -1898,6 +1907,15 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         file.close();
         for (auto& obj : objects) {
             EnsureInspectorComponentMetadata(obj);
+            if (!obj.hasAnimation) {
+                if (!obj.animation.clips.empty() ||
+                    !obj.animation.keyframes.empty() ||
+                    !obj.animation.events.empty() ||
+                    !obj.animation.tracks.empty() ||
+                    !obj.animation.clipAssetPath.empty()) {
+                    obj.hasAnimation = true;
+                }
+            }
             if (obj.hasAnimation) {
                 NormalizeAnimationClipSlots(obj.animation);
             }
