@@ -1,6 +1,6 @@
 [submodule "src/ThirdParty/imgui"]
 	path = src/ThirdParty/imgui
-	url = https://github.com/ocornut/imgui.git
+	url = https://github.com/darkresident55/ModuGUI.git
 	branch = docking
 [submodule "src/ThirdParty/glfw"]
 	path = src/ThirdParty/glfw

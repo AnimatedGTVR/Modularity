@@ -650,6 +650,7 @@ ensure_linux_dependencies() {
 }
 
 sync_submodules() {
+    git -C "${script_dir}" submodule sync --recursive
     git -C "${script_dir}" submodule update --init --recursive
 }
 
