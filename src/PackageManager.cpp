@@ -671,11 +671,8 @@ void PackageManager::buildRegistry() {
     registryUpdatedBy.clear();
     registryRoot.clear();
     const fs::path runtimeRoot = fs::current_path();
+    const fs::path engineSourceRoot = findEngineSourceRoot(runtimeRoot).value_or(fs::path());
     const fs::path sdkRoot = findBundledScriptSdkRoot(runtimeRoot).value_or(fs::path());
-    const fs::path engineSourceRoot = !sdkRoot.empty()
-        ? fs::path()
-        : findEngineSourceRoot(runtimeRoot).value_or(fs::path());
-    const fs::path includeRoot = !sdkRoot.empty() ? sdkRoot : engineSourceRoot;
 
     auto add = [this](PackageInfo info) {
         for (auto& dir : info.includeDirs) {
@@ -689,8 +686,11 @@ void PackageManager::buildRegistry() {
     engineCore.name = "Engine Core";
     engineCore.description = "Modularity engine headers and common utilities";
     engineCore.builtIn = true;
-    if (!includeRoot.empty()) {
-        appendBundledScriptSdkIncludeDirs(engineCore.includeDirs, includeRoot);
+    if (!engineSourceRoot.empty()) {
+        appendBundledScriptSdkIncludeDirs(engineCore.includeDirs, engineSourceRoot);
+    }
+    if (!sdkRoot.empty() && sdkRoot != engineSourceRoot) {
+        appendBundledScriptSdkIncludeDirs(engineCore.includeDirs, sdkRoot);
     }
     engineCore.linuxLibs = {"pthread", "dl"};
     engineCore.windowsLibs = {"User32.lib", "Advapi32.lib"};
@@ -701,8 +701,10 @@ void PackageManager::buildRegistry() {
     glm.name = "GLM Math";
     glm.description = "Header-only GLM math library (bundled)";
     glm.builtIn = false; // Count as installed instead of hidden built-in
-    if (!includeRoot.empty()) {
-        appendIfExists(glm.includeDirs, includeRoot / "src/ThirdParty/glm");
+    if (!engineSourceRoot.empty()) {
+        appendIfExists(glm.includeDirs, engineSourceRoot / "src/ThirdParty/glm");
+    } else if (!sdkRoot.empty()) {
+        appendIfExists(glm.includeDirs, sdkRoot / "src/ThirdParty/glm");
     }
     add(glm);
 
@@ -711,9 +713,12 @@ void PackageManager::buildRegistry() {
     imgui.name = "Dear ImGui";
     imgui.description = "Immediate-mode UI helpers for editor-time tools";
     imgui.builtIn = false;
-    if (!includeRoot.empty()) {
-        appendIfExists(imgui.includeDirs, includeRoot / "src/ThirdParty/imgui");
-        appendIfExists(imgui.includeDirs, includeRoot / "src/ThirdParty/imgui/backends");
+    if (!engineSourceRoot.empty()) {
+        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/imgui");
+        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/imgui/backends");
+    } else if (!sdkRoot.empty()) {
+        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/imgui");
+        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/imgui/backends");
     }
     add(imgui);
 
@@ -722,8 +727,10 @@ void PackageManager::buildRegistry() {
     imguizmo.name = "ImGuizmo";
     imguizmo.description = "Gizmo/transform helpers used by the editor";
     imguizmo.builtIn = false;
-    if (!includeRoot.empty()) {
-        appendIfExists(imguizmo.includeDirs, includeRoot / "src/ThirdParty/ImGuizmo");
+    if (!engineSourceRoot.empty()) {
+        appendIfExists(imguizmo.includeDirs, engineSourceRoot / "src/ThirdParty/ImGuizmo");
+    } else if (!sdkRoot.empty()) {
+        appendIfExists(imguizmo.includeDirs, sdkRoot / "src/ThirdParty/ImGuizmo");
     }
     add(imguizmo);
 
@@ -732,8 +739,10 @@ void PackageManager::buildRegistry() {
     miniaudio.name = "miniaudio";
     miniaudio.description = "Single-header audio helpers (bundled)";
     miniaudio.builtIn = false;
-    if (!includeRoot.empty()) {
-        appendIfExists(miniaudio.includeDirs, includeRoot / "include/ThirdParty");
+    if (!engineSourceRoot.empty()) {
+        appendIfExists(miniaudio.includeDirs, engineSourceRoot / "include/ThirdParty");
+    } else if (!sdkRoot.empty()) {
+        appendIfExists(miniaudio.includeDirs, sdkRoot / "include/ThirdParty");
     }
     add(miniaudio);
 

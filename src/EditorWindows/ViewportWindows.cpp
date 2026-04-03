@@ -252,6 +252,53 @@ void MapRenderRectToScreenRect(const EmbeddedViewportLayout& layout,
     outMax = ImVec2(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
 }
 
+struct Runtime2DWorldProfilerStats {
+    bool useWorldUi = false;
+    double uiRuntimeMs = 0.0;
+    double spriteBatchBuildMs = 0.0;
+    uint32_t visibleObjectCount = 0;
+    float light2DBuildMs = 0.0f;
+    int light2DVisibleLights = 0;
+    int light2DVisibleSprites = 0;
+};
+
+void SubmitRuntime2DWorldProfilerStats(const Runtime2DWorldProfilerStats& stats) {
+    if (!stats.useWorldUi) {
+        return;
+    }
+
+    ModuRuntime2DProfiler_RecordUiRuntime(stats.uiRuntimeMs,
+                                          stats.spriteBatchBuildMs,
+                                          stats.visibleObjectCount);
+
+    Profiler& profiler = Profiler::instance();
+    std::string worldRenderLabel = "2D World Render";
+    if (stats.visibleObjectCount > 0) {
+        worldRenderLabel += " (" + std::to_string(stats.visibleObjectCount) + " visible)";
+    }
+    profiler.addSyntheticSample(worldRenderLabel,
+                                ProfilerSampleCategory::Render,
+                                std::max(0.0, stats.uiRuntimeMs));
+
+    if (stats.spriteBatchBuildMs > 0.0001) {
+        profiler.addSyntheticSample("2D Sprite Build",
+                                    ProfilerSampleCategory::RenderDetail,
+                                    stats.spriteBatchBuildMs);
+    }
+
+    if (stats.light2DBuildMs > 0.0001f) {
+        std::string lightBuildLabel = "2D Light2D Build";
+        if (stats.light2DVisibleLights > 0 || stats.light2DVisibleSprites > 0) {
+            lightBuildLabel += " (" +
+                std::to_string(std::max(0, stats.light2DVisibleLights)) + " lights, " +
+                std::to_string(std::max(0, stats.light2DVisibleSprites)) + " sprites)";
+        }
+        profiler.addSyntheticSample(lightBuildLabel,
+                                    ProfilerSampleCategory::RenderDetail,
+                                    static_cast<double>(stats.light2DBuildMs));
+    }
+}
+
 void ApplyNearestTextureSampling(GLuint textureId) {
     if (textureId == 0 || glfwGetCurrentContext() == nullptr) return;
 
@@ -2008,6 +2055,10 @@ void updateDockDrawerAnimations();
 
 #pragma region Game Viewport Window
 void Engine::renderGameViewportWindow() {
+    const auto runtimeUiStart = std::chrono::steady_clock::now();
+    double runtimeSpriteBatchBuildMs = 0.0;
+    uint32_t runtimeVisibleObjectCount = 0;
+    Runtime2DWorldProfilerStats runtime2DProfilerStats;
     gameViewportFocused = false;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     const bool windowVisible = ImGui::Begin("Game Viewport", &showGameViewport, ImGuiWindowFlags_NoScrollbar);
@@ -2133,8 +2184,86 @@ void Engine::renderGameViewportWindow() {
         }
         toolbarTooltip("Viewport zoom");
 
+        const float toolbarSpacing = ImGui::GetStyle().ItemSpacing.x;
+        bool gameViewportToolbarChanged = false;
         toolbarSeparator();
-        ImGui::Checkbox("Profiler", &showGameProfiler);
+        if (ImGui::Checkbox("Profiler", &showGameProfiler)) {
+            gameViewportToolbarChanged = true;
+        }
+        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+        if (ImGui::Checkbox("2D PostFX", &world2DPostFx.enabled)) {
+            gameViewportToolbarChanged = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Apply 2D post FX after the world render and blend in active ModuVolume settings");
+        }
+        ImGui::SameLine(0.0f, toolbarSpacing * 0.35f);
+        if (ImGui::ArrowButton("##game_world2d_postfx_settings_arrow", ImGuiDir_Down)) {
+            ImGui::OpenPopup("##game_world2d_postfx_settings_popup");
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("2D World Post FX settings");
+        }
+        if (ImGui::BeginPopup("##game_world2d_postfx_settings_popup")) {
+            ImGui::TextUnformatted("2D World Post FX");
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Dither Intensity", &world2DPostFx.ditherIntensity, 0.0f, 1.5f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderInt("Color Bit Depth", &world2DPostFx.colorBits, 1, 8, "%d bits")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Dark Adjustment", &world2DPostFx.darkAdjustment, 0.0f, 1.0f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Pattern Scale", &world2DPostFx.ditherScale, 1.0f, 8.0f, "%.1fx")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Pixelation", &world2DPostFx.pixelation, 0.0f, 64.0f, "%.1f px")) {
+                gameViewportToolbarChanged = true;
+            }
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Exposure", &world2DPostFx.exposure, -4.0f, 4.0f, "%.2f EV")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Contrast", &world2DPostFx.contrast, 0.0f, 2.5f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Saturation", &world2DPostFx.saturation, 0.0f, 2.5f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::ColorEdit3("Color Filter", &world2DPostFx.colorFilter.x, ImGuiColorEditFlags_Float)) {
+                gameViewportToolbarChanged = true;
+            }
+            ImGui::Separator();
+            if (ImGui::SliderFloat("Vignette", &world2DPostFx.vignetteIntensity, 0.0f, 1.0f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Vignette Softness", &world2DPostFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Chromatic Aberration", &world2DPostFx.chromaticAmount, 0.0f, 0.05f, "%.4f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Sharpen", &world2DPostFx.sharpenStrength, 0.0f, 2.0f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Film Grain", &world2DPostFx.grainAmount, 0.0f, 0.4f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            if (ImGui::SliderFloat("Scanlines", &world2DPostFx.scanlineIntensity, 0.0f, 1.0f, "%.2f")) {
+                gameViewportToolbarChanged = true;
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Reset Defaults")) {
+                world2DPostFx = Light2DPostFXSettings{};
+                gameViewportToolbarChanged = true;
+            }
+            ImGui::EndPopup();
+        }
+        if (gameViewportToolbarChanged) {
+            saveEditorUserSettings();
+        }
     }
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -2227,6 +2356,8 @@ void Engine::renderGameViewportWindow() {
     } else if (playerCam && (rendererInitialized || hasVulkanSceneTexture)) {
         ImTextureID texId = static_cast<ImTextureID>(0);
         if (rendererInitialized) {
+            MODU_PROFILE_SCOPE("Render", ProfilerSampleCategory::Render);
+            Profiler::instance().beginOpenGlGpuFrame();
             unsigned int tex = renderer.renderScenePreview(
                 makeCameraFromObject(*playerCam),
                 sceneObjects,
@@ -2235,9 +2366,10 @@ void Engine::renderGameViewportWindow() {
                 playerCam->camera.fov,
                 playerCam->camera.nearClip,
                 playerCam->camera.farClip,
-                playerCam->camera.applyPostFX,
+                playerCam->camera.use2D || playerCam->camera.applyPostFX,
                 kGameViewportPreviewSlot
             );
+            Profiler::instance().endOpenGlGpuFrame();
             texId = (ImTextureID)(intptr_t)tex;
         } else if (vulkanRenderer) {
             vulkanRenderer->setGameSceneSize(static_cast<uint32_t>(std::max(1, renderWidth)),
@@ -2380,6 +2512,7 @@ void Engine::renderGameViewportWindow() {
             editCanvas3DId = find3DCanvasId(*selected);
         }
         auto isUIType = [&](const SceneObject& target) {
+            if (target.type == ObjectType::Sprite25D) return true;
             if (!target.hasUI || target.ui.type == UIElementType::None) return false;
             int canvasId = find3DCanvasId(target);
             if (!((canvasId < 0) || (canvasId == editCanvas3DId))) {
@@ -2484,6 +2617,7 @@ void Engine::renderGameViewportWindow() {
             uiWorldCamera.viewportSize = glm::vec2(static_cast<float>(renderWidth),
                                                    static_cast<float>(renderHeight));
         }
+        runtime2DProfilerStats.useWorldUi = useWorldUi;
         Camera projectedUiCamera = playerCam ? makeCameraFromObject(*playerCam) : Camera{};
         glm::mat4 projectedUiView(1.0f);
         glm::mat4 projectedUiProj(1.0f);
@@ -2700,6 +2834,7 @@ void Engine::renderGameViewportWindow() {
         glm::vec2 worldViewMax = useWorldUi
             ? uiWorldCamera.ScreenToWorld(glm::vec2(static_cast<float>(renderWidth), 0.0f))
             : glm::vec2(0.0f);
+        const auto spriteBatchBuildStart = std::chrono::steady_clock::now();
         BatchedSpriteEmitter spriteBatch(ImGui::GetWindowDrawList());
         auto resolveCanvasMaskRectForObject = [&](const SceneObject& obj, ImVec2& outMin, ImVec2& outMax) -> bool {
             bool hasMask = false;
@@ -2767,6 +2902,7 @@ void Engine::renderGameViewportWindow() {
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
             lightRequest.lightingBufferScale = light2DLightingBufferScale;
+            lightRequest.postFx = resolveWorld2DPostFx(makeCameraFromObject(*playerCam));
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -3031,12 +3167,21 @@ void Engine::renderGameViewportWindow() {
             }
 
             const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            const bool wantsPostFxComposite = Light2DHasVisiblePostFx(lightRequest.postFx);
             lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
-            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty() || wantsPostFxComposite)) {
                 unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
                 if (lightTexture != 0) {
+                    unsigned int presentedTexture = lightTexture;
+                    presentedTexture = renderer.postProcessTexture(
+                        makeCameraFromObject(*playerCam),
+                        sceneObjects,
+                        lightTexture,
+                        lightRequest.width,
+                        lightRequest.height,
+                        false);
                     ImGui::GetWindowDrawList()->AddImage(
-                        (ImTextureID)(intptr_t)lightTexture,
+                        (ImTextureID)(intptr_t)presentedTexture,
                         outputLayout.displayMin,
                         outputLayout.displayMax,
                         ImVec2(outputLayout.uvMin.x, 1.0f - outputLayout.uvMin.y),
@@ -3051,7 +3196,9 @@ void Engine::renderGameViewportWindow() {
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
+                    setLight2DRoutingReason(objectId, wantsPostFxComposite
+                        ? "Legacy path: the Light2D compositor was expected to run for 2D post FX, but no output was requested."
+                        : "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -3067,6 +3214,7 @@ void Engine::renderGameViewportWindow() {
             }
             ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
             if (rectSize.x <= 1.0f || rectSize.y <= 1.0f) continue;
+            ++runtimeVisibleObjectCount;
             const bool disableCulling =
                 obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
             if (!disableCulling && rectOutsideOverlay(rectMin, rectMax)) continue;
@@ -3446,12 +3594,17 @@ void Engine::renderGameViewportWindow() {
             if (styleApplied) ImGui::GetStyle() = savedStyle;
         }
         spriteBatch.flush();
+        runtimeSpriteBatchBuildMs +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - spriteBatchBuildStart).count();
         if (useWorldUi) {
             light2DCompositorRanLastFrame = renderedLight2DComposite;
             light2DLightBufferHadContentLastFrame = lightBufferHadContent;
             light2DActiveCountLastFrame = activeLight2DCount;
             light2DLitSprite2DCountLastFrame = litSprite2DCount;
             light2DLitWorldImageCountLastFrame = litWorldImageCount;
+            runtime2DProfilerStats.light2DBuildMs = light2DStats.cpuBuildMs;
+            runtime2DProfilerStats.light2DVisibleLights = light2DStats.visibleLights;
+            runtime2DProfilerStats.light2DVisibleSprites = light2DStats.visibleSprites;
             if (captureLight2DRoutingReasons) {
                 light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
             }
@@ -4082,18 +4235,20 @@ void Engine::renderGameViewportWindow() {
         gameViewportFocused = ImGui::IsWindowFocused();
     }
 
-    ImGui::End();
+    const auto runtimeUiEnd = std::chrono::steady_clock::now();
+    runtime2DProfilerStats.uiRuntimeMs =
+        std::chrono::duration<double, std::milli>(runtimeUiEnd - runtimeUiStart).count();
+    runtime2DProfilerStats.spriteBatchBuildMs = runtimeSpriteBatchBuildMs;
+    runtime2DProfilerStats.visibleObjectCount = runtimeVisibleObjectCount;
+    SubmitRuntime2DWorldProfilerStats(runtime2DProfilerStats);
 
-    // Keep dock drawer collapse/expand responsive when Game Viewport is the active tab.
-    // Skip while workspace transitions are in-flight to avoid split-node thrashing.
-    if (!(pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil)) {
-        updateDockDrawerAnimations();
-    }
+    ImGui::End();
 }
 #pragma endregion
 
 #pragma region Play Controls Bar
 void Engine::renderPlayControlsBar() {
+    const EditorChromeMetrics& chrome = getEditorChromeMetrics(uiChromeScale);
     const char* playTooltip = isPlaying ? "Stop Play Mode" : "Play Mode";
     const char* specTooltip = specMode ? "Disable Spec Mode" : "Spec Mode";
     const char* pauseTooltip = isPaused ? "Resume" : "Pause";
@@ -4132,12 +4287,12 @@ void Engine::renderPlayControlsBar() {
         return {};
     };
 
-    const float buttonSide = std::max(24.0f, ImGui::GetFrameHeight());
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float totalWidth = buttonSide * 3.0f + spacing * 2.0f;
+    const float buttonSide = chrome.buttonSize;
+    const float spacing = chrome.buttonSpacing;
 
     const float regionMinX = ImGui::GetWindowContentRegionMin().x;
     const float regionMaxX = ImGui::GetWindowContentRegionMax().x;
+    const float totalWidth = buttonSide * 3.0f + spacing * 2.0f;
     float startX = regionMaxX - totalWidth;
     if (startX < regionMinX) startX = regionMinX;
 
@@ -4185,10 +4340,10 @@ void Engine::renderPlayControlsBar() {
         const float highlightStrength = std::max(st.hover, st.active);
         if (highlightStrength > 0.01f) {
             const int a = static_cast<int>(24.0f + 68.0f * highlightStrength);
-            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, a), 6.0f, 0, 1.0f);
+            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, a), 3.0f, 0, 1.0f);
         }
         if (toggled) {
-            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, 146), 6.0f, 0, 1.2f);
+            dl->AddRect(slotPos, slotMax, IM_COL32(255, 255, 255, 146), 3.0f, 0, 1.2f);
         }
 
         if (icon.id != static_cast<ImTextureID>(0)) {
@@ -4234,11 +4389,13 @@ void Engine::renderPlayControlsBar() {
         isPaused);
 
     if (playPressed) {
+        ImGui::ClearActiveID();
         bool newState = !isPlaying;
         if (newState) {
             // Reset script module state so Begin/static script state is fresh each play session.
             resetScriptRuntimeStateForReload(false);
             capturePlayModeSnapshot();
+            deferInspectorRefresh = true;
             for (SceneObject& obj : sceneObjects) {
                 if (!obj.hasAnimation) continue;
                 obj.animation.runtimePlaying = false;
@@ -4253,6 +4410,7 @@ void Engine::renderPlayControlsBar() {
             } else {
                 addConsoleMessage("PhysX failed to initialize; physics disabled for play mode", ConsoleMessageType::Warning);
             }
+            audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
             audio.onPlayStart(sceneObjects);
             bool hasPlayerController = false;
             for (const auto& obj : sceneObjects) {
@@ -4269,6 +4427,7 @@ void Engine::renderPlayControlsBar() {
             physics.onPlayStop();
             audio.onPlayStop();
             restorePlayModeSnapshot();
+            deferInspectorRefresh = true;
             resetScriptRuntimeStateForReload(false);
             isPaused = false;
             if (specMode && (physics.isReady() || physics.init())) {
@@ -4282,15 +4441,21 @@ void Engine::renderPlayControlsBar() {
         if (isPaused) isPlaying = true; // placeholder: pausing implies we’re in play mode
     }
     if (specPressed) {
+        ImGui::ClearActiveID();
         bool enable = !specMode;
         if (enable && !physics.isReady() && !physics.init()) {
             addConsoleMessage("PhysX failed to initialize; spec mode disabled", ConsoleMessageType::Warning);
             enable = false;
         }
+        if (specMode != enable) {
+            deferInspectorRefresh = true;
+            resetScriptRuntimeStateForReload(false);
+        }
         specMode = enable;
         if (!isPlaying) {
             if (specMode) {
                 physics.onPlayStart(sceneObjects);
+                audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
                 audio.onPlayStart(sceneObjects);
             } else {
                 physics.onPlayStop();
@@ -4495,6 +4660,33 @@ void applyPendingDrawerTabFocus(DockDrawerState& state, ImGuiTabBar* tabBar) {
     }
 }
 
+void drawCollapsedDrawerHandleGrip(ImDrawList* draw,
+                                   const ImRect& rect,
+                                   DockDrawerSide side,
+                                   ImU32 color) {
+    if (!draw || (color & IM_COL32_A_MASK) == 0) return;
+
+    if (side == DockDrawerSide::Bottom) {
+        const float gripWidth = ImMin(16.0f, ImMax(8.0f, rect.GetWidth() - 18.0f));
+        const float x0 = rect.GetCenter().x - gripWidth * 0.5f;
+        const float x1 = x0 + gripWidth;
+        const float startY = rect.Min.y + 5.0f;
+        for (int i = 0; i < 2; ++i) {
+            const float y = startY + static_cast<float>(i) * 3.0f;
+            draw->AddLine(ImVec2(x0, y), ImVec2(x1, y), color, 1.25f);
+        }
+        return;
+    }
+
+    const float gripX = (side == DockDrawerSide::Left) ? (rect.Max.x - 5.0f) : (rect.Min.x + 5.0f);
+    const float centerY = rect.GetCenter().y;
+    for (int i = -1; i <= 1; ++i) {
+        const float y0 = centerY + static_cast<float>(i) * 4.0f - 1.4f;
+        const float y1 = y0 + 2.8f;
+        draw->AddLine(ImVec2(gripX, y0), ImVec2(gripX, y1), color, 1.2f);
+    }
+}
+
 void renderCollapsedSideDockRail(DockDrawerState& state,
                                  const DockDrawerTarget& target,
                                  DockDrawerSide side,
@@ -4567,6 +4759,7 @@ void renderCollapsedSideDockRail(DockDrawerState& state,
     if (ImGui::Begin(railWindowName, nullptr, railFlags)) {
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, 1.0f));
         ImDrawList* draw = ImGui::GetWindowDrawList();
+
         const ImGuiStyle& style = ImGui::GetStyle();
         const float slotSpacing = ImMax(1.0f, style.ItemInnerSpacing.y);
         const ImVec2 railMin = ImGui::GetWindowPos();
@@ -4576,8 +4769,8 @@ void renderCollapsedSideDockRail(DockDrawerState& state,
         draw->AddRect(railRect.Min, railRect.Max, ImGui::GetColorU32(ImGuiCol_Border));
 
         const bool tabBarFocused = (tabBar->Flags & ImGuiTabBarFlags_IsFocused) != 0;
-        const float minSlotHeight = ImGui::GetFrameHeight();
-        const float maxSlotHeight = ImGui::GetFrameHeight() * 3.2f;
+        const float minSlotHeight = ImGui::GetFrameHeight() * 0.86f;
+        const float maxSlotHeight = ImGui::GetFrameHeight() * 2.55f;
         const float slotWidth = ImMax(3.0f, ImGui::GetContentRegionAvail().x);
         float cursorY = ImGui::GetCursorPosY() + style.FramePadding.y;
 
@@ -4628,15 +4821,20 @@ void renderCollapsedSideDockRail(DockDrawerState& state,
                 }
             }
 
+            drawCollapsedDrawerHandleGrip(draw,
+                                          slotRect,
+                                          side,
+                                          ImGui::GetColorU32(ImGuiCol_TextDisabled));
+
             const ImU32 textCol = ImGui::GetColorU32((selected || hovered) ? ImGuiCol_Text : ImGuiCol_TextDisabled);
             const float baseFontSize = ImGui::GetFontSize();
-            const float minRailFont = baseFontSize * 0.70f;
-            const float maxRailFont = baseFontSize * 1.05f;
-            float railFontSize = std::clamp(baseFontSize * 0.95f, minRailFont, maxRailFont);
+            const float minRailFont = baseFontSize * 0.64f;
+            const float maxRailFont = baseFontSize * 0.92f;
+            float railFontSize = std::clamp(baseFontSize * 0.82f, minRailFont, maxRailFont);
             const ImVec2 unscaledText = ImGui::GetFont()->CalcTextSizeA(railFontSize, FLT_MAX, 0.0f, tabName);
             if (unscaledText.x > 0.5f && unscaledText.y > 0.5f) {
-                const float fitToWidth = (slotRect.GetWidth() - 4.0f) / unscaledText.y;
-                const float fitToHeight = (slotRect.GetHeight() - 6.0f) / unscaledText.x;
+                const float fitToWidth = (slotRect.GetWidth() - 8.0f) / unscaledText.y;
+                const float fitToHeight = (slotRect.GetHeight() - 10.0f) / unscaledText.x;
                 const float fitScale = ImMin(fitToWidth, fitToHeight);
                 railFontSize = std::clamp(railFontSize * fitScale, minRailFont, maxRailFont);
             }
@@ -4647,6 +4845,143 @@ void renderCollapsedSideDockRail(DockDrawerState& state,
             ImGui::PopID();
             cursorY += slotHeight + slotSpacing;
         }
+        ImGui::PopStyleVar();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+}
+
+void renderCollapsedBottomDockRail(DockDrawerState& state,
+                                   const DockDrawerTarget& target,
+                                   float railHeight,
+                                   float revealAmount) {
+    if (!target.drawerBranch || !target.splitParent) return;
+    ImGuiTabBar* tabBar = target.drawerBranch->TabBar;
+    if (!tabBar || tabBar->Tabs.Size <= 0) return;
+
+    const float reveal = std::clamp(revealAmount, 0.0f, 1.0f);
+    if (reveal <= 0.001f) return;
+
+    const float splitMinY = target.splitParent->Pos.y;
+    const float splitMaxY = target.splitParent->Pos.y + target.splitParent->Size.y;
+    const float splitHeight = ImMax(1.0f, splitMaxY - splitMinY);
+    const float fullRailHeight = std::clamp(ImMax(railHeight, 20.0f), 8.0f, splitHeight);
+    const float visibleRailHeight = ImMax(1.0f, fullRailHeight * reveal);
+
+    const float branchMinX = target.drawerBranch->Pos.x;
+    const float branchMaxX = target.drawerBranch->Pos.x + target.drawerBranch->Size.x;
+    const float branchMinY = target.drawerBranch->Pos.y;
+
+    ImVec2 railPos(branchMinX, std::clamp(branchMinY, splitMinY, splitMaxY - visibleRailHeight));
+    ImVec2 railSize(ImMax(1.0f, branchMaxX - branchMinX), visibleRailHeight);
+
+    char railWindowName[64];
+    std::snprintf(railWindowName, sizeof(railWindowName), "##DockRail_B_%08X", target.splitParent->ID);
+
+    ImGuiWindowFlags railFlags = ImGuiWindowFlags_NoDecoration |
+                                 ImGuiWindowFlags_NoDocking |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoNav |
+                                 ImGuiWindowFlags_NoFocusOnAppearing;
+
+    ImGui::SetNextWindowPos(railPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(railSize, ImGuiCond_Always);
+    if (target.drawerBranch->HostWindow) {
+        ImGui::SetNextWindowViewport(target.drawerBranch->HostWindow->ViewportId);
+    }
+    ImGui::SetNextWindowBgAlpha(0.96f * reveal);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 7.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    if (ImGui::Begin(railWindowName, nullptr, railFlags)) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const ImRect railRect(ImGui::GetWindowPos(),
+                              ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x,
+                                     ImGui::GetWindowPos().y + ImGui::GetWindowSize().y));
+        draw->AddRectFilled(railRect.Min,
+                            railRect.Max,
+                            ImGui::GetColorU32(ImGuiCol_Tab),
+                            style.WindowRounding,
+                            ImDrawFlags_RoundCornersTop);
+        draw->AddRect(railRect.Min,
+                      railRect.Max,
+                      ImGui::GetColorU32(ImGuiCol_Border),
+                      style.WindowRounding,
+                      ImDrawFlags_RoundCornersTop);
+
+        const bool tabBarFocused = (tabBar->Flags & ImGuiTabBarFlags_IsFocused) != 0;
+        const float baseFontSize = ImGui::GetFontSize();
+        const float handleFontSize = std::clamp(baseFontSize * 0.84f, baseFontSize * 0.72f, baseFontSize * 0.90f);
+        const float tabHeight = ImMax(16.0f, railRect.GetHeight() - 4.0f);
+        float cursorX = ImGui::GetCursorPosX();
+
+        for (int i = 0; i < tabBar->Tabs.Size; ++i) {
+            ImGuiTabItem* tab = &tabBar->Tabs[i];
+            const char* tabName = ImGui::TabBarGetTabName(tabBar, tab);
+            const bool selected = (tabBar->SelectedTabId == tab->ID) || (tabBar->VisibleTabId == tab->ID);
+            const ImVec2 labelSize = ImGui::GetFont()->CalcTextSizeA(handleFontSize, FLT_MAX, 0.0f, tabName);
+            const float tabWidth = std::clamp(labelSize.x + 26.0f, 58.0f, 124.0f);
+
+            ImGui::PushID(static_cast<int>(tab->ID));
+            ImGui::SetCursorPos(ImVec2(cursorX, ImGui::GetCursorPosY()));
+            ImVec2 slotPos = ImGui::GetCursorScreenPos();
+            ImVec2 slotSize(tabWidth, tabHeight);
+            if (ImGui::InvisibleButton("##BottomTab", slotSize)) {
+                queueDrawerTabFocus(state, tabBar, tab->ID);
+                state.collapsed = false;
+            }
+            const bool hovered = ImGui::IsItemHovered();
+            if (hovered) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+
+            const ImRect slotRect(slotPos, ImVec2(slotPos.x + slotSize.x, slotPos.y + slotSize.y));
+            const ImU32 bg = selected
+                ? ImGui::GetColorU32(tabBarFocused ? ImGuiCol_TabSelected : ImGuiCol_TabDimmedSelected)
+                : (hovered ? ImGui::GetColorU32(ImGuiCol_TabHovered)
+                           : ImGui::GetColorU32(tabBarFocused ? ImGuiCol_Tab : ImGuiCol_TabDimmed));
+            draw->AddRectFilled(slotRect.Min,
+                                slotRect.Max,
+                                bg,
+                                style.FrameRounding,
+                                ImDrawFlags_RoundCornersTop);
+            draw->AddRect(slotRect.Min,
+                          slotRect.Max,
+                          ImGui::GetColorU32(ImGuiCol_Border),
+                          style.FrameRounding,
+                          ImDrawFlags_RoundCornersTop);
+            if (selected) {
+                const float accentHeight = ImMax(1.0f, style.TabBarOverlineSize + 1.0f);
+                draw->AddRectFilled(ImVec2(slotRect.Min.x + 1.0f, slotRect.Max.y - accentHeight),
+                                    ImVec2(slotRect.Max.x - 1.0f, slotRect.Max.y),
+                                    ImGui::GetColorU32(tabBarFocused ? ImGuiCol_TabSelectedOverline
+                                                                     : ImGuiCol_TabDimmedSelectedOverline),
+                                    style.FrameRounding,
+                                    ImDrawFlags_RoundCornersTop);
+            }
+
+            drawCollapsedDrawerHandleGrip(draw,
+                                          slotRect,
+                                          DockDrawerSide::Bottom,
+                                          ImGui::GetColorU32(ImGuiCol_TextDisabled));
+
+            const ImU32 textCol = ImGui::GetColorU32((selected || hovered) ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+            const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(handleFontSize, FLT_MAX, 0.0f, tabName);
+            const ImVec2 textPos(slotRect.Min.x + (slotRect.GetWidth() - textSize.x) * 0.5f,
+                                 slotRect.Min.y + 9.0f + (slotRect.GetHeight() - 9.0f - textSize.y) * 0.5f);
+            draw->AddText(ImGui::GetFont(), handleFontSize, textPos, textCol, tabName);
+
+            if (hovered) {
+                ImGui::SetItemTooltip("%s", tabName);
+            }
+            ImGui::PopID();
+            cursorX += tabWidth + style.ItemSpacing.x;
+        }
+
         ImGui::PopStyleVar();
     }
     ImGui::End();
@@ -4726,13 +5061,14 @@ void updateDockDrawerAnimation(DockDrawerState& state,
 
     ImGuiTabBar* tabBar = target.drawerBranch->TabBar;
     applyPendingDrawerTabFocus(state, tabBar);
-    constexpr float kCollapsedSideRailWidth = 25.0f;
+    constexpr float kCollapsedSideRailWidth = 20.0f;
+    constexpr float kCollapsedBottomRailHeight = 24.0f;
     float collapsedExtent = (side == DockDrawerSide::Bottom)
-        ? (ImGui::GetFrameHeight() + 8.0f)
+        ? kCollapsedBottomRailHeight
         : kCollapsedSideRailWidth;
     if (tabBar) {
         if (side == DockDrawerSide::Bottom) {
-            collapsedExtent = ImMax(collapsedExtent, tabBar->BarRect.GetHeight() + 6.0f);
+            collapsedExtent = ImMax(collapsedExtent, kCollapsedBottomRailHeight);
         } else {
             collapsedExtent = ImMax(collapsedExtent, kCollapsedSideRailWidth);
         }
@@ -4805,19 +5141,22 @@ void updateDockDrawerAnimation(DockDrawerState& state,
         target.oppositeBranch->SizeRef.x = oppositeExtent;
     }
 
-    if (side != DockDrawerSide::Bottom) {
-        const float railReveal = std::clamp(1.0f - state.openAmount, 0.0f, 1.0f);
-        const bool useSideRail = railReveal > 0.01f;
-        ImGuiDockNodeFlags desiredFlags = target.drawerBranch->LocalFlags;
-        if (state.collapsed) {
-            desiredFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+    const float railReveal = std::clamp(1.0f - state.openAmount, 0.0f, 1.0f);
+    const bool useCollapsedRail = railReveal > 0.01f;
+    ImGuiDockNodeFlags desiredFlags = target.drawerBranch->LocalFlags;
+    if (useCollapsedRail) {
+        desiredFlags |= ImGuiDockNodeFlags_HiddenTabBar;
+    } else {
+        desiredFlags &= ~ImGuiDockNodeFlags_HiddenTabBar;
+    }
+    if (desiredFlags != target.drawerBranch->LocalFlags) {
+        target.drawerBranch->SetLocalFlags(desiredFlags);
+    }
+
+    if (useCollapsedRail) {
+        if (side == DockDrawerSide::Bottom) {
+            renderCollapsedBottomDockRail(state, target, collapsedExtent, railReveal);
         } else {
-            desiredFlags &= ~ImGuiDockNodeFlags_HiddenTabBar;
-        }
-        if (desiredFlags != target.drawerBranch->LocalFlags) {
-            target.drawerBranch->SetLocalFlags(desiredFlags);
-        }
-        if (useSideRail) {
             renderCollapsedSideDockRail(state, target, side, collapsedExtent, railReveal);
         }
     }
@@ -4865,14 +5204,21 @@ void updateDockDrawerAnimations() {
 }
 } // namespace
 
+void Engine::updateDockDrawerInteractions() {
+    if (pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil) {
+        return;
+    }
+    updateDockDrawerAnimations();
+}
+
 void Engine::renderMainMenuBar() {
     refreshScriptEditorWindows();
 
     if (ImGui::BeginMainMenuBar()) {
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14.0f, 8.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 6.0f));
-        ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
-        ImVec4 subtle = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+        const EditorChromeMetrics& chrome = getEditorChromeMetrics(uiChromeScale);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, chrome.menuItemSpacing);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, chrome.menuFramePadding);
+        ImGui::SetWindowFontScale(chrome.fontScale);
 
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
@@ -4920,6 +5266,38 @@ void Engine::renderMainMenuBar() {
         }
 
         if (ImGui::BeginMenu("View")) {
+            if (ImGui::BeginMenu("Workspace")) {
+                const bool workspaceTransitionActive =
+                    pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil;
+                const bool workspaceSwitchLocked = glfwGetTime() < workspaceSwitchLockUntil;
+
+                auto switchWorkspace = [&](WorkspaceMode mode) {
+                    if (currentWorkspace == mode) {
+                        return;
+                    }
+                    if (workspaceTransitionActive || workspaceSwitchLocked) {
+                        return;
+                    }
+                    saveWorkspaceLayout(currentWorkspace);
+                    applyWorkspacePreset(mode, true);
+                    workspaceSwitchLockUntil = glfwGetTime() + 0.22;
+                };
+
+                const bool canSwitchWorkspace = !workspaceTransitionActive && !workspaceSwitchLocked;
+                if (ImGui::MenuItem("Default", nullptr, currentWorkspace == WorkspaceMode::Default, canSwitchWorkspace)) {
+                    switchWorkspace(WorkspaceMode::Default);
+                }
+                if (ImGui::MenuItem("Animation", nullptr, currentWorkspace == WorkspaceMode::Animation, canSwitchWorkspace)) {
+                    switchWorkspace(WorkspaceMode::Animation);
+                }
+                if (hasScriptingWindowPackage()) {
+                    if (ImGui::MenuItem("Scripting", nullptr, currentWorkspace == WorkspaceMode::Scripting, canSwitchWorkspace)) {
+                        switchWorkspace(WorkspaceMode::Scripting);
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
             ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy);
             ImGui::MenuItem("Inspector", nullptr, &showInspector);
             ImGui::MenuItem("File Browser", nullptr, &showFileBrowser);
@@ -4994,6 +5372,25 @@ void Engine::renderMainMenuBar() {
                 }
             }
             ImGui::Separator();
+            if (ImGui::BeginMenu("UI Scale")) {
+                const auto selectScale = [&](EditorChromeScale scale) {
+                    if (uiChromeScale == scale) {
+                        return;
+                    }
+                    uiChromeScale = scale;
+                    saveEditorUserSettings();
+                };
+                if (ImGui::MenuItem("Big", nullptr, uiChromeScale == EditorChromeScale::Big)) {
+                    selectScale(EditorChromeScale::Big);
+                }
+                if (ImGui::MenuItem("Default", nullptr, uiChromeScale == EditorChromeScale::Default)) {
+                    selectScale(EditorChromeScale::Default);
+                }
+                if (ImGui::MenuItem("Compact", nullptr, uiChromeScale == EditorChromeScale::Compact)) {
+                    selectScale(EditorChromeScale::Compact);
+                }
+                ImGui::EndMenu();
+            }
             ImGui::TextDisabled("UI Animations");
             if (ImGui::MenuItem("Fluid", nullptr, uiAnimationMode == UIAnimationMode::Fluid)) {
                 uiAnimationMode = UIAnimationMode::Fluid;
@@ -5023,17 +5420,32 @@ void Engine::renderMainMenuBar() {
                     specMode = false;
                     return;
                 }
+                deferInspectorRefresh = true;
+                resetScriptRuntimeStateForReload(false);
                 specMode = enabled;
                 if (!isPlaying) {
-                    if (specMode) physics.onPlayStart(sceneObjects);
-                    else physics.onPlayStop();
+                    if (specMode) {
+                        physics.onPlayStart(sceneObjects);
+                        audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
+                        audio.onPlayStart(sceneObjects);
+                    } else {
+                        physics.onPlayStop();
+                        audio.onPlayStop();
+                    }
                 }
             };
             bool specValue = specMode;
             if (ImGui::MenuItem("Spec Mode (run Script_Spec)", nullptr, &specValue)) {
                 toggleSpec(specValue);
             }
-            ImGui::MenuItem("Test Mode (run Script_TestEditor)", nullptr, &testMode);
+            bool testValue = testMode;
+            if (ImGui::MenuItem("Test Mode (run Script_TestEditor)", nullptr, &testValue)) {
+                if (testMode != testValue) {
+                    deferInspectorRefresh = true;
+                    resetScriptRuntimeStateForReload(false);
+                }
+                testMode = testValue;
+            }
             ImGui::EndMenu();
         }
 
@@ -5065,146 +5477,14 @@ void Engine::renderMainMenuBar() {
 
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About")) {
-                logToConsole("Modularity Engine - Beta V6.7\nThis build is in beta and might have issues,\n\nif you'd like to report any bugs or missing features, feel free to contact us!");
+                logToConsole("Modularity Engine - V6.7\nThis build may still have issues,\n\nif you'd like to report any bugs or missing features, feel free to contact us!");
             }
             ImGui::EndMenu();
         }
 
-        ImGui::Separator();
-        ImGui::TextColored(subtle, "Workspace");
-        ImGui::SameLine();
-        struct WorkspaceTabConfig {
-            WorkspaceMode mode;
-            const char* label;
-        };
-        const WorkspaceTabConfig workspaceTabs[] = {
-            { WorkspaceMode::Default, "Default" },
-            { WorkspaceMode::Animation, "Animation" },
-            { WorkspaceMode::Scripting, "Scripting" }
-        };
-        auto workspaceToIndex = [](WorkspaceMode mode) {
-            switch (mode) {
-                case WorkspaceMode::Default: return 0;
-                case WorkspaceMode::Animation: return 1;
-                case WorkspaceMode::Scripting: return 2;
-            }
-            return 0;
-        };
-        auto visibleWorkspaceCount = [&]() {
-            int count = 0;
-            for (bool visible : workspaceTabVisible) {
-                if (visible) {
-                    ++count;
-                }
-            }
-            return count;
-        };
+        renderPlayControlsBar();
 
-        bool workspaceVisibilityChanged = false;
-        bool workspaceSelectionChanged = false;
-        WorkspaceMode targetWorkspace = currentWorkspace;
-        const double now = glfwGetTime();
-        const bool workspaceTransitionActive =
-            pendingWorkspaceReload || workspaceLayoutDirty || now < workspaceLayoutStabilizeUntil;
-        const bool workspaceSwitchLocked = now < workspaceSwitchLockUntil;
-        if (ImGui::BeginTabBar("##WorkspaceTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs)) {
-            int canCloseCount = visibleWorkspaceCount();
-            for (const WorkspaceTabConfig& tab : workspaceTabs) {
-                const int idx = workspaceToIndex(tab.mode);
-                if (tab.mode == WorkspaceMode::Scripting && !hasScriptingWindowPackage()) {
-                    continue;
-                }
-                if (!workspaceTabVisible[idx]) {
-                    continue;
-                }
-
-                bool open = true;
-                if (ImGui::BeginTabItem(tab.label, &open)) {
-                    const bool shouldSwitchWorkspace =
-                        !workspaceTransitionActive &&
-                        !workspaceSwitchLocked &&
-                        (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemActivated()) &&
-                        currentWorkspace != tab.mode;
-                    if (shouldSwitchWorkspace) {
-                        targetWorkspace = tab.mode;
-                        workspaceSelectionChanged = true;
-                    }
-                    ImGui::EndTabItem();
-                }
-
-                if (!open) {
-                    if (canCloseCount > 1) {
-                        workspaceTabVisible[idx] = false;
-                        workspaceVisibilityChanged = true;
-                        --canCloseCount;
-                        if (targetWorkspace == tab.mode) {
-                            for (const WorkspaceTabConfig& fallback : workspaceTabs) {
-                                if (workspaceTabVisible[workspaceToIndex(fallback.mode)]) {
-                                    targetWorkspace = fallback.mode;
-                                    workspaceSelectionChanged = true;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        workspaceTabVisible[idx] = true;
-                    }
-                }
-            }
-            ImGui::EndTabBar();
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+##WorkspaceTabsAdd")) {
-            ImGui::OpenPopup("WorkspaceTabsAddPopup");
-        }
-        if (ImGui::BeginPopup("WorkspaceTabsAddPopup")) {
-            for (const WorkspaceTabConfig& tab : workspaceTabs) {
-                const int idx = workspaceToIndex(tab.mode);
-                if (tab.mode == WorkspaceMode::Scripting && !hasScriptingWindowPackage()) {
-                    continue;
-                }
-                if (workspaceTabVisible[idx]) {
-                    continue;
-                }
-                if (ImGui::MenuItem(tab.label)) {
-                    workspaceTabVisible[idx] = true;
-                    workspaceVisibilityChanged = true;
-                }
-            }
-            ImGui::EndPopup();
-        }
-        if (workspaceSelectionChanged && currentWorkspace != targetWorkspace) {
-            saveWorkspaceLayout(currentWorkspace);
-            applyWorkspacePreset(targetWorkspace, true);
-            workspaceSwitchLockUntil = glfwGetTime() + 0.22;
-        }
-        if (workspaceVisibilityChanged || workspaceSelectionChanged) {
-            saveEditorUserSettings();
-        }
-
-        ImGui::SameLine();
-        ImGui::TextColored(subtle, "Project");
-        ImGui::SameLine();
-        std::string projectLabel = projectManager.currentProject.name.empty() ?
-            "New Project" : projectManager.currentProject.name;
-        ImGui::TextColored(accent, "%s", projectLabel.c_str());
-        ImGui::SameLine();
-        ImGui::TextColored(subtle, "|");
-        ImGui::SameLine();
-        std::string sceneLabel = projectManager.currentProject.currentSceneName.empty() ?
-            "No Scene Loaded" : projectManager.currentProject.currentSceneName;
-        ImGui::TextUnformatted(sceneLabel.c_str());
-
-        float rightX = ImGui::GetWindowWidth() - 220.0f;
-        if (rightX > ImGui::GetCursorPosX()) {
-            ImGui::SameLine(rightX);
-        } else {
-            ImGui::SameLine();
-        }
-        ImGui::TextColored(subtle, "Viewport");
-        ImGui::SameLine();
-        ImGui::TextColored(accent, viewportFullscreen ? "Fullscreen" : "Docked");
-
+        ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleVar(2);
         ImGui::EndMainMenuBar();
     }
@@ -5533,7 +5813,8 @@ void Engine::renderViewport() {
     panelSize.x = std::max(1.0f, panelSize.x);
     panelSize.y = std::max(1.0f, panelSize.y);
 
-    getSceneViewportInternalResolution(viewportWidth, viewportHeight);
+    viewportWidth = std::clamp(static_cast<int>(std::floor(panelSize.x)), 1, 8192);
+    viewportHeight = std::clamp(static_cast<int>(std::floor(panelSize.y)), 1, 8192);
     if (rendererInitialized) {
         renderer.resize(viewportWidth, viewportHeight);
     }
@@ -5562,8 +5843,8 @@ void Engine::renderViewport() {
                 activeGameResolutionWidth = gameViewportLastRenderWidth;
                 activeGameResolutionHeight = gameViewportLastRenderHeight;
             } else {
-                activeGameResolutionWidth = std::max(1, sceneViewportRenderWidth);
-                activeGameResolutionHeight = std::max(1, sceneViewportRenderHeight);
+                activeGameResolutionWidth = std::max(1, viewportWidth);
+                activeGameResolutionHeight = std::max(1, viewportHeight);
             }
             break;
         case 1:
@@ -5583,8 +5864,8 @@ void Engine::renderViewport() {
             activeGameResolutionHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
             break;
         default:
-            activeGameResolutionWidth = std::max(1, sceneViewportRenderWidth);
-            activeGameResolutionHeight = std::max(1, sceneViewportRenderHeight);
+            activeGameResolutionWidth = std::max(1, viewportWidth);
+            activeGameResolutionHeight = std::max(1, viewportHeight);
             break;
     }
     int worldUiReferenceResolutionWidth = activeGameResolutionWidth;
@@ -5617,7 +5898,8 @@ void Engine::renderViewport() {
     }
 
     if (!rendererInitialized && !hasVulkanSceneTexture) {
-        ImGui::InvisibleButton("##SceneViewportPanelEmpty", panelSize);
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##SceneViewportPanelEmpty", panelSize, ImGuiButtonFlags_MouseButtonRight);
         ImVec2 imageMin = sceneLayout.displayMin;
         ImVec2 imageMax = sceneLayout.displayMax;
         ImVec2 drawSize(std::max(1.0f, imageMax.x - imageMin.x), std::max(1.0f, imageMax.y - imageMin.y));
@@ -5695,7 +5977,8 @@ void Engine::renderViewport() {
                                 showSelected3DColliderPreview,
                                 &selectedObjectIds);
             unsigned int tex = renderer.getViewportTexture();
-            ImGui::InvisibleButton("##SceneViewportPanel", panelSize);
+            ImGui::SetNextItemAllowOverlap();
+            ImGui::InvisibleButton("##SceneViewportPanel", panelSize, ImGuiButtonFlags_MouseButtonRight);
             if (tex != 0) {
                 ImDrawList* drawList = ImGui::GetWindowDrawList();
                 drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax, IM_COL32(10, 12, 18, 255));
@@ -5708,9 +5991,23 @@ void Engine::renderViewport() {
                                    ImVec2(sceneLayout.uvMax.x, 1.0f - sceneLayout.uvMax.y));
                 drawList->PopClipRect();
             }
+
+            ImVec2 imageMin = sceneLayout.displayMin;
+            ImVec2 imageMax = sceneLayout.displayMax;
+            viewportImageMin = imageMin;
+            viewportImageMax = imageMax;
+            hasViewportImageRect = true;
+            glm::vec2 hoveredPixel(0.0f);
+            mouseOverViewportImage = TryMapScreenPointToRenderPixel(
+                sceneLayout,
+                ImGui::GetIO().MousePos,
+                viewportWidth,
+                viewportHeight,
+                hoveredPixel);
         } else {
             ImTextureID texId = vulkanRenderer ? vulkanRenderer->getViewportSceneTextureID() : static_cast<ImTextureID>(0);
-            ImGui::InvisibleButton("##SceneViewportPanelVk", panelSize);
+            ImGui::SetNextItemAllowOverlap();
+            ImGui::InvisibleButton("##SceneViewportPanelVk", panelSize, ImGuiButtonFlags_MouseButtonRight);
             if (texId != static_cast<ImTextureID>(0)) {
                 ImDrawList* drawList = ImGui::GetWindowDrawList();
                 drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax, IM_COL32(10, 12, 18, 255));
@@ -5722,20 +6019,22 @@ void Engine::renderViewport() {
                                    sceneLayout.uvMax);
                 drawList->PopClipRect();
             }
+            ImVec2 imageMin = sceneLayout.displayMin;
+            ImVec2 imageMax = sceneLayout.displayMax;
+            viewportImageMin = imageMin;
+            viewportImageMax = imageMax;
+            hasViewportImageRect = true;
+            glm::vec2 hoveredPixel(0.0f);
+            mouseOverViewportImage = TryMapScreenPointToRenderPixel(
+                sceneLayout,
+                ImGui::GetIO().MousePos,
+                viewportWidth,
+                viewportHeight,
+                hoveredPixel);
         }
 
         ImVec2 imageMin = sceneLayout.displayMin;
         ImVec2 imageMax = sceneLayout.displayMax;
-        viewportImageMin = imageMin;
-        viewportImageMax = imageMax;
-        hasViewportImageRect = true;
-        glm::vec2 hoveredPixel(0.0f);
-        mouseOverViewportImage = TryMapScreenPointToRenderPixel(
-            sceneLayout,
-            ImGui::GetIO().MousePos,
-            viewportWidth,
-            viewportHeight,
-            hoveredPixel);
         ImDrawList* viewportDrawList = ImGui::GetWindowDrawList();
         viewportDrawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax, true);
 
@@ -5956,22 +6255,33 @@ void Engine::renderViewport() {
             }
         }
 
+    ImGuiWindow* sceneViewportWindow = ImGui::GetCurrentWindow();
+    ImGuiWindow* sceneViewportRootWindow = sceneViewportWindow ? sceneViewportWindow->RootWindowDockTree : nullptr;
     bool windowActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
                         ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     const float toolbarWidthEstimate = 520.0f;
     const float toolbarHeightEstimate = 42.0f;
+    const float toolbarInsetX = 12.0f;
+    const float toolbarInsetY = 12.0f;
     static ImVec2 toolbarSizeCache(toolbarWidthEstimate, toolbarHeightEstimate);
     ImVec2 toolbarRectMin(imageMin.x, imageMin.y);
     ImVec2 toolbarRectMax(imageMin.x, imageMin.y);
     auto computeToolbarRect = [&]() {
-        ImVec2 desiredBottomLeft = ImVec2(imageMin.x + 12.0f, imageMax.y - 12.0f);
-        float minX = imageMin.x + 12.0f;
-        float maxX = imageMax.x - 12.0f;
-        float toolbarLeft = desiredBottomLeft.x;
+        float minX = imageMin.x + toolbarInsetX;
+        float maxX = imageMax.x - toolbarInsetX;
+        float minY = imageMin.y + toolbarInsetY;
+        float maxY = imageMax.y - toolbarInsetY;
+        float toolbarLeft = (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight ||
+                             sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight)
+            ? (maxX - toolbarSizeCache.x)
+            : minX;
         if (toolbarLeft + toolbarSizeCache.x > maxX) toolbarLeft = maxX - toolbarSizeCache.x;
         if (toolbarLeft < minX) toolbarLeft = minX;
-        float minY = imageMin.y + 12.0f;
-        float toolbarTop = desiredBottomLeft.y - toolbarSizeCache.y;
+        float toolbarTop = (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomLeft ||
+                            sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight)
+            ? (maxY - toolbarSizeCache.y)
+            : minY;
+        if (toolbarTop + toolbarSizeCache.y > maxY) toolbarTop = maxY - toolbarSizeCache.y;
         if (toolbarTop < minY) toolbarTop = minY;
         toolbarRectMin = ImVec2(toolbarLeft, toolbarTop);
         toolbarRectMax = ImVec2(toolbarLeft + toolbarSizeCache.x, toolbarTop + toolbarSizeCache.y);
@@ -5979,19 +6289,51 @@ void Engine::renderViewport() {
     computeToolbarRect();
     static float toolbarHideAnim = 0.0f;
     float toolbarHideOffset = toolbarSizeCache.y + 14.0f;
-    ImVec2 toolbarRectMinAnim = ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset * toolbarHideAnim);
-    ImVec2 toolbarRectMaxAnim = ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset * toolbarHideAnim);
+    const float toolbarHideDirection =
+        (sceneViewportToolbarCorner == ViewportToolbarCorner::TopLeft ||
+         sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight)
+            ? -1.0f
+            : 1.0f;
+    ImVec2 toolbarRectMinAnim = ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset * toolbarHideAnim * toolbarHideDirection);
+    ImVec2 toolbarRectMaxAnim = ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset * toolbarHideAnim * toolbarHideDirection);
     bool mouseInViewportRect = ImGui::IsMouseHoveringRect(imageMin, imageMax, true);
-    ImVec2 toolbarGuardMin(imageMin.x + 6.0f, imageMax.y - std::max(84.0f, toolbarSizeCache.y + 30.0f));
-    ImVec2 toolbarGuardMax(imageMin.x + std::min((imageMax.x - imageMin.x) - 6.0f, std::max(760.0f, toolbarSizeCache.x + 40.0f)),
-                           imageMax.y - 4.0f);
-    bool mouseInToolbarGuard = ImGui::IsMouseHoveringRect(toolbarGuardMin, toolbarGuardMax, true);
-    bool mouseInToolbar = ImGui::IsMouseHoveringRect(
-        ImVec2(toolbarRectMinAnim.x - 4.0f, toolbarRectMinAnim.y - 4.0f),
-        ImVec2(toolbarRectMaxAnim.x + 4.0f, toolbarRectMaxAnim.y + 4.0f),
-        true
-    ) || mouseInToolbarGuard;
-    bool toolbarAllowed = !gameViewportFocused && !(isPlaying && showGameViewport);
+    auto isToolbarHoverWindow = [&](ImGuiWindow* hoveredWindow) {
+        if (!hoveredWindow) {
+            return false;
+        }
+        if (sceneViewportRootWindow && hoveredWindow->RootWindowDockTree == sceneViewportRootWindow) {
+            return true;
+        }
+        if (sceneViewportWindow &&
+            hoveredWindow->RootWindowPopupTree == sceneViewportWindow->RootWindowPopupTree) {
+            return true;
+        }
+        return false;
+    };
+    auto isMouseInToolbarZone = [&](const ImVec2& rectMin, const ImVec2& rectMax) {
+        ImGuiWindow* hoveredWindow = nullptr;
+        ImGuiWindow* hoveredWindowUnderMovingWindow = nullptr;
+        ImGui::FindHoveredWindowEx(ImGui::GetIO().MousePos,
+                                   false,
+                                   &hoveredWindow,
+                                   &hoveredWindowUnderMovingWindow);
+        if (!isToolbarHoverWindow(hoveredWindow)) {
+            return false;
+        }
+        const bool overToolbarRect = ImGui::IsMouseHoveringRect(
+            ImVec2(rectMin.x - 4.0f, rectMin.y - 4.0f),
+            ImVec2(rectMax.x + 4.0f, rectMax.y + 4.0f),
+            true);
+        ImVec2 toolbarGuardMin(std::max(imageMin.x + 6.0f, rectMin.x - 12.0f),
+                               std::max(imageMin.y + 6.0f, rectMin.y - 12.0f));
+        ImVec2 toolbarGuardMax(std::min(imageMax.x - 6.0f, rectMax.x + 12.0f),
+                               std::min(imageMax.y - 6.0f, rectMax.y + 12.0f));
+        const bool overToolbarGuard = ImGui::IsMouseHoveringRect(toolbarGuardMin, toolbarGuardMax, true);
+        return overToolbarRect || overToolbarGuard;
+    };
+    bool mouseInToolbarGuard = isMouseInToolbarZone(toolbarRectMinAnim, toolbarRectMaxAnim);
+    bool mouseInToolbar = mouseInToolbarGuard;
+    bool toolbarAllowed = !cursorLocked && !gameViewportFocused && !(isPlaying && showGameViewport);
     bool showViewportToolbar = toolbarAllowed &&
                                (windowActive || mouseInViewportRect || mouseInToolbar || toolbarHideAnim < 0.999f);
     bool toolbarHover = toolbarAllowed && (mouseInViewportRect || mouseInToolbar);
@@ -6002,13 +6344,9 @@ void Engine::renderViewport() {
     }
     float toolbarAnimStep = 1.0f - std::exp(-toolbarAnimSpeed * ImGui::GetIO().DeltaTime);
     toolbarHideAnim += (toolbarTarget - toolbarHideAnim) * toolbarAnimStep;
-    toolbarRectMin.y += toolbarHideOffset * toolbarHideAnim;
-    toolbarRectMax.y += toolbarHideOffset * toolbarHideAnim;
-    mouseInToolbar = ImGui::IsMouseHoveringRect(
-        ImVec2(toolbarRectMin.x - 4.0f, toolbarRectMin.y - 4.0f),
-        ImVec2(toolbarRectMax.x + 4.0f, toolbarRectMax.y + 4.0f),
-        true
-    ) || mouseInToolbarGuard;
+    toolbarRectMin.y += toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
+    toolbarRectMax.y += toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
+    mouseInToolbar = isMouseInToolbarZone(toolbarRectMin, toolbarRectMax);
     if (showViewportToolbar && mouseInToolbar) {
         blockSelection = true;
     }
@@ -6099,7 +6437,9 @@ void Engine::renderViewport() {
         }
         spriteBatch.flush();
     };
-    drawProjected25DSceneSprites();
+    if (!worldUiEditing) {
+        drawProjected25DSceneSprites();
+    }
 
     bool uiWorldCameraActive = false;
     if (worldUiEditing) {
@@ -6115,14 +6455,10 @@ void Engine::renderViewport() {
             int canvasId = uiSceneLookup.find3DCanvasId(target);
             return (canvasId < 0) || (canvasId == editCanvas3DId);
         };
-        float overlayHeight = imageMax.y - imageMin.y;
-        if (showViewportToolbar) {
-            overlayHeight = std::min(overlayHeight, std::max(1.0f, (toolbarRectMin.y - imageMin.y) - 2.0f));
-        }
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::SetCursorScreenPos(imageMin);
         ImGui::BeginChild("SceneUIWorldOverlay",
-                          ImVec2(imageMax.x - imageMin.x, overlayHeight),
+                          ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y),
                           false,
                           ImGuiWindowFlags_NoTitleBar |
                           ImGuiWindowFlags_NoResize |
@@ -6237,9 +6573,6 @@ void Engine::renderViewport() {
         if (showUIWorldGrid) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
-            if (showViewportToolbar && toolbarRectMin.y > overlayPos.y) {
-                overlayMax.y = std::min(overlayMax.y, toolbarRectMin.y - 2.0f);
-            }
             dl->PushClipRect(overlayPos, overlayMax, true);
             float step = 1.0f;
             float minPx = 30.0f;
@@ -6280,9 +6613,6 @@ void Engine::renderViewport() {
         if (showCanvasOverlay && worldUiReferenceResolutionWidth > 0 && worldUiReferenceResolutionHeight > 0) {
             ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
             ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
-            if (showViewportToolbar && toolbarRectMin.y > overlayPos.y) {
-                overlayMax.y = std::min(overlayMax.y, toolbarRectMin.y - 2.0f);
-            }
             dl->PushClipRect(overlayPos, overlayMax, true);
 
             const float fitScale = std::max(0.01f, std::min(
@@ -6314,9 +6644,6 @@ void Engine::renderViewport() {
         if (showSceneGizmos && gizmoShowCameraOverlays) {
             ImDrawList* dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
             ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
-            if (showViewportToolbar && toolbarRectMin.y > overlayPos.y) {
-                overlayMax.y = std::min(overlayMax.y, toolbarRectMin.y - 2.0f);
-            }
             dl->PushClipRect(overlayPos, overlayMax, true);
 
             for (const auto& camObj : sceneObjects) {
@@ -6494,6 +6821,7 @@ void Engine::renderViewport() {
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
             lightRequest.lightingBufferScale = light2DLightingBufferScale;
+            lightRequest.postFx = resolveWorld2DPostFx(uiWorldCamera);
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -6748,12 +7076,26 @@ void Engine::renderViewport() {
             }
 
             const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            const bool wantsPostFxComposite = Light2DHasVisiblePostFx(lightRequest.postFx);
             lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
-            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty() || wantsPostFxComposite)) {
                 unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
                 if (lightTexture != 0) {
+                    Camera effectCamera;
+                    effectCamera.position = glm::vec3(uiWorldCamera.position.x, uiWorldCamera.position.y, 0.0f);
+                    effectCamera.front = glm::vec3(0.0f, 0.0f, -1.0f);
+                    effectCamera.up = glm::vec3(0.0f, 1.0f, 0.0f);
+                    effectCamera.orthographic = true;
+                    effectCamera.pixelsPerUnit = std::max(1.0f, uiWorldCamera.zoom);
+                    unsigned int presentedTexture = renderer.postProcessTexture(
+                        effectCamera,
+                        sceneObjects,
+                        lightTexture,
+                        lightRequest.width,
+                        lightRequest.height,
+                        false);
                     ImGui::GetWindowDrawList()->AddImage(
-                        (ImTextureID)(intptr_t)lightTexture,
+                        (ImTextureID)(intptr_t)presentedTexture,
                         overlayPos,
                         ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y),
                         ImVec2(0.0f, 1.0f),
@@ -6768,7 +7110,9 @@ void Engine::renderViewport() {
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
+                    setLight2DRoutingReason(objectId, wantsPostFxComposite
+                        ? "Legacy path: the Light2D compositor was expected to run for 2D post FX, but no output was requested."
+                        : "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -7189,8 +7533,7 @@ void Engine::renderViewport() {
         }
 
         bool light2DHandleUsed = false;
-        if (showSceneGizmos &&
-            (gizmoShowLight2DBounds || gizmoShowLight2DShapes || gizmoShowShadowCaster2DBounds)) {
+        if (showSceneGizmos) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             for (const SceneObject& target : sceneObjects) {
                 if (!IsObjectEnabledInHierarchy(target)) {
@@ -7244,6 +7587,53 @@ void Engine::renderViewport() {
                             const ImVec2 b = screenPoints[(i + 1) % screenPoints.size()];
                             dl->AddLine(a, b, edgeColor, 1.8f);
                         }
+                    }
+                }
+
+                if (target.hasAudioSource &&
+                    target.audioSource.enabled &&
+                    !target.audioSource.clipPath.empty()) {
+                    const glm::vec2 audioWorld(target.position.x, target.position.y);
+                    const ImVec2 center = worldToScreen(audioWorld);
+                    const float spatialBlend = std::clamp(GetAudioSpatialBlend(target.audioSource), 0.0f, 1.0f);
+                    const float nearRadiusPx = std::max(2.0f, target.audioSource.minDistance * uiWorldCamera.zoom);
+                    const float farRadiusPx = std::max(nearRadiusPx + 1.0f, target.audioSource.maxDistance * uiWorldCamera.zoom);
+                    const bool selectedAudio = (selectedObjectId == target.id) ||
+                        (std::find(selectedObjectIds.begin(), selectedObjectIds.end(), target.id) != selectedObjectIds.end());
+                    const float alphaScale = 0.25f + spatialBlend * 0.75f;
+                    const ImU32 outerColor = selectedAudio
+                        ? ImGui::GetColorU32(ImVec4(0.56f, 0.86f, 1.00f, 0.95f * alphaScale))
+                        : ImGui::GetColorU32(ImVec4(0.38f, 0.70f, 1.00f, 0.72f * alphaScale));
+                    const ImU32 innerColor = selectedAudio
+                        ? ImGui::GetColorU32(ImVec4(0.92f, 0.97f, 1.00f, 0.70f * alphaScale))
+                        : ImGui::GetColorU32(ImVec4(0.86f, 0.94f, 1.00f, 0.42f * alphaScale));
+                    const ImU32 markerColor = selectedAudio
+                        ? ImGui::GetColorU32(ImVec4(0.94f, 0.98f, 1.00f, 1.0f))
+                        : ImGui::GetColorU32(ImVec4(0.62f, 0.82f, 1.00f, 0.92f));
+
+                    if (spatialBlend > 0.001f) {
+                        dl->AddCircle(center, farRadiusPx, outerColor, 72, 1.5f);
+                        if (nearRadiusPx > 1.0f) {
+                            dl->AddCircle(center, nearRadiusPx, innerColor, 48, 1.0f);
+                        }
+                    }
+
+                    dl->AddCircleFilled(center, selectedAudio ? 5.0f : 4.0f, markerColor, 18);
+                    dl->AddLine(ImVec2(center.x - 8.0f, center.y), ImVec2(center.x - 2.0f, center.y),
+                                markerColor, selectedAudio ? 2.0f : 1.5f);
+                    dl->AddLine(ImVec2(center.x + 2.0f, center.y), ImVec2(center.x + 8.0f, center.y),
+                                markerColor, selectedAudio ? 2.0f : 1.5f);
+                    dl->AddLine(ImVec2(center.x, center.y - 8.0f), ImVec2(center.x, center.y - 2.0f),
+                                markerColor, selectedAudio ? 2.0f : 1.5f);
+                    dl->AddLine(ImVec2(center.x, center.y + 2.0f), ImVec2(center.x, center.y + 8.0f),
+                                markerColor, selectedAudio ? 2.0f : 1.5f);
+
+                    if (selectedAudio) {
+                        const std::string clipLabel = fs::path(target.audioSource.clipPath).stem().string();
+                        const std::string label = clipLabel.empty() ? "Audio Source" : clipLabel;
+                        dl->AddText(ImVec2(center.x + 10.0f, center.y - 20.0f),
+                                    IM_COL32(214, 240, 255, 245),
+                                    label.c_str());
                     }
                 }
 
@@ -7865,6 +8255,24 @@ void Engine::renderViewport() {
             blockSelection = true;
         }
     }
+
+        bool sceneInteractionOverlayActive = false;
+        if (!worldUiEditing) {
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::SetCursorScreenPos(imageMin);
+            ImGui::BeginChild("SceneViewportInteractionOverlay",
+                              ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y),
+                              false,
+                              ImGuiWindowFlags_NoTitleBar |
+                              ImGuiWindowFlags_NoResize |
+                              ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse |
+                              ImGuiWindowFlags_NoSavedSettings |
+                              ImGuiWindowFlags_NoBackground |
+                              ImGuiWindowFlags_NoNav);
+            sceneInteractionOverlayActive = true;
+        }
 
         auto projectToScreen = [&](const glm::vec3& p) -> std::optional<ImVec2> {
             glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);
@@ -11049,6 +11457,8 @@ void Engine::renderViewport() {
             }
         }
 
+        viewportDrawList->PopClipRect();
+
         const ImGuiStyle& style = ImGui::GetStyle();
         ImVec4 bgCol = style.Colors[ImGuiCol_PopupBg];
         bgCol.w = 0.78f;
@@ -11069,10 +11479,30 @@ void Engine::renderViewport() {
         ImU32 iconColor = ImGui::GetColorU32(ImVec4(0.95f, 0.98f, 1.0f, 0.95f));
         ImU32 toolbarBg = ImGui::GetColorU32(bgCol);
         ImU32 toolbarOutline = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.0f));
+        const float toolbarFrameBleed = 2.0f;
 
         if (showViewportToolbar) {
-            ImGui::SetCursorScreenPos(ImVec2(toolbarRectMin.x + toolbarPadding, toolbarRectMin.y + toolbarPadding));
+            const ImGuiWindowFlags toolbarWindowFlags =
+                ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse |
+                ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoBackground |
+                ImGuiWindowFlags_NoNav;
+            ImGui::SetCursorScreenPos(ImVec2(toolbarRectMin.x - toolbarFrameBleed,
+                                             toolbarRectMin.y - toolbarFrameBleed));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                                ImVec2(toolbarPadding + toolbarFrameBleed,
+                                       toolbarPadding + toolbarFrameBleed));
+            ImGui::BeginChild("##SceneViewportToolbar",
+                              ImVec2(toolbarSizeCache.x + toolbarFrameBleed * 2.0f,
+                                     toolbarSizeCache.y + toolbarFrameBleed * 2.0f),
+                              false,
+                              toolbarWindowFlags);
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(toolbarSpacing, toolbarSpacing));
+            ImGui::PushClipRect(imageMin, imageMax, false);
 
             ImDrawList* toolbarDrawList = ImGui::GetWindowDrawList();
             ImDrawListSplitter splitter;
@@ -11485,43 +11915,36 @@ void Engine::renderViewport() {
             toolbarRectMin = bgMin;
             toolbarRectMax = bgMax;
 
-        if (ImGui::IsAnyItemHovered() ||
-            ImGui::IsMouseHoveringRect(toolbarRectMin, toolbarRectMax)) {
-            blockSelection = true;
-        }
+            const bool toolbarWindowHovered =
+                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+            if (toolbarWindowHovered) {
+                blockSelection = true;
+            }
+            ImGui::PopClipRect();
+            ImGui::PopStyleVar();
+            ImGui::EndChild();
             ImGui::PopStyleVar();
         }
 
         if (worldUiEditing) {
             blockSelection = true;
         }
-        // RMB input routing: drag/hold enters camera-look, click-release opens context/select.
+        // RMB input routing: pressing RMB over the viewport immediately enters freelook.
         static bool viewportRightPending = false;
         static bool viewportRightConsumedByLook = false;
         static ImVec2 viewportRightPressPos(0.0f, 0.0f);
-        const float rightLookDragThreshold = 6.0f;
         const bool rightPressCandidate = mouseOverViewportImage &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
             !ImGuizmo::IsUsing() && !ImGuizmo::IsOver() &&
             !blockSelection;
         if (rightPressCandidate) {
             viewportRightPending = true;
-            viewportRightConsumedByLook = false;
+            viewportRightConsumedByLook = true;
             viewportRightPressPos = ImGui::GetMousePos();
             viewportController.setFocused(true);
-        }
-        if (viewportRightPending && ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-            ImVec2 now = ImGui::GetMousePos();
-            float dx = now.x - viewportRightPressPos.x;
-            float dy = now.y - viewportRightPressPos.y;
-            if (!cursorLocked && (dx * dx + dy * dy) >= (rightLookDragThreshold * rightLookDragThreshold)) {
-                cursorLocked = true;
-                camera.firstMouse = true;
-                viewportRightConsumedByLook = true;
-            }
-            if (cursorLocked) {
-                viewportRightConsumedByLook = true;
-            }
+            cursorLocked = true;
+            camera.firstMouse = true;
+            ImGui::ClearActiveID();
         }
 
         bool rightPickRelease = false;
@@ -11529,7 +11952,7 @@ void Engine::renderViewport() {
             ImVec2 now = ImGui::GetMousePos();
             float dx = now.x - viewportRightPressPos.x;
             float dy = now.y - viewportRightPressPos.y;
-            bool isClick = (dx * dx + dy * dy) < (rightLookDragThreshold * rightLookDragThreshold);
+            bool isClick = (dx * dx + dy * dy) < (6.0f * 6.0f);
             rightPickRelease = isClick &&
                 !viewportRightConsumedByLook &&
                 mouseOverViewportImage &&
@@ -11929,7 +12352,7 @@ void Engine::renderViewport() {
                         previewCam->camera.fov,
                         previewCam->camera.nearClip,
                         previewCam->camera.farClip,
-                        previewCam->camera.applyPostFX
+                        previewCam->camera.use2D || previewCam->camera.applyPostFX
                     );
                     cachedViewOutputWidth = previewWidth;
                     cachedViewOutputHeight = previewHeight;
@@ -11986,7 +12409,10 @@ void Engine::renderViewport() {
             previewCameraId = -1;
         }
 
-        viewportDrawList->PopClipRect();
+        if (sceneInteractionOverlayActive) {
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+        }
     }
 
     // Draw viewport hint/status on the foreground layer so it always stays above scene sprites/gizmos.
@@ -12013,18 +12439,14 @@ void Engine::renderViewport() {
             fg->AddText(ImVec2(statusPos.x + 1.0f, statusPos.y + 1.0f), hintShadow, "Viewport Focused");
             fg->AddText(statusPos, IM_COL32(180, 226, 255, 255), "Viewport Focused");
         }
+
         fg->PopClipRect();
     }
 
-    bool windowFocused = ImGui::IsWindowFocused();
+    bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     viewportController.updateFocusFromImGui(windowFocused, cursorLocked);
 
     ImGui::End();
-
-    // Run dock drawer interactions after docked windows are submitted so tab hit-rects are current.
-    if (!(pendingWorkspaceReload || workspaceLayoutDirty || glfwGetTime() < workspaceLayoutStabilizeUntil)) {
-        updateDockDrawerAnimations();
-    }
 }
 #pragma endregion
 
@@ -12588,6 +13010,7 @@ void Engine::renderPlayerViewport() {
     const auto runtimeUiStart = std::chrono::steady_clock::now();
     double runtimeSpriteBatchBuildMs = 0.0;
     uint32_t runtimeVisibleObjectCount = 0;
+    Runtime2DWorldProfilerStats runtime2DProfilerStats;
     int runtimeRenderWidth = kRuntimeInternalWidth;
     int runtimeRenderHeight = kRuntimeInternalHeight;
     getRuntimeInternalResolution(runtimeRenderWidth, runtimeRenderHeight);
@@ -12739,6 +13162,7 @@ void Engine::renderPlayerViewport() {
             editCanvas3DId = find3DCanvasId(*selected);
         }
         auto isUIType = [&](const SceneObject& target) {
+            if (target.type == ObjectType::Sprite25D) return true;
             if (!target.hasUI || target.ui.type == UIElementType::None) return false;
             int canvasId = find3DCanvasId(target);
             if (!((canvasId < 0) || (canvasId == editCanvas3DId))) {
@@ -12824,6 +13248,7 @@ void Engine::renderPlayerViewport() {
                 uiWorldCamera.zoom = std::max(1.0f, runtimeCam->camera.pixelsPerUnit);
             }
         }
+        runtime2DProfilerStats.useWorldUi = useWorldUi;
         uiWorldPanning = false;
         if (useWorldUi) {
             uiWorldCamera.viewportSize = glm::vec2(overlaySize.x, overlaySize.y);
@@ -12984,6 +13409,7 @@ void Engine::renderPlayerViewport() {
 
         std::unordered_set<int> light2DRenderedObjectIds;
         bool renderedLight2DComposite = false;
+        Light2DDebugStats light2DStats;
         int activeLight2DCount = 0;
         int litSprite2DCount = 0;
         int litWorldImageCount = 0;
@@ -13006,6 +13432,7 @@ void Engine::renderPlayerViewport() {
             lightRequest.clearColor = glm::vec4(0.0f);
             lightRequest.baseAmbient = glm::vec3(0.0f);
             lightRequest.lightingBufferScale = light2DLightingBufferScale;
+            lightRequest.postFx = resolveWorld2DPostFx(projectedUiCamera);
             lightRequest.blendStyles = light2DBlendStyles;
             auto computeFlickerMultiplier = [](const Light2DFlickerSettings& flicker) {
                 if (!flicker.enabled || flicker.amount <= 0.0001f) {
@@ -13250,17 +13677,35 @@ void Engine::renderPlayerViewport() {
             }
 
             const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+            const bool wantsPostFxComposite = Light2DHasVisiblePostFx(lightRequest.postFx);
             lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
-            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty())) {
+            if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty() || wantsPostFxComposite)) {
                 unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
                 if (lightTexture != 0) {
+                    unsigned int presentedTexture = lightTexture;
+                    bool applyScenePostFx = !playerMode;
+                    if (playerMode) {
+                        if (const SceneObject* runtimeCam = findPlayerCameraObject()) {
+                            applyScenePostFx = runtimeCam->camera.use2D || runtimeCam->camera.applyPostFX;
+                        }
+                    }
+                    if (applyScenePostFx) {
+                        presentedTexture = renderer.postProcessTexture(
+                            projectedUiCamera,
+                            sceneObjects,
+                            lightTexture,
+                            lightRequest.width,
+                            lightRequest.height,
+                            false);
+                    }
                     ImGui::GetWindowDrawList()->AddImage(
-                        (ImTextureID)(intptr_t)lightTexture,
+                        (ImTextureID)(intptr_t)presentedTexture,
                         overlayPos,
                         ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y),
                         ImVec2(0.0f, 1.0f),
                         ImVec2(1.0f, 0.0f));
                     renderedLight2DComposite = true;
+                    light2DStats = lighting2DRenderer.getLastStats();
                 } else {
                     for (int objectId : light2DRenderedObjectIds) {
                         setLight2DRoutingReason(objectId, "Legacy path: Light2D compositor did not produce a valid output texture this frame.");
@@ -13269,7 +13714,9 @@ void Engine::renderPlayerViewport() {
                 }
             } else {
                 for (int objectId : light2DRenderedObjectIds) {
-                    setLight2DRoutingReason(objectId, "Legacy path: no active Light2D or Global Light2D affected this frame.");
+                    setLight2DRoutingReason(objectId, wantsPostFxComposite
+                        ? "Legacy path: the Light2D compositor was expected to run for 2D post FX, but no output was requested."
+                        : "Legacy path: no active Light2D or Global Light2D affected this frame.");
                 }
                 light2DRenderedObjectIds.clear();
             }
@@ -13583,6 +14030,9 @@ void Engine::renderPlayerViewport() {
             light2DActiveCountLastFrame = activeLight2DCount;
             light2DLitSprite2DCountLastFrame = litSprite2DCount;
             light2DLitWorldImageCountLastFrame = litWorldImageCount;
+            runtime2DProfilerStats.light2DBuildMs = light2DStats.cpuBuildMs;
+            runtime2DProfilerStats.light2DVisibleLights = light2DStats.visibleLights;
+            runtime2DProfilerStats.light2DVisibleSprites = light2DStats.visibleSprites;
             if (captureLight2DRoutingReasons) {
                 light2DObjectRoutingReasonsLastFrame = std::move(light2DRoutingReasons);
             }
@@ -13848,10 +14298,11 @@ void Engine::renderPlayerViewport() {
     }
 
     const auto runtimeUiEnd = std::chrono::steady_clock::now();
-    ModuRuntime2DProfiler_RecordUiRuntime(
-        std::chrono::duration<double, std::milli>(runtimeUiEnd - runtimeUiStart).count(),
-        runtimeSpriteBatchBuildMs,
-        runtimeVisibleObjectCount);
+    runtime2DProfilerStats.uiRuntimeMs =
+        std::chrono::duration<double, std::milli>(runtimeUiEnd - runtimeUiStart).count();
+    runtime2DProfilerStats.spriteBatchBuildMs = runtimeSpriteBatchBuildMs;
+    runtime2DProfilerStats.visibleObjectCount = runtimeVisibleObjectCount;
+    SubmitRuntime2DWorldProfilerStats(runtime2DProfilerStats);
 
     ImGui::End();
 }

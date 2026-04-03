@@ -27,6 +27,11 @@ namespace {
 constexpr int kRuntimeInternalWidth = 1280;
 constexpr int kRuntimeInternalHeight = 720;
 
+bool IsNativeBinaryPath(const fs::path& path) {
+    const std::string ext = path.extension().string();
+    return ext == ".so" || ext == ".dll" || ext == ".dylib";
+}
+
 ConsoleMessageType DiagnosticConsoleType(Modularity::ScriptDiagnosticSeverity severity) {
     switch (severity) {
         case Modularity::ScriptDiagnosticSeverity::Error:
@@ -2099,6 +2104,44 @@ Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     return cam;
 }
 
+Light2DPostFXSettings Engine::resolveWorld2DPostFx(const Camera& effectCamera) const {
+    (void)effectCamera;
+    Light2DPostFXSettings settings = world2DPostFx;
+    if (!world2DPostFx.enabled) {
+        settings.enabled = false;
+        settings.ditherIntensity = 0.0f;
+        settings.colorBits = 8;
+        settings.darkAdjustment = 0.0f;
+        settings.ditherScale = 1.0f;
+        settings.pixelation = 0.0f;
+    }
+
+    settings.colorBits = std::clamp(settings.colorBits, 1, 8);
+    settings.ditherIntensity = std::clamp(settings.ditherIntensity, 0.0f, 1.5f);
+    settings.darkAdjustment = std::clamp(settings.darkAdjustment, 0.0f, 1.0f);
+    settings.ditherScale = std::clamp(settings.ditherScale, 1.0f, 8.0f);
+    settings.pixelation = std::clamp(settings.pixelation, 0.0f, 64.0f);
+    settings.contrast = std::clamp(settings.contrast, 0.0f, 2.5f);
+    settings.saturation = std::clamp(settings.saturation, 0.0f, 2.5f);
+    settings.colorFilter = glm::clamp(settings.colorFilter, glm::vec3(0.0f), glm::vec3(2.0f));
+    settings.vignetteIntensity = std::clamp(settings.vignetteIntensity, 0.0f, 1.0f);
+    settings.vignetteSmoothness = std::clamp(settings.vignetteSmoothness, 0.05f, 1.0f);
+    settings.chromaticAmount = std::clamp(settings.chromaticAmount, 0.0f, 0.05f);
+    settings.sharpenStrength = std::clamp(settings.sharpenStrength, 0.0f, 2.0f);
+    settings.grainAmount = std::clamp(settings.grainAmount, 0.0f, 0.4f);
+    settings.scanlineIntensity = std::clamp(settings.scanlineIntensity, 0.0f, 1.0f);
+
+    return settings;
+}
+
+Light2DPostFXSettings Engine::resolveWorld2DPostFx(const UIWorldCamera2D& effectCamera) const {
+    Camera camera2D;
+    camera2D.position = glm::vec3(effectCamera.position.x, effectCamera.position.y, 0.0f);
+    camera2D.orthographic = true;
+    camera2D.pixelsPerUnit = std::max(1.0f, effectCamera.zoom);
+    return resolveWorld2DPostFx(camera2D);
+}
+
 const SceneObject* Engine::findPlayerCameraObject() const {
     for (const auto& obj : sceneObjects) {
         if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCamera) continue;
@@ -2522,6 +2565,12 @@ float Engine::getSceneTimeOfDay() {
 }
 
 void Engine::getSceneViewportInternalResolution(int& outWidth, int& outHeight) const {
+    if (!playerMode && viewportWidth > 0 && viewportHeight > 0) {
+        outWidth = std::clamp(viewportWidth, 1, 8192);
+        outHeight = std::clamp(viewportHeight, 1, 8192);
+        return;
+    }
+
     outWidth = std::clamp(sceneViewportRenderWidth, 64, 8192);
     outHeight = std::clamp(sceneViewportRenderHeight, 64, 8192);
 }
@@ -2609,14 +2658,10 @@ bool Engine::init() {
 
     auto mouse_cb = [](GLFWwindow* window, double xpos, double ypos) {
         auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window));
-        if (!engine) return;
-
-        int cursorMode = glfwGetInputMode(window, GLFW_CURSOR);
-        if (!engine->viewportController.isViewportFocused() || cursorMode != GLFW_CURSOR_DISABLED) {
-            return;
-        }
-
-        engine->camera.processMouse(xpos, ypos);
+        (void)window;
+        (void)xpos;
+        (void)ypos;
+        (void)engine;
     };
     glfwSetCursorPosCallback(editorWindow, mouse_cb);
 
@@ -2757,6 +2802,8 @@ void Engine::run() {
     while (!glfwWindowShouldClose(editorWindow)) {
         ++renderFrameSerial;
         renderer.setFrameSerial(renderFrameSerial);
+        Profiler& profiler = Profiler::instance();
+        profiler.beginFrame(renderFrameSerial);
         double frameStart = glfwGetTime();
         const auto frameStartClock = Runtime2DClock::now();
         const bool runtime2DProfileThisFrame =
@@ -2786,6 +2833,7 @@ void Engine::run() {
 
         if (glfwGetWindowAttrib(editorWindow, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
+            profiler.endFrame();
             continue;
         }
 
@@ -2819,6 +2867,13 @@ void Engine::run() {
             gameViewCursorLocked = false;
         }
 
+        if (viewportController.isViewportFocused() && cursorLocked) {
+            ImGuiIO& io = ImGui::GetIO();
+            if (std::abs(io.MouseDelta.x) > 0.0001f || std::abs(io.MouseDelta.y) > 0.0001f) {
+                camera.processMouseDelta(io.MouseDelta.x, -io.MouseDelta.y);
+            }
+        }
+
         // Scroll-wheel speed adjustment while freelook is active
         if (viewportController.isViewportFocused() && cursorLocked) {
             float wheel = ImGui::GetIO().MouseWheel;
@@ -2843,11 +2898,13 @@ void Engine::run() {
         }
 
         if (isPlaying) {
+            MODU_PROFILE_SCOPE("Player Controller", ProfilerSampleCategory::Engine);
             updatePlayerController(deltaTime);
         }
 
         bool simulate2D = (isPlaying && !isPaused) || (!isPlaying && specMode) || (!isPlaying && testMode);
         if (simulate2D) {
+            MODU_PROFILE_SCOPE("Physics 2D", ProfilerSampleCategory::Physics);
             rigidbody2DAccumulator = std::min(
                 rigidbody2DAccumulator + deltaTime,
                 kRigidbody2DFixedStep * static_cast<float>(kMaxRigidbody2DStepsPerFrame));
@@ -2871,17 +2928,23 @@ void Engine::run() {
         }
 
         if (isPlaying) {
+            MODU_PROFILE_SCOPE("Camera Follow", ProfilerSampleCategory::Engine);
             updateCameraFollow2D(deltaTime);
         }
 
         float runtimeAnimDelta = ((isPlaying && isPaused) ? 0.0f : deltaTime);
-        updateRuntimeAnimations(runtimeAnimDelta);
-        updateSkeletalAnimations(deltaTime);
+        {
+            MODU_PROFILE_SCOPE("Animation", ProfilerSampleCategory::Animation);
+            updateRuntimeAnimations(runtimeAnimDelta);
+            updateSkeletalAnimations(deltaTime);
+        }
         if (runtime2DProfileThisFrame) {
             const auto transformStart = Runtime2DClock::now();
+            MODU_PROFILE_SCOPE("Hierarchy Transforms", ProfilerSampleCategory::Engine);
             updateHierarchyWorldTransforms();
             profileTransformMs += Runtime2DMsSince(transformStart, Runtime2DClock::now());
         } else {
+            MODU_PROFILE_SCOPE("Hierarchy Transforms", ProfilerSampleCategory::Engine);
             updateHierarchyWorldTransforms();
         }
 
@@ -2916,14 +2979,17 @@ void Engine::run() {
                                ((isPlaying && !isPaused) || (!isPlaying && specMode)) &&
                                hasRuntime3DPhysics;
         if (simulatePhysics) {
+            MODU_PROFILE_SCOPE("Physics 3D", ProfilerSampleCategory::Physics);
             physics.simulate(deltaTime, sceneObjects);
         }
         bool runAI = (isPlaying || specMode || testMode) && hasRuntimeAIAgent;
         if (runAI) {
+            MODU_PROFILE_SCOPE("AI", ProfilerSampleCategory::AI);
             updateAIAgents(deltaTime);
         }
 
         if (hasRuntimeSkeletal) {
+            MODU_PROFILE_SCOPE("Skinning", ProfilerSampleCategory::Animation);
             updateSkinningMatrices();
         }
         if (runtime2DProfileThisFrame) {
@@ -2988,9 +3054,14 @@ void Engine::run() {
             listenerCamera = makeCameraFromObject(*runtimeCam);
             listenerCamera.position = runtimeCam->position;
         }
-        audio.update(sceneObjects, listenerCamera, audioShouldPlay);
+        audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
+        {
+            MODU_PROFILE_SCOPE("Audio", ProfilerSampleCategory::Audio);
+            audio.update(sceneObjects, listenerCamera, audioShouldPlay);
+        }
 
         if (!playerMode) {
+            MODU_PROFILE_SCOPE("Asset Loading", ProfilerSampleCategory::Asset);
             updateCompileJob();
             updateAutoCompileScripts();
             processAutoCompileQueue();
@@ -3016,6 +3087,7 @@ void Engine::run() {
         }
 
         if (playerMode && !showLauncher && projectManager.currentProject.isLoaded && rendererInitialized) {
+            MODU_PROFILE_SCOPE("Render", ProfilerSampleCategory::Render);
             Runtime2DClock::time_point renderSubmissionStart;
             if (runtime2DProfileThisFrame) {
                 renderSubmissionStart = Runtime2DClock::now();
@@ -3041,6 +3113,7 @@ void Engine::run() {
                                               renderNear,
                                               renderFar);
 
+            profiler.beginOpenGlGpuFrame();
             renderer.beginRender(view, proj, camera.position);
             renderer.renderScene(camera, sceneObjects, selectedObjectId,
                                  renderFov,
@@ -3049,6 +3122,7 @@ void Engine::run() {
                                  false,
                                  &selectedObjectIds);
             renderer.endRender();
+            profiler.endOpenGlGpuFrame();
             if (runtime2DProfileThisFrame) {
                 profileRenderSubmissionMs += Runtime2DMsSince(renderSubmissionStart, Runtime2DClock::now());
             }
@@ -3058,81 +3132,86 @@ void Engine::run() {
             std::cerr << "[DEBUG] First frame: starting ImGui NewFrame" << std::endl;
         }
         
-        if (usingVulkan()) {
+        {
+            MODU_PROFILE_SCOPE("Editor UI", ProfilerSampleCategory::UI);
+            if (usingVulkan()) {
 #if MODULARITY_HAS_VULKAN
-            if (vulkanRendererInitialized &&
-                vulkanRenderer &&
-                projectManager.currentProject.isLoaded &&
-                !showLauncher) {
-                if (!vulkanRenderer->prepareFrameResources()) {
-                    static bool loggedVulkanPrepareError = false;
-                    if (!loggedVulkanPrepareError) {
-                        addConsoleMessage("Vulkan scene target preparation failed: " + vulkanRenderer->getLastError(),
-                                          ConsoleMessageType::Error);
-                        loggedVulkanPrepareError = true;
+                if (vulkanRendererInitialized &&
+                    vulkanRenderer &&
+                    projectManager.currentProject.isLoaded &&
+                    !showLauncher) {
+                    if (!vulkanRenderer->prepareFrameResources()) {
+                        static bool loggedVulkanPrepareError = false;
+                        if (!loggedVulkanPrepareError) {
+                            addConsoleMessage("Vulkan scene target preparation failed: " + vulkanRenderer->getLastError(),
+                                              ConsoleMessageType::Error);
+                            loggedVulkanPrepareError = true;
+                        }
                     }
                 }
-            }
-            ImGui_ImplVulkan_NewFrame();
+                ImGui_ImplVulkan_NewFrame();
 #endif
-        } else {
-            ImGui_ImplOpenGL3_NewFrame();
-        }
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        uiCanvas3DInputs.clear();
+            } else {
+                ImGui_ImplOpenGL3_NewFrame();
+            }
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            uiCanvas3DInputs.clear();
 
-        if (firstFrame) {
-            std::cerr << "[DEBUG] First frame: ImGui NewFrame complete, rendering UI..." << std::endl;
-        }
-
-        if (showLauncher) {
-            mainDockspaceId = 0;
             if (firstFrame) {
-                std::cerr << "[DEBUG] First frame: calling renderLauncher()" << std::endl;
-            }
-            #ifdef MODULARITY_PLAYER
-            renderPlayerViewport();
-            #else
-            renderLauncher();
-            #endif
-        } else if (!playerMode) {
-            mainDockspaceId = setupDockspace([this]() { renderPlayControlsBar(); });
-            renderMainMenuBar();
-            const bool skipDockedWindowsThisFrame = workspaceLayoutSettlingFrame;
-            workspaceLayoutSettlingFrame = false;
-
-            if (!viewportFullscreen && !skipDockedWindowsThisFrame) {
-                if (showHierarchy) renderHierarchyPanel();
-                if (showInspector) renderInspectorPanel();
-                if (showFileBrowser) renderFileBrowserPanel();
-                if (showMeshBuilder && hasMeshBuilderPackage()) renderMeshBuilderPanel();
-                if (showScriptingWindow && hasScriptingWindowPackage()) renderScriptingWindow();
-                if (showEnvironmentWindow) renderEnvironmentWindow();
-                if (showCameraWindow) renderCameraWindow();
-                if (showAnimationWindow) renderAnimationWindow();
-                if (showAIPathfindingWindow) renderAIPathfindingWindow();
-                if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) renderPixelSpriteEditorWindow();
-                if (showProjectBrowser) renderProjectBrowserPanel();
-                if (showRegistryPackagesWindow) renderRegistryPackagesWindow();
+                std::cerr << "[DEBUG] First frame: ImGui NewFrame complete, rendering UI..." << std::endl;
             }
 
-            if (showBuildSettings) renderBuildSettingsWindow();
-            if (!skipDockedWindowsThisFrame) {
-                renderScriptEditorWindows();
-                renderViewport();
-                if (showGameViewport) renderGameViewportWindow();
-                if (showConsole) renderConsolePanel();
-            }
-            renderLatestErrorBar();
-        } else {
-            mainDockspaceId = 0;
-            renderPlayerViewport();
-        }
+            if (showLauncher) {
+                mainDockspaceId = 0;
+                if (firstFrame) {
+                    std::cerr << "[DEBUG] First frame: calling renderLauncher()" << std::endl;
+                }
+                #ifdef MODULARITY_PLAYER
+                renderPlayerViewport();
+                #else
+                renderLauncher();
+                #endif
+            } else if (!playerMode) {
+                mainDockspaceId = setupDockspace(uiChromeScale);
+                renderMainMenuBar();
+                const bool skipDockedWindowsThisFrame = workspaceLayoutSettlingFrame;
+                workspaceLayoutSettlingFrame = false;
 
-        if (!playerMode) {
-            renderTermsOfServiceModal();
-            renderDialogs();
+                if (!viewportFullscreen && !skipDockedWindowsThisFrame) {
+                    if (showHierarchy) renderHierarchyPanel();
+                    if (showInspector) renderInspectorPanel();
+                    if (showFileBrowser) renderFileBrowserPanel();
+                    if (showMeshBuilder && hasMeshBuilderPackage()) renderMeshBuilderPanel();
+                    if (showScriptingWindow && hasScriptingWindowPackage()) renderScriptingWindow();
+                    if (showEnvironmentWindow) renderEnvironmentWindow();
+                    if (showCameraWindow) renderCameraWindow();
+                    if (showAnimationWindow) renderAnimationWindow();
+                    if (showAIPathfindingWindow) renderAIPathfindingWindow();
+                    if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) renderPixelSpriteEditorWindow();
+                    if (showProjectBrowser) renderProjectBrowserPanel();
+                    if (showRegistryPackagesWindow) renderRegistryPackagesWindow();
+                }
+
+                if (showBuildSettings) renderBuildSettingsWindow();
+                if (!skipDockedWindowsThisFrame) {
+                    renderScriptEditorWindows();
+                    renderViewport();
+                    if (showGameViewport) renderGameViewportWindow();
+                    if (showConsole) renderConsolePanel();
+                }
+                renderLatestErrorBar();
+                renderEditorToast();
+                updateDockDrawerInteractions();
+            } else {
+                mainDockspaceId = 0;
+                renderPlayerViewport();
+            }
+
+            if (!playerMode) {
+                renderTermsOfServiceModal();
+                renderDialogs();
+            }
         }
 
         if (firstFrame) {
@@ -3250,6 +3329,27 @@ void Engine::run() {
             accumulateRuntime2DFrame();
             emitRuntime2DProfileSummaryIfReady(glfwGetTime());
         }
+
+        uint64_t profilerDrawCalls = 0;
+        uint64_t profilerTextureBinds = 0;
+        uint64_t profilerStateBinds = 0;
+        if (rendererInitialized && (playerMode || showGameViewport)) {
+            const Renderer::RenderStats& stats = playerMode
+                ? renderer.getLastViewportStats()
+                : renderer.getLastPreviewStats();
+            profilerDrawCalls = static_cast<uint64_t>(std::max(0, stats.drawCalls));
+        }
+        if (runtime2DProfileThisFrame) {
+            profilerTextureBinds = gRuntime2DProfileFrame.textureBindCount;
+            profilerStateBinds = gRuntime2DProfileFrame.stateBindCount;
+        }
+        profiler.setCurrentFrameRenderCounters(profilerDrawCalls, profilerTextureBinds, profilerStateBinds);
+        profiler.setCurrentFrameRenderMemory(renderer.getTextureCacheUsageBytes(),
+                                             renderer.getTextureCacheBudgetBytes());
+        if (usingVulkan()) {
+            profiler.setCurrentFrameGpuCapability(false, false);
+        }
+        profiler.endFrame();
         
         if (firstFrame) {
             std::cerr << "[DEBUG] First frame complete!" << std::endl;
@@ -4013,12 +4113,45 @@ void Engine::handleKeyboardShortcuts() {
 
 #pragma region Runtime Updates
 void Engine::updateScripts(float delta) {
+    MODU_PROFILE_SCOPE("Script Update", ProfilerSampleCategory::Script);
+    static bool runtimeTraceWasActive = false;
+    static int runtimeTraceFramesRemaining = 0;
+    const bool runtimeActive = isPlaying || specMode || testMode;
+    if (runtimeActive && !runtimeTraceWasActive) {
+        runtimeTraceFramesRemaining = 3;
+        std::cerr << "[RuntimeTrace] Enter runtime mode play=" << (isPlaying ? 1 : 0)
+                  << " spec=" << (specMode ? 1 : 0)
+                  << " test=" << (testMode ? 1 : 0) << std::endl;
+    } else if (!runtimeActive && runtimeTraceWasActive) {
+        std::cerr << "[RuntimeTrace] Exit runtime mode" << std::endl;
+    }
+    runtimeTraceWasActive = runtimeActive;
+
     if (sceneObjects.empty()) return;
     if (runtimeScriptBindingsCachedVersion != runtimeScriptBindingsVersion) {
         rebuildRuntimeScriptBindings();
     }
     if (runtimeScriptBindings.empty()) return;
     refreshSceneObjectIndexCache();
+
+    const bool traceScripts = runtimeTraceFramesRemaining > 0;
+    auto scriptLanguageLabel = [](ScriptLanguage language) {
+        switch (language) {
+            case ScriptLanguage::Cpp: return "Cpp";
+            case ScriptLanguage::CSharp: return "CSharp";
+            case ScriptLanguage::C: return "C";
+            default: return "Unknown";
+        }
+    };
+    if (traceScripts) {
+        std::cerr << "[RuntimeTrace] updateScripts begin frame=" << ImGui::GetFrameCount()
+                  << " bindings=" << runtimeScriptBindings.size() << std::endl;
+    }
+
+    using ManagedClock = std::chrono::steady_clock;
+    const ManagedScriptRuntime::GcStats gcStartStats = managedRuntime.getGcStats();
+    ManagedScriptRuntime::GcStats gcEndStats = gcStartStats;
+    double gcMs = 0.0;
 
     for (const RuntimeScriptBinding& binding : runtimeScriptBindings) {
         auto objIt = sceneObjectIndexById.find(binding.objectId);
@@ -4059,10 +4192,49 @@ void Engine::updateScripts(float delta) {
                 if (!fs::exists(assembly, ec) || ec) continue;
                 sc.lastBinaryVerified = true;
             }
+            if (traceScripts) {
+                std::cerr << "[RuntimeTrace] script start obj=\"" << obj.name
+                          << "\" id=" << obj.id
+                          << " slot=" << binding.scriptIndex
+                          << " lang=" << scriptLanguageLabel(sc.language)
+                          << " type=\"" << sc.managedType
+                          << "\" binary=\"" << assembly.string() << "\""
+                          << std::endl;
+            }
+            const ManagedScriptRuntime::GcStats beforeManagedCall = managedRuntime.getGcStats();
+            const auto managedCallStart = ManagedClock::now();
             managedRuntime.tickModule(assembly, sc.managedType, ctx, delta, specMode, testMode);
+            if (traceScripts) {
+                std::cerr << "[RuntimeTrace] script end obj=\"" << obj.name
+                          << "\" id=" << obj.id
+                          << " slot=" << binding.scriptIndex << std::endl;
+            }
+            const ManagedScriptRuntime::GcStats afterManagedCall = managedRuntime.getGcStats();
+            gcEndStats = afterManagedCall;
+            if (beforeManagedCall.available && afterManagedCall.available) {
+                bool collected = false;
+                for (size_t generation = 0; generation < beforeManagedCall.collectionCounts.size(); ++generation) {
+                    if (afterManagedCall.collectionCounts[generation] > beforeManagedCall.collectionCounts[generation]) {
+                        collected = true;
+                        break;
+                    }
+                }
+                if (collected) {
+                    gcMs += std::chrono::duration<double, std::milli>(
+                        ManagedClock::now() - managedCallStart).count();
+                }
+            }
         } else {
             fs::path binary;
-            if (!sc.lastBinaryPath.empty()) {
+            const bool attachedBinaryDirectly = IsNativeBinaryPath(fs::path(sc.path));
+            if (!attachedBinaryDirectly && (!sc.lastBinaryVerified || sc.lastBinaryPath.empty())) {
+                fs::path resolvedBinary = resolveScriptBinary(sc.path);
+                if (!resolvedBinary.empty()) {
+                    binary = resolvedBinary;
+                    sc.lastBinaryPath = resolvedBinary.string();
+                }
+            }
+            if (binary.empty() && !sc.lastBinaryPath.empty()) {
                 if (sc.lastBinaryVerified) {
                     binary = fs::path(sc.lastBinaryPath);
                 } else {
@@ -4099,19 +4271,69 @@ void Engine::updateScripts(float delta) {
 
             std::string binaryKey = binary.lexically_normal().string();
             nativeScriptMissingLogged.erase(fs::path(sc.path).lexically_normal().string());
+            if (traceScripts) {
+                std::cerr << "[RuntimeTrace] script start obj=\"" << obj.name
+                          << "\" id=" << obj.id
+                          << " slot=" << binding.scriptIndex
+                          << " lang=" << scriptLanguageLabel(sc.language)
+                          << " path=\"" << sc.path
+                          << "\" binary=\"" << binary.string() << "\""
+                          << std::endl;
+            }
             scriptRuntime.tickModule(binary, ctx, delta, specMode, testMode);
+            if (traceScripts) {
+                std::cerr << "[RuntimeTrace] script end obj=\"" << obj.name
+                          << "\" id=" << obj.id
+                          << " slot=" << binding.scriptIndex << std::endl;
+            }
             const std::string& runtimeError = scriptRuntime.getLastError();
             if (!runtimeError.empty()) {
                 std::string errorKey = binaryKey + "|" + runtimeError;
                 if (nativeScriptLoadErrorLogged.insert(errorKey).second) {
-                    std::cerr << "[Script] Failed to load native script '" << binary.filename().string()
+                    std::cerr << "[Script] Failed to load native script '" << binary.string()
                               << "': " << runtimeError << "\n";
                     addConsoleMessage(
-                        "Failed to load native script '" + binary.filename().string() +
+                        "Failed to load native script '" + binary.string() +
                         "': " + runtimeError,
                         ConsoleMessageType::Error);
                 }
             }
+        }
+    }
+
+    if (traceScripts) {
+        std::cerr << "[RuntimeTrace] updateScripts end frame=" << ImGui::GetFrameCount() << std::endl;
+        --runtimeTraceFramesRemaining;
+    }
+
+    if (gcStartStats.available || gcEndStats.available) {
+        if (!gcEndStats.available) {
+            gcEndStats = managedRuntime.getGcStats();
+        }
+        std::array<uint32_t, 3> gcDelta = { 0, 0, 0 };
+        for (size_t generation = 0; generation < gcDelta.size(); ++generation) {
+            const uint32_t before = gcStartStats.collectionCounts[generation];
+            const uint32_t after = gcEndStats.collectionCounts[generation];
+            gcDelta[generation] = (after >= before) ? (after - before) : 0u;
+        }
+        const int64_t heapDeltaBytes =
+            static_cast<int64_t>(gcEndStats.usedBytes) - static_cast<int64_t>(gcStartStats.usedBytes);
+        Profiler::instance().setCurrentFrameGcMetrics(gcMs,
+                                                      heapDeltaBytes,
+                                                      gcEndStats.usedBytes,
+                                                      gcEndStats.heapBytes,
+                                                      gcEndStats.collectionCounts,
+                                                      gcDelta);
+
+        const uint32_t totalCollections = gcDelta[0] + gcDelta[1] + gcDelta[2];
+        if (totalCollections > 0 || gcMs > 0.0001) {
+            Profiler::instance().addSyntheticSample("GC",
+                                                    ProfilerSampleCategory::GC,
+                                                    gcMs,
+                                                    std::max<uint32_t>(1u, totalCollections),
+                                                    0,
+                                                    heapDeltaBytes,
+                                                    gcEndStats.usedBytes);
         }
     }
 }
@@ -4127,9 +4349,80 @@ void Engine::queueAutoCompile(const fs::path& scriptPath, const fs::file_time_ty
     scriptLastAutoCompileTime[key] = sourceTime;
 }
 
+void Engine::queueScriptCompile(const fs::path& scriptPath) {
+    if (scriptPath.empty()) return;
+    std::error_code ec;
+    fs::path normalized = fs::absolute(scriptPath, ec);
+    if (ec) normalized = scriptPath;
+    normalized = normalized.lexically_normal();
+
+    ScriptCompileQueueItem item;
+    item.scriptPath = normalized;
+    item.displayLabel = normalized.filename().empty() ? normalized.string() : normalized.filename().string();
+    if (item.displayLabel.empty()) {
+        item.displayLabel = "Script";
+    }
+    const std::string ext = normalized.extension().string();
+    item.managed = (ext == ".cs" || ext == ".csproj");
+
+    const std::string key = item.managed ? std::string("managed:") + normalized.string() : normalized.string();
+    if (!compileRequestKeys.insert(key).second) {
+        return;
+    }
+
+    if (compileRequestQueue.empty() && !compileInProgress && !compileResultReady) {
+        compileHistory.clear();
+        compileBatchTotal = 0;
+        compileBatchCompleted = 0;
+        compileCompletionStart = 0.0;
+        showCompilePopup = true;
+        compilePopupHideTime = 0.0;
+        compilePopupOpened = false;
+        playCompileStartSound();
+    }
+
+    compileRequestQueue.push_back(std::move(item));
+    ++compileBatchTotal;
+}
+
+void Engine::queueScriptCompileBatch(const std::vector<fs::path>& scriptPaths) {
+    for (const auto& scriptPath : scriptPaths) {
+        queueScriptCompile(scriptPath);
+    }
+
+    if (!compileInProgress && !compileResultReady) {
+        if (!compileRequestQueue.empty()) {
+            const ScriptCompileQueueItem next = compileRequestQueue.front();
+            compileRequestQueue.pop_front();
+            const std::string key = next.managed ? std::string("managed:") + next.scriptPath.string()
+                                                 : next.scriptPath.string();
+            compileRequestKeys.erase(key);
+            compileCurrentLabel = next.displayLabel;
+            compileCurrentPath = next.scriptPath;
+            compileCurrentManaged = next.managed;
+            compileBatchCompleted = std::min(compileBatchCompleted, std::max(0, compileBatchTotal - 1));
+            if (next.managed) {
+                compileManagedScripts();
+            } else {
+                compileScriptFile(next.scriptPath);
+            }
+        }
+    } else {
+        showCompilePopup = true;
+        compilePopupOpened = false;
+    }
+}
+
+void Engine::playCompileStartSound() {
+    if (audio.isReady()) {
+        audio.playOneShot("Resources/Sounds/Notification.mp3", 0.95f);
+    }
+}
+
 void Engine::updateAutoCompileScripts() {
     if (!projectManager.currentProject.isLoaded) return;
     if (showLauncher) return;
+    if (isPlaying || specMode || testMode) return;
 
     double now = glfwGetTime();
     if (now - scriptAutoCompileLastCheck < scriptAutoCompileInterval) return;
@@ -4342,17 +4635,28 @@ void Engine::updateAutoCompileScripts() {
 }
 
 void Engine::processAutoCompileQueue() {
+    if (isPlaying || specMode || testMode) return;
     if (compileInProgress) return;
     if (autoCompileQueue.empty()) return;
 
-    fs::path next = autoCompileQueue.front();
-    autoCompileQueue.pop_front();
-    std::error_code ec;
-    fs::path absPath = fs::absolute(next, ec);
-    if (ec) absPath = next;
-    autoCompileQueued.erase(absPath.lexically_normal().string());
+    std::vector<fs::path> batch;
+    batch.reserve(autoCompileQueue.size());
 
-    compileScriptFile(next);
+    while (!autoCompileQueue.empty()) {
+        fs::path next = autoCompileQueue.front();
+        autoCompileQueue.pop_front();
+
+        std::error_code ec;
+        fs::path absPath = fs::absolute(next, ec);
+        if (ec) absPath = next;
+        autoCompileQueued.erase(absPath.lexically_normal().string());
+
+        batch.push_back(std::move(next));
+    }
+
+    if (!batch.empty()) {
+        queueScriptCompileBatch(batch);
+    }
 }
 
 void Engine::updatePlayerController(float delta) {
@@ -5950,6 +6254,7 @@ void Engine::finalizeDeferredSceneLoad() {
     // Rebuild runtime systems so physics/audio always match the loaded scene.
     if (isPlaying || specMode || testMode) {
         physics.onPlayStart(sceneObjects);
+        audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
         if (playerMode) {
             syncPlayerCamera();
@@ -6215,6 +6520,7 @@ void Engine::applyAutoStartMode() {
         }
     }
     physics.onPlayStart(sceneObjects);
+    audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
     audio.onPlayStart(sceneObjects);
     startupSplashStartTime = glfwGetTime();
     applyBuildWindowTitle();
@@ -7974,6 +8280,20 @@ void Engine::logToConsole(const std::string& message) {
     addConsoleMessage(message, ConsoleMessageType::Info);
 }
 
+void Engine::showEditorToast(const std::string& message, ConsoleMessageType type, double holdSeconds) {
+    if (message.empty()) {
+        editorToast.visible = false;
+        editorToast.message.clear();
+        return;
+    }
+
+    editorToast.visible = true;
+    editorToast.type = type;
+    editorToast.message = message;
+    editorToast.startTime = glfwGetTime();
+    editorToast.holdSeconds = std::max(0.2, holdSeconds);
+}
+
 void Engine::addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type) {
     addConsoleMessage(message, type);
 }
@@ -8538,15 +8858,23 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         compileWorker.join();
     }
 
+    compileCurrentPath = scriptPath;
+    compileCurrentLabel = scriptPath.filename().empty() ? scriptPath.string() : scriptPath.filename().string();
+    compileCurrentManaged = false;
+    if (compileBatchTotal <= 1 && compileRequestQueue.empty()) {
+        compileHistory.clear();
+        compileBatchTotal = 1;
+        compileBatchCompleted = 0;
+        compileCompletionStart = 0.0;
+        playCompileStartSound();
+    }
+
     showCompilePopup = true;
     compilePopupHideTime = 0.0;
     lastCompileLog.clear();
     lastCompileDiagnostics.clear();
     lastCompileStatus = "Compiling " + scriptPath.filename().string();
     lastCompileSuccess = false;
-    if (audio.isReady()) {
-        audio.playPreview("Resources/Sounds/Notification.mp3", 0.95f, false);
-    }
     {
         std::lock_guard<std::mutex> lock(compileMutex);
         compileProgress = 0.05f;
@@ -8639,6 +8967,16 @@ void Engine::compileManagedScripts() {
 
     fs::path projectRoot = projectManager.currentProject.projectPath;
     fs::path projectManagedProject = projectRoot / "Scripts" / "Managed" / "ModuCPP.csproj";
+    compileCurrentPath = projectManagedProject;
+    compileCurrentLabel = "Managed Scripts";
+    compileCurrentManaged = true;
+    if (compileBatchTotal <= 1 && compileRequestQueue.empty()) {
+        compileHistory.clear();
+        compileBatchTotal = 1;
+        compileBatchCompleted = 0;
+        compileCompletionStart = 0.0;
+        playCompileStartSound();
+    }
     if (!fs::exists(projectManagedProject)) {
         std::string setupError;
         fs::path engineRoot = findEngineManagedRoot();
@@ -8699,9 +9037,6 @@ void Engine::compileManagedScripts() {
     lastCompileDiagnostics.clear();
     lastCompileStatus = "Compiling managed scripts";
     lastCompileSuccess = false;
-    if (audio.isReady()) {
-        audio.playPreview("Resources/Sounds/Notification.mp3", 0.95f, false);
-    }
     {
         std::lock_guard<std::mutex> lock(compileMutex);
         compileProgress = 0.05f;
@@ -8787,6 +9122,17 @@ void Engine::updateCompileJob() {
         }
 
         lastCompileDiagnostics = result.diagnostics;
+        const int warningCount = static_cast<int>(std::count_if(
+            lastCompileDiagnostics.begin(),
+            lastCompileDiagnostics.end(),
+            [](const Modularity::ScriptDiagnostic& diagnostic) {
+                return diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Warning;
+            }));
+        const bool finishedWithWarnings = warningCount > 0;
+        const std::string displayLabel = result.scriptPath.filename().empty()
+            ? (result.isManaged ? "Managed Scripts" : "Script")
+            : result.scriptPath.filename().string();
+        const bool hasQueuedContinuation = !compileRequestQueue.empty();
 
         auto logDiagnostic = [&](const Modularity::ScriptDiagnostic& diagnostic) {
             addConsoleMessage(Modularity::formatScriptDiagnostic(diagnostic),
@@ -8795,29 +9141,36 @@ void Engine::updateCompileJob() {
 
         if (!result.success) {
             lastCompileSuccess = false;
-            lastCompileStatus = "Compile failed";
+            lastCompileStatus = "Compile failed (" + displayLabel + ")";
             lastCompileLog = result.compileLog + result.linkLog + result.error;
             if (lastCompileDiagnostics.empty()) {
                 if (!result.error.empty()) {
-                    addConsoleMessage("Compile failed: " + result.error, ConsoleMessageType::Error);
+                    addConsoleMessage("Compile failed (" + displayLabel + "): " + result.error, ConsoleMessageType::Error);
                 } else {
-                    addConsoleMessage("Compile failed", ConsoleMessageType::Error);
+                    addConsoleMessage("Compile failed (" + displayLabel + ")", ConsoleMessageType::Error);
                 }
             } else {
                 for (const auto& diagnostic : lastCompileDiagnostics) {
                     logDiagnostic(diagnostic);
                 }
             }
+            if (audio.isReady()) {
+                audio.playOneShot("Resources/Sounds/Script Error.mp3", 0.95f);
+            }
         } else {
-            // Ensure every runtime/script instance is rebuilt against freshly compiled binaries.
-            resetScriptRuntimeStateForReload(true);
-
             lastCompileSuccess = true;
             lastCompileLog = result.compileLog + result.linkLog;
+            lastCompileStatus = finishedWithWarnings
+                ? "Finished compiling (" + displayLabel + ") with warnings"
+                : "Finished compiling (" + displayLabel + ")";
             if (audio.isReady()) {
-                audio.playPreview("Resources/Sounds/Success Script.mp3", 0.95f, false);
+                audio.playOneShot("Resources/Sounds/Success Script.mp3", 0.95f);
             }
-            addConsoleMessage("Compiled script -> " + result.binaryPath.string(), ConsoleMessageType::Success);
+            addConsoleMessage(
+                finishedWithWarnings
+                    ? "Finished compiling (" + displayLabel + ") with warnings"
+                    : "Finished compiling (" + displayLabel + ")",
+                finishedWithWarnings ? ConsoleMessageType::Warning : ConsoleMessageType::Success);
             for (const auto& diagnostic : lastCompileDiagnostics) {
                 if (diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Info) {
                     continue;
@@ -8874,44 +9227,73 @@ void Engine::updateCompileJob() {
                         if (isCompiledScript) {
                             sc.lastBinaryPath = compiledBinary;
                             sc.lastBinaryVerified = !compiledBinary.empty();
-                        } else {
-                            // Force re-resolution after compile so inspector/runtime can't stay on stale binaries.
-                            sc.lastBinaryPath.clear();
-                            sc.lastBinaryVerified = false;
                         }
                     }
                 }
-
-                nativeScriptMissingLogged.clear();
-                nativeScriptLoadErrorLogged.clear();
             }
-
-            scriptEditorWindowsDirty = true;
-            refreshScriptEditorWindows();
-
-            const int warningCount = static_cast<int>(std::count_if(
-                lastCompileDiagnostics.begin(),
-                lastCompileDiagnostics.end(),
-                [](const Modularity::ScriptDiagnostic& diagnostic) {
-                    return diagnostic.severity == Modularity::ScriptDiagnosticSeverity::Warning;
-                }));
-            lastCompileStatus = warningCount > 0 ? "Compile finished with warnings" : "Compile succeeded";
         }
+
+        ScriptCompileHistoryItem history;
+        history.scriptPath = result.scriptPath;
+        history.displayLabel = result.scriptPath.filename().empty() ? result.scriptPath.string()
+                                                                   : result.scriptPath.filename().string();
+        if (history.displayLabel.empty()) {
+            history.displayLabel = result.isManaged ? "Managed Scripts" : "Script";
+        }
+        history.statusLabel = result.success
+            ? (finishedWithWarnings ? "Completed with warnings" : "Completed")
+            : "Failed";
+        history.summary = result.success
+            ? (finishedWithWarnings ? "Completed with warnings" : "Completed")
+            : (result.error.empty() ? "Compile failed" : result.error);
+        history.outputLog = result.compileLog + result.linkLog + result.error;
+        history.diagnostics = lastCompileDiagnostics;
+        history.success = result.success;
+        history.warning = finishedWithWarnings;
+        history.completedAt = glfwGetTime();
+        compileHistory.push_back(std::move(history));
+        if (compileHistory.size() > 18) {
+            compileHistory.erase(compileHistory.begin());
+        }
+
+        ++compileBatchCompleted;
 
         {
             std::lock_guard<std::mutex> lock(compileMutex);
             compileProgress = 1.0f;
             compileStage = lastCompileSuccess ? "Done" : "Failed";
         }
-        compilePopupHideTime = glfwGetTime() + 1.0;
-        showCompilePopup = true;
-    }
 
-    if (!compileInProgress && showCompilePopup && compilePopupHideTime > 0.0 &&
-        glfwGetTime() >= compilePopupHideTime) {
-        showCompilePopup = false;
-        compilePopupOpened = false;
-        compilePopupHideTime = 0.0;
+        if (!compileRequestQueue.empty()) {
+            const ScriptCompileQueueItem next = compileRequestQueue.front();
+            compileRequestQueue.pop_front();
+            const std::string key = next.managed ? std::string("managed:") + next.scriptPath.string()
+                                                 : next.scriptPath.string();
+            compileRequestKeys.erase(key);
+            compileCurrentLabel = next.displayLabel;
+            compileCurrentPath = next.scriptPath;
+            compileCurrentManaged = next.managed;
+            if (next.managed) {
+                compileManagedScripts();
+            } else {
+                compileScriptFile(next.scriptPath);
+            }
+            return;
+        }
+
+        if (!hasQueuedContinuation) {
+            // Refresh runtime state once after the entire batch finishes.
+            resetScriptRuntimeStateForReload(true);
+            scriptEditorWindowsDirty = true;
+            refreshScriptEditorWindows();
+            nativeScriptMissingLogged.clear();
+            nativeScriptLoadErrorLogged.clear();
+            compileCompletionStart = glfwGetTime();
+        }
+        compileBatchTotal = 0;
+        compileBatchCompleted = 0;
+        compileCurrentManaged = false;
+        showCompilePopup = true;
     }
 
     if (!compileInProgress && managedAutoCompileQueued) {
@@ -9410,6 +9792,14 @@ void Engine::loadEditorUserSettings() {
             } else {
                 uiAnimationMode = UIAnimationMode::Off;
             }
+        } else if (key == "uiChromeScale") {
+            if (value == "Big") {
+                uiChromeScale = EditorChromeScale::Big;
+            } else if (value == "Compact") {
+                uiChromeScale = EditorChromeScale::Compact;
+            } else {
+                uiChromeScale = EditorChromeScale::Default;
+            }
         } else if (key == "workspace") {
             if (value == "Animation") {
                 currentWorkspace = WorkspaceMode::Animation;
@@ -9476,6 +9866,42 @@ void Engine::loadEditorUserSettings() {
             showLight2DStatsOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "light2DLightingBufferScale") {
             try { light2DLightingBufferScale = std::clamp(std::stof(value), 0.5f, 1.0f); } catch (...) {}
+        } else if (key == "world2DPostFxEnabled") {
+            world2DPostFx.enabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "world2DPostFxDitherIntensity") {
+            try { world2DPostFx.ditherIntensity = std::clamp(std::stof(value), 0.0f, 1.5f); } catch (...) {}
+        } else if (key == "world2DPostFxColorBits") {
+            try { world2DPostFx.colorBits = std::clamp(std::stoi(value), 1, 8); } catch (...) {}
+        } else if (key == "world2DPostFxDarkAdjustment") {
+            try { world2DPostFx.darkAdjustment = std::clamp(std::stof(value), 0.0f, 1.0f); } catch (...) {}
+        } else if (key == "world2DPostFxDitherScale") {
+            try { world2DPostFx.ditherScale = std::clamp(std::stof(value), 1.0f, 8.0f); } catch (...) {}
+        } else if (key == "world2DPostFxPixelation") {
+            try { world2DPostFx.pixelation = std::clamp(std::stof(value), 0.0f, 64.0f); } catch (...) {}
+        } else if (key == "world2DPostFxExposure") {
+            try { world2DPostFx.exposure = std::clamp(std::stof(value), -4.0f, 4.0f); } catch (...) {}
+        } else if (key == "world2DPostFxContrast") {
+            try { world2DPostFx.contrast = std::clamp(std::stof(value), 0.0f, 2.5f); } catch (...) {}
+        } else if (key == "world2DPostFxSaturation") {
+            try { world2DPostFx.saturation = std::clamp(std::stof(value), 0.0f, 2.5f); } catch (...) {}
+        } else if (key == "world2DPostFxColorFilterR") {
+            try { world2DPostFx.colorFilter.r = std::clamp(std::stof(value), 0.0f, 2.0f); } catch (...) {}
+        } else if (key == "world2DPostFxColorFilterG") {
+            try { world2DPostFx.colorFilter.g = std::clamp(std::stof(value), 0.0f, 2.0f); } catch (...) {}
+        } else if (key == "world2DPostFxColorFilterB") {
+            try { world2DPostFx.colorFilter.b = std::clamp(std::stof(value), 0.0f, 2.0f); } catch (...) {}
+        } else if (key == "world2DPostFxVignetteIntensity") {
+            try { world2DPostFx.vignetteIntensity = std::clamp(std::stof(value), 0.0f, 1.0f); } catch (...) {}
+        } else if (key == "world2DPostFxVignetteSmoothness") {
+            try { world2DPostFx.vignetteSmoothness = std::clamp(std::stof(value), 0.05f, 1.0f); } catch (...) {}
+        } else if (key == "world2DPostFxChromaticAmount") {
+            try { world2DPostFx.chromaticAmount = std::clamp(std::stof(value), 0.0f, 0.05f); } catch (...) {}
+        } else if (key == "world2DPostFxSharpenStrength") {
+            try { world2DPostFx.sharpenStrength = std::clamp(std::stof(value), 0.0f, 2.0f); } catch (...) {}
+        } else if (key == "world2DPostFxGrainAmount") {
+            try { world2DPostFx.grainAmount = std::clamp(std::stof(value), 0.0f, 0.4f); } catch (...) {}
+        } else if (key == "world2DPostFxScanlineIntensity") {
+            try { world2DPostFx.scanlineIntensity = std::clamp(std::stof(value), 0.0f, 1.0f); } catch (...) {}
         } else if (key == "gizmoShowLight2DBounds") {
             gizmoShowLight2DBounds = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowLight2DShapes") {
@@ -9498,6 +9924,10 @@ void Engine::loadEditorUserSettings() {
             try { pixelGridSnapStep = std::clamp(std::stoi(value), 1, 64); } catch (...) {}
         } else if (key == "showGameProfiler") {
             showGameProfiler = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "revealDebugSectionsAndMenus") {
+            revealDebugSectionsAndMenus = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showGameProfilerWindow") {
+            revealDebugSectionsAndMenus = (value == "1" || value == "true" || value == "yes");
         } else if (key == "collisionWireframe") {
             collisionWireframe = (value == "1" || value == "true" || value == "yes");
         } else if (key == "fpsCapEnabled") {
@@ -9538,6 +9968,16 @@ void Engine::loadEditorUserSettings() {
             } else {
                 sceneViewportDisplayMode = ViewportDisplayMode::Stretch;
             }
+        } else if (key == "sceneViewportToolbarCorner") {
+            if (value == "BottomRight") {
+                sceneViewportToolbarCorner = ViewportToolbarCorner::BottomRight;
+            } else if (value == "TopLeft") {
+                sceneViewportToolbarCorner = ViewportToolbarCorner::TopLeft;
+            } else if (value == "TopRight") {
+                sceneViewportToolbarCorner = ViewportToolbarCorner::TopRight;
+            } else {
+                sceneViewportToolbarCorner = ViewportToolbarCorner::BottomLeft;
+            }
         } else if (key == "gameViewportDisplayMode") {
             if (value == "Stretch") {
                 gameViewportDisplayMode = ViewportDisplayMode::Stretch;
@@ -9552,6 +9992,8 @@ void Engine::loadEditorUserSettings() {
             try { scriptAutoCompileInterval = std::clamp(std::stod(value), 0.1, 10.0); } catch (...) {}
         } else if (key == "scriptAutoCompileOnSave") {
             scriptEditorState.autoCompileOnSave = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "audioPreviewVolume") {
+            try { audioPreviewVolume = std::stof(value); } catch (...) {}
         } else if (key.rfind("color.", 0) == 0) {
             std::string name = key.substr(6);
             auto it = colorIndex.find(name);
@@ -9605,6 +10047,7 @@ void Engine::loadEditorUserSettings() {
     light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
+    audioPreviewVolume = std::clamp(audioPreviewVolume, 0.0f, 2.0f);
 
     if (!workspaceTabVisible[0] && !workspaceTabVisible[1] && !workspaceTabVisible[2]) {
         workspaceTabVisible[0] = true;
@@ -9672,6 +10115,7 @@ void Engine::saveEditorUserSettings() const {
         animMode = "Snappy";
     }
     file << "uiAnimationMode=" << animMode << "\n";
+    file << "uiChromeScale=" << getEditorChromeScaleLabel(uiChromeScale) << "\n";
     const char* workspaceName = "Default";
     if (currentWorkspace == WorkspaceMode::Animation) {
         workspaceName = "Animation";
@@ -9701,6 +10145,24 @@ void Engine::saveEditorUserSettings() const {
     file << "showViewportHintOverlay=" << (showViewportHintOverlay ? "1" : "0") << "\n";
     file << "showLight2DStatsOverlay=" << (showLight2DStatsOverlay ? "1" : "0") << "\n";
     file << "light2DLightingBufferScale=" << std::clamp(light2DLightingBufferScale, 0.5f, 1.0f) << "\n";
+    file << "world2DPostFxEnabled=" << (world2DPostFx.enabled ? "1" : "0") << "\n";
+    file << "world2DPostFxDitherIntensity=" << std::clamp(world2DPostFx.ditherIntensity, 0.0f, 1.5f) << "\n";
+    file << "world2DPostFxColorBits=" << std::clamp(world2DPostFx.colorBits, 1, 8) << "\n";
+    file << "world2DPostFxDarkAdjustment=" << std::clamp(world2DPostFx.darkAdjustment, 0.0f, 1.0f) << "\n";
+    file << "world2DPostFxDitherScale=" << std::clamp(world2DPostFx.ditherScale, 1.0f, 8.0f) << "\n";
+    file << "world2DPostFxPixelation=" << std::clamp(world2DPostFx.pixelation, 0.0f, 64.0f) << "\n";
+    file << "world2DPostFxExposure=" << std::clamp(world2DPostFx.exposure, -4.0f, 4.0f) << "\n";
+    file << "world2DPostFxContrast=" << std::clamp(world2DPostFx.contrast, 0.0f, 2.5f) << "\n";
+    file << "world2DPostFxSaturation=" << std::clamp(world2DPostFx.saturation, 0.0f, 2.5f) << "\n";
+    file << "world2DPostFxColorFilterR=" << std::clamp(world2DPostFx.colorFilter.r, 0.0f, 2.0f) << "\n";
+    file << "world2DPostFxColorFilterG=" << std::clamp(world2DPostFx.colorFilter.g, 0.0f, 2.0f) << "\n";
+    file << "world2DPostFxColorFilterB=" << std::clamp(world2DPostFx.colorFilter.b, 0.0f, 2.0f) << "\n";
+    file << "world2DPostFxVignetteIntensity=" << std::clamp(world2DPostFx.vignetteIntensity, 0.0f, 1.0f) << "\n";
+    file << "world2DPostFxVignetteSmoothness=" << std::clamp(world2DPostFx.vignetteSmoothness, 0.05f, 1.0f) << "\n";
+    file << "world2DPostFxChromaticAmount=" << std::clamp(world2DPostFx.chromaticAmount, 0.0f, 0.05f) << "\n";
+    file << "world2DPostFxSharpenStrength=" << std::clamp(world2DPostFx.sharpenStrength, 0.0f, 2.0f) << "\n";
+    file << "world2DPostFxGrainAmount=" << std::clamp(world2DPostFx.grainAmount, 0.0f, 0.4f) << "\n";
+    file << "world2DPostFxScanlineIntensity=" << std::clamp(world2DPostFx.scanlineIntensity, 0.0f, 1.0f) << "\n";
     file << "gizmoShowLight2DBounds=" << (gizmoShowLight2DBounds ? "1" : "0") << "\n";
     file << "gizmoShowLight2DShapes=" << (gizmoShowLight2DShapes ? "1" : "0") << "\n";
     file << "gizmoShowShadowCaster2DBounds=" << (gizmoShowShadowCaster2DBounds ? "1" : "0") << "\n";
@@ -9712,6 +10174,7 @@ void Engine::saveEditorUserSettings() const {
     file << "pixelGridSnapEnabled=" << (pixelGridSnapEnabled ? "1" : "0") << "\n";
     file << "pixelGridSnapStep=" << std::clamp(pixelGridSnapStep, 1, 64) << "\n";
     file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";
+    file << "revealDebugSectionsAndMenus=" << (revealDebugSectionsAndMenus ? "1" : "0") << "\n";
     file << "collisionWireframe=" << (collisionWireframe ? "1" : "0") << "\n";
     file << "fpsCapEnabled=" << (fpsCapEnabled ? "1" : "0") << "\n";
     file << "fpsCap=" << fpsCap << "\n";
@@ -9742,8 +10205,20 @@ void Engine::saveEditorUserSettings() const {
     };
     writeViewportDisplayMode("sceneViewportDisplayMode", sceneViewportDisplayMode);
     writeViewportDisplayMode("gameViewportDisplayMode", gameViewportDisplayMode);
+    const char* toolbarCornerName = "BottomLeft";
+    switch (sceneViewportToolbarCorner) {
+        case ViewportToolbarCorner::BottomRight: toolbarCornerName = "BottomRight"; break;
+        case ViewportToolbarCorner::TopLeft: toolbarCornerName = "TopLeft"; break;
+        case ViewportToolbarCorner::TopRight: toolbarCornerName = "TopRight"; break;
+        case ViewportToolbarCorner::BottomLeft:
+        default:
+            toolbarCornerName = "BottomLeft";
+            break;
+    }
+    file << "sceneViewportToolbarCorner=" << toolbarCornerName << "\n";
     file << "scriptAutoCompileInterval=" << scriptAutoCompileInterval << "\n";
     file << "scriptAutoCompileOnSave=" << (scriptEditorState.autoCompileOnSave ? "1" : "0") << "\n";
+    file << "audioPreviewVolume=" << std::clamp(audioPreviewVolume, 0.0f, 2.0f) << "\n";
     const ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; ++i) {
         const ImVec4& c = style.Colors[i];

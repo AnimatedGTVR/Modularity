@@ -38,6 +38,19 @@ namespace {
         return value;
     }
 
+    static std::string normalizeScriptSelectionKey(const fs::path& path) {
+        std::error_code ec;
+        fs::path absPath = fs::absolute(path, ec);
+        if (ec) absPath = path;
+        std::string key = absPath.lexically_normal().string();
+#if defined(_WIN32)
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+#endif
+        return key;
+    }
+
     static std::string extensionLower(const fs::path& path) {
         return toLowerCopy(path.extension().string());
     }
@@ -713,6 +726,7 @@ void Engine::renderScriptingWindow() {
     static double lastReloadCheckTime = 0.0;
     static std::string cachedFilterLower;
     static std::vector<int> filteredScriptIndices;
+    static std::unordered_set<std::string> selectedCompileScripts;
     static bool showFilePane = true;
     static bool showDetailsPane = true;
     static bool showDiagnosticsPane = true;
@@ -765,7 +779,49 @@ void Engine::renderScriptingWindow() {
                 }
                 filteredScriptIndices.push_back(static_cast<int>(i));
             }
+            std::unordered_set<std::string> visibleKeys;
+            visibleKeys.reserve(scriptingFileList.size());
+            for (const auto& scriptPath : scriptingFileList) {
+                visibleKeys.insert(normalizeScriptSelectionKey(scriptPath));
+            }
+            for (auto it = selectedCompileScripts.begin(); it != selectedCompileScripts.end(); ) {
+                if (visibleKeys.find(*it) == visibleKeys.end()) {
+                    it = selectedCompileScripts.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
+
+        int selectedBatchCount = static_cast<int>(selectedCompileScripts.size());
+        ImGui::TextDisabled("Batch Selection: %d", selectedBatchCount);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(selectedBatchCount == 0 || compileInProgress);
+        if (ImGui::Button("Compile Selected")) {
+            std::vector<fs::path> batch;
+            batch.reserve(selectedCompileScripts.size());
+            for (const auto& scriptPath : scriptingFileList) {
+                const std::string key = normalizeScriptSelectionKey(scriptPath);
+                if (selectedCompileScripts.find(key) == selectedCompileScripts.end()) {
+                    continue;
+                }
+                const std::string ext = extensionLower(scriptPath);
+                if (ext == ".cs" || ext == ".csproj") {
+                    continue;
+                }
+                batch.push_back(scriptPath);
+            }
+            if (!batch.empty()) {
+                queueScriptCompileBatch(batch);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear Selection")) {
+            selectedCompileScripts.clear();
+        }
+
+        ImGui::Spacing();
 
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(filteredScriptIndices.size()));
@@ -773,10 +829,41 @@ void Engine::renderScriptingWindow() {
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
                 const fs::path& scriptPath = scriptingFileList[filteredScriptIndices[row]];
                 std::string label = scriptPath.filename().string();
-                bool selected = (scriptEditorState.filePath == scriptPath);
-                if (ImGui::Selectable(label.c_str(), selected)) {
+                const std::string key = normalizeScriptSelectionKey(scriptPath);
+                const bool selected = (scriptEditorState.filePath == scriptPath);
+                const std::string ext = extensionLower(scriptPath);
+                const bool batchCapable = ext != ".cs" && ext != ".csproj";
+
+                ImGui::PushID(filteredScriptIndices[row]);
+                bool compileSelected = selectedCompileScripts.find(key) != selectedCompileScripts.end();
+                if (!batchCapable) {
+                    ImGui::BeginDisabled();
+                }
+                if (ImGui::Checkbox("##BatchSelect", &compileSelected)) {
+                    if (compileSelected) {
+                        selectedCompileScripts.insert(key);
+                    } else {
+                        selectedCompileScripts.erase(key);
+                    }
+                }
+                if (!batchCapable) {
+                    ImGui::EndDisabled();
+                }
+                ImGui::SameLine();
+                ImGuiSelectableFlags rowFlags = ImGuiSelectableFlags_SpanAvailWidth;
+                if (ImGui::Selectable(label.c_str(), selected, rowFlags)) {
                     openScriptInEditor(scriptPath);
                 }
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                    if (batchCapable) {
+                        if (compileSelected) {
+                            selectedCompileScripts.erase(key);
+                        } else {
+                            selectedCompileScripts.insert(key);
+                        }
+                    }
+                }
+                ImGui::PopID();
             }
         }
         ImGui::EndChild();

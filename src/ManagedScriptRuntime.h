@@ -2,6 +2,7 @@
 
 #include "ManagedBindings.h"
 #include "ScriptRuntime.h"
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -10,6 +11,13 @@
 
 class ManagedScriptRuntime {
 public:
+    struct GcStats {
+        bool available = false;
+        uint64_t usedBytes = 0;
+        uint64_t heapBytes = 0;
+        std::array<uint32_t, 3> collectionCounts = { 0, 0, 0 };
+    };
+
     ~ManagedScriptRuntime();
 
     bool hasInspector(const fs::path& assemblyPath, const std::string& typeName);
@@ -18,6 +26,7 @@ public:
                     ScriptContext& ctx, float deltaTime, bool runSpec, bool runTest);
     void unloadAll();
     const std::string& getLastError() const { return lastError; }
+    GcStats getGcStats() const;
 
     struct Module {
         struct MethodSlot {

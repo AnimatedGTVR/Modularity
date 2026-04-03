@@ -24,8 +24,17 @@
 #include <shlobj.h>
 #endif
 
+namespace ImGui {
+    bool BufferingBar(const char* label, float value, const ImVec2& size_arg, const ImU32& bg_col, const ImU32& fg_col);
+}
+
 #pragma region Hierarchy Helpers
 namespace {
+    bool IsNativeBinaryPath(const fs::path& path) {
+        const std::string ext = path.extension().string();
+        return ext == ".so" || ext == ".dll" || ext == ".dylib";
+    }
+
     bool IsSpriteSheetSidecarPath(const fs::path& path) {
         return path.extension() == ".spritesheet";
     }
@@ -1302,6 +1311,13 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                         obj.scripts.push_back(sc);
                         markRuntimeScriptBindingsDirty();
                         projectManager.currentProject.hasUnsavedChanges = true;
+                        if (audio.isReady()) {
+                            audio.playPreview("Resources/Sounds/Drag Script Assign Check Successful.mp3", 0.95f, false);
+                        }
+                        const std::string targetName = obj.name.empty() ? "Object" : obj.name;
+                        showEditorToast("Script assigned to " + targetName + " Successful.",
+                                        ConsoleMessageType::Success,
+                                        1.65);
                         addConsoleMessage("Assigned script to " + obj.name, ConsoleMessageType::Success);
                     }
                 }
@@ -1405,6 +1421,14 @@ void Engine::renderInspectorPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 6.0f));
 
+    if (deferInspectorRefresh) {
+        deferInspectorRefresh = false;
+        ImGui::TextDisabled("Refreshing inspector after play mode transition...");
+        ImGui::PopStyleVar(3);
+        ImGui::End();
+        return;
+    }
+
     fs::path selectedMaterialPath;
     bool browserHasMaterial = false;
     fs::path selectedAudioPath;
@@ -1459,7 +1483,9 @@ void Engine::renderInspectorPanel() {
         if (selectedAudio != audioPreviewSelectedPath) {
             audioPreviewSelectedPath = selectedAudio;
             if (audioPreviewAutoPlay) {
-                audio.playPreview(selectedAudio, 1.0f, audioPreviewLoop);
+                audioPreviewBaseVolume = 1.0f;
+                audioPreviewContext = AudioPreviewContext::AssetBrowser;
+                audio.playPreview(selectedAudio, audioPreviewBaseVolume * audioPreviewVolume, audioPreviewLoop);
             }
         }
     } else {
@@ -1672,6 +1698,171 @@ void Engine::renderInspectorPanel() {
             ImGui::EndDisabled();
         }
         return !disabled && pressed;
+    };
+
+    auto stopClipPreview = [&]() {
+        audio.stopPreview();
+        audioPreviewBaseVolume = 1.0f;
+        audioPreviewContext = AudioPreviewContext::None;
+    };
+
+    auto beginClipPreview = [&](const std::string& path, float baseVolume, bool loop, AudioPreviewContext context) {
+        audioPreviewBaseVolume = std::max(0.0f, baseVolume);
+        audioPreviewContext = context;
+        return audio.playPreview(path, audioPreviewBaseVolume * audioPreviewVolume, loop);
+    };
+
+    auto syncClipPreviewVolume = [&](AudioPreviewContext context, float baseVolume) {
+        if (audioPreviewContext != context) {
+            return;
+        }
+        audioPreviewBaseVolume = std::max(0.0f, baseVolume);
+        audio.setPreviewVolume(audioPreviewBaseVolume * audioPreviewVolume);
+    };
+
+    auto drawAudioPreviewVolumeControl = [&](const char* id, AudioPreviewContext context, float baseVolume) {
+        AudioPlayerUiIcon icon = resolveAudioPlayerIcon("Resources/Engine-Root/Audio Player/Audio Icon.png");
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            ImGui::Image(icon.id, ImVec2(18.0f, 18.0f), uvMin, uvMax);
+        } else {
+            ImGui::TextDisabled("Vol");
+        }
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Preview Volume");
+        ImGui::SetNextItemWidth(std::max(140.0f, ImGui::GetContentRegionAvail().x));
+        if (ImGui::SliderFloat(id, &audioPreviewVolume, 0.0f, 2.0f, "%.2fx")) {
+            audioPreviewVolume = std::clamp(audioPreviewVolume, 0.0f, 2.0f);
+            saveEditorUserSettings();
+            syncClipPreviewVolume(context, baseVolume);
+        }
+    };
+
+    auto drawFileReferenceSlot = [&](const char* label,
+                                     const char* id,
+                                     std::string& path,
+                                     FileCategory expectedCategory,
+                                     const char* noneLabel) -> bool {
+        bool changed = false;
+        const std::string display = path.empty() ? std::string(noneLabel) : fs::path(path).filename().string();
+        char displayBuf[512] = {};
+        std::snprintf(displayBuf, sizeof(displayBuf), "%s", display.c_str());
+        ImGui::PushID(id);
+
+        ImGui::TextDisabled("%s", label);
+        ImGui::SetNextItemWidth(-146.0f);
+        ImGui::InputText("##SlotValue", displayBuf, sizeof(displayBuf), ImGuiInputTextFlags_ReadOnly);
+        if (ImGui::IsItemHovered()) {
+            if (path.empty()) {
+                ImGui::SetTooltip("Drag a matching asset here.");
+            } else {
+                ImGui::SetTooltip("%s", path.c_str());
+            }
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                const char* droppedPath = static_cast<const char*>(payload->Data);
+                if (droppedPath && *droppedPath) {
+                    std::error_code ec;
+                    fs::directory_entry entry(droppedPath, ec);
+                    if (!ec && fileBrowser.getFileCategory(entry) == expectedCategory) {
+                        path = entry.path().string();
+                        changed = true;
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+
+        ImGui::SameLine();
+        bool selectionMatches = false;
+        if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
+            selectionMatches = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == expectedCategory;
+        }
+        ImGui::BeginDisabled(!selectionMatches);
+        if (ImGui::SmallButton("Use Selection")) {
+            path = fileBrowser.selectedFile.string();
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(path.empty());
+        if (ImGui::SmallButton("Clear")) {
+            path.clear();
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        return changed;
+    };
+
+    auto drawSceneObjectReferenceSlot = [&](const char* label,
+                                            const char* id,
+                                            int& targetId,
+                                            int disallowId,
+                                            const char* noneLabel) -> bool {
+        bool changed = false;
+        ImGui::PushID(id);
+        std::string display = noneLabel;
+        if (targetId >= 0) {
+            if (SceneObject* current = findObjectById(targetId)) {
+                display = current->name + " (" + std::to_string(current->id) + ")";
+            } else {
+                targetId = -1;
+            }
+        }
+
+        if (ImGui::BeginCombo(label, display.c_str())) {
+            if (ImGui::Selectable(noneLabel, targetId < 0)) {
+                targetId = -1;
+                changed = true;
+            }
+            for (const auto& candidate : sceneObjects) {
+                if (candidate.id == disallowId) continue;
+                const std::string option = candidate.name + " (" + std::to_string(candidate.id) + ")";
+                const bool selected = candidate.id == targetId;
+                if (ImGui::Selectable(option.c_str(), selected)) {
+                    targetId = candidate.id;
+                    changed = true;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
+                if (payload->DataSize == sizeof(int)) {
+                    int droppedId = *static_cast<const int*>(payload->Data);
+                    if (droppedId != disallowId) {
+                        targetId = droppedId;
+                        changed = true;
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+        ImGui::SameLine();
+        SceneObject* selectedTarget = findObjectById(selectedObjectId);
+        const bool canUseSelected = selectedTarget && selectedTarget->id != disallowId;
+        ImGui::BeginDisabled(!canUseSelected);
+        if (ImGui::SmallButton("Use Selected")) {
+            targetId = selectedTarget->id;
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(targetId < 0);
+        if (ImGui::SmallButton("Clear")) {
+            targetId = -1;
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        return changed;
     };
 
     auto drawMaterialPreview = [&](const char* idSuffix,
@@ -2167,9 +2358,9 @@ void Engine::renderInspectorPanel() {
                 ImVec2(42.0f, 42.0f),
                 ImVec4(0.92f, 0.55f, 0.30f, 1.0f))) {
             if (isPlayingPreview) {
-                audio.stopPreview();
+                stopClipPreview();
             } else {
-                audio.playPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop);
+                beginClipPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop, AudioPreviewContext::AssetBrowser);
             }
         }
         ImGui::SameLine();
@@ -2203,9 +2394,11 @@ void Engine::renderInspectorPanel() {
                 ImVec4(0.45f, 0.88f, 0.76f, 1.0f))) {
             audioPreviewAutoPlay = !audioPreviewAutoPlay;
             if (audioPreviewAutoPlay && !selectedAudioPath.empty() && !isPlayingPreview) {
-                audio.playPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop);
+                beginClipPreview(selectedAudioPath.string(), 1.0f, audioPreviewLoop, AudioPreviewContext::AssetBrowser);
             }
         }
+
+        drawAudioPreviewVolumeControl("##AudioAssetPreviewVolume", AudioPreviewContext::AssetBrowser, 1.0f);
 
         if (selectedAudioPreview) {
             double cur = 0.0;
@@ -2280,8 +2473,13 @@ void Engine::renderInspectorPanel() {
         }
     };
 
+    const bool assetPreviewSuppressed = isPlaying || specMode || testMode || playerMode;
     if (selectedObjectIds.empty()) {
-        if (browserHasMaterial) {
+        if (assetPreviewSuppressed && (browserHasMaterial || browserHasAudio || browserHasTexture)) {
+            ImGui::TextDisabled("Asset previews are disabled while the scene is running.");
+            ImGui::Spacing();
+            ImGui::TextDisabled("Select an object to inspect components, or stop playback to edit assets.");
+        } else if (browserHasMaterial) {
             renderMaterialAssetPanel("Material Asset", true);
         } else if (browserHasAudio) {
             renderAudioAssetPanel("Audio Clip", nullptr);
@@ -2855,6 +3053,7 @@ void Engine::renderInspectorPanel() {
         UpdateLegacyTypeFromComponents(target);
     };
 
+    const bool runtimeSceneEditingLocked = isPlaying || specMode || testMode || playerMode;
     auto objectHeader = drawComponentHeader("Object Info", "ObjectInfo", "", nullptr, true, std::function<void()>{});
     if (objectHeader.open) {
         char nameBuffer[128];
@@ -2864,6 +3063,7 @@ void Engine::renderInspectorPanel() {
         ImGui::Text("Name:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
+        ImGui::BeginDisabled(runtimeSceneEditingLocked);
         if (ImGui::InputText("##Name", nameBuffer, sizeof(nameBuffer))) {
             const std::string oldName = obj.name;
             const std::string newName = nameBuffer;
@@ -2873,6 +3073,10 @@ void Engine::renderInspectorPanel() {
                 propagateObjectRenameReferences(oldName, newName, obj.id);
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
+        }
+        ImGui::EndDisabled();
+        if (runtimeSceneEditingLocked && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Object renaming is disabled while the scene is running.");
         }
 
         ImGui::Text("Type:");
@@ -3009,7 +3213,8 @@ void Engine::renderInspectorPanel() {
 
     ImGui::Spacing();
 
-    for (const std::string& inspectorComponentKey : obj.inspectorComponentOrder) {
+    const std::vector<std::string> inspectorComponentOrder = obj.inspectorComponentOrder;
+    for (const std::string& inspectorComponentKey : inspectorComponentOrder) {
     if (inspectorComponentKey == "ui" && isUIObject(obj) && sharedUIObject) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.45f, 0.65f, 1.0f));
@@ -3782,6 +3987,7 @@ void Engine::renderInspectorPanel() {
             if (ImGui::Checkbox("Use Gravity", &obj.rigidbody.useGravity)) {
                 changed = true;
             }
+            ImGui::SameLine();
             if (ImGui::Checkbox("Kinematic", &obj.rigidbody.isKinematic)) {
                 changed = true;
             }
@@ -3793,15 +3999,19 @@ void Engine::renderInspectorPanel() {
                 obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
                 changed = true;
             }
-            ImGui::TextDisabled("Rotation Constraints");
-            if (ImGui::Checkbox("Lock Rotation X", &obj.rigidbody.lockRotationX)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Lock Rotation Y", &obj.rigidbody.lockRotationY)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Lock Rotation Z", &obj.rigidbody.lockRotationZ)) {
-                changed = true;
+            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("Lock Rotation");
+                if (ImGui::Checkbox("Lock X", &obj.rigidbody.lockRotationX)) {
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Lock Y", &obj.rigidbody.lockRotationY)) {
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Lock Z", &obj.rigidbody.lockRotationZ)) {
+                    changed = true;
+                }
             }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
@@ -3857,6 +4067,12 @@ void Engine::renderInspectorPanel() {
             }
             if (ImGui::DragFloat2("Velocity", &obj.rigidbody2D.velocity.x, 0.1f)) {
                 changed = true;
+            }
+            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("Locks the object's Z-axis rotation.");
+                if (ImGui::Checkbox("Lock Rotation", &obj.rigidbody2D.lockRotation)) {
+                    changed = true;
+                }
             }
             ImGui::Unindent(10.0f);
             ImGui::PopID();
@@ -4123,37 +4339,23 @@ void Engine::renderInspectorPanel() {
             ImGui::PushID("AudioSource");
             ImGui::Indent(10.0f);
             auto& src = obj.audioSource;
+            const std::string previousClipPath = src.clipPath;
 
-            char clipBuf[512] = {};
-            std::snprintf(clipBuf, sizeof(clipBuf), "%s", src.clipPath.c_str());
-            ImGui::TextDisabled("Clip");
-            ImGui::SetNextItemWidth(-170);
-            if (ImGui::InputText("##ClipPath", clipBuf, sizeof(clipBuf))) {
-                src.clipPath = clipBuf;
+            if (drawFileReferenceSlot("Sound Clip", "##AudioClipSlot", src.clipPath, FileCategory::Audio, "None (Sound Clip)")) {
+                if (previousClipPath != src.clipPath && audio.isPreviewing(previousClipPath)) {
+                    stopClipPreview();
+                }
                 changed = true;
             }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Clear##AudioClip")) {
-                src.clipPath.clear();
-                changed = true;
-            }
-            ImGui::SameLine();
-            bool selectionIsAudio = false;
-            if (!fileBrowser.selectedFile.empty() && fs::exists(fileBrowser.selectedFile)) {
-                selectionIsAudio = fileBrowser.getFileCategory(fs::directory_entry(fileBrowser.selectedFile)) == FileCategory::Audio;
-            }
-            ImGui::BeginDisabled(!selectionIsAudio);
-            if (ImGui::SmallButton("Use Selection##AudioClip")) {
-                src.clipPath = fileBrowser.selectedFile.string();
-                changed = true;
-            }
-            ImGui::EndDisabled();
 
             ImGui::Spacing();
-            ImGui::TextDisabled("%s", src.clipPath.empty() ? "No clip selected" : fs::path(src.clipPath).filename().string().c_str());
+            if (!src.clipPath.empty()) {
+                drawTrimmedPathText(src.clipPath, ImVec4(0.78f, 0.88f, 1.0f, 1.0f));
+            }
 
             if (ImGui::SliderFloat("Volume", &src.volume, 0.0f, 1.5f, "%.2f")) {
                 changed = true;
+                syncClipPreviewVolume(AudioPreviewContext::AudioSourceComponent, src.volume);
             }
             if (ImGui::Checkbox("Loop", &src.loop)) {
                 changed = true;
@@ -4161,42 +4363,56 @@ void Engine::renderInspectorPanel() {
             if (ImGui::Checkbox("Play On Start", &src.playOnStart)) {
                 changed = true;
             }
-            if (ImGui::Checkbox("3D Spatialization", &src.spatial)) {
+            const bool usePlanar2DAudio = isProject2DPipeline() || HasUIComponent(obj);
+            const char* spatialBlendLabel = usePlanar2DAudio ? "Localization" : "Spatial Blend";
+            if (ImGui::SliderFloat(spatialBlendLabel, &src.spatialBlend, 0.0f, 1.0f, "%.2f")) {
+                src.spatialBlend = std::clamp(src.spatialBlend, 0.0f, 1.0f);
+                src.spatial = src.spatialBlend > 0.001f;
                 changed = true;
             }
-            ImGui::BeginDisabled(!src.spatial);
-            if (ImGui::DragFloat("Min Distance", &src.minDistance, 0.1f, 0.1f, 200.0f, "%.2f")) {
+            ImGui::TextDisabled(usePlanar2DAudio
+                ? "0 keeps audio global and centered. 1 fully uses world position for pan and falloff."
+                : "0 keeps audio centered. 1 uses full world placement.");
+
+            ImGui::BeginDisabled(src.spatialBlend <= 0.001f);
+            const char* minDistanceLabel = usePlanar2DAudio ? "Near Distance" : "Min Distance";
+            const char* maxDistanceLabel = usePlanar2DAudio ? "Far Distance" : "Max Distance";
+            if (ImGui::DragFloat(minDistanceLabel, &src.minDistance, 0.1f, 0.1f, 200.0f, "%.2f")) {
                 src.minDistance = std::max(0.1f, src.minDistance);
                 changed = true;
             }
-            if (ImGui::DragFloat("Max Distance", &src.maxDistance, 0.1f, src.minDistance + 0.5f, 500.0f, "%.2f")) {
+            if (ImGui::DragFloat(maxDistanceLabel, &src.maxDistance, 0.1f, src.minDistance + 0.5f, 500.0f, "%.2f")) {
                 src.maxDistance = std::max(src.maxDistance, src.minDistance + 0.5f);
                 changed = true;
             }
-            const char* rolloffModes[] = { "Logarithmic", "Linear", "Exponential", "Custom" };
-            int rolloffIndex = static_cast<int>(src.rolloffMode);
-            if (ImGui::Combo("Rolloff Mode", &rolloffIndex, rolloffModes, IM_ARRAYSIZE(rolloffModes))) {
-                src.rolloffMode = static_cast<AudioRolloffMode>(rolloffIndex);
-                changed = true;
-            }
-            if (src.rolloffMode != AudioRolloffMode::Custom) {
-                if (ImGui::SliderFloat("Rolloff Factor", &src.rolloff, 0.1f, 4.0f, "%.2f")) {
-                    src.rolloff = std::max(0.1f, src.rolloff);
+            if (!usePlanar2DAudio) {
+                const char* rolloffModes[] = { "Logarithmic", "Linear", "Exponential", "Custom" };
+                int rolloffIndex = static_cast<int>(src.rolloffMode);
+                if (ImGui::Combo("Rolloff Mode", &rolloffIndex, rolloffModes, IM_ARRAYSIZE(rolloffModes))) {
+                    src.rolloffMode = static_cast<AudioRolloffMode>(rolloffIndex);
                     changed = true;
+                }
+                if (src.rolloffMode != AudioRolloffMode::Custom) {
+                    if (ImGui::SliderFloat("Rolloff Factor", &src.rolloff, 0.1f, 4.0f, "%.2f")) {
+                        src.rolloff = std::max(0.1f, src.rolloff);
+                        changed = true;
+                    }
+                } else {
+                    if (ImGui::SliderFloat("Mid Distance", &src.customMidDistance, 0.0f, 1.0f, "%.2f")) {
+                        src.customMidDistance = std::clamp(src.customMidDistance, 0.0f, 1.0f);
+                        changed = true;
+                    }
+                    if (ImGui::SliderFloat("Mid Gain", &src.customMidGain, 0.0f, 1.0f, "%.2f")) {
+                        src.customMidGain = std::clamp(src.customMidGain, 0.0f, 1.0f);
+                        changed = true;
+                    }
+                    if (ImGui::SliderFloat("End Gain", &src.customEndGain, 0.0f, 1.0f, "%.2f")) {
+                        src.customEndGain = std::clamp(src.customEndGain, 0.0f, 1.0f);
+                        changed = true;
+                    }
                 }
             } else {
-                if (ImGui::SliderFloat("Mid Distance", &src.customMidDistance, 0.0f, 1.0f, "%.2f")) {
-                    src.customMidDistance = std::clamp(src.customMidDistance, 0.0f, 1.0f);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Mid Gain", &src.customMidGain, 0.0f, 1.0f, "%.2f")) {
-                    src.customMidGain = std::clamp(src.customMidGain, 0.0f, 1.0f);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("End Gain", &src.customEndGain, 0.0f, 1.0f, "%.2f")) {
-                    src.customEndGain = std::clamp(src.customEndGain, 0.0f, 1.0f);
-                    changed = true;
-                }
+                ImGui::TextDisabled("2D projects use planar left/right placement with the blend slider.");
             }
             ImGui::EndDisabled();
 
@@ -4227,9 +4443,9 @@ void Engine::renderInspectorPanel() {
                     ImVec2(42.0f, 42.0f),
                     ImVec4(0.92f, 0.55f, 0.30f, 1.0f))) {
                 if (previewPlaying) {
-                    audio.stopPreview();
+                    stopClipPreview();
                 } else {
-                    audio.playPreview(src.clipPath, src.volume, src.loop);
+                    beginClipPreview(src.clipPath, src.volume, src.loop, AudioPreviewContext::AudioSourceComponent);
                 }
             }
             ImGui::SameLine();
@@ -4250,6 +4466,8 @@ void Engine::renderInspectorPanel() {
                     audio.setPreviewLoop(src.loop);
                 }
             }
+
+            drawAudioPreviewVolumeControl("##AudioSourcePreviewVolume", AudioPreviewContext::AudioSourceComponent, src.volume);
 
             ImVec2 waveSize(ImGui::GetContentRegionAvail().x, 64.0f);
             double cur = 0.0;
@@ -4272,7 +4490,7 @@ void Engine::renderInspectorPanel() {
         }
         if (removeAudioSource) {
             if (audio.isPreviewing(obj.audioSource.clipPath)) {
-                audio.stopPreview();
+                stopClipPreview();
             }
             obj.hasAudioSource = false;
             changed = true;
@@ -4422,22 +4640,8 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
             if (obj.aiAgent.useTargetObject) {
-                SceneObject* target = findObjectById(obj.aiAgent.targetId);
-                ImGui::TextDisabled("Target: %s",
-                    (target && target->enabled) ? target->name.c_str() : "<none>");
-
-                SceneObject* selectedTarget = findObjectById(selectedObjectId);
-                bool canUseSelection = selectedTarget && selectedTarget->id != obj.id;
-                ImGui::BeginDisabled(!canUseSelection);
-                if (ImGui::Button("Use Selection as Target")) {
-                    obj.aiAgent.targetId = selectedTarget->id;
-                    aiPreviewTargetId = selectedTarget->id;
-                    changed = true;
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Clear Target")) {
-                    obj.aiAgent.targetId = -1;
+                if (drawSceneObjectReferenceSlot("Target Object", "##AIAgentTarget", obj.aiAgent.targetId, obj.id, "None (Target Object)")) {
+                    aiPreviewTargetId = obj.aiAgent.targetId;
                     changed = true;
                 }
             }
@@ -4972,42 +5176,7 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Requires a Camera component.");
             }
 
-            std::string targetLabel = "None";
-            if (obj.cameraFollow2D.targetId >= 0) {
-                auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
-                    [&](const SceneObject& o) { return o.id == obj.cameraFollow2D.targetId; });
-                if (it != sceneObjects.end()) {
-                    targetLabel = it->name + " (" + std::to_string(it->id) + ")";
-                }
-            }
-            if (ImGui::BeginCombo("Target", targetLabel.c_str())) {
-                if (ImGui::Selectable("None", obj.cameraFollow2D.targetId < 0)) {
-                    obj.cameraFollow2D.targetId = -1;
-                    changed = true;
-                }
-                for (const auto& candidate : sceneObjects) {
-                    if (candidate.id == obj.id) continue;
-                    std::string label = candidate.name + " (" + std::to_string(candidate.id) + ")";
-                    bool selected = (candidate.id == obj.cameraFollow2D.targetId);
-                    if (ImGui::Selectable(label.c_str(), selected)) {
-                        obj.cameraFollow2D.targetId = candidate.id;
-                        changed = true;
-                    }
-                    if (selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            if (ImGui::Button("Use Selected")) {
-                if (selectedObjectId >= 0 && selectedObjectId != obj.id) {
-                    obj.cameraFollow2D.targetId = selectedObjectId;
-                    changed = true;
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Clear Target")) {
-                obj.cameraFollow2D.targetId = -1;
+            if (drawSceneObjectReferenceSlot("Target", "##CameraFollowTarget", obj.cameraFollow2D.targetId, obj.id, "None (Target Object)")) {
                 changed = true;
             }
             if (ImGui::DragFloat2("Offset", &obj.cameraFollow2D.offset.x, 0.1f)) {
@@ -5031,7 +5200,7 @@ void Engine::renderInspectorPanel() {
         ImGui::PopStyleColor();
     }
 
-    if (inspectorComponentKey == "post_fx" && obj.hasPostFX && sharedPostFX) {
+    if (inspectorComponentKey == "post_fx" && obj.hasPostFX) {
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
         bool changed = false;
@@ -5195,6 +5364,162 @@ void Engine::renderInspectorPanel() {
                 ImGui::EndDisabled();
             }
 
+            if (ImGui::CollapsingHeader("Dither", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##Dither", &obj.postFx.ditherEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.ditherEnabled);
+                if (ImGui::SliderFloat("Dither Intensity", &obj.postFx.ditherIntensity, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderInt("Color Bit Depth", &obj.postFx.ditherColorBits, 1, 8, "%d bits")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Dither Size", &obj.postFx.ditherSize, 1.0f, 8.0f, "%.1f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Contrast", &obj.postFx.ditherContrast, -1.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Offset", &obj.postFx.ditherOffset, -1.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Dark Adjustment", &obj.postFx.ditherDarkAdjustment, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Pixelation", &obj.postFx.ditherPixelation, 0.0f, 64.0f, "%.1f px")) {
+                    changed = true;
+                }
+                static const char* ditherPaletteNames[] = {
+                    "Full Color",
+                    "PS1 Warm",
+                    "PS1 Cool",
+                    "Mono",
+                    "Sepia"
+                };
+                int ditherPalette = static_cast<int>(obj.postFx.ditherPalette);
+                if (ImGui::Combo("Palette", &ditherPalette, ditherPaletteNames, IM_ARRAYSIZE(ditherPaletteNames))) {
+                    obj.postFx.ditherPalette = static_cast<PostFXDitherPalette>(ditherPalette);
+                    changed = true;
+                }
+                static const char* ditherPatternNames[] = {
+                    "Classic 4x4",
+                    "Bayer 8x8",
+                    "Bayer 16x16",
+                    "Checker",
+                    "Hybrid PS1"
+                };
+                int ditherPattern = static_cast<int>(obj.postFx.ditherPattern);
+                if (ImGui::Combo("Pattern", &ditherPattern, ditherPatternNames, IM_ARRAYSIZE(ditherPatternNames))) {
+                    obj.postFx.ditherPattern = static_cast<PostFXDitherPattern>(ditherPattern);
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Static", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##Static", &obj.postFx.staticEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.staticEnabled);
+                if (ImGui::SliderFloat("Intensity", &obj.postFx.staticIntensity, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Grain Scale", &obj.postFx.staticGrainScale, 0.25f, 10.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Dark Area Influence", &obj.postFx.staticDarkAreaInfluence, 0.0f, 2.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Speed", &obj.postFx.staticSpeed, 0.0f, 20.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Static Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##StaticDistortion", &obj.postFx.staticDistortionEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.staticDistortionEnabled);
+                if (ImGui::SliderFloat("Horizontal Jitter Amount", &obj.postFx.staticDistortionHorizontalJitterAmount, 0.0f, 0.05f, "%.4f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Line Density", &obj.postFx.staticDistortionLineDensity, 1.0f, 256.0f, "%.1f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Glitch Frequency", &obj.postFx.staticDistortionGlitchFrequency, 0.0f, 20.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Distortion Strength", &obj.postFx.staticDistortionStrength, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Lens Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##LensDistortion", &obj.postFx.lensDistortionEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.lensDistortionEnabled);
+                if (ImGui::SliderFloat("Distortion Amount", &obj.postFx.lensDistortionAmount, -1.0f, 1.0f, "%.3f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Edge Falloff", &obj.postFx.lensDistortionEdgeFalloff, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::DragFloat2("Center Offset", &obj.postFx.lensDistortionCenterOffset.x, 0.001f, -0.25f, 0.25f, "%.3f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("VHS Overlay", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##VHSOverlay", &obj.postFx.vhsOverlayEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.vhsOverlayEnabled);
+                if (ImGui::SliderFloat("Opacity", &obj.postFx.vhsOverlayOpacity, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Scanline Strength", &obj.postFx.vhsOverlayScanlineStrength, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Tape Noise", &obj.postFx.vhsOverlayTapeNoise, 0.0f, 1.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Chroma Bleed", &obj.postFx.vhsOverlayChromaBleed, 0.0f, 0.02f, "%.4f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Bottom Noise Band Height", &obj.postFx.vhsOverlayBottomNoiseBandHeight, 0.0f, 0.5f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Bottom Noise Band Intensity", &obj.postFx.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
+            if (ImGui::CollapsingHeader("Wavy Effect", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::Checkbox("Enabled##WavyEffect", &obj.postFx.wavyEnabled)) {
+                    changed = true;
+                }
+                ImGui::BeginDisabled(!obj.postFx.wavyEnabled);
+                if (ImGui::SliderFloat("Amplitude", &obj.postFx.wavyAmplitude, 0.0f, 0.05f, "%.4f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Frequency", &obj.postFx.wavyFrequency, 0.1f, 80.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::SliderFloat("Speed##Wavy", &obj.postFx.wavySpeed, 0.0f, 20.0f, "%.2f")) {
+                    changed = true;
+                }
+                if (ImGui::Checkbox("Vertical Direction", &obj.postFx.wavyVertical)) {
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            }
+
             if (ImGui::CollapsingHeader("Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
                 static const Renderer::PostProcessStats zeroPostStats{};
                 const Renderer::PostProcessStats& postStats = rendererInitialized
@@ -5213,6 +5538,25 @@ void Engine::renderInspectorPanel() {
                 ImGui::Text("Bloom Blur: %.2f ms", postStats.bloomBlurMs);
                 ImGui::Text("Composite: %.2f ms", postStats.compositeMs);
                 ImGui::Text("Total: %.2f ms", postStats.totalMs);
+                ImGui::Text("Execution Began: %s", postStats.executionBegan ? "Yes" : "No");
+                ImGui::Text("Composite Executed: %s", postStats.compositeExecuted ? "Yes" : "No");
+                ImGui::Text("Raw Scene Tex/FBO: %u / %u", postStats.sourceTextureId, postStats.sourceFramebufferId);
+                ImGui::Text("Bloom Extract Dest: %u / %u",
+                            postStats.bloomExtractDestinationTextureId,
+                            postStats.bloomExtractDestinationFramebufferId);
+                ImGui::Text("Bloom Blur Result: %u / %u",
+                            postStats.bloomBlurTextureId,
+                            postStats.bloomBlurFramebufferId);
+                ImGui::Text("Composite Dest: %u / %u",
+                            postStats.compositeDestinationTextureId,
+                            postStats.compositeDestinationFramebufferId);
+                ImGui::Text("Presented Tex/FBO: %u / %u",
+                            postStats.finalPresentedTextureId,
+                            postStats.finalPresentedFramebufferId);
+                ImGui::Text("Processed Differs: %s", postStats.finalTextureDiffersFromSource ? "Yes" : "No");
+                if (!postStats.skipReason.empty()) {
+                    ImGui::Text("Skip Reason: %s", postStats.skipReason.c_str());
+                }
                 ImGui::TextDisabled("Highest-priority active volume wins; local volumes fade by blend radius.");
                 ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
             }
@@ -6591,9 +6935,18 @@ void Engine::renderInspectorPanel() {
                 std::string inspectorId = "ScriptInspector##" + std::to_string(obj.id) + sc.path;
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
                 ImGui::Indent(8.0f);
-                if (isNativeScriptLanguage(sc.language)) {
+                if (isPlaying || specMode || testMode) {
+                    ImGui::TextDisabled("Custom script preview is paused while the scene is running.");
+                } else if (isNativeScriptLanguage(sc.language)) {
                     fs::path binary;
-                    if (!sc.lastBinaryPath.empty()) {
+                    const bool attachedBinaryDirectly = IsNativeBinaryPath(fs::path(sc.path));
+                    if (!attachedBinaryDirectly && (!sc.lastBinaryVerified || sc.lastBinaryPath.empty())) {
+                        binary = resolveScriptBinary(sc.path);
+                        if (!binary.empty()) {
+                            sc.lastBinaryPath = binary.string();
+                        }
+                    }
+                    if (binary.empty() && !sc.lastBinaryPath.empty()) {
                         fs::path cachedBinary = sc.lastBinaryPath;
                         if (fs::exists(cachedBinary)) {
                             binary = std::move(cachedBinary);
@@ -7633,6 +7986,7 @@ void Engine::renderInspectorPanel() {
 void Engine::renderConsolePanel() {
     const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
     if (!mainViewport) return;
+    const EditorChromeMetrics& chrome = getEditorChromeMetrics(uiChromeScale);
 
     ImVec2 anchorMin = mainViewport->WorkPos;
     ImVec2 anchorMax = ImVec2(mainViewport->WorkPos.x + mainViewport->WorkSize.x,
@@ -7648,8 +8002,8 @@ void Engine::renderConsolePanel() {
     static bool autoScroll = true;
     static float consolePopoutAnim = 0.0f;
 
-    const float margin = 12.0f;
-    const ImVec2 tabSize(96.0f, 30.0f);
+    const float margin = chrome.consoleMargin;
+    const ImVec2 tabSize = chrome.consoleTabSize;
     ImVec2 tabPos(anchorMax.x - tabSize.x - margin, anchorMax.y - tabSize.y - margin);
     tabPos.x = ImMax(anchorMin.x + 4.0f, tabPos.x);
     tabPos.y = ImMax(anchorMin.y + 4.0f, tabPos.y);
@@ -7705,8 +8059,8 @@ void Engine::renderConsolePanel() {
         return;
     }
 
-    ImVec2 miniSize(ImMin(560.0f, anchorMax.x - anchorMin.x - margin * 2.0f),
-                    ImMin(320.0f, anchorMax.y - anchorMin.y - tabSize.y - margin * 3.0f));
+    ImVec2 miniSize(ImMin(chrome.consoleMiniSize.x, anchorMax.x - anchorMin.x - margin * 2.0f),
+                    ImMin(chrome.consoleMiniSize.y, anchorMax.y - anchorMin.y - tabSize.y - margin * 3.0f));
     if (miniSize.x < 260.0f || miniSize.y < 140.0f) {
         return;
     }
@@ -7932,6 +8286,7 @@ void Engine::renderConsolePanel() {
 void Engine::renderLatestErrorBar() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     if (!viewport) return;
+    const EditorChromeMetrics& chrome = getEditorChromeMetrics(uiChromeScale);
 
     const bool hasMessage = !consoleLog.empty();
     const ConsoleEntry* latest = hasMessage ? &consoleLog.back() : nullptr;
@@ -7972,23 +8327,23 @@ void Engine::renderLatestErrorBar() {
 
     auto typeBackgroundColor = [](ConsoleMessageType type) -> ImVec4 {
         switch (type) {
-            case ConsoleMessageType::Warning: return ImVec4(0.30f, 0.22f, 0.08f, 0.93f);
-            case ConsoleMessageType::Error: return ImVec4(0.30f, 0.10f, 0.10f, 0.93f);
-            case ConsoleMessageType::Success: return ImVec4(0.10f, 0.23f, 0.12f, 0.90f);
+            case ConsoleMessageType::Warning: return ImVec4(0.22f, 0.19f, 0.10f, 0.86f);
+            case ConsoleMessageType::Error: return ImVec4(0.22f, 0.12f, 0.12f, 0.86f);
+            case ConsoleMessageType::Success: return ImVec4(0.12f, 0.20f, 0.14f, 0.84f);
             case ConsoleMessageType::Info:
             default:
-                return ImVec4(0.10f, 0.18f, 0.24f, 0.88f);
+                return ImVec4(0.12f, 0.16f, 0.20f, 0.84f);
         }
     };
 
     auto typeBorderColor = [](ConsoleMessageType type) -> ImVec4 {
         switch (type) {
-            case ConsoleMessageType::Warning: return ImVec4(0.85f, 0.65f, 0.20f, 0.75f);
-            case ConsoleMessageType::Error: return ImVec4(0.85f, 0.25f, 0.25f, 0.80f);
-            case ConsoleMessageType::Success: return ImVec4(0.25f, 0.70f, 0.35f, 0.70f);
+            case ConsoleMessageType::Warning: return ImVec4(0.82f, 0.66f, 0.26f, 0.62f);
+            case ConsoleMessageType::Error: return ImVec4(0.86f, 0.32f, 0.32f, 0.64f);
+            case ConsoleMessageType::Success: return ImVec4(0.30f, 0.72f, 0.42f, 0.60f);
             case ConsoleMessageType::Info:
             default:
-                return ImVec4(0.30f, 0.50f, 0.70f, 0.60f);
+                return ImVec4(0.34f, 0.54f, 0.74f, 0.56f);
         }
     };
 
@@ -8019,14 +8374,12 @@ void Engine::renderLatestErrorBar() {
     ImVec2 hostPos = dockHost ? dockHost->Pos : viewport->WorkPos;
     ImVec2 hostSize = dockHost ? dockHost->Size : viewport->WorkSize;
 
-    const float reserveHeight = getEditorBottomStatusReserveHeight();
-    const float barHeight = ImMax(14.0f, reserveHeight - 6.0f);
-    const float marginX = 6.0f;
+    const float reserveHeight = chrome.bottomReserveHeight;
+    const float barHeight = ImMax(16.0f, reserveHeight);
     const float stripTop = hostPos.y + hostSize.y - reserveHeight;
 
-    ImVec2 barMin(hostPos.x + marginX,
-                  stripTop + (reserveHeight - barHeight) * 0.5f);
-    ImVec2 barMax(hostPos.x + hostSize.x - marginX, barMin.y + barHeight);
+    ImVec2 barMin(hostPos.x, stripTop);
+    ImVec2 barMax(hostPos.x + hostSize.x, barMin.y + barHeight);
     if (barMax.x - barMin.x <= 40.0f || barMax.y - barMin.y <= 8.0f) return;
 
     ImDrawList* draw = ImGui::GetForegroundDrawList(const_cast<ImGuiViewport*>(viewport));
@@ -8037,29 +8390,143 @@ void Engine::renderLatestErrorBar() {
     const ImU32 accentU32 = ImGui::ColorConvertFloat4ToU32(accentColor);
     const ImU32 textU32 = ImGui::GetColorU32(ImGuiCol_Text);
 
-    draw->AddRectFilled(barMin, barMax, bgU32, 5.0f);
-    draw->AddRect(barMin, barMax, borderU32, 5.0f, 0, 1.0f);
+    draw->AddRectFilled(barMin, barMax, bgU32, 0.0f);
+    draw->AddLine(ImVec2(barMin.x, barMin.y), ImVec2(barMax.x, barMin.y), borderU32, 1.0f);
 
-    float cursorX = barMin.x + 6.0f;
+    float cursorX = barMin.x + chrome.consoleMargin * 0.5f;
     const float fontY = barMin.y + (barHeight - ImGui::GetFontSize()) * 0.5f;
 
     if (icon && icon->GetID()) {
-        const float iconSize = ImClamp(barHeight - 4.0f, 10.0f, 14.0f);
+        const float iconSize = ImClamp(barHeight - 6.0f, 10.0f, 16.0f);
         const ImVec2 iconMin(cursorX, barMin.y + (barHeight - iconSize) * 0.5f);
         const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
         draw->AddImage((ImTextureID)(intptr_t)icon->GetID(), iconMin, iconMax,
                        ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE);
-        cursorX += iconSize + 5.0f;
+        cursorX += iconSize + 6.0f;
     }
 
     const char* label = latest ? typeLabel(latestType) : "Status";
     std::string labelText = std::string(label) + ":";
     draw->AddText(ImVec2(cursorX, fontY), accentU32, labelText.c_str());
-    cursorX += ImGui::CalcTextSize(labelText.c_str()).x + 6.0f;
+    cursorX += ImGui::CalcTextSize(labelText.c_str()).x + chrome.consoleMargin * 0.5f;
 
-    draw->PushClipRect(ImVec2(cursorX, barMin.y + 1.0f), ImVec2(barMax.x - 6.0f, barMax.y - 1.0f), true);
+    draw->PushClipRect(ImVec2(cursorX, barMin.y + 1.0f), ImVec2(barMax.x - chrome.consoleMargin * 0.5f, barMax.y - 1.0f), true);
     draw->AddText(ImVec2(cursorX, fontY), textU32, bodyText.c_str());
     draw->PopClipRect();
+}
+
+void Engine::renderEditorToast() {
+    if (!editorToast.visible || editorToast.message.empty()) {
+        return;
+    }
+
+    const double now = glfwGetTime();
+    const float appearSeconds = 0.18f;
+    const float disappearSeconds = 0.22f;
+    const double totalLifetime = appearSeconds + editorToast.holdSeconds + disappearSeconds;
+    const double elapsed = now - editorToast.startTime;
+    if (elapsed >= totalLifetime) {
+        editorToast.visible = false;
+        editorToast.message.clear();
+        return;
+    }
+
+    auto smoothstep = [](float t) {
+        t = std::clamp(t, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+
+    const float appearT = smoothstep(static_cast<float>(elapsed / appearSeconds));
+    const float disappearT = smoothstep(static_cast<float>((elapsed - appearSeconds - editorToast.holdSeconds) /
+                                                           disappearSeconds));
+    const float visibility = appearT * (1.0f - disappearT);
+    if (visibility <= 0.001f) {
+        return;
+    }
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (!viewport) {
+        return;
+    }
+
+    auto accentColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(0.98f, 0.82f, 0.32f, 1.0f);
+            case ConsoleMessageType::Error: return ImVec4(0.98f, 0.46f, 0.46f, 1.0f);
+            case ConsoleMessageType::Success: return ImVec4(0.47f, 0.91f, 0.57f, 1.0f);
+            case ConsoleMessageType::Info:
+            default: return ImVec4(0.70f, 0.88f, 1.0f, 1.0f);
+        }
+    };
+
+    auto backgroundColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(0.20f, 0.15f, 0.05f, 0.94f);
+            case ConsoleMessageType::Error: return ImVec4(0.24f, 0.08f, 0.08f, 0.94f);
+            case ConsoleMessageType::Success: return ImVec4(0.08f, 0.19f, 0.10f, 0.94f);
+            case ConsoleMessageType::Info:
+            default: return ImVec4(0.08f, 0.16f, 0.22f, 0.94f);
+        }
+    };
+
+    auto borderColor = [](ConsoleMessageType type) -> ImVec4 {
+        switch (type) {
+            case ConsoleMessageType::Warning: return ImVec4(0.80f, 0.62f, 0.18f, 0.90f);
+            case ConsoleMessageType::Error: return ImVec4(0.84f, 0.24f, 0.24f, 0.92f);
+            case ConsoleMessageType::Success: return ImVec4(0.23f, 0.72f, 0.35f, 0.92f);
+            case ConsoleMessageType::Info:
+            default: return ImVec4(0.30f, 0.55f, 0.76f, 0.90f);
+        }
+    };
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList(const_cast<ImGuiViewport*>(viewport));
+    if (!draw) {
+        return;
+    }
+
+    ImFont* font = ImGui::GetFont();
+    if (!font) {
+        return;
+    }
+
+    const float scale = 0.86f + 0.14f * appearT - 0.12f * disappearT;
+    const float fontSize = ImGui::GetFontSize() * scale;
+    const ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, editorToast.message.c_str());
+    const float padX = 16.0f * scale;
+    const float padY = 10.0f * scale;
+    const float width = textSize.x + padX * 2.0f;
+    const float height = textSize.y + padY * 2.0f;
+    const float slideY = (1.0f - appearT) * 26.0f + disappearT * 22.0f;
+
+    const float centerX = viewport->WorkPos.x + viewport->WorkSize.x * 0.5f;
+    const float bottomY = viewport->WorkPos.y + viewport->WorkSize.y - getEditorBottomStatusReserveHeight(uiChromeScale) - 16.0f;
+    const ImVec2 min(centerX - width * 0.5f, bottomY - height - slideY);
+    const ImVec2 max(min.x + width, min.y + height);
+
+    ImVec4 bg = backgroundColor(editorToast.type);
+    ImVec4 border = borderColor(editorToast.type);
+    ImVec4 accent = accentColor(editorToast.type);
+    bg.w *= visibility;
+    border.w *= visibility;
+    accent.w *= visibility;
+    ImVec4 textColor = ImVec4(0.96f, 0.98f, 1.0f, visibility);
+
+    draw->AddRectFilled(ImVec2(min.x + 1.0f, min.y + 3.0f),
+                        ImVec2(max.x + 1.0f, max.y + 3.0f),
+                        ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.20f * visibility)),
+                        12.0f);
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(bg), 12.0f);
+    draw->AddRect(min, max, ImGui::GetColorU32(border), 12.0f, 0, 1.5f);
+    draw->AddRectFilled(min,
+                        ImVec2(min.x + ImMax(4.0f * scale, 3.0f), max.y),
+                        ImGui::GetColorU32(accent),
+                        12.0f,
+                        ImDrawFlags_RoundCornersLeft);
+    draw->AddText(font,
+                  fontSize,
+                  ImVec2(min.x + padX, min.y + padY),
+                  ImGui::GetColorU32(textColor),
+                  editorToast.message.c_str());
 }
 
 #pragma endregion
@@ -8257,13 +8724,61 @@ void Engine::renderDialogs() {
         }
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        struct CompileWindowIcon {
+            ImTextureID id = static_cast<ImTextureID>(0);
+            bool flipY = false;
+        };
+        const bool hasVulkanUiImages = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
+        auto resolveCompileWindowIcon = [&](const char* iconPath) -> CompileWindowIcon {
+            if (!iconPath || !*iconPath) {
+                return {};
+            }
+            if (rendererInitialized) {
+                if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Point);
+                    icon && icon->GetID()) {
+                    return { static_cast<ImTextureID>(icon->GetID()), true };
+                }
+            }
+            if (hasVulkanUiImages && vulkanRenderer) {
+                ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+                if (icon != static_cast<ImTextureID>(0)) {
+                    return { icon, false };
+                }
+            }
+            return {};
+        };
+        auto getCompileStateIcon = [&](bool success, bool warning) -> CompileWindowIcon {
+            if (!success) {
+                return resolveCompileWindowIcon("Resources/Engine-Root/Compiler window/Script Failed.png");
+            }
+            if (warning) {
+                return resolveCompileWindowIcon("Resources/Engine-Root/Compiler window/Script Warning.png");
+            }
+            return resolveCompileWindowIcon("Resources/Engine-Root/Compiler window/Script Completed.png");
+        };
+
+        const double now = glfwGetTime();
+        const int historyCount = static_cast<int>(compileHistory.size());
+        const int visibleHistoryRows = std::clamp(historyCount, 1, 5);
+        const float historyHeight = static_cast<float>(visibleHistoryRows) * 20.0f + 2.0f;
+        const bool compileFinished = !compileInProgress && compileCompletionStart > 0.0;
+        const float completionBlend = compileFinished
+            ? std::clamp(static_cast<float>((now - compileCompletionStart) / 0.24), 0.0f, 1.0f)
+            : 0.0f;
+        const float jobsBlend = compileInProgress ? 1.0f : std::max(0.0f, 1.0f - completionBlend);
+        const float logBlend = compileFinished ? completionBlend : 0.0f;
+        const float targetWidth = 600.0f;
+        const float targetHeight = 88.0f + historyHeight * jobsBlend + (logBlend > 0.0f ? 88.0f * logBlend + 12.0f : 0.0f);
+        static ImVec2 compilePopupSize = ImVec2(targetWidth, targetHeight);
+        const float popupLerp = std::clamp(io.DeltaTime * 12.0f, 0.0f, 1.0f);
+        compilePopupSize.x = ImLerp(compilePopupSize.x, targetWidth, popupLerp);
+        compilePopupSize.y = ImLerp(compilePopupSize.y, targetHeight, popupLerp);
         ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(520, 260), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Always);
         ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
                                  ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
         bool allowClose = !compileInProgress;
         if (ImGui::BeginPopupModal("Script Compile", allowClose ? &showCompilePopup : nullptr, flags)) {
-            ImGui::TextWrapped("%s", lastCompileStatus.c_str());
             float progress = 1.0f;
             std::string stageText;
             {
@@ -8273,15 +8788,124 @@ void Engine::renderDialogs() {
             }
             const char* stageLabel = stageText.empty() ? "Working..." : stageText.c_str();
             if (progress <= 0.0f) progress = 0.02f;
-            ImGui::ProgressBar(progress, ImVec2(-1, 0), stageLabel);
-            ImGui::Separator();
-            ImGui::BeginChild("CompileLog", ImVec2(0, -40), true);
-            if (lastCompileLog.empty() && compileInProgress) {
-                ImGui::TextUnformatted("Waiting for compiler output...");
-            } else {
-                ImGui::TextUnformatted(lastCompileLog.c_str());
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted(lastCompileStatus.empty() ? "Idle" : lastCompileStatus.c_str());
+            if (!compileCurrentLabel.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", compileCurrentLabel.c_str());
+                if (compileBatchTotal > 0) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%d/%d", std::min(compileBatchCompleted + 1, std::max(1, compileBatchTotal)), std::max(1, compileBatchTotal));
+                }
             }
-            ImGui::EndChild();
+            if (compileInProgress) {
+                ImGui::Spacing();
+                ImGui::BufferingBar("##CompileLoadingBar",
+                                    progress,
+                                    ImVec2(ImGui::GetContentRegionAvail().x, 10.0f),
+                                    ImGui::GetColorU32(ImVec4(0.20f, 0.24f, 0.32f, 1.0f)),
+                                    ImGui::GetColorU32(ImVec4(0.90f, 0.72f, 0.14f, 1.0f)));
+                ImGui::TextDisabled("%s", stageLabel);
+                if (compileInProgress && !compileRequestQueue.empty()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("+%zu queued", compileRequestQueue.size());
+                }
+            } else if (compileFinished) {
+                ImGui::Spacing();
+                ImDrawList* barDraw = ImGui::GetWindowDrawList();
+                ImVec2 barMin = ImGui::GetCursorScreenPos();
+                ImVec2 barMax(barMin.x + ImGui::GetContentRegionAvail().x, barMin.y + 10.0f);
+                barDraw->AddRectFilled(barMin, barMax, ImGui::GetColorU32(ImVec4(0.18f, 0.21f, 0.28f, 1.0f)), 4.0f);
+                barDraw->AddRectFilled(barMin,
+                                       ImVec2(barMin.x + (barMax.x - barMin.x) * completionBlend, barMax.y),
+                                       ImGui::GetColorU32(ImVec4(0.28f, 0.72f, 0.40f, 1.0f)),
+                                       4.0f);
+                ImGui::Dummy(ImVec2(0.0f, 12.0f));
+                ImGui::TextDisabled("%s", stageLabel);
+            }
+
+            if (compileInProgress || jobsBlend > 0.01f) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Jobs");
+                ImGui::BeginChild("CompileHistoryList", ImVec2(0.0f, std::max(20.0f, historyHeight * jobsBlend)), false);
+                const float rowAlpha = compileInProgress ? 1.0f : jobsBlend;
+                if (historyCount == 0 && !compileInProgress) {
+                    ImGui::TextDisabled("No compile results yet.");
+                } else {
+                    if (compileInProgress) {
+                        ImVec2 rowMin = ImGui::GetCursorScreenPos();
+                        ImVec2 rowSize(ImGui::GetContentRegionAvail().x, 18.0f);
+                        ImGui::InvisibleButton("##CompileActiveRow", rowSize);
+                        ImDrawList* rowDraw = ImGui::GetWindowDrawList();
+                        const CompileWindowIcon activeIcon = resolveCompileWindowIcon("Resources/Engine-Root/Compiler window/Script Warning.png");
+                        if (activeIcon.id != static_cast<ImTextureID>(0)) {
+                            const ImVec2 iconMin(rowMin.x + 2.0f, rowMin.y + 4.0f);
+                            const ImVec2 iconMax(iconMin.x + 10.0f, iconMin.y + 10.0f);
+                            const ImVec2 uvMin = activeIcon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                            const ImVec2 uvMax = activeIcon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                            rowDraw->AddImage(activeIcon.id, iconMin, iconMax, uvMin, uvMax, IM_COL32(255, 255, 255, static_cast<int>(200.0f * rowAlpha)));
+                        }
+                        rowDraw->AddText(ImVec2(rowMin.x + 16.0f, rowMin.y + 1.0f),
+                                         ImGui::GetColorU32(ImVec4(0.95f, 0.97f, 1.0f, rowAlpha)),
+                                         compileCurrentLabel.empty() ? "Current compile" : compileCurrentLabel.c_str());
+                        const std::string runningStatus = lastCompileStatus.empty() ? "Working..." : lastCompileStatus;
+                        const ImVec2 statusSize = ImGui::CalcTextSize(runningStatus.c_str());
+                        rowDraw->AddText(ImVec2(rowMin.x + rowSize.x - statusSize.x - 4.0f, rowMin.y + 1.0f),
+                                         ImGui::GetColorU32(ImVec4(0.78f, 0.90f, 1.0f, rowAlpha)),
+                                         runningStatus.c_str());
+                        rowDraw->AddLine(ImVec2(rowMin.x, rowMin.y + rowSize.y + 1.0f),
+                                         ImVec2(rowMin.x + rowSize.x, rowMin.y + rowSize.y + 1.0f),
+                                         ImGui::GetColorU32(ImVec4(0.24f, 0.27f, 0.34f, 0.80f * rowAlpha)));
+                    }
+
+                    for (size_t index = 0; index < compileHistory.size(); ++index) {
+                        const auto& item = compileHistory[index];
+                        const float fade = std::clamp(static_cast<float>((now - item.completedAt) / 0.22), 0.0f, 1.0f) * rowAlpha;
+                        const float rowHeight = 18.0f;
+                        ImVec2 rowMin = ImGui::GetCursorScreenPos();
+                        ImVec2 rowSize(ImGui::GetContentRegionAvail().x, rowHeight);
+                        std::string rowId = "##CompileHistoryRow" + std::to_string(index);
+                        ImGui::InvisibleButton(rowId.c_str(), rowSize);
+                        ImDrawList* rowDraw = ImGui::GetWindowDrawList();
+                        const CompileWindowIcon icon = getCompileStateIcon(item.success, item.warning);
+                        if (icon.id != static_cast<ImTextureID>(0)) {
+                            const ImVec2 iconMin(rowMin.x + 2.0f, rowMin.y + 4.0f);
+                            const ImVec2 iconMax(iconMin.x + 10.0f, iconMin.y + 10.0f);
+                            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                            rowDraw->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax, IM_COL32(255, 255, 255, static_cast<int>(fade * 255.0f)));
+                        }
+
+                        const ImU32 titleColor = ImGui::GetColorU32(ImVec4(0.96f, 0.98f, 1.0f, fade));
+                        rowDraw->AddText(ImVec2(rowMin.x + 16.0f, rowMin.y + 1.0f),
+                                         titleColor,
+                                         item.displayLabel.c_str());
+
+                        const ImVec2 statusSize = ImGui::CalcTextSize(item.statusLabel.c_str());
+                        const ImVec2 statusPos(rowMin.x + rowSize.x - statusSize.x - 4.0f, rowMin.y + 1.0f);
+                        rowDraw->AddText(statusPos,
+                                         item.success
+                                             ? ImGui::GetColorU32(ImVec4(0.60f, 0.95f, 0.72f, fade))
+                                             : ImGui::GetColorU32(ImVec4(0.98f, 0.62f, 0.62f, fade)),
+                                         item.statusLabel.c_str());
+
+                        rowDraw->AddLine(ImVec2(rowMin.x, rowMin.y + rowSize.y + 1.0f),
+                                         ImVec2(rowMin.x + rowSize.x, rowMin.y + rowSize.y + 1.0f),
+                                         ImGui::GetColorU32(ImVec4(0.24f, 0.27f, 0.34f, 0.80f * fade)));
+                    }
+                }
+                ImGui::EndChild();
+            }
+
+            if (compileFinished && !lastCompileLog.empty()) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Log");
+                ImGui::BeginChild("CompileLog", ImVec2(0.0f, 88.0f), true);
+                ImGui::TextUnformatted(lastCompileLog.c_str());
+                ImGui::EndChild();
+            }
+
             ImGui::Spacing();
             if (allowClose && ImGui::Button("Close", ImVec2(80, 0))) {
                 showCompilePopup = false;

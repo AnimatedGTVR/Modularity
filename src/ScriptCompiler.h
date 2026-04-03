@@ -3,7 +3,7 @@
 #include "Common.h"
 
 struct ScriptBuildConfig {
-    std::string cppStandard = "c++20";
+    std::string cppStandard = "c++26";
     fs::path scriptsDir = "Scripts";
     fs::path outDir = "Cache/ScriptBin";
     std::vector<fs::path> includeDirs;

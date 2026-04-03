@@ -1,4 +1,5 @@
 #include "Rendering.h"
+#include "Profiler.h"
 #include "Camera.h"
 #include "ModelLoader.h"
 #include <algorithm>
@@ -135,6 +136,42 @@ PostFXSettings MakeNeutralPostFXSettings() {
     settings.ambientOcclusionEnabled = false;
     settings.aoRadius = 0.0035f;
     settings.aoStrength = 0.0f;
+    settings.ditherEnabled = false;
+    settings.ditherIntensity = 0.0f;
+    settings.ditherColorBits = 8;
+    settings.ditherDarkAdjustment = 0.0f;
+    settings.ditherPixelation = 0.0f;
+    settings.ditherSize = 1.0f;
+    settings.ditherContrast = 0.35f;
+    settings.ditherOffset = 0.0f;
+    settings.ditherPalette = PostFXDitherPalette::FullColor;
+    settings.ditherPattern = PostFXDitherPattern::HybridPS1;
+    settings.staticEnabled = false;
+    settings.staticIntensity = 0.0f;
+    settings.staticGrainScale = 1.0f;
+    settings.staticDarkAreaInfluence = 0.0f;
+    settings.staticSpeed = 0.0f;
+    settings.staticDistortionEnabled = false;
+    settings.staticDistortionHorizontalJitterAmount = 0.0f;
+    settings.staticDistortionLineDensity = 128.0f;
+    settings.staticDistortionGlitchFrequency = 0.0f;
+    settings.staticDistortionStrength = 0.0f;
+    settings.lensDistortionEnabled = false;
+    settings.lensDistortionAmount = 0.0f;
+    settings.lensDistortionEdgeFalloff = 0.75f;
+    settings.lensDistortionCenterOffset = glm::vec2(0.0f);
+    settings.vhsOverlayEnabled = false;
+    settings.vhsOverlayOpacity = 0.0f;
+    settings.vhsOverlayScanlineStrength = 0.0f;
+    settings.vhsOverlayTapeNoise = 0.0f;
+    settings.vhsOverlayChromaBleed = 0.0f;
+    settings.vhsOverlayBottomNoiseBandHeight = 0.0f;
+    settings.vhsOverlayBottomNoiseBandIntensity = 0.0f;
+    settings.wavyEnabled = false;
+    settings.wavyAmplitude = 0.0f;
+    settings.wavyFrequency = 16.0f;
+    settings.wavySpeed = 0.0f;
+    settings.wavyVertical = false;
     return settings;
 }
 
@@ -173,7 +210,24 @@ int CountEnabledPostEffects(const PostFXSettings& settings) {
     count += settings.chromaticAberrationEnabled ? 1 : 0;
     count += settings.sharpenEnabled ? 1 : 0;
     count += settings.ambientOcclusionEnabled ? 1 : 0;
+    count += settings.ditherEnabled ? 1 : 0;
+    count += settings.staticEnabled ? 1 : 0;
+    count += settings.staticDistortionEnabled ? 1 : 0;
+    count += settings.lensDistortionEnabled ? 1 : 0;
+    count += settings.vhsOverlayEnabled ? 1 : 0;
+    count += settings.wavyEnabled ? 1 : 0;
     return count;
+}
+
+bool HasMeaningfulToneMapping(const PostFXSettings& settings) {
+    constexpr float kWhitePointDefault = 4.0f;
+    constexpr float kGammaDefault = 2.2f;
+    if (settings.hdrEnabled) {
+        return true;
+    }
+    return settings.toneMapper != PostFXToneMapper::ACES ||
+           std::fabs(settings.whitePoint - kWhitePointDefault) > 0.0001f ||
+           std::fabs(settings.gamma - kGammaDefault) > 0.0001f;
 }
 
 glm::mat4 BuildCameraProjection(const Camera& camera, int width, int height,
@@ -1940,6 +1994,90 @@ void Renderer::clearTarget(RenderTarget& target) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+unsigned int Renderer::findFramebufferForTexture(unsigned int texture) const {
+    if (texture == 0) return 0;
+    if (texture == viewportTexture) return framebuffer;
+
+    auto findTargetMatch = [texture](const RenderTarget& target) -> unsigned int {
+        return (target.texture == texture) ? target.fbo : 0u;
+    };
+
+    if (unsigned int match = findTargetMatch(previewTarget)) return match;
+    if (unsigned int match = findTargetMatch(postTarget)) return match;
+    if (unsigned int match = findTargetMatch(previewPostTarget)) return match;
+    if (unsigned int match = findTargetMatch(historyTarget)) return match;
+    if (unsigned int match = findTargetMatch(bloomTargetA)) return match;
+    if (unsigned int match = findTargetMatch(bloomTargetB)) return match;
+    if (unsigned int match = findTargetMatch(selectionMaskTarget)) return match;
+
+    for (const auto& [id, target] : extraPreviewTargets) {
+        (void)id;
+        if (unsigned int match = findTargetMatch(target)) return match;
+    }
+    for (const auto& [id, target] : mirrorTargets) {
+        (void)id;
+        if (unsigned int match = findTargetMatch(target)) return match;
+    }
+    for (const auto& [id, target] : uiTargets) {
+        (void)id;
+        if (unsigned int match = findTargetMatch(target)) return match;
+    }
+
+    return 0;
+}
+
+void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) const {
+    if (stats.resolvedVolumeId < 0 && stats.sourceTextureId == 0 && stats.skipReason.empty()) {
+        return;
+    }
+
+    const char* route = allowHistory ? "viewport" : "preview";
+    if (!stats.executionBegan) {
+        std::cerr << "[PostFX][" << route << "] skipped"
+                  << " reason=" << (stats.skipReason.empty() ? "unknown" : stats.skipReason)
+                  << " volume=" << (stats.resolvedVolumeName.empty() ? "<none>" : stats.resolvedVolumeName)
+                  << " srcTex=" << stats.sourceTextureId
+                  << " srcFbo=" << stats.sourceFramebufferId
+                  << " finalTex=" << stats.finalPresentedTextureId
+                  << " differs=" << (stats.finalTextureDiffersFromSource ? "yes" : "no")
+                  << "\n";
+        return;
+    }
+
+    std::cerr << "[PostFX][" << route << "] begin"
+              << " volume=" << (stats.resolvedVolumeName.empty() ? "<none>" : stats.resolvedVolumeName)
+              << " blend=" << stats.resolvedBlend
+              << " effects=" << stats.activeEffectCount
+              << " srcTex=" << stats.sourceTextureId
+              << " srcFbo=" << stats.sourceFramebufferId
+              << "\n";
+
+    if (stats.bloomExtractDestinationTextureId != 0) {
+        std::cerr << "[PostFX][" << route << "] bloom-extract"
+                  << " dstTex=" << stats.bloomExtractDestinationTextureId
+                  << " dstFbo=" << stats.bloomExtractDestinationFramebufferId
+                  << "\n";
+    }
+    if (stats.bloomBlurTextureId != 0) {
+        std::cerr << "[PostFX][" << route << "] bloom-blur"
+                  << " finalTex=" << stats.bloomBlurTextureId
+                  << " finalFbo=" << stats.bloomBlurFramebufferId
+                  << "\n";
+    }
+    if (stats.compositeExecuted) {
+        std::cerr << "[PostFX][" << route << "] composite"
+                  << " dstTex=" << stats.compositeDestinationTextureId
+                  << " dstFbo=" << stats.compositeDestinationFramebufferId
+                  << "\n";
+    }
+
+    std::cerr << "[PostFX][" << route << "] present"
+              << " finalTex=" << stats.finalPresentedTextureId
+              << " finalFbo=" << stats.finalPresentedFramebufferId
+              << " differs=" << (stats.finalTextureDiffersFromSource ? "yes" : "no")
+              << "\n";
+}
+
 void Renderer::resize(int w, int h) {
     if (w <= 0 || h <= 0 || (w == currentWidth && h == currentHeight)) return;
     
@@ -2286,6 +2424,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         return light.castShadows && light.type != 0 && light.sourceId >= 0;
     });
     if (shadowDepthShader && shadowDepthShader->ID != 0 && hasShadowCasters) {
+        MODU_PROFILE_SCOPE("Shadow Pass", ProfilerSampleCategory::RenderDetail);
         GLint prevViewport[4] = {0, 0, width, height};
         GLint prevFbo = 0;
         GLboolean blendWasEnabled = glIsEnabled(GL_BLEND);
@@ -3013,6 +3152,63 @@ Renderer::ResolvedPostFX Renderer::gatherPostFX(const Camera& camera, const std:
         settings.aoRadius = glm::mix(settings.aoRadius, resolvedVolume->postFx.aoRadius, weight);
         settings.aoStrength = glm::mix(0.0f, resolvedVolume->postFx.aoStrength, weight);
     }
+    if (resolvedVolume->postFx.ditherEnabled) {
+        settings.ditherEnabled = true;
+        settings.ditherIntensity = glm::mix(0.0f, resolvedVolume->postFx.ditherIntensity, weight);
+        settings.ditherColorBits = resolvedVolume->postFx.ditherColorBits;
+        settings.ditherDarkAdjustment = glm::mix(0.0f, resolvedVolume->postFx.ditherDarkAdjustment, weight);
+        settings.ditherPixelation = glm::mix(0.0f, resolvedVolume->postFx.ditherPixelation, weight);
+        settings.ditherSize = glm::mix(1.0f, resolvedVolume->postFx.ditherSize, weight);
+        settings.ditherContrast = glm::mix(0.0f, resolvedVolume->postFx.ditherContrast, weight);
+        settings.ditherOffset = glm::mix(0.0f, resolvedVolume->postFx.ditherOffset, weight);
+        settings.ditherPalette = resolvedVolume->postFx.ditherPalette;
+        settings.ditherPattern = resolvedVolume->postFx.ditherPattern;
+    }
+    if (resolvedVolume->postFx.staticEnabled) {
+        settings.staticEnabled = true;
+        settings.staticIntensity = glm::mix(0.0f, resolvedVolume->postFx.staticIntensity, weight);
+        settings.staticGrainScale = glm::mix(settings.staticGrainScale, resolvedVolume->postFx.staticGrainScale, weight);
+        settings.staticDarkAreaInfluence = glm::mix(0.0f, resolvedVolume->postFx.staticDarkAreaInfluence, weight);
+        settings.staticSpeed = glm::mix(0.0f, resolvedVolume->postFx.staticSpeed, weight);
+    }
+    if (resolvedVolume->postFx.staticDistortionEnabled) {
+        settings.staticDistortionEnabled = true;
+        settings.staticDistortionHorizontalJitterAmount =
+            glm::mix(0.0f, resolvedVolume->postFx.staticDistortionHorizontalJitterAmount, weight);
+        settings.staticDistortionLineDensity =
+            glm::mix(settings.staticDistortionLineDensity, resolvedVolume->postFx.staticDistortionLineDensity, weight);
+        settings.staticDistortionGlitchFrequency =
+            glm::mix(0.0f, resolvedVolume->postFx.staticDistortionGlitchFrequency, weight);
+        settings.staticDistortionStrength =
+            glm::mix(0.0f, resolvedVolume->postFx.staticDistortionStrength, weight);
+    }
+    if (resolvedVolume->postFx.lensDistortionEnabled) {
+        settings.lensDistortionEnabled = true;
+        settings.lensDistortionAmount = glm::mix(0.0f, resolvedVolume->postFx.lensDistortionAmount, weight);
+        settings.lensDistortionEdgeFalloff =
+            glm::mix(settings.lensDistortionEdgeFalloff, resolvedVolume->postFx.lensDistortionEdgeFalloff, weight);
+        settings.lensDistortionCenterOffset =
+            glm::mix(settings.lensDistortionCenterOffset, resolvedVolume->postFx.lensDistortionCenterOffset, weight);
+    }
+    if (resolvedVolume->postFx.vhsOverlayEnabled) {
+        settings.vhsOverlayEnabled = true;
+        settings.vhsOverlayOpacity = glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayOpacity, weight);
+        settings.vhsOverlayScanlineStrength =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayScanlineStrength, weight);
+        settings.vhsOverlayTapeNoise = glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayTapeNoise, weight);
+        settings.vhsOverlayChromaBleed = glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayChromaBleed, weight);
+        settings.vhsOverlayBottomNoiseBandHeight =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBottomNoiseBandHeight, weight);
+        settings.vhsOverlayBottomNoiseBandIntensity =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBottomNoiseBandIntensity, weight);
+    }
+    if (resolvedVolume->postFx.wavyEnabled) {
+        settings.wavyEnabled = true;
+        settings.wavyAmplitude = glm::mix(0.0f, resolvedVolume->postFx.wavyAmplitude, weight);
+        settings.wavyFrequency = glm::mix(settings.wavyFrequency, resolvedVolume->postFx.wavyFrequency, weight);
+        settings.wavySpeed = glm::mix(0.0f, resolvedVolume->postFx.wavySpeed, weight);
+        settings.wavyVertical = resolvedVolume->postFx.wavyVertical;
+    }
 
     result.settings = settings;
     result.resolvedVolumeId = resolvedVolume->id;
@@ -3021,17 +3217,38 @@ Renderer::ResolvedPostFX Renderer::gatherPostFX(const Camera& camera, const std:
     return result;
 }
 
+PostFXSettings Renderer::resolvePostFXSettings(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const {
+    return gatherPostFX(camera, sceneObjects).settings;
+}
+
+unsigned int Renderer::postProcessTexture(const Camera& camera,
+                                          const std::vector<SceneObject>& sceneObjects,
+                                          unsigned int sourceTexture,
+                                          int width,
+                                          int height,
+                                          bool allowHistory) {
+    return applyPostProcessing(camera, sceneObjects, sourceTexture, width, height, allowHistory);
+}
+
 unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory) {
+    MODU_PROFILE_SCOPE("Post Processing", ProfilerSampleCategory::RenderDetail);
     using Clock = std::chrono::steady_clock;
 
     PostProcessStats& postStats = allowHistory ? viewportPostStats : previewPostStats;
     postStats = {};
+    postStats.sourceTextureId = sourceTexture;
+    postStats.sourceFramebufferId = findFramebufferForTexture(sourceTexture);
 
     const auto totalStart = Clock::now();
-    const auto resolveStart = Clock::now();
-    ResolvedPostFX resolved = gatherPostFX(camera, sceneObjects);
-    PostFXSettings settings = resolved.settings;
-    postStats.resolveMs = std::chrono::duration<float, std::milli>(Clock::now() - resolveStart).count();
+    ResolvedPostFX resolved;
+    PostFXSettings settings;
+    {
+        MODU_PROFILE_SCOPE("PostFX Resolve", ProfilerSampleCategory::RenderDetail);
+        const auto resolveStart = Clock::now();
+        resolved = gatherPostFX(camera, sceneObjects);
+        settings = resolved.settings;
+        postStats.resolveMs = std::chrono::duration<float, std::milli>(Clock::now() - resolveStart).count();
+    }
     postStats.activeVolumeCount = resolved.activeVolumeCount;
     postStats.resolvedVolumeId = resolved.resolvedVolumeId;
     postStats.resolvedVolumeName = resolved.resolvedVolumeName;
@@ -3040,10 +3257,13 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     postStats.hdrEnabled = settings.hdrEnabled;
 
     bool wantsEffects = settings.enabled &&
-        (settings.hdrEnabled || settings.bloomEnabled || settings.colorAdjustEnabled ||
+        (HasMeaningfulToneMapping(settings) || settings.bloomEnabled || settings.colorAdjustEnabled ||
          settings.motionBlurEnabled || settings.vignetteEnabled ||
          settings.chromaticAberrationEnabled || settings.sharpenEnabled ||
-         settings.ambientOcclusionEnabled);
+         settings.ambientOcclusionEnabled || settings.ditherEnabled ||
+         settings.staticEnabled || settings.staticDistortionEnabled ||
+         settings.lensDistortionEnabled || settings.vhsOverlayEnabled ||
+         settings.wavyEnabled);
 
     if (wantsEffects) {
         GLint polygonMode[2] = { GL_FILL, GL_FILL };
@@ -3055,15 +3275,31 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
             wantsEffects = false;
             postStats.activeEffectCount = 0;
             postStats.hdrEnabled = false;
+            postStats.skipReason = "wireframe_or_line_mode";
         }
     }
 
     if (!wantsEffects || !postShader || width <= 0 || height <= 0 || sourceTexture == 0) {
+        if (postStats.skipReason.empty()) {
+            if (!wantsEffects) {
+                postStats.skipReason = "no_visible_effects";
+            } else if (!postShader) {
+                postStats.skipReason = "post_shader_unavailable";
+            } else if (width <= 0 || height <= 0) {
+                postStats.skipReason = "invalid_target_size";
+            } else {
+                postStats.skipReason = "missing_source_texture";
+            }
+        }
         postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
+        postStats.finalPresentedTextureId = sourceTexture;
+        postStats.finalPresentedFramebufferId = postStats.sourceFramebufferId;
+        postStats.finalTextureDiffersFromSource = false;
         if (allowHistory) {
             displayTexture = sourceTexture;
             clearHistory();
         }
+        logPostFxDebug(postStats, allowHistory);
         return sourceTexture;
     }
 
@@ -3075,58 +3311,81 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     ensureRenderTarget(bloomTargetA, width, height, false, true);
     ensureRenderTarget(bloomTargetB, width, height, false, true);
     if (target.fbo == 0 || target.texture == 0) {
+        postStats.skipReason = "post_target_unavailable";
         postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
+        postStats.finalPresentedTextureId = sourceTexture;
+        postStats.finalPresentedFramebufferId = postStats.sourceFramebufferId;
+        postStats.finalTextureDiffersFromSource = false;
         if (allowHistory) {
             displayTexture = sourceTexture;
             clearHistory();
         }
+        logPostFxDebug(postStats, allowHistory);
         return sourceTexture;
     }
 
+    postStats.executionBegan = true;
     unsigned int bloomTex = 0;
     if (settings.bloomEnabled && brightShader && blurShader) {
-        const auto bloomExtractStart = Clock::now();
-        glDisable(GL_DEPTH_TEST);
-        brightShader->use();
-        brightShader->setFloat("threshold", settings.bloomThreshold);
-        brightShader->setFloat("softKnee", settings.bloomSoftKnee);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sourceTexture);
-        glBindFramebuffer(GL_FRAMEBUFFER, bloomTargetA.fbo);
-        glViewport(0, 0, width, height);
-        glClear(GL_COLOR_BUFFER_BIT);
-        drawFullscreenQuad();
-        postStats.bloomExtractMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomExtractStart).count();
-
-        const auto bloomBlurStart = Clock::now();
-        blurShader->use();
-        float sigma = glm::max(settings.bloomRadius * 2.5f, 0.1f);
-        int radius = static_cast<int>(glm::clamp(settings.bloomRadius * 4.0f, 2.0f, 12.0f));
-        blurShader->setFloat("sigma", sigma);
-        blurShader->setInt("radius", radius);
-
-        bool horizontal = true;
-        unsigned int pingTex = bloomTargetA.texture;
-        RenderTarget* writeTarget = &bloomTargetB;
-        for (int i = 0; i < 4; ++i) {
-            blurShader->setBool("horizontal", horizontal);
-            blurShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
+        {
+            MODU_PROFILE_SCOPE("Bloom Extract", ProfilerSampleCategory::RenderDetail);
+            const auto bloomExtractStart = Clock::now();
+            glDisable(GL_DEPTH_TEST);
+            brightShader->use();
+            brightShader->setFloat("threshold", settings.bloomThreshold);
+            brightShader->setFloat("softKnee", settings.bloomSoftKnee);
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, pingTex);
-            glBindFramebuffer(GL_FRAMEBUFFER, writeTarget->fbo);
+            glBindTexture(GL_TEXTURE_2D, sourceTexture);
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomTargetA.fbo);
             glViewport(0, 0, width, height);
             glClear(GL_COLOR_BUFFER_BIT);
             drawFullscreenQuad();
+            postStats.bloomExtractDestinationTextureId = bloomTargetA.texture;
+            postStats.bloomExtractDestinationFramebufferId = bloomTargetA.fbo;
+            postStats.bloomExtractMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomExtractStart).count();
+        }
 
-            // swap
-            pingTex = writeTarget->texture;
-            writeTarget = (writeTarget == &bloomTargetA) ? &bloomTargetB : &bloomTargetA;
-            horizontal = !horizontal;
+        unsigned int pingTex = bloomTargetA.texture;
+        {
+            MODU_PROFILE_SCOPE("Bloom Blur", ProfilerSampleCategory::RenderDetail);
+            const auto bloomBlurStart = Clock::now();
+            blurShader->use();
+            float sigma = glm::max(settings.bloomRadius * 2.5f, 0.1f);
+            int radius = static_cast<int>(glm::clamp(settings.bloomRadius * 4.0f, 2.0f, 12.0f));
+            blurShader->setFloat("sigma", sigma);
+            blurShader->setInt("radius", radius);
+
+            bool horizontal = true;
+            RenderTarget* writeTarget = &bloomTargetB;
+            for (int i = 0; i < 4; ++i) {
+                const unsigned int readTex = pingTex;
+                blurShader->setBool("horizontal", horizontal);
+                blurShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, pingTex);
+                glBindFramebuffer(GL_FRAMEBUFFER, writeTarget->fbo);
+                glViewport(0, 0, width, height);
+                glClear(GL_COLOR_BUFFER_BIT);
+                drawFullscreenQuad();
+                std::cerr << "[PostFX][" << (allowHistory ? "viewport" : "preview") << "] bloom-blur-pass"
+                          << " index=" << i
+                          << " srcTex=" << readTex
+                          << " srcFbo=" << findFramebufferForTexture(readTex)
+                          << " dstTex=" << writeTarget->texture
+                          << " dstFbo=" << writeTarget->fbo
+                          << "\n";
+
+                pingTex = writeTarget->texture;
+                writeTarget = (writeTarget == &bloomTargetA) ? &bloomTargetB : &bloomTargetA;
+                horizontal = !horizontal;
+            }
+            postStats.bloomBlurMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomBlurStart).count();
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glEnable(GL_DEPTH_TEST);
         bloomTex = pingTex;
-        postStats.bloomBlurMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomBlurStart).count();
+        postStats.bloomBlurTextureId = bloomTex;
+        postStats.bloomBlurFramebufferId = findFramebufferForTexture(bloomTex);
         postStats.bloomUsed = true;
     } else {
         bloomTex = 0;
@@ -3137,52 +3396,100 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     const bool hasHistory = allowHistory && historyValid;
     postStats.motionBlurUsed = settings.motionBlurEnabled && hasHistory;
 
-    const auto compositeStart = Clock::now();
-    glDisable(GL_DEPTH_TEST);
-    postShader->use();
-    postShader->setBool("enableHDR", settings.hdrEnabled);
-    postShader->setInt("toneMapper", static_cast<int>(settings.toneMapper));
-    postShader->setFloat("whitePoint", settings.whitePoint);
-    postShader->setFloat("gamma", settings.gamma);
-    postShader->setBool("enableBloom", settings.bloomEnabled && bloomTex != 0);
-    postShader->setFloat("bloomIntensity", settings.bloomIntensity);
-    postShader->setBool("enableColorAdjust", settings.colorAdjustEnabled);
-    postShader->setFloat("exposure", settings.exposure);
-    postShader->setFloat("contrast", settings.contrast);
-    postShader->setFloat("saturation", settings.saturation);
-    postShader->setVec3("colorFilter", settings.colorFilter);
-    postShader->setBool("enableMotionBlur", settings.motionBlurEnabled);
-    postShader->setFloat("motionBlurStrength", settings.motionBlurStrength);
-    postShader->setFloat("motionBlurThreshold", settings.motionBlurThreshold);
-    postShader->setFloat("motionBlurClamp", settings.motionBlurClamp);
-    postShader->setBool("hasHistory", hasHistory);
-    postShader->setBool("enableVignette", settings.vignetteEnabled);
-    postShader->setFloat("vignetteIntensity", settings.vignetteIntensity);
-    postShader->setFloat("vignetteSmoothness", settings.vignetteSmoothness);
-    postShader->setBool("enableChromatic", settings.chromaticAberrationEnabled);
-    postShader->setFloat("chromaticAmount", settings.chromaticAmount);
-    postShader->setBool("enableSharpen", settings.sharpenEnabled);
-    postShader->setFloat("sharpenStrength", settings.sharpenStrength);
-    postShader->setBool("enableAO", settings.ambientOcclusionEnabled);
-    postShader->setFloat("aoRadius", settings.aoRadius);
-    postShader->setFloat("aoStrength", settings.aoStrength);
-    postShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
+    {
+        MODU_PROFILE_SCOPE("PostFX Composite", ProfilerSampleCategory::RenderDetail);
+        const auto compositeStart = Clock::now();
+        glDisable(GL_DEPTH_TEST);
+        postShader->use();
+        postShader->setBool("enableHDR", settings.hdrEnabled);
+        postShader->setInt("toneMapper", static_cast<int>(settings.toneMapper));
+        postShader->setFloat("whitePoint", settings.whitePoint);
+        postShader->setFloat("gamma", settings.gamma);
+        postShader->setBool("enableBloom", settings.bloomEnabled && bloomTex != 0);
+        postShader->setFloat("bloomIntensity", settings.bloomIntensity);
+        postShader->setBool("enableColorAdjust", settings.colorAdjustEnabled);
+        postShader->setFloat("exposure", settings.exposure);
+        postShader->setFloat("contrast", settings.contrast);
+        postShader->setFloat("saturation", settings.saturation);
+        postShader->setVec3("colorFilter", settings.colorFilter);
+        postShader->setBool("enableMotionBlur", settings.motionBlurEnabled);
+        postShader->setFloat("motionBlurStrength", settings.motionBlurStrength);
+        postShader->setFloat("motionBlurThreshold", settings.motionBlurThreshold);
+        postShader->setFloat("motionBlurClamp", settings.motionBlurClamp);
+        postShader->setBool("hasHistory", hasHistory);
+        postShader->setBool("enableVignette", settings.vignetteEnabled);
+        postShader->setFloat("vignetteIntensity", settings.vignetteIntensity);
+        postShader->setFloat("vignetteSmoothness", settings.vignetteSmoothness);
+        postShader->setBool("enableChromatic", settings.chromaticAberrationEnabled);
+        postShader->setFloat("chromaticAmount", settings.chromaticAmount);
+        postShader->setBool("enableSharpen", settings.sharpenEnabled);
+        postShader->setFloat("sharpenStrength", settings.sharpenStrength);
+        postShader->setBool("enableAO", settings.ambientOcclusionEnabled);
+        postShader->setFloat("aoRadius", settings.aoRadius);
+        postShader->setFloat("aoStrength", settings.aoStrength);
+        postShader->setBool("enableDither", settings.ditherEnabled);
+        postShader->setFloat("ditherIntensity", settings.ditherIntensity);
+        postShader->setInt("ditherColorBits", std::clamp(settings.ditherColorBits, 1, 8));
+        postShader->setFloat("ditherDarkAdjustment", settings.ditherDarkAdjustment);
+        postShader->setFloat("ditherPixelation", settings.ditherPixelation);
+        postShader->setFloat("ditherSize", std::clamp(settings.ditherSize, 1.0f, 8.0f));
+        postShader->setFloat("ditherContrast", std::clamp(settings.ditherContrast, -1.0f, 1.0f));
+        postShader->setFloat("ditherOffset", std::clamp(settings.ditherOffset, -1.0f, 1.0f));
+        postShader->setInt("ditherPalette", static_cast<int>(settings.ditherPalette));
+        postShader->setInt("ditherPattern", static_cast<int>(settings.ditherPattern));
+        postShader->setBool("enableStatic", settings.staticEnabled);
+        postShader->setFloat("staticIntensity", settings.staticIntensity);
+        postShader->setFloat("staticGrainScale", std::max(0.01f, settings.staticGrainScale));
+        postShader->setFloat("staticDarkAreaInfluence", std::clamp(settings.staticDarkAreaInfluence, 0.0f, 4.0f));
+        postShader->setFloat("staticSpeed", settings.staticSpeed);
+        postShader->setBool("enableStaticDistortion", settings.staticDistortionEnabled);
+        postShader->setFloat("staticDistortionHorizontalJitterAmount",
+                             std::max(0.0f, settings.staticDistortionHorizontalJitterAmount));
+        postShader->setFloat("staticDistortionLineDensity",
+                             std::max(1.0f, settings.staticDistortionLineDensity));
+        postShader->setFloat("staticDistortionGlitchFrequency", std::max(0.0f, settings.staticDistortionGlitchFrequency));
+        postShader->setFloat("staticDistortionStrength", std::max(0.0f, settings.staticDistortionStrength));
+        postShader->setBool("enableLensDistortion", settings.lensDistortionEnabled);
+        postShader->setFloat("lensDistortionAmount", settings.lensDistortionAmount);
+        postShader->setFloat("lensDistortionEdgeFalloff", std::clamp(settings.lensDistortionEdgeFalloff, 0.0f, 1.0f));
+        postShader->setVec2("lensDistortionCenterOffset",
+                            glm::clamp(settings.lensDistortionCenterOffset, glm::vec2(-0.5f), glm::vec2(0.5f)));
+        postShader->setBool("enableVHSOverlay", settings.vhsOverlayEnabled);
+        postShader->setFloat("vhsOverlayOpacity", std::clamp(settings.vhsOverlayOpacity, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayScanlineStrength", std::clamp(settings.vhsOverlayScanlineStrength, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayTapeNoise", std::clamp(settings.vhsOverlayTapeNoise, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayChromaBleed", std::clamp(settings.vhsOverlayChromaBleed, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayBottomNoiseBandHeight",
+                             std::clamp(settings.vhsOverlayBottomNoiseBandHeight, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayBottomNoiseBandIntensity",
+                             std::clamp(settings.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f));
+        postShader->setBool("enableWavyEffect", settings.wavyEnabled);
+        postShader->setFloat("wavyAmplitude", std::max(0.0f, settings.wavyAmplitude));
+        postShader->setFloat("wavyFrequency", std::max(0.0f, settings.wavyFrequency));
+        postShader->setFloat("wavySpeed", settings.wavySpeed);
+        postShader->setBool("wavyVertical", settings.wavyVertical);
+        postShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
+        postShader->setFloat("u_time", static_cast<float>(glfwGetTime()));
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, sourceTexture);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, bloomTex ? bloomTex : sourceTexture);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, allowHistory ? historyTarget.texture : 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sourceTexture);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, bloomTex ? bloomTex : sourceTexture);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, allowHistory ? historyTarget.texture : 0);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
-    glViewport(0, 0, width, height);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    drawFullscreenQuad();
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glEnable(GL_DEPTH_TEST);
-    postStats.compositeMs = std::chrono::duration<float, std::milli>(Clock::now() - compositeStart).count();
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+        glViewport(0, 0, width, height);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        drawFullscreenQuad();
+        postStats.compositeExecuted = true;
+        postStats.compositeDestinationTextureId = target.texture;
+        postStats.compositeDestinationFramebufferId = target.fbo;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glEnable(GL_DEPTH_TEST);
+        postStats.compositeMs = std::chrono::duration<float, std::milli>(Clock::now() - compositeStart).count();
+    }
 
     if (allowHistory) {
         displayTexture = target.texture;
@@ -3199,6 +3506,10 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     }
 
     postStats.totalMs = std::chrono::duration<float, std::milli>(Clock::now() - totalStart).count();
+    postStats.finalPresentedTextureId = target.texture;
+    postStats.finalPresentedFramebufferId = target.fbo;
+    postStats.finalTextureDiffersFromSource = (target.texture != sourceTexture);
+    logPostFxDebug(postStats, allowHistory);
     return target.texture;
 }
 
@@ -3206,9 +3517,13 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     resetStats(viewportStats);
     activeStats = &viewportStats;
     if (!camera.orthographic) {
+        MODU_PROFILE_SCOPE("Mirror Targets", ProfilerSampleCategory::RenderDetail);
         updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
     }
-    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
+    {
+        MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
+        renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
+    }
     std::vector<int> effectiveSelection;
     if (selectedIds && !selectedIds->empty()) {
         effectiveSelection = *selectedIds;
@@ -3216,6 +3531,7 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         effectiveSelection.push_back(selectedId);
     }
     if (!camera.orthographic && drawColliders) {
+        MODU_PROFILE_SCOPE("Collision Overlay", ProfilerSampleCategory::RenderDetail);
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
         glViewport(0, 0, currentWidth, currentHeight);
         renderCollisionOverlay(
@@ -3230,9 +3546,14 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
     if (!camera.orthographic) {
-        renderSelectionOutline(camera, sceneObjects, effectiveSelection, fovDeg, nearPlane, farPlane);
-        unsigned int result = applyPostProcessing(camera, sceneObjects, viewportTexture, currentWidth, currentHeight, true);
-        displayTexture = result ? result : viewportTexture;
+        {
+            MODU_PROFILE_SCOPE("Selection Outline", ProfilerSampleCategory::RenderDetail);
+            renderSelectionOutline(camera, sceneObjects, effectiveSelection, fovDeg, nearPlane, farPlane);
+        }
+    }
+    unsigned int result = applyPostProcessing(camera, sceneObjects, viewportTexture, currentWidth, currentHeight, true);
+    if (result) {
+        displayTexture = result;
     } else {
         displayTexture = viewportTexture;
         viewportPostStats = {};
@@ -3261,10 +3582,14 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (!camera.orthographic) {
+        MODU_PROFILE_SCOPE("Mirror Targets", ProfilerSampleCategory::RenderDetail);
         updateMirrorTargets(camera, sceneObjects, width, height, fovDeg, nearPlane, farPlane);
     }
-    renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
-    if (camera.orthographic || !applyPostFX) {
+    {
+        MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
+        renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
+    }
+    if (!applyPostFX) {
         previewPostStats = {};
         activeStats = nullptr;
         return target.texture;

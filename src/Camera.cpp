@@ -11,10 +11,22 @@ void Camera::processMouse(double xpos, double ypos) {
     }
 
     float sens = std::max(0.001f, mouseSensitivity);
-    float xoffset = (xpos - lastX) * sens;
-    float yoffset = (lastY - ypos) * sens;
+    float xoffset = (xpos - lastX);
+    float yoffset = (lastY - ypos);
     lastX = xpos;
     lastY = ypos;
+
+    processMouseDelta(xoffset, yoffset);
+}
+
+void Camera::processMouseDelta(double deltaX, double deltaY) {
+    if (ImGuizmo::IsUsing() || ImGuizmo::IsOver()) {
+        return;
+    }
+
+    float sens = std::max(0.001f, mouseSensitivity);
+    float xoffset = static_cast<float>(deltaX) * sens;
+    float yoffset = static_cast<float>(deltaY) * sens;
 
     yaw += xoffset;
     pitch += yoffset;

@@ -10,6 +10,7 @@
 #include <mono/metadata/assembly.h>
 #include <mono/metadata/attrdefs.h>
 #include <mono/metadata/debug-helpers.h>
+#include <mono/metadata/mono-gc.h>
 #include <mono/metadata/mono-config.h>
 #include <mono/metadata/threads.h>
 #endif
@@ -523,6 +524,22 @@ void ManagedScriptRuntime::unloadAll() {
         monoState->scriptDomain = nullptr;
     }
 }
+
+ManagedScriptRuntime::GcStats ManagedScriptRuntime::getGcStats() const {
+    GcStats stats;
+    if (!monoState || !monoState->scriptDomain) {
+        return stats;
+    }
+
+    stats.available = true;
+    stats.usedBytes = static_cast<uint64_t>(std::max<int64_t>(0, mono_gc_get_used_size()));
+    stats.heapBytes = static_cast<uint64_t>(std::max<int64_t>(0, mono_gc_get_heap_size()));
+    for (int generation = 0; generation < 3; ++generation) {
+        stats.collectionCounts[generation] = static_cast<uint32_t>(
+            std::max(0, mono_gc_collection_count(generation)));
+    }
+    return stats;
+}
 #else
 ManagedScriptRuntime::~ManagedScriptRuntime() = default;
 
@@ -563,5 +580,9 @@ void ManagedScriptRuntime::unloadAll() {
     monoState.reset();
     apiInjected = false;
     lastError.clear();
+}
+
+ManagedScriptRuntime::GcStats ManagedScriptRuntime::getGcStats() const {
+    return {};
 }
 #endif

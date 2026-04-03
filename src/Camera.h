@@ -23,6 +23,7 @@ public:
     float pixelsPerUnit = 100.0f;
 
     void processMouse(double xpos, double ypos);
+    void processMouseDelta(double deltaX, double deltaY);
     void processKeyboard(float deltaTime, GLFWwindow* window);
     glm::mat4 getViewMatrix() const;
 };

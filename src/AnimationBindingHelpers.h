@@ -252,7 +252,7 @@ inline bool ReadProperty(const SceneObject& obj, const std::string& propertyId, 
     if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { outValue = obj.audioSource.minDistance; return true; }
     if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { outValue = obj.audioSource.maxDistance; return true; }
     if (propertyId == "Audio.Loop" && obj.hasAudioSource) { outValue = obj.audioSource.loop ? 1.0f : 0.0f; return true; }
-    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { outValue = obj.audioSource.spatial ? 1.0f : 0.0f; return true; }
+    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { outValue = AudioSourceUsesSpatialization(obj.audioSource) ? 1.0f : 0.0f; return true; }
 
     if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { outValue = obj.aiAgent.speed; return true; }
     if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { outValue = obj.aiAgent.stoppingDistance; return true; }
@@ -387,7 +387,11 @@ inline bool WriteProperty(SceneObject& obj, const std::string& propertyId, float
     if (propertyId == "Audio.MinDistance" && obj.hasAudioSource) { obj.audioSource.minDistance = std::max(0.01f, value); return true; }
     if (propertyId == "Audio.MaxDistance" && obj.hasAudioSource) { obj.audioSource.maxDistance = std::max(obj.audioSource.minDistance + 0.01f, value); return true; }
     if (propertyId == "Audio.Loop" && obj.hasAudioSource) { obj.audioSource.loop = value >= 0.5f; return true; }
-    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) { obj.audioSource.spatial = value >= 0.5f; return true; }
+    if (propertyId == "Audio.Spatial" && obj.hasAudioSource) {
+        obj.audioSource.spatial = value >= 0.5f;
+        obj.audioSource.spatialBlend = obj.audioSource.spatial ? 1.0f : 0.0f;
+        return true;
+    }
 
     if (propertyId == "AIAgent.Speed" && obj.hasAIAgent) { obj.aiAgent.speed = std::max(0.05f, value); return true; }
     if (propertyId == "AIAgent.StoppingDistance" && obj.hasAIAgent) { obj.aiAgent.stoppingDistance = std::max(0.0f, value); return true; }

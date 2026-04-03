@@ -70,7 +70,9 @@ bool Project::create() {
         // Initialize a default scripting build file
         std::ofstream scriptCfg(scriptsConfigPath);
         scriptCfg << "# scripts.modu\n";
-        scriptCfg << "cppStandard=c++20\n";
+        scriptCfg << "# Default native script target is C++26. Use c++23 if your compiler is not ready for C++26 yet.\n";
+        scriptCfg << "# ModuCPP standards below C++20 are deprecated and may be removed in a later version.\n";
+        scriptCfg << "cppStandard=c++26\n";
         scriptCfg << "scriptsDir=Assets/Scripts\n";
         scriptCfg << "outDir=Library/CompiledScripts\n";
         scriptCfg << "define=MODU_SCRIPTING=1\n";
@@ -440,6 +442,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             if (obj.hasRigidbody2D) {
                 file << "rb2dEnabled=" << (obj.rigidbody2D.enabled ? 1 : 0) << "\n";
                 file << "rb2dUseGravity=" << (obj.rigidbody2D.useGravity ? 1 : 0) << "\n";
+                file << "rb2dLockRotation=" << (obj.rigidbody2D.lockRotation ? 1 : 0) << "\n";
                 file << "rb2dGravityScale=" << obj.rigidbody2D.gravityScale << "\n";
                 file << "rb2dLinearDamping=" << obj.rigidbody2D.linearDamping << "\n";
                 file << "rb2dVelocity=" << obj.rigidbody2D.velocity.x << "," << obj.rigidbody2D.velocity.y << "\n";
@@ -510,7 +513,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "audioVolume=" << obj.audioSource.volume << "\n";
                 file << "audioLoop=" << (obj.audioSource.loop ? 1 : 0) << "\n";
                 file << "audioPlayOnStart=" << (obj.audioSource.playOnStart ? 1 : 0) << "\n";
-                file << "audioSpatial=" << (obj.audioSource.spatial ? 1 : 0) << "\n";
+                file << "audioSpatial=" << (AudioSourceUsesSpatialization(obj.audioSource) ? 1 : 0) << "\n";
+                file << "audioSpatialBlend=" << GetAudioSpatialBlend(obj.audioSource) << "\n";
                 file << "audioMinDistance=" << obj.audioSource.minDistance << "\n";
                 file << "audioMaxDistance=" << obj.audioSource.maxDistance << "\n";
                 file << "audioRolloffMode=" << static_cast<int>(obj.audioSource.rolloffMode) << "\n";
@@ -876,6 +880,44 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "postAOEnabled=" << (obj.postFx.ambientOcclusionEnabled ? 1 : 0) << "\n";
                 file << "postAORadius=" << obj.postFx.aoRadius << "\n";
                 file << "postAOStrength=" << obj.postFx.aoStrength << "\n";
+                file << "postDitherEnabled=" << (obj.postFx.ditherEnabled ? 1 : 0) << "\n";
+                file << "postDitherIntensity=" << obj.postFx.ditherIntensity << "\n";
+                file << "postDitherColorBits=" << obj.postFx.ditherColorBits << "\n";
+                file << "postDitherDarkAdjustment=" << obj.postFx.ditherDarkAdjustment << "\n";
+                file << "postDitherPixelation=" << obj.postFx.ditherPixelation << "\n";
+                file << "postDitherSize=" << obj.postFx.ditherSize << "\n";
+                file << "postDitherContrast=" << obj.postFx.ditherContrast << "\n";
+                file << "postDitherOffset=" << obj.postFx.ditherOffset << "\n";
+                file << "postDitherPalette=" << static_cast<int>(obj.postFx.ditherPalette) << "\n";
+                file << "postDitherPattern=" << static_cast<int>(obj.postFx.ditherPattern) << "\n";
+                file << "postStaticEnabled=" << (obj.postFx.staticEnabled ? 1 : 0) << "\n";
+                file << "postStaticIntensity=" << obj.postFx.staticIntensity << "\n";
+                file << "postStaticGrainScale=" << obj.postFx.staticGrainScale << "\n";
+                file << "postStaticDarkAreaInfluence=" << obj.postFx.staticDarkAreaInfluence << "\n";
+                file << "postStaticSpeed=" << obj.postFx.staticSpeed << "\n";
+                file << "postStaticDistortionEnabled=" << (obj.postFx.staticDistortionEnabled ? 1 : 0) << "\n";
+                file << "postStaticDistortionHorizontalJitterAmount="
+                     << obj.postFx.staticDistortionHorizontalJitterAmount << "\n";
+                file << "postStaticDistortionLineDensity=" << obj.postFx.staticDistortionLineDensity << "\n";
+                file << "postStaticDistortionGlitchFrequency=" << obj.postFx.staticDistortionGlitchFrequency << "\n";
+                file << "postStaticDistortionStrength=" << obj.postFx.staticDistortionStrength << "\n";
+                file << "postLensDistortionEnabled=" << (obj.postFx.lensDistortionEnabled ? 1 : 0) << "\n";
+                file << "postLensDistortionAmount=" << obj.postFx.lensDistortionAmount << "\n";
+                file << "postLensDistortionEdgeFalloff=" << obj.postFx.lensDistortionEdgeFalloff << "\n";
+                file << "postLensDistortionCenterOffset=" << obj.postFx.lensDistortionCenterOffset.x << ","
+                     << obj.postFx.lensDistortionCenterOffset.y << "\n";
+                file << "postVHSOverlayEnabled=" << (obj.postFx.vhsOverlayEnabled ? 1 : 0) << "\n";
+                file << "postVHSOverlayOpacity=" << obj.postFx.vhsOverlayOpacity << "\n";
+                file << "postVHSOverlayScanlineStrength=" << obj.postFx.vhsOverlayScanlineStrength << "\n";
+                file << "postVHSOverlayTapeNoise=" << obj.postFx.vhsOverlayTapeNoise << "\n";
+                file << "postVHSOverlayChromaBleed=" << obj.postFx.vhsOverlayChromaBleed << "\n";
+                file << "postVHSOverlayBottomNoiseBandHeight=" << obj.postFx.vhsOverlayBottomNoiseBandHeight << "\n";
+                file << "postVHSOverlayBottomNoiseBandIntensity=" << obj.postFx.vhsOverlayBottomNoiseBandIntensity << "\n";
+                file << "postWavyEnabled=" << (obj.postFx.wavyEnabled ? 1 : 0) << "\n";
+                file << "postWavyAmplitude=" << obj.postFx.wavyAmplitude << "\n";
+                file << "postWavyFrequency=" << obj.postFx.wavyFrequency << "\n";
+                file << "postWavySpeed=" << obj.postFx.wavySpeed << "\n";
+                file << "postWavyVertical=" << (obj.postFx.wavyVertical ? 1 : 0) << "\n";
             }
 
             file << "scriptCount=" << obj.scripts.size() << "\n";
@@ -1147,6 +1189,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"hasRigidbody2D", +[](SceneObject& obj, const std::string& value) { obj.hasRigidbody2D = std::stoi(value) != 0; }},
         {"rb2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.enabled = std::stoi(value) != 0; }},
         {"rb2dUseGravity", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.useGravity = std::stoi(value) != 0; }},
+        {"rb2dLockRotation", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.lockRotation = std::stoi(value) != 0; }},
         {"rb2dGravityScale", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.gravityScale = std::stof(value); }},
         {"rb2dLinearDamping", +[](SceneObject& obj, const std::string& value) { obj.rigidbody2D.linearDamping = std::stof(value); }},
         {"rb2dVelocity", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.rigidbody2D.velocity); }},
@@ -1200,7 +1243,14 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"audioVolume", +[](SceneObject& obj, const std::string& value) { obj.audioSource.volume = std::stof(value); }},
         {"audioLoop", +[](SceneObject& obj, const std::string& value) { obj.audioSource.loop = std::stoi(value) != 0; }},
         {"audioPlayOnStart", +[](SceneObject& obj, const std::string& value) { obj.audioSource.playOnStart = std::stoi(value) != 0; }},
-        {"audioSpatial", +[](SceneObject& obj, const std::string& value) { obj.audioSource.spatial = std::stoi(value) != 0; }},
+        {"audioSpatial", +[](SceneObject& obj, const std::string& value) {
+            obj.audioSource.spatial = std::stoi(value) != 0;
+            obj.audioSource.spatialBlend = obj.audioSource.spatial ? 1.0f : 0.0f;
+        }},
+        {"audioSpatialBlend", +[](SceneObject& obj, const std::string& value) {
+            obj.audioSource.spatialBlend = std::clamp(std::stof(value), 0.0f, 1.0f);
+            obj.audioSource.spatial = obj.audioSource.spatialBlend > 0.001f;
+        }},
         {"audioMinDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.minDistance = std::stof(value); }},
         {"audioMaxDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.maxDistance = std::stof(value); }},
         {"audioRolloffMode", +[](SceneObject& obj, const std::string& value) { obj.audioSource.rolloffMode = static_cast<AudioRolloffMode>(std::stoi(value)); }},
@@ -1554,6 +1604,42 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"postAOEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.ambientOcclusionEnabled = (std::stoi(value) != 0); }},
         {"postAORadius", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoRadius = std::stof(value); }},
         {"postAOStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.aoStrength = std::stof(value); }},
+        {"postDitherEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherEnabled = (std::stoi(value) != 0); }},
+        {"postDitherIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherIntensity = std::stof(value); }},
+        {"postDitherColorBits", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherColorBits = std::stoi(value); }},
+        {"postDitherDarkAdjustment", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherDarkAdjustment = std::stof(value); }},
+        {"postDitherPixelation", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherPixelation = std::stof(value); }},
+        {"postDitherSize", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherSize = std::stof(value); }},
+        {"postDitherContrast", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherContrast = std::stof(value); }},
+        {"postDitherOffset", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherOffset = std::stof(value); }},
+        {"postDitherPalette", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherPalette = static_cast<PostFXDitherPalette>(std::clamp(std::stoi(value), 0, 4)); }},
+        {"postDitherPattern", +[](SceneObject& obj, const std::string& value) { obj.postFx.ditherPattern = static_cast<PostFXDitherPattern>(std::clamp(std::stoi(value), 0, 4)); }},
+        {"postStaticEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticEnabled = (std::stoi(value) != 0); }},
+        {"postStaticIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticIntensity = std::stof(value); }},
+        {"postStaticGrainScale", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticGrainScale = std::stof(value); }},
+        {"postStaticDarkAreaInfluence", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDarkAreaInfluence = std::stof(value); }},
+        {"postStaticSpeed", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticSpeed = std::stof(value); }},
+        {"postStaticDistortionEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDistortionEnabled = (std::stoi(value) != 0); }},
+        {"postStaticDistortionHorizontalJitterAmount", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDistortionHorizontalJitterAmount = std::stof(value); }},
+        {"postStaticDistortionLineDensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDistortionLineDensity = std::stof(value); }},
+        {"postStaticDistortionGlitchFrequency", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDistortionGlitchFrequency = std::stof(value); }},
+        {"postStaticDistortionStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.staticDistortionStrength = std::stof(value); }},
+        {"postLensDistortionEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.lensDistortionEnabled = (std::stoi(value) != 0); }},
+        {"postLensDistortionAmount", +[](SceneObject& obj, const std::string& value) { obj.postFx.lensDistortionAmount = std::stof(value); }},
+        {"postLensDistortionEdgeFalloff", +[](SceneObject& obj, const std::string& value) { obj.postFx.lensDistortionEdgeFalloff = std::stof(value); }},
+        {"postLensDistortionCenterOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.postFx.lensDistortionCenterOffset); }},
+        {"postVHSOverlayEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayEnabled = (std::stoi(value) != 0); }},
+        {"postVHSOverlayOpacity", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayOpacity = std::stof(value); }},
+        {"postVHSOverlayScanlineStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayScanlineStrength = std::stof(value); }},
+        {"postVHSOverlayTapeNoise", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayTapeNoise = std::stof(value); }},
+        {"postVHSOverlayChromaBleed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayChromaBleed = std::stof(value); }},
+        {"postVHSOverlayBottomNoiseBandHeight", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBottomNoiseBandHeight = std::stof(value); }},
+        {"postVHSOverlayBottomNoiseBandIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBottomNoiseBandIntensity = std::stof(value); }},
+        {"postWavyEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyEnabled = (std::stoi(value) != 0); }},
+        {"postWavyAmplitude", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyAmplitude = std::stof(value); }},
+        {"postWavyFrequency", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyFrequency = std::stof(value); }},
+        {"postWavySpeed", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavySpeed = std::stof(value); }},
+        {"postWavyVertical", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyVertical = (std::stoi(value) != 0); }},
         {"meshPath", +[](SceneObject& obj, const std::string& value) {
              obj.meshPath = value;
              if (g_deferSceneAssetLoading) {

@@ -371,7 +371,7 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
     }
 
     snd->clipPath = obj.audioSource.clipPath;
-    snd->spatial = obj.audioSource.spatial;
+    snd->spatial = AudioSourceUsesSpatialization(obj.audioSource);
     snd->started = false;
     refreshSoundParams(obj, *snd);
     activeSounds.emplace(obj.id, std::move(snd));
@@ -379,12 +379,29 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
 }
 
 void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
+    const float spatialBlend = GetAudioSpatialBlend(obj.audioSource);
+    const bool spatialEnabled = spatialBlend > 0.001f;
+    const bool planar2D = shouldUsePlanar2DAudio(obj);
     float minDist = std::max(0.1f, obj.audioSource.minDistance);
     float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
+    float gain = obj.audioSource.volume;
     ma_sound_set_looping(&snd.sound, obj.audioSource.loop ? MA_TRUE : MA_FALSE);
-    ma_sound_set_volume(&snd.sound, obj.audioSource.volume);
-    ma_sound_set_spatialization_enabled(&snd.sound, obj.audioSource.spatial ? MA_TRUE : MA_FALSE);
-    if (obj.audioSource.spatial) {
+
+    if (planar2D) {
+        const glm::vec3 planarSourcePos = computeSpatializedPosition(obj, spatialBlend, lastListenerPosition);
+        const float attenuation = computeDistanceAttenuation(obj, lastListenerPosition, planarSourcePos);
+        gain *= std::clamp(1.0f + (attenuation - 1.0f) * spatialBlend, 0.0f, 1.0f);
+        ma_sound_set_pan_mode(&snd.sound, ma_pan_mode_pan);
+        ma_sound_set_pan(&snd.sound, computePlanarPan(obj, lastListenerPosition, spatialBlend));
+        ma_sound_set_spatialization_enabled(&snd.sound, MA_FALSE);
+        ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_none);
+        ma_sound_set_position(&snd.sound, 0.0f, 0.0f, 0.0f);
+    } else {
+        ma_sound_set_pan_mode(&snd.sound, ma_pan_mode_balance);
+        ma_sound_set_pan(&snd.sound, 0.0f);
+        ma_sound_set_spatialization_enabled(&snd.sound, spatialEnabled ? MA_TRUE : MA_FALSE);
+    }
+    if (spatialEnabled && !planar2D) {
         switch (obj.audioSource.rolloffMode) {
             case AudioRolloffMode::Linear:
                 ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_linear);
@@ -406,7 +423,16 @@ void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
     }
     ma_sound_set_min_distance(&snd.sound, minDist);
     ma_sound_set_max_distance(&snd.sound, maxDist);
-    ma_sound_set_position(&snd.sound, obj.position.x, obj.position.y, obj.position.z);
+    if (!planar2D) {
+        const glm::vec3 spatialPos = computeSpatializedPosition(obj, spatialBlend, lastListenerPosition);
+        ma_sound_set_position(&snd.sound, spatialPos.x, spatialPos.y, spatialPos.z);
+
+        if (spatialEnabled && obj.audioSource.rolloffMode == AudioRolloffMode::Custom) {
+            float attenuation = computeCustomAttenuation(obj, lastListenerPosition, spatialPos);
+            gain *= attenuation;
+        }
+    }
+    ma_sound_set_volume(&snd.sound, gain);
 
     if (!ma_sound_is_playing(&snd.sound) && !snd.started && obj.audioSource.playOnStart && obj.audioSource.enabled) {
         ma_sound_start(&snd.sound);
@@ -417,6 +443,7 @@ void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
 void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& listenerCamera, bool playing) {
     if (!initialized) return;
 
+    lastListenerPosition = listenerCamera.position;
     ma_engine_listener_set_position(&engine, 0, listenerCamera.position.x, listenerCamera.position.y, listenerCamera.position.z);
     ma_engine_listener_set_direction(&engine, 0, listenerCamera.front.x, listenerCamera.front.y, listenerCamera.front.z);
     ma_engine_listener_set_world_up(&engine, 0, listenerCamera.up.x, listenerCamera.up.y, listenerCamera.up.z);
@@ -424,7 +451,7 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
 
     if (!playing) {
         destroyActiveSounds();
-        destroyOneShotSounds();
+        cleanupFinishedOneShots();
         return;
     }
 
@@ -447,10 +474,6 @@ void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& 
 
         if (ensureSoundFor(obj)) {
             refreshSoundParams(obj, *activeSounds[obj.id]);
-            if (obj.audioSource.spatial && obj.audioSource.rolloffMode == AudioRolloffMode::Custom) {
-                float attenuation = computeCustomAttenuation(obj, listenerCamera.position);
-                ma_sound_set_volume(&activeSounds[obj.id]->sound, obj.audioSource.volume * attenuation);
-            }
         }
     }
 
@@ -491,6 +514,43 @@ bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) 
         releaseDecodedAudio(previewDecodedData);
     }
     return previewActive;
+}
+
+bool AudioSystem::playOneShot(const std::string& path, float volume) {
+    if (path.empty()) return false;
+    if (!initialized && !init()) return false;
+    if (!fs::exists(path)) {
+        if (missingClips.insert(path).second) {
+            std::cerr << "AudioSystem: clip not found " << path << "\n";
+        }
+        return false;
+    }
+    missingClips.erase(path);
+
+    auto oneShot = std::make_unique<OneShotSound>();
+    if (!initSoundFromPath(path, 0, reverbReady ? &reverbGroup : nullptr,
+                           oneShot->sound, oneShot->decodedData))
+    {
+        return false;
+    }
+
+    ma_sound_set_looping(&oneShot->sound, MA_FALSE);
+    ma_sound_set_volume(&oneShot->sound, std::max(0.0f, volume));
+    ma_sound_set_spatialization_enabled(&oneShot->sound, MA_FALSE);
+    ma_sound_set_pan_mode(&oneShot->sound, ma_pan_mode_balance);
+    ma_sound_set_pan(&oneShot->sound, 0.0f);
+    ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_none);
+    ma_sound_set_position(&oneShot->sound, 0.0f, 0.0f, 0.0f);
+
+    if (ma_sound_start(&oneShot->sound) != MA_SUCCESS) {
+        ma_sound_uninit(&oneShot->sound);
+        releaseDecodedAudio(oneShot->decodedData);
+        return false;
+    }
+
+    oneShotSounds.emplace_back(std::move(oneShot));
+    cleanupFinishedOneShots();
+    return true;
 }
 
 void AudioSystem::stopPreview() {
@@ -584,6 +644,12 @@ bool AudioSystem::setPreviewLoop(bool loop) {
     return true;
 }
 
+bool AudioSystem::setPreviewVolume(float volume) {
+    if (!previewActive) return false;
+    ma_sound_set_volume(&previewSound, std::max(0.0f, volume));
+    return true;
+}
+
 bool AudioSystem::playObjectSound(const SceneObject& obj) {
     if (!IsObjectEnabledInHierarchy(obj) || !obj.hasAudioSource || obj.audioSource.clipPath.empty() || !obj.audioSource.enabled) return false;
     if (!ensureSoundFor(obj)) return false;
@@ -615,14 +681,26 @@ bool AudioSystem::playObjectOneShot(const SceneObject& obj, const std::string& c
 
     const float minDist = std::max(0.1f, obj.audioSource.minDistance);
     const float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
+    const float spatialBlend = GetAudioSpatialBlend(obj.audioSource);
+    const bool spatialEnabled = spatialBlend > 0.001f;
+    const bool planar2D = shouldUsePlanar2DAudio(obj);
+    const glm::vec3 spatialPos = computeSpatializedPosition(obj, spatialBlend, lastListenerPosition);
+    float gain = std::max(0.0f, obj.audioSource.volume * volumeScale);
     ma_sound_set_looping(&oneShot->sound, MA_FALSE);
-    ma_sound_set_volume(&oneShot->sound, std::max(0.0f, obj.audioSource.volume * volumeScale));
-    ma_sound_set_spatialization_enabled(&oneShot->sound, obj.audioSource.spatial ? MA_TRUE : MA_FALSE);
+    ma_sound_set_pan_mode(&oneShot->sound, planar2D ? ma_pan_mode_pan : ma_pan_mode_balance);
+    ma_sound_set_pan(&oneShot->sound, planar2D ? computePlanarPan(obj, lastListenerPosition, spatialBlend) : 0.0f);
+    ma_sound_set_spatialization_enabled(&oneShot->sound, (spatialEnabled && !planar2D) ? MA_TRUE : MA_FALSE);
     ma_sound_set_min_distance(&oneShot->sound, minDist);
     ma_sound_set_max_distance(&oneShot->sound, maxDist);
-    ma_sound_set_position(&oneShot->sound, obj.position.x, obj.position.y, obj.position.z);
+    if (planar2D) {
+        const float attenuation = computeDistanceAttenuation(obj, lastListenerPosition, spatialPos);
+        gain *= std::clamp(1.0f + (attenuation - 1.0f) * spatialBlend, 0.0f, 1.0f);
+        ma_sound_set_position(&oneShot->sound, 0.0f, 0.0f, 0.0f);
+    } else {
+        ma_sound_set_position(&oneShot->sound, spatialPos.x, spatialPos.y, spatialPos.z);
+    }
 
-    if (obj.audioSource.spatial) {
+    if (spatialEnabled && !planar2D) {
         switch (obj.audioSource.rolloffMode) {
             case AudioRolloffMode::Linear:
                 ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_linear);
@@ -642,6 +720,12 @@ bool AudioSystem::playObjectOneShot(const SceneObject& obj, const std::string& c
     } else {
         ma_sound_set_attenuation_model(&oneShot->sound, ma_attenuation_model_none);
     }
+
+    if (spatialEnabled && !planar2D && obj.audioSource.rolloffMode == AudioRolloffMode::Custom) {
+        float attenuation = computeCustomAttenuation(obj, lastListenerPosition, spatialPos);
+        gain *= attenuation;
+    }
+    ma_sound_set_volume(&oneShot->sound, gain);
 
     if (ma_sound_start(&oneShot->sound) != MA_SUCCESS) {
         ma_sound_uninit(&oneShot->sound);
@@ -670,15 +754,61 @@ bool AudioSystem::setObjectLoop(const SceneObject& obj, bool loop) {
 
 bool AudioSystem::setObjectVolume(const SceneObject& obj, float volume) {
     if (!ensureSoundFor(obj)) return false;
+    (void)volume;
     ActiveSound& snd = *activeSounds[obj.id];
-    ma_sound_set_volume(&snd.sound, volume);
+    refreshSoundParams(obj, snd);
     return true;
 }
 
-float AudioSystem::computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos) const {
+bool AudioSystem::shouldUsePlanar2DAudio(const SceneObject& obj) const {
+    return prefer2DSpatialAudio || HasUIComponent(obj);
+}
+
+float AudioSystem::computePlanarPan(const SceneObject& obj, const glm::vec3& listenerPos, float spatialBlend) const {
+    const float panRange = std::max(0.5f, obj.audioSource.maxDistance * 0.35f);
+    const float relativeX = obj.position.x - listenerPos.x;
+    const float normalizedPan = std::clamp(relativeX / panRange, -1.0f, 1.0f);
+    const float shapedPan = std::copysign(std::pow(std::abs(normalizedPan), 0.8f), normalizedPan);
+    return std::clamp(shapedPan * std::clamp(spatialBlend, 0.0f, 1.0f), -1.0f, 1.0f);
+}
+
+float AudioSystem::computeDistanceAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const {
+    if (obj.audioSource.rolloffMode == AudioRolloffMode::Custom) {
+        return computeCustomAttenuation(obj, listenerPos, sourcePos);
+    }
+
+    const float minDist = std::max(0.1f, obj.audioSource.minDistance);
+    const float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
+    const float dist = glm::length(glm::vec2(listenerPos.x - sourcePos.x, listenerPos.y - sourcePos.y));
+    if (dist <= minDist) return 1.0f;
+    if (dist >= maxDist) return 0.0f;
+
+    const float t = std::clamp((dist - minDist) / std::max(0.001f, maxDist - minDist), 0.0f, 1.0f);
+    switch (obj.audioSource.rolloffMode) {
+        case AudioRolloffMode::Linear:
+            return 1.0f - t;
+        case AudioRolloffMode::Exponential:
+            return std::pow(1.0f - t, std::max(0.01f, obj.audioSource.rolloff));
+        case AudioRolloffMode::Logarithmic:
+        default: {
+            const float falloff = 1.0f / (1.0f + std::max(0.01f, obj.audioSource.rolloff) * ((dist - minDist) / minDist));
+            return std::clamp(falloff, 0.0f, 1.0f);
+        }
+    }
+}
+
+glm::vec3 AudioSystem::computeSpatializedPosition(const SceneObject& obj, float spatialBlend, const glm::vec3& listenerPos) const {
+    glm::vec3 sourcePos = obj.position;
+    if (prefer2DSpatialAudio || HasUIComponent(obj)) {
+        sourcePos.z = listenerPos.z;
+    }
+    return glm::mix(listenerPos, sourcePos, std::clamp(spatialBlend, 0.0f, 1.0f));
+}
+
+float AudioSystem::computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const {
     float minDist = std::max(0.1f, obj.audioSource.minDistance);
     float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
-    float dist = glm::length(listenerPos - obj.position);
+    float dist = glm::length(listenerPos - sourcePos);
     if (dist <= minDist) return 1.0f;
     if (dist >= maxDist) return std::clamp(obj.audioSource.customEndGain, 0.0f, 1.0f);
 

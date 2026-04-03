@@ -561,6 +561,9 @@ public class AutoInspectorDemo {
 ## scripts.modu
 Native script compilation reads `scripts.modu` (legacy `Scripts.modu` still detected).
 
+ModuCPP/native C++ now targets `C++26` by default, with `C++23` as the primary compatibility fallback when a toolchain is not ready for `C++26` yet. Standards below `C++20` are deprecated and may be removed in a later release.
+Compiler flags are normalized per toolchain, so `c++26` maps to the closest available draft/latest mode where a compiler does not yet expose a literal `c++26` switch.
+
 Common keys:
 - `scriptsDir`
 - `outDir`
@@ -571,11 +574,13 @@ Common keys:
 
 Example:
 ```ini
+# Default native script target is C++26. Use c++23 if your compiler is not ready for C++26 yet.
+# ModuCPP standards below C++20 are deprecated and may be removed in a later version.
 scriptsDir=Assets/Scripts
 outDir=Library/CompiledScripts
 includeDir=../src
 includeDir=../include
-cppStandard=c++20
+cppStandard=c++26
 linux.linkLib=pthread
 linux.linkLib=dl
 win.linkLib=User32.lib

@@ -15,6 +15,7 @@
 #include "AudioSystem.h"
 #include "PackageManager.h"
 #include "ManagedScriptRuntime.h"
+#include "Profiler.h"
 #include "SpritesheetFormat.h"
 #include "ThirdParty/ImGuiColorTextEdit/TextEditor.h"
 #include "Vulkan/VulkanRenderer.h"
@@ -42,6 +43,13 @@ enum class ViewportDisplayMode {
     Fit = 1,
     Fill = 2,
     IntegerScale = 3
+};
+
+enum class ViewportToolbarCorner {
+    BottomLeft = 0,
+    BottomRight = 1,
+    TopLeft = 2,
+    TopRight = 3
 };
 
 class Engine {
@@ -144,6 +152,7 @@ private:
     bool playerMode = false;
     bool autoStartRequested = false;
     bool autoStartPlayerMode = false;
+    bool deferInspectorRefresh = false;
     std::string autoStartBundlePath;
     std::string autoStartProjectPath;
     std::string autoStartSceneName;
@@ -221,6 +230,7 @@ private:
         Animation = 1,
         Scripting = 2
     };
+    EditorChromeScale uiChromeScale = EditorChromeScale::Default;
     static constexpr int kWorkspaceLayoutVersion = 2;
     UIAnimationMode uiAnimationMode = UIAnimationMode::Fluid;
     WorkspaceMode currentWorkspace = WorkspaceMode::Default;
@@ -298,6 +308,14 @@ private:
     bool hierarchyShowTexturePreview = false;
     bool audioPreviewLoop = false;
     bool audioPreviewAutoPlay = false;
+    float audioPreviewVolume = 1.0f;
+    float audioPreviewBaseVolume = 1.0f;
+    enum class AudioPreviewContext {
+        None = 0,
+        AssetBrowser,
+        AudioSourceComponent
+    };
+    AudioPreviewContext audioPreviewContext = AudioPreviewContext::None;
     std::string audioPreviewSelectedPath;
     bool isPlaying = false;
     bool isPaused = false;
@@ -319,6 +337,7 @@ private:
     bool gameViewCursorLocked = false;
     bool gameViewportFocused = false;
     bool showGameProfiler = true;
+    bool revealDebugSectionsAndMenus = false;
     bool showCanvasOverlay = false;
     bool showUIWorldGrid = true;
     bool showSceneGrid3D = false;
@@ -417,6 +436,7 @@ private:
     int sceneViewportRenderHeight = 900;
     ViewportDisplayMode sceneViewportDisplayMode = ViewportDisplayMode::Stretch;
     ViewportDisplayMode gameViewportDisplayMode = ViewportDisplayMode::Fit;
+    ViewportToolbarCorner sceneViewportToolbarCorner = ViewportToolbarCorner::BottomLeft;
     int gameViewportLastRenderWidth = 0;
     int gameViewportLastRenderHeight = 0;
     int activePlayerId = -1;
@@ -484,6 +504,7 @@ private:
     int light2DLitSprite2DCountLastFrame = 0;
     int light2DLitWorldImageCountLastFrame = 0;
     float light2DLightingBufferScale = 0.75f;
+    Light2DPostFXSettings world2DPostFx;
     std::unordered_map<int, std::string> light2DObjectRoutingReasonsLastFrame;
     bool light2DShapeEditMode = false;
     int light2DShapeEditingObjectId = -1;
@@ -509,9 +530,18 @@ private:
     ManagedScriptRuntime managedRuntime;
     PhysicsSystem physics;
     AudioSystem audio;
+    struct EditorToastState {
+        bool visible = false;
+        ConsoleMessageType type = ConsoleMessageType::Info;
+        std::string message;
+        double startTime = 0.0;
+        double holdSeconds = 1.8;
+    };
+    EditorToastState editorToast;
     bool showCompilePopup = false;
     bool compilePopupOpened = false;
     double compilePopupHideTime = 0.0;
+    double compileCompletionStart = 0.0;
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
     std::string lastCompileLog;
@@ -593,11 +623,35 @@ private:
         std::string error;
         std::vector<Modularity::ScriptDiagnostic> diagnostics;
     };
+    struct ScriptCompileQueueItem {
+        fs::path scriptPath;
+        std::string displayLabel;
+        bool managed = false;
+    };
+    struct ScriptCompileHistoryItem {
+        fs::path scriptPath;
+        std::string displayLabel;
+        std::string statusLabel;
+        std::string summary;
+        std::string outputLog;
+        std::vector<Modularity::ScriptDiagnostic> diagnostics;
+        bool success = false;
+        bool warning = false;
+        double completedAt = 0.0;
+    };
     std::atomic<bool> compileInProgress = false;
     std::atomic<bool> compileResultReady = false;
     std::thread compileWorker;
     std::mutex compileMutex;
     ScriptCompileJobResult compileResult;
+    std::deque<ScriptCompileQueueItem> compileRequestQueue;
+    std::unordered_set<std::string> compileRequestKeys;
+    std::vector<ScriptCompileHistoryItem> compileHistory;
+    std::string compileCurrentLabel;
+    fs::path compileCurrentPath;
+    bool compileCurrentManaged = false;
+    int compileBatchTotal = 0;
+    int compileBatchCompleted = 0;
     std::unordered_map<std::string, fs::file_time_type> scriptLastAutoCompileTime;
     std::unordered_map<std::string, fs::file_time_type> scriptAutoCompileCheckedSourceTime;
     std::unordered_map<std::string, fs::path> scriptAutoCompileBinaryCache;
@@ -709,6 +763,9 @@ private:
     void updateHierarchyWorldTransforms();
     void updateLocalFromWorld(SceneObject& obj, const glm::vec3& parentPos, const glm::quat& parentRot, const glm::vec3& parentScale);
     void initializeLocalTransformsFromWorld(int sceneVersion);
+    void queueScriptCompile(const fs::path& scriptPath);
+    void queueScriptCompileBatch(const std::vector<fs::path>& scriptPaths);
+    void playCompileStartSound();
     
     void importOBJToScene(const std::string& filepath, const std::string& objectName);
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
@@ -741,9 +798,11 @@ private:
     void renderInspectorPanel();
     void renderConsolePanel();
     void renderLatestErrorBar();
+    void renderEditorToast();
     void renderViewport();
     void renderPlayerViewport();
     void renderGameViewportWindow();
+    void drawGameProfilerContent();
     void renderUiCanvas3DTargets();
     void renderBuildSettingsWindow();
     void renderScriptingWindow();
@@ -756,6 +815,8 @@ private:
     void refreshScriptingFileList();
     Camera makeCameraFromObject(const SceneObject& obj) const;
     const SceneObject* findPlayerCameraObject() const;
+    Light2DPostFXSettings resolveWorld2DPostFx(const Camera& effectCamera) const;
+    Light2DPostFXSettings resolveWorld2DPostFx(const UIWorldCamera2D& effectCamera) const;
     void compileScriptFile(const fs::path& scriptPath);
     void updateAutoCompileScripts();
     void processAutoCompileQueue();
@@ -794,6 +855,7 @@ private:
     bool applyUIStylePresetByName(const std::string& name);
     void applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout);
     void buildWorkspaceLayout(WorkspaceMode mode);
+    void updateDockDrawerInteractions();
     bool bakeAIPathGrid(bool logResult);
     bool findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vector<glm::vec3>& outPath) const;
     void autosaveWorkspaceLayout();
@@ -861,6 +923,9 @@ private:
     // Console/logging
     void addConsoleMessage(const std::string& message, ConsoleMessageType type);
     void logToConsole(const std::string& message);
+    void showEditorToast(const std::string& message,
+                         ConsoleMessageType type = ConsoleMessageType::Info,
+                         double holdSeconds = 1.8);
 
     // Material helpers
     bool loadMaterialData(const std::string& path, MaterialProperties& props,

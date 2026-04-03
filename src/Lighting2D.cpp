@@ -14,6 +14,22 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr int kMaxFreeformPoints = 64;
 
+bool HasVisiblePostFxInternal(const Light2DPostFXSettings& settings) {
+    const bool hasDither = settings.ditherIntensity > 0.0001f || settings.colorBits < 8 || settings.pixelation > 0.0001f;
+    const bool hasColorAdjust =
+        std::abs(settings.exposure) > 0.0001f ||
+        std::abs(settings.contrast - 1.0f) > 0.0001f ||
+        std::abs(settings.saturation - 1.0f) > 0.0001f ||
+        glm::length(settings.colorFilter - glm::vec3(1.0f)) > 0.0001f;
+    const bool hasLensFx =
+        settings.vignetteIntensity > 0.0001f ||
+        settings.chromaticAmount > 0.000001f ||
+        settings.sharpenStrength > 0.0001f ||
+        settings.grainAmount > 0.0001f ||
+        settings.scanlineIntensity > 0.0001f;
+    return settings.enabled && (hasDither || hasColorAdjust || hasLensFx);
+}
+
 struct ScopedLighting2DState {
     GLint framebuffer = 0;
     GLint viewport[4] = {0, 0, 0, 0};
@@ -221,6 +237,10 @@ void SetBlendStateForLight(Light2DBlendMode mode, Light2DOverlapOperation overla
 }
 } // namespace
 
+bool Light2DHasVisiblePostFx(const Light2DPostFXSettings& settings) {
+    return HasVisiblePostFxInternal(settings);
+}
+
 uint32_t Light2DLayerBit(int layer) {
     const int clamped = std::clamp(layer, 0, 31);
     return (1u << static_cast<uint32_t>(clamped));
@@ -376,6 +396,7 @@ Lighting2DRenderer::~Lighting2DRenderer() {
 
 void Lighting2DRenderer::shutdown() {
     destroyTarget(finalTarget);
+    destroyTarget(postTarget);
     destroyTarget(additiveTarget);
     destroyTarget(multiplyTarget);
     destroyTarget(subtractiveTarget);
@@ -398,6 +419,7 @@ void Lighting2DRenderer::shutdown() {
     lightQuadShader.reset();
     lightFreeformShader.reset();
     spriteShader.reset();
+    postFxShader.reset();
     initialized = false;
 }
 
@@ -558,6 +580,10 @@ void Lighting2DRenderer::ensureShaders() {
     if (!spriteShader) {
         spriteShader = std::make_unique<Shader>("Resources/Shaders/light2d_sprite.vert",
                                                 "Resources/Shaders/light2d_sprite.frag");
+    }
+    if (!postFxShader) {
+        postFxShader = std::make_unique<Shader>("Resources/Shaders/postfx_vert.glsl",
+                                                "Resources/Shaders/light2d_dither_frag.glsl");
     }
 }
 
@@ -840,6 +866,74 @@ void Lighting2DRenderer::renderSpritePass(const Light2DRenderRequest& request,
     flush();
 }
 
+unsigned int Lighting2DRenderer::applyPostProcessing(const Light2DRenderRequest& request,
+                                                     unsigned int sourceTexture,
+                                                     int width,
+                                                     int height) {
+    if (!Light2DHasVisiblePostFx(request.postFx) || sourceTexture == 0 || !postFxShader) {
+        return sourceTexture;
+    }
+
+    const int safeWidth = std::max(1, width);
+    const int safeHeight = std::max(1, height);
+    ensureTarget(postTarget, safeWidth, safeHeight);
+    if (postTarget.fbo == 0) {
+        return sourceTexture;
+    }
+
+    const int colorBits = std::clamp(request.postFx.colorBits, 1, 8);
+    const float ditherIntensity = std::max(0.0f, request.postFx.ditherIntensity);
+    const float darkAdjustment = std::clamp(request.postFx.darkAdjustment, 0.0f, 1.0f);
+    const float ditherScale = std::clamp(request.postFx.ditherScale, 1.0f, 8.0f);
+    const float pixelation = std::max(0.0f, request.postFx.pixelation);
+    const float exposure = std::clamp(request.postFx.exposure, -8.0f, 8.0f);
+    const float contrast = std::clamp(request.postFx.contrast, 0.0f, 2.5f);
+    const float saturation = std::clamp(request.postFx.saturation, 0.0f, 2.5f);
+    const glm::vec3 colorFilter = glm::clamp(request.postFx.colorFilter, glm::vec3(0.0f), glm::vec3(2.0f));
+    const float vignetteIntensity = std::clamp(request.postFx.vignetteIntensity, 0.0f, 1.0f);
+    const float vignetteSmoothness = std::clamp(request.postFx.vignetteSmoothness, 0.05f, 1.0f);
+    const float chromaticAmount = std::clamp(request.postFx.chromaticAmount, 0.0f, 0.05f);
+    const float sharpenStrength = std::clamp(request.postFx.sharpenStrength, 0.0f, 2.0f);
+    const float grainAmount = std::clamp(request.postFx.grainAmount, 0.0f, 0.4f);
+    const float scanlineIntensity = std::clamp(request.postFx.scanlineIntensity, 0.0f, 1.0f);
+    const float timeSeconds = std::chrono::duration<float>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, postTarget.fbo);
+    glViewport(0, 0, postTarget.width, postTarget.height);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+
+    postFxShader->use();
+    postFxShader->setVec2("u_viewportSize", glm::vec2(static_cast<float>(postTarget.width),
+                                                      static_cast<float>(postTarget.height)));
+    postFxShader->setInt("sceneTex", 0);
+    postFxShader->setFloat("u_ditherIntensity", ditherIntensity);
+    postFxShader->setInt("u_colorBits", colorBits);
+    postFxShader->setFloat("u_darkAdjustment", darkAdjustment);
+    postFxShader->setFloat("u_ditherScale", ditherScale);
+    postFxShader->setFloat("u_pixelation", pixelation);
+    postFxShader->setFloat("u_exposure", exposure);
+    postFxShader->setFloat("u_contrast", contrast);
+    postFxShader->setFloat("u_saturation", saturation);
+    postFxShader->setVec3("u_colorFilter", colorFilter);
+    postFxShader->setFloat("u_vignetteIntensity", vignetteIntensity);
+    postFxShader->setFloat("u_vignetteSmoothness", vignetteSmoothness);
+    postFxShader->setFloat("u_chromaticAmount", chromaticAmount);
+    postFxShader->setFloat("u_sharpenStrength", sharpenStrength);
+    postFxShader->setFloat("u_grainAmount", grainAmount);
+    postFxShader->setFloat("u_scanlineIntensity", scanlineIntensity);
+    postFxShader->setFloat("u_time", timeSeconds);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sourceTexture);
+    drawFullscreenQuad();
+    return postTarget.texture;
+}
+
 void Lighting2DRenderer::renderLayer(const Light2DRenderRequest& request,
                                      Renderer& renderer,
                                      const LayerBatch& batch,
@@ -993,5 +1087,5 @@ unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Ren
     const auto end = std::chrono::steady_clock::now();
     lastStats.cpuBuildMs =
         std::chrono::duration<float, std::milli>(end - start).count();
-    return finalTarget.texture;
+    return applyPostProcessing(request, finalTarget.texture, finalTarget.width, finalTarget.height);
 }

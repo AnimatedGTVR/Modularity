@@ -1537,12 +1537,22 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     }
 
     Module mod{};
+    auto unloadModuleHandle = [&](void* handle) {
+        if (!handle) return;
+#if defined(_WIN32)
+        FreeLibrary(static_cast<HMODULE>(handle));
+#else
+        dlclose(handle);
+#endif
+    };
 #if defined(_WIN32)
     mod.handle = LoadLibraryA(binaryPath.string().c_str());
     if (!mod.handle) {
         lastError = "LoadLibrary failed";
         return nullptr;
     }
+    AbiVersionFn abiVersionFn = reinterpret_cast<AbiVersionFn>(
+        GetProcAddress(static_cast<HMODULE>(mod.handle), "Modularity_ScriptAbiVersion"));
     mod.inspector = reinterpret_cast<InspectorFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_OnInspector"));
     mod.begin = reinterpret_cast<BeginFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_Begin"));
     mod.spec = reinterpret_cast<SpecFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_Spec"));
@@ -1558,6 +1568,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
         if (err) lastError = err;
         return nullptr;
     }
+    dlerror();
+    AbiVersionFn abiVersionFn = reinterpret_cast<AbiVersionFn>(dlsym(mod.handle, "Modularity_ScriptAbiVersion"));
     mod.inspector = reinterpret_cast<InspectorFn>(dlsym(mod.handle, "Script_OnInspector"));
     mod.begin = reinterpret_cast<BeginFn>(dlsym(mod.handle, "Script_Begin"));
     mod.spec = reinterpret_cast<SpecFn>(dlsym(mod.handle, "Script_Spec"));
@@ -1577,13 +1589,24 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
 #endif
 #endif
 
+    if (!abiVersionFn) {
+        unloadModuleHandle(mod.handle);
+        lastError = "Native script binary is incompatible with this engine build (missing ABI export). Recompile scripts.";
+        return nullptr;
+    }
+
+    const int abiVersion = abiVersionFn();
+    if (abiVersion != MODULARITY_NATIVE_SCRIPT_ABI_VERSION) {
+        unloadModuleHandle(mod.handle);
+        lastError = "Native script binary ABI mismatch (expected " +
+                    std::to_string(MODULARITY_NATIVE_SCRIPT_ABI_VERSION) +
+                    ", got " + std::to_string(abiVersion) + "). Recompile scripts.";
+        return nullptr;
+    }
+
     if (!mod.inspector && !mod.begin && !mod.spec && !mod.testEditor
         && !mod.update && !mod.tickUpdate && !mod.editorRender && !mod.editorExit) {
-#if defined(_WIN32)
-        FreeLibrary(static_cast<HMODULE>(mod.handle));
-#else
-        dlclose(mod.handle);
-#endif
+        unloadModuleHandle(mod.handle);
         if (lastError.empty()) lastError = "No script exports found";
         return nullptr;
     }

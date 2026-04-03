@@ -2586,6 +2586,9 @@ void Engine::renderFileBrowserPanel() {
     }
 
     if (triggerDeletePopup) {
+        if (audio.isReady()) {
+            audio.playPreview("Resources/Sounds/Info.mp3", 0.95f, false);
+        }
         ImGui::OpenPopup("Confirm Delete");
         triggerDeletePopup = false;
     }
@@ -2618,6 +2621,9 @@ void Engine::renderFileBrowserPanel() {
     }
 
     if (triggerRenamePopup) {
+        if (audio.isReady()) {
+            audio.playPreview("Resources/Sounds/Info.mp3", 0.95f, false);
+        }
         ImGui::OpenPopup("Rename Item");
         triggerRenamePopup = false;
     }

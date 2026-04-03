@@ -121,6 +121,20 @@ public:
         bool hdrEnabled = false;
         bool bloomUsed = false;
         bool motionBlurUsed = false;
+        bool executionBegan = false;
+        bool compositeExecuted = false;
+        bool finalTextureDiffersFromSource = false;
+        unsigned int sourceTextureId = 0;
+        unsigned int sourceFramebufferId = 0;
+        unsigned int bloomExtractDestinationTextureId = 0;
+        unsigned int bloomExtractDestinationFramebufferId = 0;
+        unsigned int bloomBlurTextureId = 0;
+        unsigned int bloomBlurFramebufferId = 0;
+        unsigned int compositeDestinationTextureId = 0;
+        unsigned int compositeDestinationFramebufferId = 0;
+        unsigned int finalPresentedTextureId = 0;
+        unsigned int finalPresentedFramebufferId = 0;
+        std::string skipReason;
     };
 
 private:
@@ -258,6 +272,8 @@ private:
     void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects);
     unsigned int applyPostProcessing(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory);
     ResolvedPostFX gatherPostFX(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const;
+    unsigned int findFramebufferForTexture(unsigned int texture) const;
+    void logPostFxDebug(const PostProcessStats& stats, bool allowHistory) const;
 
 public:
     Renderer() = default;
@@ -287,6 +303,8 @@ public:
     unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false, int previewSlot = 0);
     void renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, const std::vector<int>* previewIds = nullptr);
     void endRender();
+    PostFXSettings resolvePostFXSettings(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const;
+    unsigned int postProcessTexture(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory = false);
 
     Skybox* getSkybox() { return skybox; }
     unsigned int getViewportTexture() const { return displayTexture ? displayTexture : viewportTexture; }
@@ -294,6 +312,8 @@ public:
     const RenderStats& getLastPreviewStats() const { return previewStats; }
     const PostProcessStats& getLastViewportPostStats() const { return viewportPostStats; }
     const PostProcessStats& getLastPreviewPostStats() const { return previewPostStats; }
+    uint64_t getTextureCacheUsageBytes() const { return static_cast<uint64_t>(textureCacheUsageBytes); }
+    uint64_t getTextureCacheBudgetBytes() const { return static_cast<uint64_t>(textureCacheBudgetBytes); }
 
     struct UiTargetInfo {
         unsigned int fbo = 0;

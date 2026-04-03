@@ -39,12 +39,15 @@ public:
     void update(const std::vector<SceneObject>& objects, const Camera& listenerCamera, bool playing);
 
     bool playPreview(const std::string& path, float volume = 1.0f, bool loop = false);
+    bool playOneShot(const std::string& path, float volume = 1.0f);
     void stopPreview();
     bool isPreviewing(const std::string& path) const;
     const AudioClipPreview* getPreview(const std::string& path);
     bool getPreviewTime(const std::string& path, double& cursorSeconds, double& durationSeconds) const;
     bool seekPreview(const std::string& path, double seconds);
     bool setPreviewLoop(bool loop);
+    bool setPreviewVolume(float volume);
+    void setPrefer2DSpatialAudio(bool enabled) { prefer2DSpatialAudio = enabled; }
 
     // Scene audio control (runtime)
     bool playObjectSound(const SceneObject& obj);
@@ -128,13 +131,19 @@ private:
     bool previewActive = false;
     std::string previewPath;
     std::shared_ptr<DecodedAudioData> previewDecodedData;
+    bool prefer2DSpatialAudio = false;
+    glm::vec3 lastListenerPosition = glm::vec3(0.0f);
 
     void destroyActiveSounds();
     void destroyOneShotSounds();
     void cleanupFinishedOneShots();
     bool ensureSoundFor(const SceneObject& obj);
     void refreshSoundParams(const SceneObject& obj, ActiveSound& snd);
-    float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos) const;
+    bool shouldUsePlanar2DAudio(const SceneObject& obj) const;
+    float computePlanarPan(const SceneObject& obj, const glm::vec3& listenerPos, float spatialBlend) const;
+    float computeDistanceAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const;
+    glm::vec3 computeSpatializedPosition(const SceneObject& obj, float spatialBlend, const glm::vec3& listenerPos) const;
+    float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const;
     AudioClipPreview loadPreview(const std::string& path);
     std::shared_ptr<DecodedAudioData> decodeClipToMemory(const std::string& path);
     bool initSoundFromPath(const std::string& path, ma_uint32 flags, ma_sound_group* group, ma_sound& sound,

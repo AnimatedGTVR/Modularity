@@ -2,6 +2,7 @@
 #include "ModelLoader.h"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -2188,19 +2189,174 @@ void Engine::renderProjectBrowserPanel() {
         saveEditorUserSettings();
     }
 
+    struct ProjectSettingsUiIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
+    };
+    const bool hasVulkanUiImages = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
+    auto resolveProjectSettingsIcon = [&](const char* iconPath) -> ProjectSettingsUiIcon {
+        if (!iconPath || !*iconPath) {
+            return {};
+        }
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+                icon && icon->GetID()) {
+                return { static_cast<ImTextureID>(icon->GetID()), true };
+            }
+        }
+        if (hasVulkanUiImages && vulkanRenderer) {
+            ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (icon != static_cast<ImTextureID>(0)) {
+                return { icon, false };
+            }
+        }
+        return {};
+    };
+
+    struct ProjectSettingsTabInfo {
+        const char* label;
+        const char* iconPath;
+        const char* fallback;
+    };
+
+    static constexpr ProjectSettingsTabInfo tabs[] = {
+        { "Scenes", "Resources/Engine-Root/Project Settings/Tabs/Scenes.png", "S" },
+        { "Assets", "Resources/Engine-Root/Project Settings/Tabs/Assets.png", "A" },
+        { "Editor", "Resources/Engine-Root/Project Settings/Tabs/Editor.png", "E" },
+        { "Build", "Resources/Engine-Root/Project Settings/Tabs/Build.png", "B" },
+        { "Compilation", "Resources/Engine-Root/Project Settings/Tabs/Compilation.png", "C" }
+    };
+
     static int selectedTab = 0;
-    const char* tabs[] = { "Scenes", "Assets", "Editor", "Build", "Compilation" };
     constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
+    static std::array<float, tabCount> tabSelectionAnim = {};
     if (selectedTab < 0 || selectedTab >= tabCount) {
         selectedTab = 0;
     }
 
-    ImGui::BeginChild("SettingsNav", ImVec2(180, 0), true);
+    const float tabAnimLerpSelected = std::clamp(ImGui::GetIO().DeltaTime * 10.0f, 0.0f, 1.0f);
+    const float tabAnimLerpDeselected = std::clamp(ImGui::GetIO().DeltaTime * 16.0f, 0.0f, 1.0f);
+    for (int i = 0; i < tabCount; ++i) {
+        const float target = (selectedTab == i) ? 1.0f : 0.0f;
+        const float lerpT = (selectedTab == i) ? tabAnimLerpSelected : tabAnimLerpDeselected;
+        tabSelectionAnim[i] = ImLerp(tabSelectionAnim[i], target, lerpT);
+    }
+
+    auto drawProjectSettingsTab = [&](int index) {
+        const ProjectSettingsTabInfo& tab = tabs[index];
+        const bool isCurrentSelection = (selectedTab == index);
+        const float selectedBlend = tabSelectionAnim[index];
+        const float pulse = isCurrentSelection ? std::sin(static_cast<float>(ImGui::GetTime()) * 7.5f) : 0.0f;
+        const float brighten = std::max(0.0f, pulse) * selectedBlend;
+        const float darken = std::max(0.0f, -pulse) * selectedBlend;
+
+        const ImVec2 slotPos = ImGui::GetCursorScreenPos();
+        const ImVec2 slotSize(ImGui::GetContentRegionAvail().x, 38.0f);
+        ImGui::PushID(index);
+        const bool pressed = ImGui::InvisibleButton("##ProjectSettingsNavTab", slotSize);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool held = ImGui::IsItemActive();
+        ImGui::PopID();
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImRect slot(slotPos, ImVec2(slotPos.x + slotSize.x, slotPos.y + slotSize.y));
+        const float expand = isCurrentSelection
+            ? selectedBlend * (0.75f + brighten * 1.35f - darken * 0.55f)
+            : selectedBlend * 0.2f;
+        const float insetX = std::max(3.0f, 5.0f - expand);
+        const float insetY = std::max(1.5f, 2.5f - expand * 0.45f);
+        const ImVec2 cardMin(slot.Min.x + insetX, slot.Min.y + insetY);
+        const ImVec2 cardMax(slot.Max.x - insetX, slot.Max.y - insetY);
+        const float rounding = 13.0f;
+
+        ImVec4 bg = ImVec4(0.12f, 0.14f, 0.19f, 0.92f);
+        ImVec4 border = ImVec4(0.22f, 0.27f, 0.36f, 0.90f);
+        ImVec4 accent = ImVec4(0.38f, 0.63f, 0.98f, 0.95f);
+        if (hovered) {
+            bg = ImVec4(0.15f, 0.18f, 0.24f, 0.95f);
+            border = ImVec4(0.32f, 0.42f, 0.56f, 0.95f);
+        }
+        if (selectedBlend > 0.001f) {
+            bg = ImVec4(0.14f + brighten * 0.06f - darken * 0.03f,
+                        0.20f + brighten * 0.08f - darken * 0.05f,
+                        0.30f + brighten * 0.12f - darken * 0.06f,
+                        0.96f);
+            border = ImVec4(0.32f + brighten * 0.10f,
+                            0.58f + brighten * 0.10f,
+                            0.95f,
+                            0.98f);
+            accent = ImVec4(0.45f + brighten * 0.10f,
+                            0.78f + brighten * 0.08f,
+                            1.0f,
+                            0.98f);
+        }
+        if (held) {
+            bg.x += 0.03f;
+            bg.y += 0.03f;
+            bg.z += 0.03f;
+        }
+
+        if (isCurrentSelection && selectedBlend > 0.05f) {
+            drawList->AddRectFilled(
+                ImVec2(cardMin.x + 1.0f, cardMin.y + 3.0f),
+                ImVec2(cardMax.x + 1.0f, cardMax.y + 3.0f),
+                ImGui::GetColorU32(ImVec4(0.02f, 0.04f, 0.08f, 0.16f + 0.08f * selectedBlend)),
+                rounding);
+        }
+        drawList->AddRectFilled(cardMin, cardMax, ImGui::GetColorU32(bg), rounding);
+        drawList->AddRect(cardMin, cardMax, ImGui::GetColorU32(border), rounding, 0, 1.0f + selectedBlend);
+        if (selectedBlend > 0.02f) {
+            const float stripeWidth = isCurrentSelection ? 3.0f + brighten * 1.4f : 2.0f;
+            drawList->AddRectFilled(
+                ImVec2(cardMin.x, cardMin.y + 7.0f),
+                ImVec2(cardMin.x + stripeWidth, cardMax.y - 7.0f),
+                ImGui::GetColorU32(accent),
+                4.0f);
+        }
+
+        const ProjectSettingsUiIcon icon = resolveProjectSettingsIcon(tab.iconPath);
+        const float iconSize = isCurrentSelection
+            ? 18.0f + selectedBlend * (2.2f + brighten * 1.5f - darken * 0.6f)
+            : 18.0f + selectedBlend * 0.4f;
+        const ImVec2 iconMin(cardMin.x + 14.0f, cardMin.y + (cardMax.y - cardMin.y - iconSize) * 0.5f);
+        const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
+        const int iconAlpha = selectedBlend > 0.05f ? 255 : hovered ? 235 : 214;
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            drawList->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax, IM_COL32(255, 255, 255, iconAlpha));
+        } else {
+            drawList->AddText(
+                ImVec2(cardMin.x + 16.0f, cardMin.y + (cardMax.y - cardMin.y - ImGui::GetTextLineHeight()) * 0.5f),
+                IM_COL32(255, 255, 255, iconAlpha),
+                tab.fallback);
+        }
+
+        const ImVec2 textSize = ImGui::CalcTextSize(tab.label);
+        const float textX = iconMax.x + 12.0f;
+        const float textY = cardMin.y + (cardMax.y - cardMin.y - textSize.y) * 0.5f;
+        const ImU32 textColor = ImGui::GetColorU32(
+            selectedBlend > 0.05f
+                ? ImVec4(0.95f, 0.98f, 1.0f, 1.0f)
+                : hovered
+                    ? ImVec4(0.90f, 0.94f, 0.98f, 1.0f)
+                    : ImVec4(0.78f, 0.83f, 0.89f, 1.0f));
+        drawList->AddText(ImVec2(textX, textY), textColor, tab.label);
+        return pressed;
+    };
+
+    ImGui::BeginChild("SettingsNav", ImVec2(214.0f, 0), true);
     ImGui::TextDisabled("Categories");
     ImGui::Separator();
     for (int i = 0; i < tabCount; ++i) {
-        if (ImGui::Selectable(tabs[i], selectedTab == i, 0, ImVec2(0, 32))) {
-            selectedTab = i;
+        if (drawProjectSettingsTab(i)) {
+            if (selectedTab != i) {
+                selectedTab = i;
+                audio.playPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false);
+            }
+        }
+        if (i + 1 < tabCount) {
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
         }
     }
     ImGui::EndChild();
@@ -2390,10 +2546,20 @@ void Engine::renderProjectBrowserPanel() {
             }
             ImGui::EndDisabled();
 
-            if (ImGui::Checkbox("Show Game Profiler", &showGameProfiler)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Show Viewport Profiler Overlay", &showGameProfiler)) editorSettingsChanged = true;
+            if (ImGui::Checkbox("Reveal Debug Sections and Menus", &revealDebugSectionsAndMenus)) editorSettingsChanged = true;
             if (ImGui::Checkbox("Canvas Guides", &showCanvasOverlay)) editorSettingsChanged = true;
             if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
             if (ImGui::Checkbox("Viewport Hint Overlay", &showViewportHintOverlay)) editorSettingsChanged = true;
+            const char* toolbarCornerOptions[] = { "Bottom Left", "Bottom Right", "Top Left", "Top Right" };
+            int toolbarCornerIndex = static_cast<int>(sceneViewportToolbarCorner);
+            if (toolbarCornerIndex < 0 || toolbarCornerIndex >= static_cast<int>(IM_ARRAYSIZE(toolbarCornerOptions))) {
+                toolbarCornerIndex = 0;
+            }
+            if (ImGui::Combo("Viewport Toolbar Corner", &toolbarCornerIndex, toolbarCornerOptions, IM_ARRAYSIZE(toolbarCornerOptions))) {
+                sceneViewportToolbarCorner = static_cast<ViewportToolbarCorner>(toolbarCornerIndex);
+                editorSettingsChanged = true;
+            }
             if (ImGui::Checkbox("2D Light Stats Overlay", &showLight2DStatsOverlay)) editorSettingsChanged = true;
             if (ImGui::SliderFloat("2D Light Buffer Scale", &light2DLightingBufferScale, 0.5f, 1.0f, "%.2fx")) {
                 light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
@@ -2477,6 +2643,12 @@ void Engine::renderProjectBrowserPanel() {
                 editorSettingsChanged = true;
             }
             ImGui::EndDisabled();
+            if (revealDebugSectionsAndMenus) {
+                ImGui::Separator();
+                if (ImGui::CollapsingHeader("Game Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    drawGameProfilerContent();
+                }
+            }
         }
 
         if (editorSettingsChanged) {
@@ -2609,6 +2781,28 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
+        {
+            const ProjectSettingsUiIcon cppLogo = resolveProjectSettingsIcon(
+                "Resources/Engine-Root/Project Settings/CompilationTab/CPPLogo.png");
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.11f, 0.16f, 0.84f));
+            ImGui::BeginChild("CompilationHeader", ImVec2(0, 76.0f), true,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            if (cppLogo.id != static_cast<ImTextureID>(0)) {
+                const ImVec2 uvMin = cppLogo.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                const ImVec2 uvMax = cppLogo.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                ImGui::Image(cppLogo.id, ImVec2(44.0f, 44.0f), uvMin, uvMax);
+                ImGui::SameLine();
+            }
+            ImGui::BeginGroup();
+            ImGui::Text("Compilation");
+            ImGui::TextDisabled("C++26 default, C++23 fallback, pre-C++20 marked deprecated.");
+            ImGui::TextDisabled("Script compiler flags are normalized per toolchain.");
+            ImGui::EndGroup();
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+        }
+
         bool editorSettingsChanged = false;
         if (ImGui::CollapsingHeader("Compiler Workflow", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::Checkbox("Auto-compile on Save", &scriptEditorState.autoCompileOnSave)) {
@@ -2640,17 +2834,58 @@ void Engine::renderProjectBrowserPanel() {
                 }
             };
 
-            const char* cppStd[] = {"c++17", "c++20", "c++23", "gnu++20"};
-            int cppIdx = 1;
-            for (int i = 0; i < IM_ARRAYSIZE(cppStd); ++i) {
-                if (ui.config.cppStandard == cppStd[i]) {
+            auto canonicalCppStd = [](std::string value) {
+                std::transform(value.begin(), value.end(), value.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (value == "c++2b") return std::string("c++23");
+                if (value == "gnu++2b") return std::string("gnu++23");
+                if (value == "c++2c") return std::string("c++26");
+                if (value == "gnu++2c") return std::string("gnu++26");
+                return value;
+            };
+            auto isDeprecatedCppStd = [&](const std::string& value) {
+                const std::string normalized = canonicalCppStd(value);
+                return normalized == "c++17" || normalized == "gnu++17" ||
+                       normalized == "c++14" || normalized == "gnu++14";
+            };
+
+            static const char* cppStdLabels[] = {
+                "c++26 (Default)",
+                "c++23",
+                "c++20",
+                "c++17 (Deprecated)",
+                "gnu++26",
+                "gnu++23",
+                "gnu++20",
+                "gnu++17 (Deprecated)"
+            };
+            static const char* cppStdValues[] = {
+                "c++26",
+                "c++23",
+                "c++20",
+                "c++17",
+                "gnu++26",
+                "gnu++23",
+                "gnu++20",
+                "gnu++17"
+            };
+
+            int cppIdx = 0;
+            const std::string currentCppStandard = canonicalCppStd(ui.config.cppStandard);
+            for (int i = 0; i < IM_ARRAYSIZE(cppStdValues); ++i) {
+                if (currentCppStandard == cppStdValues[i]) {
                     cppIdx = i;
                     break;
                 }
             }
-            if (ImGui::Combo("C++ Standard", &cppIdx, cppStd, IM_ARRAYSIZE(cppStd))) {
-                ui.config.cppStandard = cppStd[cppIdx];
+            if (ImGui::Combo("C++ Standard", &cppIdx, cppStdLabels, IM_ARRAYSIZE(cppStdLabels))) {
+                ui.config.cppStandard = cppStdValues[cppIdx];
                 ui.dirty = true;
+            }
+            if (isDeprecatedCppStd(ui.config.cppStandard)) {
+                ImGui::TextDisabled("ModuCPP standards below C++20 are deprecated and may be removed later.");
+            } else {
+                ImGui::TextDisabled("Default is C++26. Use C++23 if your toolchain is not ready for C++26 yet.");
             }
 
             editPath("Scripts Directory", ui.config.scriptsDir);

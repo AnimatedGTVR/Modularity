@@ -592,7 +592,7 @@ bool Engine::savePixelSpriteDocument() {
         }
         sidecarDocument.spriteVersion = 1;
         sidecarDocument.expectedMinimumModuEngineVersionOrHigher =
-            pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty() ? "ModuEngine V6.7" : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher;
+            pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty() ? "V6.7" : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher;
         sidecarDocument.expectLayers = std::max(1, static_cast<int>(pixelSpriteDocument.layers.size()));
         sidecarDocument.expectRects = static_cast<int>(pixelSpriteDocument.spriteFrames.size());
         sidecarDocument.strictValidation = pixelSpriteDocument.strictValidation;
@@ -1015,10 +1015,24 @@ void Engine::renderPixelSpriteEditorWindow() {
                               const char* tooltip,
                               bool active,
                               bool disabled,
-                              ImVec2 size) -> bool {
+                              ImVec2 size,
+                              bool animatedSelection = false) -> bool {
         if (disabled) {
             ImGui::BeginDisabled();
         }
+
+        ImGui::PushID(id);
+        float* activeAnimRef = ImGui::GetStateStorage()->GetFloatRef(ImGui::GetID("##PixelSpriteIconAnim"), 0.0f);
+        ImGui::PopID();
+        const float targetAnim = active ? 1.0f : 0.0f;
+        const float animLerp = std::clamp(ImGui::GetIO().DeltaTime * (active ? 11.0f : 18.0f), 0.0f, 1.0f);
+        *activeAnimRef = ImLerp(*activeAnimRef, targetAnim, animLerp);
+        const float activeAnim = animatedSelection ? *activeAnimRef : (active ? 1.0f : 0.0f);
+        const float pulse = (animatedSelection && active && activeAnim > 0.001f)
+            ? std::sin(static_cast<float>(ImGui::GetTime()) * 7.5f)
+            : 0.0f;
+        const float brighten = std::max(0.0f, pulse) * activeAnim;
+        const float darken = std::max(0.0f, -pulse) * activeAnim;
 
         const ImVec2 pos = ImGui::GetCursorScreenPos();
         const bool pressed = ImGui::InvisibleButton(id, size);
@@ -1026,24 +1040,50 @@ void Engine::renderPixelSpriteEditorWindow() {
         const ImVec2 max(pos.x + size.x, pos.y + size.y);
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const float rounding = size.x >= 40.0f ? 8.0f : 5.0f;
+        const float expand = animatedSelection
+            ? activeAnim * (0.7f + brighten * 1.2f - darken * 0.45f)
+            : 0.0f;
+        const float inset = std::max(1.5f, 2.5f - expand * 0.9f);
+        const ImVec2 frameMin(pos.x + inset, pos.y + inset);
+        const ImVec2 frameMax(max.x - inset, max.y - inset);
 
-        const ImU32 bgColor = active
-            ? IM_COL32(92, 54, 164, disabled ? 110 : 235)
+        ImVec4 bg = active
+            ? ImVec4(0.36f, 0.21f, 0.64f, disabled ? 0.45f : 0.92f)
             : hovered
-                ? IM_COL32(58, 36, 99, disabled ? 90 : 210)
-                : IM_COL32(24, 26, 40, disabled ? 78 : 188);
-        const ImU32 borderColor = active
-            ? IM_COL32(212, 182, 255, disabled ? 130 : 255)
+                ? ImVec4(0.23f, 0.14f, 0.39f, disabled ? 0.35f : 0.82f)
+                : ImVec4(0.09f, 0.10f, 0.16f, disabled ? 0.30f : 0.74f);
+        ImVec4 border = active
+            ? ImVec4(0.83f, 0.71f, 1.0f, disabled ? 0.52f : 1.0f)
             : hovered
-                ? IM_COL32(128, 101, 182, disabled ? 108 : 220)
-                : IM_COL32(67, 71, 102, disabled ? 88 : 168);
-        drawList->AddRectFilled(pos, max, bgColor, rounding);
-        drawList->AddRect(pos, max, borderColor, rounding, 0, active ? 2.0f : 1.0f);
+                ? ImVec4(0.50f, 0.40f, 0.72f, disabled ? 0.40f : 0.86f)
+                : ImVec4(0.26f, 0.28f, 0.40f, disabled ? 0.32f : 0.66f);
+        if (activeAnim > 0.001f) {
+            bg = ImVec4(0.34f + brighten * 0.08f - darken * 0.03f,
+                        0.20f + brighten * 0.05f - darken * 0.02f,
+                        0.60f + brighten * 0.10f - darken * 0.04f,
+                        disabled ? 0.45f : 0.93f);
+            border = ImVec4(0.78f + brighten * 0.10f,
+                            0.64f + brighten * 0.06f,
+                            1.0f,
+                            disabled ? 0.52f : 1.0f);
+        }
+        if (animatedSelection && activeAnim > 0.05f && active) {
+            drawList->AddRectFilled(
+                ImVec2(frameMin.x + 1.0f, frameMin.y + 2.0f),
+                ImVec2(frameMax.x + 1.0f, frameMax.y + 2.0f),
+                ImGui::GetColorU32(ImVec4(0.10f, 0.05f, 0.18f, disabled ? 0.08f : (0.18f + brighten * 0.08f))),
+                rounding);
+        }
+        drawList->AddRectFilled(frameMin, frameMax, ImGui::GetColorU32(bg), rounding);
+        drawList->AddRect(frameMin, frameMax, ImGui::GetColorU32(border), rounding, 0, 1.0f + activeAnim);
 
         const PixelSpriteUiIcon icon = resolveUiIcon(iconPath);
         const float iconInset = size.x >= 40.0f ? 8.0f : 5.0f;
-        const ImVec2 iconMin(pos.x + iconInset, pos.y + iconInset);
-        const ImVec2 iconMax(max.x - iconInset, max.y - iconInset);
+        const float iconGrow = animatedSelection
+            ? activeAnim * (1.0f + brighten * 1.1f - darken * 0.35f)
+            : 0.0f;
+        const ImVec2 iconMin(frameMin.x + iconInset - iconGrow * 0.35f, frameMin.y + iconInset - iconGrow * 0.35f);
+        const ImVec2 iconMax(frameMax.x - iconInset + iconGrow * 0.35f, frameMax.y - iconInset + iconGrow * 0.35f);
         const int alpha = disabled ? 104 : active ? 255 : hovered ? 240 : 214;
         if (icon.id != static_cast<ImTextureID>(0)) {
             const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
@@ -1191,6 +1231,9 @@ void Engine::renderPixelSpriteEditorWindow() {
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.10f, 0.16f, 0.96f));
     if (ImGui::BeginChild("PixelSpriteTopBar", ImVec2(0.0f, 84.0f), true)) {
+        auto playToolbarTick = [&]() {
+            audio.playPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false);
+        };
         const float sectionSpacing = 12.0f;
         const float totalWidth = ImGui::GetContentRegionAvail().x;
         const float actionsWidth = 228.0f;
@@ -1219,24 +1262,29 @@ void Engine::renderPixelSpriteEditorWindow() {
         ImGui::SameLine(0.0f, sectionSpacing);
         ImGui::BeginChild("PixelSpriteTopBarActions", ImVec2(actionsWidth, 0.0f), false);
         ImGui::TextDisabled("Actions");
-        if (drawIconButton("##PixelSpriteLoad", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Load Sprite.png", "O", "Open image from project assets", false, !projectManager.currentProject.isLoaded, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteLoad", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Load Sprite.png", "O", "Open image from project assets", false, !projectManager.currentProject.isLoaded, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             openPixelSpriteImagePicker();
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteSave", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Save.png", "S", "Save sprite", false, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteSave", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Save.png", "S", "Save sprite", false, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             ensureProjectAssetPath();
             savePixelSpriteDocument();
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteUndo", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Undo.png", "U", "Undo", false, pixelSpriteUndoStack.size() <= 1, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteUndo", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Undo.png", "U", "Undo", false, pixelSpriteUndoStack.size() <= 1, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             undoHistory();
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteRedo", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Redo.png", "R", "Redo", false, pixelSpriteRedoStack.empty(), ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteRedo", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Redo.png", "R", "Redo", false, pixelSpriteRedoStack.empty(), ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             redoHistory();
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteApply", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Apply to Object.png", "A", "Apply sprite clips to selected object", false, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteApply", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Apply to Object.png", "A", "Apply sprite clips to selected object", false, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             applyDocToSelectedSprite();
         }
         ImGui::EndChild();
@@ -1244,18 +1292,25 @@ void Engine::renderPixelSpriteEditorWindow() {
         ImGui::SameLine(0.0f, sectionSpacing);
         ImGui::BeginChild("PixelSpriteTopBarView", ImVec2(0.0f, 0.0f), false);
         ImGui::TextDisabled("View");
-        if (drawIconButton("##PixelSpriteModeEdit", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Edit Mode.png", "E", "Edit mode", pixelSpriteEditorMode == PixelSpriteEditorMode::Edit, false, ImVec2(32.0f, 32.0f))) {
-            pixelSpriteEditorMode = PixelSpriteEditorMode::Edit;
+        if (drawIconButton("##PixelSpriteModeEdit", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Edit Mode.png", "E", "Edit mode", pixelSpriteEditorMode == PixelSpriteEditorMode::Edit, false, ImVec2(32.0f, 32.0f), true)) {
+            if (pixelSpriteEditorMode != PixelSpriteEditorMode::Edit) {
+                playToolbarTick();
+                pixelSpriteEditorMode = PixelSpriteEditorMode::Edit;
+            }
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteModeSheet", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Spritesheet Mode.png", "SS", "Spritesheet mode", pixelSpriteEditorMode == PixelSpriteEditorMode::SpriteSheet, false, ImVec2(32.0f, 32.0f))) {
-            pixelSpriteEditorMode = PixelSpriteEditorMode::SpriteSheet;
-            if (!pixelSpriteToolIsSelectionLike(pixelSpriteTool)) {
-                pixelSpriteTool = PixelSpriteTool::SelectArea;
+        if (drawIconButton("##PixelSpriteModeSheet", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Spritesheet Mode.png", "SS", "Spritesheet mode", pixelSpriteEditorMode == PixelSpriteEditorMode::SpriteSheet, false, ImVec2(32.0f, 32.0f), true)) {
+            if (pixelSpriteEditorMode != PixelSpriteEditorMode::SpriteSheet) {
+                playToolbarTick();
+                pixelSpriteEditorMode = PixelSpriteEditorMode::SpriteSheet;
+                if (!pixelSpriteToolIsSelectionLike(pixelSpriteTool)) {
+                    pixelSpriteTool = PixelSpriteTool::SelectArea;
+                }
             }
         }
         ImGui::SameLine(0.0f, 10.0f);
-        if (drawIconButton("##PixelSpriteZoomOut", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Magnifier Zoom Out.png", "-", "Zoom out", false, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteZoomOut", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Magnifier Zoom Out.png", "-", "Zoom out", false, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             pixelSpriteTargetZoom = pixelSpritePixelPerfect
                 ? std::max(1.0f, std::round(pixelSpriteTargetZoom) - 1.0f)
                 : std::max(1.0f, pixelSpriteTargetZoom / 1.12f);
@@ -1268,17 +1323,20 @@ void Engine::renderPixelSpriteEditorWindow() {
             }
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpriteZoomIn", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Magnifier Zoom In.png", "+", "Zoom in", false, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteZoomIn", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Magnifier Zoom In.png", "+", "Zoom in", false, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             pixelSpriteTargetZoom = pixelSpritePixelPerfect
                 ? std::min(128.0f, std::round(pixelSpriteTargetZoom) + 1.0f)
                 : std::min(128.0f, pixelSpriteTargetZoom * 1.12f);
         }
         ImGui::SameLine(0.0f, 10.0f);
-        if (drawIconButton("##PixelSpriteGridToggle", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Pixel Grid.png", "G", "Toggle pixel grid", pixelSpriteShowGrid, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpriteGridToggle", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Pixel Grid.png", "G", "Toggle pixel grid", pixelSpriteShowGrid, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             pixelSpriteShowGrid = !pixelSpriteShowGrid;
         }
         ImGui::SameLine(0.0f, 6.0f);
-        if (drawIconButton("##PixelSpritePixelPerfect", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Pixel Perfect.png", "PP", "Toggle pixel perfect zoom", pixelSpritePixelPerfect, false, ImVec2(32.0f, 32.0f))) {
+        if (drawIconButton("##PixelSpritePixelPerfect", "Resources/Engine-Root/Image Editor and Spritesheet Editor/Pixel Perfect.png", "PP", "Toggle pixel perfect zoom", pixelSpritePixelPerfect, false, ImVec2(32.0f, 32.0f), true)) {
+            playToolbarTick();
             pixelSpritePixelPerfect = !pixelSpritePixelPerfect;
             pixelSpriteTargetZoom = std::clamp(pixelSpriteTargetZoom, 1.0f, 128.0f);
             if (pixelSpritePixelPerfect) {
@@ -2151,7 +2209,7 @@ void Engine::renderPixelSpriteEditorWindow() {
             char versionBuf[128];
             std::snprintf(versionBuf, sizeof(versionBuf), "%s",
                           pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.empty()
-                              ? "ModuEngine V6.7"
+                              ? "V6.7"
                               : pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher.c_str());
             if (ImGui::InputText("Engine Version", versionBuf, sizeof(versionBuf))) {
                 pixelSpriteDocument.expectedMinimumModuEngineVersionOrHigher = versionBuf;

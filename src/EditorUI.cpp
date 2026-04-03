@@ -5,7 +5,6 @@
 #include <unordered_map>
 
 namespace {
-constexpr float kEditorBottomStatusReserveHeight = 24.0f;
 constexpr float kModularityUiFontSizeBase = 18.0f;
 constexpr float kModularityUiFontSizeOffset = -2.5f;
 
@@ -179,6 +178,57 @@ float smoothDampScalar(float current,
     return output;
 }
 
+}
+
+const EditorChromeMetrics& getEditorChromeMetrics(EditorChromeScale scale) {
+    static const EditorChromeMetrics kMetrics[] = {
+        {
+            0.84f,
+            ImVec2(7.0f, 3.0f),
+            ImVec2(7.0f, 2.0f),
+            15.0f,
+            3.0f,
+            18.0f,
+            ImVec2(88.0f, 27.0f),
+            10.0f,
+            ImVec2(520.0f, 300.0f)
+        },
+        {
+            0.90f,
+            ImVec2(9.0f, 4.0f),
+            ImVec2(8.0f, 2.0f),
+            16.0f,
+            3.0f,
+            20.0f,
+            ImVec2(96.0f, 30.0f),
+            12.0f,
+            ImVec2(560.0f, 320.0f)
+        },
+        {
+            0.98f,
+            ImVec2(11.0f, 5.0f),
+            ImVec2(10.0f, 3.0f),
+            18.0f,
+            4.0f,
+            24.0f,
+            ImVec2(108.0f, 34.0f),
+            14.0f,
+            ImVec2(620.0f, 360.0f)
+        }
+    };
+
+    const int idx = std::clamp(static_cast<int>(scale), 0, 2);
+    return kMetrics[idx];
+}
+
+const char* getEditorChromeScaleLabel(EditorChromeScale scale) {
+    switch (scale) {
+        case EditorChromeScale::Compact: return "Compact";
+        case EditorChromeScale::Big: return "Big";
+        case EditorChromeScale::Default:
+        default:
+            return "Default";
+    }
 }
 
 #pragma region File Browser
@@ -659,11 +709,11 @@ void applySuperRoundStyle(ImGuiStyle& style) {
 
 #pragma region Dockspace
 // Call once per frame before rendering editor panels.
-ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
+ImGuiID setupDockspace(EditorChromeScale chromeScale) {
     static bool dockspaceOpen = true;
     static ImGuiDockNodeFlags dockspaceFlags = ImGuiDockNodeFlags_None;
 
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking;
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -679,15 +729,8 @@ ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
     ImGui::Begin("DockSpace", &dockspaceOpen, windowFlags);
     ImGui::PopStyleVar(3);
 
-    if (ImGui::BeginMenuBar()) {
-        if (menuBarContent) {
-            menuBarContent();
-        }
-        ImGui::EndMenuBar();
-    }
-
     ImGuiID dockspaceId = ImGui::GetID("MainDockspace");
-    const float reserveHeight = getEditorBottomStatusReserveHeight();
+    const float reserveHeight = getEditorBottomStatusReserveHeight(chromeScale);
     ImVec2 dockspaceSize = ImGui::GetContentRegionAvail();
     dockspaceSize.y = ImMax(0.0f, dockspaceSize.y - reserveHeight);
     ImGui::DockSpace(dockspaceId, dockspaceSize, dockspaceFlags);
@@ -696,8 +739,8 @@ ImGuiID setupDockspace(const std::function<void()>& menuBarContent) {
     return dockspaceId;
 }
 
-float getEditorBottomStatusReserveHeight() {
-    return kEditorBottomStatusReserveHeight;
+float getEditorBottomStatusReserveHeight(EditorChromeScale chromeScale) {
+    return getEditorChromeMetrics(chromeScale).bottomReserveHeight;
 }
 #pragma endregion
 

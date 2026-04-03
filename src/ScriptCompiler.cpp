@@ -1,5 +1,6 @@
 #include "ScriptCompiler.h"
 #include "ModuCPPTranspiler.h"
+#include "ScriptRuntime.h"
 
 #include <algorithm>
 #include <array>
@@ -44,6 +45,38 @@ namespace {
             end--;
         }
         return value.substr(start, end - start);
+    }
+
+    std::string toLowerCopy(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    }
+
+    std::string canonicalizeCppStandard(std::string value) {
+        value = toLowerCopy(trimCopy(value));
+        if (value == "c++2b") return "c++23";
+        if (value == "gnu++2b") return "gnu++23";
+        if (value == "c++2c") return "c++26";
+        if (value == "gnu++2c") return "gnu++26";
+        return value;
+    }
+
+    std::string compilerCppStandardFlag(const std::string& value) {
+        const std::string normalized = canonicalizeCppStandard(value);
+#if defined(_WIN32)
+        if (normalized == "c++26" || normalized == "gnu++26") return "c++latest";
+        if (normalized == "c++23" || normalized == "gnu++23") return "c++23preview";
+        if (normalized == "c++20" || normalized == "gnu++20") return "c++20";
+        if (normalized == "c++17" || normalized == "gnu++17") return "c++17";
+        if (normalized == "c++14" || normalized == "gnu++14") return "c++14";
+#else
+        if (normalized == "c++26") return "c++2c";
+        if (normalized == "gnu++26") return "gnu++2c";
+        if (normalized == "c++23") return "c++2b";
+        if (normalized == "gnu++23") return "gnu++2b";
+#endif
+        return normalized;
     }
 
     bool addBundledScriptSdkIncludeRoots(const fs::path& start, ScriptBuildConfig& outConfig) {
@@ -667,7 +700,7 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
         std::string value = trim(cleaned.substr(pos + 1));
 
         if (key == "cppStandard") {
-            outConfig.cppStandard = value;
+            outConfig.cppStandard = canonicalizeCppStandard(value);
         } else if (key == "scriptsDir") {
             outConfig.scriptsDir = makeAbsolute(baseDir, value);
         } else if (key == "outDir") {
@@ -794,6 +827,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
     fs::path relativeParent = relToScripts.has_parent_path() ? relToScripts.parent_path() : fs::path();
     std::string baseName = scriptAbs.stem().string();
+    const std::string cppStandardFlag = compilerCppStandardFlag(config.cppStandard);
     fs::path objectPath = config.outDir / relativeParent / (baseName + ".o");
     fs::path secondaryObjectPath;
     fs::path dependencyPath;
@@ -1376,6 +1410,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             tickUpdateSpec.present || inspectorSpec.present || editorRenderSpec.present || editorExitSpec.present) {
             wrapper << "\n";
         }
+        wrapper << "MODULARITY_SCRIPT_EXPORT int Modularity_ScriptAbiVersion() {\n";
+        wrapper << "    return " << MODULARITY_NATIVE_SCRIPT_ABI_VERSION << ";\n";
+        wrapper << "}\n\n";
 
         auto emitScriptBridge = [&](const char* exportedName, const char* implName,
                                     const FunctionSpec& spec) {
@@ -1434,12 +1471,12 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
 
         std::ostringstream scriptRsp;
-        scriptRsp << "/nologo /TP /std:" << config.cppStandard << " /MD /Zi /Od";
+        scriptRsp << "/nologo /TP /std:" << cppStandardFlag << " /MD /Zi /Od";
         appendWindowsIncludesAndDefines(scriptRsp);
         scriptRsp << " /c \"" << compileSourcePath.string() << "\" /Fo\"" << objectPath.string() << "\"";
 
         std::ostringstream wrapperRsp;
-        wrapperRsp << "/nologo /TP /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        wrapperRsp << "/nologo /TP /std:" << cppStandardFlag << " /EHsc /MD /Zi /Od";
         appendWindowsIncludesAndDefines(wrapperRsp);
         wrapperRsp << " /c \"" << wrapperPath.string() << "\" /Fo\"" << secondaryObjectPath.string() << "\"";
 
@@ -1463,12 +1500,12 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         linkCmd << "link @\"" << linkRspPath.string() << "\"";
         buildSignaturePayload = scriptRsp.str() + "\n---rsp---\n" + wrapperRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
-        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << compileSourcePath.string() << "\" -o \"" << objectPath.string() << "\"";
         compileCmd << " && ";
-        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << secondaryDependencyPath.string() << "\"";
         compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
@@ -1524,6 +1561,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             }
             wrapper << "\n";
             wrapper << "extern \"C\" {\n";
+            wrapper << "MODULARITY_SCRIPT_EXPORT int Modularity_ScriptAbiVersion() {\n";
+            wrapper << "    return " << MODULARITY_NATIVE_SCRIPT_ABI_VERSION << ";\n";
+            wrapper << "}\n\n";
 
             auto emitTickBridge = [&](const char* exportedName, const char* implName,
                                       const FunctionSpec& spec) {
@@ -1590,7 +1630,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
 
         std::ostringstream compileRsp;
-        compileRsp << "/nologo /std:" << config.cppStandard << " /EHsc /MD /Zi /Od";
+        compileRsp << "/nologo /std:" << cppStandardFlag << " /EHsc /MD /Zi /Od";
         appendWindowsIncludesAndDefines(compileRsp);
         compileRsp << " /c \"" << sourceToCompile.string() << "\" /Fo\"" << objectPath.string() << "\"";
 
@@ -1611,7 +1651,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         linkCmd << "link @\"" << linkRspPath.string() << "\"";
         buildSignaturePayload = compileRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
-        compileCmd << posixCompileDriver(true) << " -std=" << config.cppStandard << " -fPIC -O0 -g";
+        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";

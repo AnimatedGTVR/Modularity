@@ -1,5 +1,7 @@
 # Scripts.modu
-cppStandard=c++20
+# Default native script target is C++26. Use c++23 if your compiler is not ready for C++26 yet.
+# ModuCPP standards below C++20 are deprecated and may be removed in a later version.
+cppStandard=c++26
 scriptsDir=Scripts
 outDir=Cache/ScriptBin
 includeDir=src

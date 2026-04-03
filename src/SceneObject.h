@@ -344,6 +344,22 @@ enum class PostFXToneMapper {
     ACES = 2
 };
 
+enum class PostFXDitherPalette {
+    FullColor = 0,
+    PS1Warm = 1,
+    PS1Cool = 2,
+    Mono = 3,
+    Sepia = 4
+};
+
+enum class PostFXDitherPattern {
+    Classic4x4 = 0,
+    Bayer8x8 = 1,
+    Bayer16x16 = 2,
+    Checker = 3,
+    HybridPS1 = 4
+};
+
 struct CameraComponent {
     SceneCameraType type = SceneCameraType::Player;
     float fov = FOV;
@@ -388,6 +404,42 @@ struct PostFXSettings {
     bool ambientOcclusionEnabled = false;
     float aoRadius = 0.0035f;
     float aoStrength = 0.6f;
+    bool ditherEnabled = false;
+    float ditherIntensity = 0.65f;
+    int ditherColorBits = 5;
+    float ditherDarkAdjustment = 0.35f;
+    float ditherPixelation = 0.0f;
+    float ditherSize = 1.0f;
+    float ditherContrast = 0.35f;
+    float ditherOffset = 0.0f;
+    PostFXDitherPalette ditherPalette = PostFXDitherPalette::FullColor;
+    PostFXDitherPattern ditherPattern = PostFXDitherPattern::HybridPS1;
+    bool staticEnabled = false;
+    float staticIntensity = 0.15f;
+    float staticGrainScale = 2.0f;
+    float staticDarkAreaInfluence = 0.5f;
+    float staticSpeed = 1.0f;
+    bool staticDistortionEnabled = false;
+    float staticDistortionHorizontalJitterAmount = 0.003f;
+    float staticDistortionLineDensity = 128.0f;
+    float staticDistortionGlitchFrequency = 1.5f;
+    float staticDistortionStrength = 0.2f;
+    bool lensDistortionEnabled = false;
+    float lensDistortionAmount = 0.08f;
+    float lensDistortionEdgeFalloff = 0.75f;
+    glm::vec2 lensDistortionCenterOffset = glm::vec2(0.0f);
+    bool vhsOverlayEnabled = false;
+    float vhsOverlayOpacity = 0.6f;
+    float vhsOverlayScanlineStrength = 0.55f;
+    float vhsOverlayTapeNoise = 0.45f;
+    float vhsOverlayChromaBleed = 0.15f;
+    float vhsOverlayBottomNoiseBandHeight = 0.18f;
+    float vhsOverlayBottomNoiseBandIntensity = 0.85f;
+    bool wavyEnabled = false;
+    float wavyAmplitude = 0.006f;
+    float wavyFrequency = 16.0f;
+    float wavySpeed = 1.0f;
+    bool wavyVertical = false;
 };
 
 enum class ConsoleMessageType {
@@ -538,6 +590,7 @@ struct UIElementComponent {
 struct Rigidbody2DComponent {
     bool enabled = true;
     bool useGravity = false;
+    bool lockRotation = false;
     float gravityScale = 1.0f;
     float linearDamping = 0.0f;
     glm::vec2 velocity = glm::vec2(0.0f);
@@ -583,6 +636,7 @@ struct AudioSourceComponent {
     bool loop = true;
     bool playOnStart = true;
     bool spatial = true;
+    float spatialBlend = 1.0f; // 0 = fully 2D/centered, 1 = fully placed in world
     float minDistance = 1.0f;
     float maxDistance = 25.0f;
     AudioRolloffMode rolloffMode = AudioRolloffMode::Logarithmic;
@@ -755,6 +809,14 @@ inline bool IsObjectEnabledInHierarchy(const SceneObject& obj) {
 
 inline bool HasUIComponent(const SceneObject& obj) {
     return obj.hasUI && obj.ui.type != UIElementType::None;
+}
+
+inline float GetAudioSpatialBlend(const AudioSourceComponent& src) {
+    return std::clamp(src.spatial ? src.spatialBlend : 0.0f, 0.0f, 1.0f);
+}
+
+inline bool AudioSourceUsesSpatialization(const AudioSourceComponent& src) {
+    return GetAudioSpatialBlend(src) > 0.001f;
 }
 
 inline std::string MakeInspectorScriptComponentKey(int inspectorId) {

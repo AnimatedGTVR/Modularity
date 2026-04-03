@@ -158,12 +158,34 @@ struct Light2DScreenShadowCaster {
     std::vector<glm::vec2> polygon;
 };
 
+struct Light2DPostFXSettings {
+    bool enabled = false;
+    float ditherIntensity = 0.65f;
+    int colorBits = 5;
+    float darkAdjustment = 0.35f;
+    float ditherScale = 1.0f;
+    float pixelation = 0.0f;
+    float exposure = 0.0f;
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    glm::vec3 colorFilter = glm::vec3(1.0f);
+    float vignetteIntensity = 0.0f;
+    float vignetteSmoothness = 0.35f;
+    float chromaticAmount = 0.0f;
+    float sharpenStrength = 0.0f;
+    float grainAmount = 0.0f;
+    float scanlineIntensity = 0.0f;
+};
+
+bool Light2DHasVisiblePostFx(const Light2DPostFXSettings& settings);
+
 struct Light2DRenderRequest {
     int width = 0;
     int height = 0;
     glm::vec4 clearColor = glm::vec4(0.0f);
     glm::vec3 baseAmbient = glm::vec3(0.15f);
     float lightingBufferScale = 0.0f;
+    Light2DPostFXSettings postFx;
     std::array<Light2DBlendStyleDefinition, 4> blendStyles = {};
     std::vector<Light2DScreenSprite> sprites;
     std::vector<Light2DScreenLight> lights;
@@ -231,6 +253,7 @@ private:
 
     bool initialized = false;
     RenderTarget finalTarget;
+    RenderTarget postTarget;
     RenderTarget additiveTarget;
     RenderTarget multiplyTarget;
     RenderTarget subtractiveTarget;
@@ -245,6 +268,7 @@ private:
     std::unique_ptr<Shader> lightQuadShader;
     std::unique_ptr<Shader> lightFreeformShader;
     std::unique_ptr<Shader> spriteShader;
+    std::unique_ptr<Shader> postFxShader;
     float lightingBufferScale = 1.0f;
     std::vector<const Light2DScreenSprite*> orderedSpritesScratch;
     std::vector<const Light2DScreenLight*> orderedLightsScratch;
@@ -276,6 +300,10 @@ private:
                           int layer,
                           size_t spriteBegin,
                           size_t spriteEnd);
+    unsigned int applyPostProcessing(const Light2DRenderRequest& request,
+                                     unsigned int sourceTexture,
+                                     int width,
+                                     int height);
     void drawFullscreenQuad() const;
     void drawUnitQuad() const;
 };
