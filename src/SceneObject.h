@@ -701,6 +701,7 @@ public:
     std::string name;
     ObjectType type;
     bool enabled = true;
+    bool IsInvariable = false;
     // Derived each hierarchy update: true when all ancestors are locally enabled.
     bool hierarchyEnabled = true;
     int layer = 0;

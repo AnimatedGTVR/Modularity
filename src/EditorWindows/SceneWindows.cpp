@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "ModelLoader.h"
 #include "../SpritesheetFormat.h"
+#include "imgui.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -1414,12 +1415,12 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
 
 #pragma region Inspector Panel
 void Engine::renderInspectorPanel() {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::Begin("Inspector", &showInspector);
     ImGui::PopStyleVar();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
 
     if (deferInspectorRefresh) {
         deferInspectorRefresh = false;
@@ -1573,6 +1574,27 @@ void Engine::renderInspectorPanel() {
         }
         return {};
     };
+
+    // Resolve an inspector UI icon (OpenGL or Vulkan, no Y-flip needed for UI icons).
+    auto resolveInspectorIcon = [&](const char* iconPath) -> ImTextureID {
+        if (!iconPath || !*iconPath) return static_cast<ImTextureID>(0);
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+                icon && icon->GetID()) {
+                return static_cast<ImTextureID>(icon->GetID());
+            }
+        }
+        if (hasVulkanUiImages && vulkanRenderer) {
+            ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (icon != static_cast<ImTextureID>(0)) return icon;
+        }
+        return static_cast<ImTextureID>(0);
+    };
+
+    const ImTextureID iconGameObject  = resolveInspectorIcon("Resources/Engine-Root/Inspector/GameObject Icon.png");
+    const ImTextureID iconTransform   = resolveInspectorIcon("Resources/Engine-Root/Inspector/Transform Component Icon.png");
+    const ImTextureID iconScript      = resolveInspectorIcon("Resources/Engine-Root/Inspector/Script Icon.png");
+    const ImTextureID iconActionsMenu = resolveInspectorIcon("Resources/Engine-Root/Inspector/Tab Area/Actions (... menu).png");
 
     auto formatAudioClock = [](double seconds, bool roundUp) -> std::string {
         if (!std::isfinite(seconds) || seconds <= 0.0) {
@@ -2673,7 +2695,8 @@ void Engine::renderInspectorPanel() {
                                    const std::string& reorderKey,
                                    bool* enabled,
                                    bool defaultOpen,
-                                   const std::function<void()>& menuFn) -> ComponentHeaderState {
+                                   const std::function<void()>& menuFn,
+                                   ImTextureID iconTex = static_cast<ImTextureID>(0)) -> ComponentHeaderState {
         ComponentHeaderState state;
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_SpanAvailWidth;
         if (defaultOpen) {
@@ -2714,9 +2737,19 @@ void Engine::renderInspectorPanel() {
         if (menuFn) {
             const ImVec2 menuPos(right - controlSize, headerMin.y + (headerHeight - controlSize) * 0.5f);
             ImGui::SetCursorScreenPos(menuPos);
-            if (ImGui::Button("...", ImVec2(controlSize, controlSize))) {
-                ImGui::OpenPopup("ComponentMenu");
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.15f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
+            bool menuClicked = false;
+            if (iconActionsMenu != static_cast<ImTextureID>(0)) {
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+                menuClicked = ImGui::ImageButton("##menu", iconActionsMenu, ImVec2(controlSize - 2.0f, controlSize - 2.0f));
+                ImGui::PopStyleVar();
+            } else {
+                menuClicked = ImGui::Button("...", ImVec2(controlSize, controlSize));
             }
+            ImGui::PopStyleColor(3);
+            if (menuClicked) ImGui::OpenPopup("ComponentMenu");
             if (ImGui::BeginPopup("ComponentMenu")) {
                 menuFn();
                 ImGui::EndPopup();
@@ -2731,6 +2764,38 @@ void Engine::renderInspectorPanel() {
             }
         }
         ImGui::PopID();
+
+        // Draw component icon after the collapse arrow, before the label text.
+        // Icon is sized to headerHeight - 6 so it sits with a visible gap before the label.
+        // The label is placed by ImGui at ~arrowWidth + FramePadding.x from the left edge,
+        // so keeping iconSize smaller than that gap prevents overlap.
+        // Okay yeah, i completely forgot to do that when redesigning it lmfao.
+        if (iconTex != static_cast<ImTextureID>(0)) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float iconSize = headerHeight - 9.0f;
+            const float arrowWidth = headerHeight;
+            const float iconX = headerMin.x + arrowWidth + 2.0f;
+            const float iconY = headerMin.y + (headerHeight - iconSize) * 0.5f;
+            dl->AddImage(iconTex,
+                ImVec2(iconX, iconY),
+                ImVec2(iconX + iconSize, iconY + iconSize),
+                ImVec2(0, 0), ImVec2(1, 1),
+                IM_COL32(255, 255, 255, 210));
+        }
+
+        // Draw a colored left-border accent stripe on the header
+        {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec4 ac = ImGui::GetStyleColorVec4(ImGuiCol_Header);
+            ac.x = std::min(1.0f, ac.x + 0.35f);
+            ac.y = std::min(1.0f, ac.y + 0.35f);
+            ac.z = std::min(1.0f, ac.z + 0.35f);
+            ac.w = 1.0f;
+            dl->AddRectFilled(
+                ImVec2(headerMin.x, headerMin.y),
+                ImVec2(headerMin.x + 3.0f, headerMax.y),
+                ImGui::ColorConvertFloat4ToU32(ac));
+        }
 
         ImGui::SetCursorScreenPos(cursorAfter);
         return state;
@@ -3054,169 +3119,249 @@ void Engine::renderInspectorPanel() {
     };
 
     const bool runtimeSceneEditingLocked = isPlaying || specMode || testMode || playerMode;
-    auto objectHeader = drawComponentHeader("Object Info", "ObjectInfo", "", nullptr, true, std::function<void()>{});
-    if (objectHeader.open) {
-        char nameBuffer[128];
-        strncpy(nameBuffer, obj.name.c_str(), sizeof(nameBuffer));
-        nameBuffer[sizeof(nameBuffer) - 1] = '\0';
 
-        ImGui::Text("Name:");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+
+    char nameBuffer[128];
+    strncpy(nameBuffer, obj.name.c_str(), sizeof(nameBuffer));
+    nameBuffer[sizeof(nameBuffer) - 1] = '\0';
+
+    bool nameHovered = false;
+
+    if (ImGui::BeginTable("##ObjectMetaTopTable", 4, ImGuiTableFlags_SizingStretchProp))
+    {
+        const float objIconSize = ImGui::GetFrameHeight();
+        ImGui::TableSetupColumn("IconColumn",      ImGuiTableColumnFlags_WidthFixed, objIconSize);
+        ImGui::TableSetupColumn("EnableColumn",    ImGuiTableColumnFlags_WidthFixed, 18.0f);
+        ImGui::TableSetupColumn("NameColumn",      ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("InvariableColumn",ImGuiTableColumnFlags_WidthFixed, 110.0f);
+
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        if (iconGameObject != static_cast<ImTextureID>(0)) {
+            ImGui::Image(iconGameObject, ImVec2(objIconSize, objIconSize));
+        } else {
+            ImGui::Dummy(ImVec2(objIconSize, objIconSize));
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        if (ImGui::Checkbox("##Enabled", &obj.enabled))
+        {
+            objectEnabledChanged = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+
+        ImGui::TableSetColumnIndex(2);
         ImGui::BeginDisabled(runtimeSceneEditingLocked);
-        if (ImGui::InputText("##Name", nameBuffer, sizeof(nameBuffer))) {
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##Name", nameBuffer, sizeof(nameBuffer)))
+        {
             const std::string oldName = obj.name;
             const std::string newName = nameBuffer;
-            if (oldName != newName) {
+            if (oldName != newName)
+            {
                 obj.name = newName;
                 objectNameChanged = true;
                 propagateObjectRenameReferences(oldName, newName, obj.id);
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
         }
+        nameHovered = ImGui::IsItemHovered();
         ImGui::EndDisabled();
-        if (runtimeSceneEditingLocked && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Object renaming is disabled while the scene is running.");
-        }
 
-        ImGui::Text("Type:");
-        ImGui::SameLine();
-        const char* typeLabel = "Empty";
-        if (obj.type == ObjectType::Sprite25D) {
-            typeLabel = "2.5D Object";
-        } else if (obj.hasRenderer) {
-            switch (obj.renderType) {
-                case RenderType::Cube: typeLabel = "Cube"; break;
-                case RenderType::Sphere: typeLabel = "Sphere"; break;
-                case RenderType::Capsule: typeLabel = "Capsule"; break;
-                case RenderType::OBJMesh: typeLabel = "OBJ Mesh"; break;
-                case RenderType::Model: typeLabel = IsRawMeshPath(obj.meshPath) ? "RMesh" : "Model"; break;
-                case RenderType::Sprite: typeLabel = "Sprite"; break;
-                case RenderType::Mirror: typeLabel = "Mirror"; break;
-                case RenderType::Plane: typeLabel = "Plane"; break;
-                case RenderType::Torus: typeLabel = "Torus"; break;
-                case RenderType::None: break;
-            }
-        } else if (obj.hasUI) {
-            switch (obj.ui.type) {
-                case UIElementType::Canvas: typeLabel = "Canvas"; break;
-                case UIElementType::Image: typeLabel = "UI Image"; break;
-                case UIElementType::Slider: typeLabel = "UI Slider"; break;
-                case UIElementType::Button: typeLabel = "UI Button"; break;
-                case UIElementType::Text: typeLabel = "UI Text"; break;
-                case UIElementType::Sprite2D: typeLabel = "Sprite2D"; break;
-                case UIElementType::None: break;
-            }
-        } else if (obj.hasLight) {
-            switch (obj.light.type) {
-                case LightType::Directional: typeLabel = "Directional Light"; break;
-                case LightType::Point: typeLabel = "Point Light"; break;
-                case LightType::Spot: typeLabel = "Spot Light"; break;
-                case LightType::Area: typeLabel = "Area Light"; break;
-            }
-        } else if (obj.hasLight2D) {
-            switch (obj.light2D.type) {
-                case Light2DType::Point: typeLabel = "2D Point Light"; break;
-                case Light2DType::Spot: typeLabel = "2D Spot Light"; break;
-                case Light2DType::Freeform: typeLabel = "2D Freeform Light"; break;
-                case Light2DType::Sprite: typeLabel = "2D Sprite Light"; break;
-                case Light2DType::Global: typeLabel = "2D Global Light"; break;
-            }
-        } else if (obj.hasShadowCaster2D) {
-            typeLabel = "2D Shadow Caster";
-        } else if (obj.hasCamera) {
-            typeLabel = "Camera";
-        } else if (obj.hasPostFX) {
-            typeLabel = "ModuVolume";
-        }
-        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", typeLabel);
-
-        ImGui::Text("ID:");
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d", obj.id);
-
-        if (ImGui::Checkbox("Enabled##ObjEnabled", &obj.enabled)) {
-            objectEnabledChanged = true;
+        ImGui::TableSetColumnIndex(3);
+        if (ImGui::Checkbox("Invariable", &obj.IsInvariable))
+        {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
-        ImGui::Text("Layer:");
-        ImGui::SameLine();
-        int layer = obj.layer;
-        ImGui::SetNextItemWidth(120);
-        if (ImGui::SliderInt("##Layer", &layer, 0, 31)) {
-            obj.layer = layer;
-            objectLayerChanged = true;
-            projectManager.currentProject.hasUnsavedChanges = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+            ImGui::TextUnformatted("Invariable objects are locked from physical transform changes and direct scene manipulation. Scripts may still reference them, and material-based properties can still update.");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(0-31)");
 
-        ImGui::Text("Tag:");
+        ImGui::EndTable();
+    }
+
+    if (runtimeSceneEditingLocked && nameHovered)
+    {
+        ImGui::SetTooltip("Object renaming is disabled while the scene is running.");
+    }
+
+    char tagBuf[64] = {};
+    std::snprintf(tagBuf, sizeof(tagBuf), "%s", obj.tag.c_str());
+
+    if (ImGui::BeginTable("##ObjectMetaBottomTable", 2, ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableSetupColumn("TagColumn", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("LayerColumn", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Tag");
         ImGui::SameLine();
-        char tagBuf[64] = {};
-        std::snprintf(tagBuf, sizeof(tagBuf), "%s", obj.tag.c_str());
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputText("##Tag", tagBuf, sizeof(tagBuf))) {
+        if (ImGui::InputText("##Tag", tagBuf, sizeof(tagBuf)))
+        {
             obj.tag = tagBuf;
             objectTagChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
-        ImGui::Spacing();
-        if (obj.hasPostFX) {
-            ImGui::TextDisabled("Transform is ignored for post-processing nodes.");
-        }
-        if (obj.type == ObjectType::Sprite25D) {
-            ImGui::TextDisabled("2.5D objects use the transform for 3D placement and the UI section for sprite content.");
-        } else if (isUIObject(obj)) {
-            ImGui::TextDisabled("UI objects use the UI section for positioning.");
-        }
-
-        ImGui::Text("Position");
-        ImGui::PushItemWidth(-1);
-        if (ImGui::DragFloat3("##Position", &obj.position.x, 0.1f)) {
-            syncLocalTransform(obj);
-            objectTransformChanged = true;
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("Layer");
+        ImGui::SameLine();
+        int layer = obj.layer;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderInt("##Layer", &layer, 0, 31, "%d"))
+        {
+            obj.layer = layer;
+            objectLayerChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
-        ImGui::PopItemWidth();
 
-        ImGui::Text("Rotation");
-        ImGui::PushItemWidth(-1);
-        if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f)) {
-            obj.rotation = NormalizeEulerDegrees(obj.rotation);
-            syncLocalTransform(obj);
-            objectTransformChanged = true;
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
-        ImGui::PopItemWidth();
+        ImGui::EndTable();
+        /*{
+            const float iconSz = ImGui::GetFrameHeight();
+            if (iconTransform != static_cast<ImTextureID>(0)) {
+                ImGui::Image(iconTransform, ImVec2(iconSz, iconSz));
+                ImGui::SameLine(0.0f, 4.0f);
+            }
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Transform");
+            ImGui::Separator();
+        }*/
 
-        ImGui::Text("Scale");
-        ImGui::PushItemWidth(-1);
-        if (ImGui::DragFloat3("##Scale", &obj.scale.x, 0.05f, 0.01f, 100.0f)) {
-            syncLocalTransform(obj);
-            objectTransformChanged = true;
-            projectManager.currentProject.hasUnsavedChanges = true;
-        }
-        ImGui::PopItemWidth();
+        if (ImGui::BeginTable("##TransformTable", 2, ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("LabelColumn", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+            ImGui::TableSetupColumn("ValueColumn", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 
-        if (ImGui::Button("Reset Transform", ImVec2(-1, 0))) {
-            obj.position = glm::vec3(0.0f);
-            obj.rotation = glm::vec3(0.0f);
-            obj.scale = glm::vec3(1.0f);
-            syncLocalTransform(obj);
-            objectTransformChanged = true;
-            projectManager.currentProject.hasUnsavedChanges = true;
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Position");
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragFloat3("##Position", &obj.position.x, 0.1f))
+            {
+                syncLocalTransform(obj);
+                objectTransformChanged = true;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Rotation");
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f))
+            {
+                obj.rotation = NormalizeEulerDegrees(obj.rotation);
+                syncLocalTransform(obj);
+                objectTransformChanged = true;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Scale");
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::DragFloat3("##Scale", &obj.scale.x, 0.05f, 0.01f, 100.0f))
+            {
+                syncLocalTransform(obj);
+                objectTransformChanged = true;
+                projectManager.currentProject.hasUnsavedChanges = true;
+            }
+            ImGui::EndTable();
         }
     }
 
-    ImGui::Spacing();
+    ImGui::PopStyleVar(2);
+
+    // Inspector field layout helpers
+    // Label col = 40% of available width, value col = 60% — scales with panel width, no fixed clipping.
+    auto beginCompFields = [](const char* id) -> bool {
+        if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_NoPadOuterX))
+            return false;
+        ImGui::TableSetupColumn("##L", ImGuiTableColumnFlags_WidthStretch, 40.0f);
+        ImGui::TableSetupColumn("##V", ImGuiTableColumnFlags_WidthStretch, 60.0f);
+        return true;
+    };
+    auto endCompFields = []() { ImGui::EndTable(); };
+    auto fieldRow = [](const char* label) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%s", label);
+        ImGui::TableSetColumnIndex(1); ImGui::SetNextItemWidth(-1.0f);
+    };
+    // Unity-style: label in col 0, checkbox left-aligned in col 1.
+    auto boolRow = [](const char* label, bool* val) -> bool {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", label);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::PushID(static_cast<const void*>(val));
+        bool r = ImGui::Checkbox("##chk", val);
+        ImGui::PopID();
+        return r;
+    };
+
+    auto HorizontalBoolRow = [](const char* label,
+                                const char* labelA, bool* valA,
+                                const char* labelB, bool* valB) -> bool
+    {
+        bool changed = false;
+
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", label);
+
+        ImGui::TableSetColumnIndex(1);
+
+        ImGui::PushID(label);
+
+        if (ImGui::Checkbox(labelA, valA))
+            changed = true;
+
+        ImGui::SameLine();
+
+        if (ImGui::Checkbox(labelB, valB))
+            changed = true;
+
+        ImGui::PopID();
+
+        return changed;
+    };
+
+    // Note/hint text indented under the value column, wraps within its cell width.
+    auto noteRow = [](const char* text) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(1);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", text);
+        ImGui::PopTextWrapPos();
+    };
 
     const std::vector<std::string> inspectorComponentOrder = obj.inspectorComponentOrder;
     for (const std::string& inspectorComponentKey : inspectorComponentOrder) {
     if (inspectorComponentKey == "ui" && isUIObject(obj) && sharedUIObject) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.45f, 0.65f, 1.0f));
         bool changed = false;
         bool removeUi = false;
@@ -3258,7 +3403,6 @@ void Engine::renderInspectorPanel() {
         });
         if (header.open) {
             ImGui::PushID("UI");
-            ImGui::Indent(10.0f);
 
             if (obj.type != ObjectType::Sprite25D) {
                 const char* anchors[] = { "Center", "Top Left", "Top Right", "Bottom Left", "Bottom Right" };
@@ -3684,15 +3828,15 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::Checkbox("Receive Lighting", &obj.ui.receiveLighting2D)) {
                         changed = true;
                     }
+                    ImGui::SameLine();
                     if (ImGui::Checkbox("Force Unlit", &obj.ui.unlitLighting2D)) {
                         changed = true;
                     }
                     if (ImGui::SliderFloat("Emissive", &obj.ui.emissiveLighting2D, 0.0f, 8.0f, "%.2f")) {
                         changed = true;
                     }
-                    ImGui::TextDisabled("Nine-slice and masked sprites fall back to the legacy 2D draw path.");
                     const auto routingIt = light2DObjectRoutingReasonsLastFrame.find(obj.id);
-                    if (routingIt != light2DObjectRoutingReasonsLastFrame.end()) {
+                    /*if (routingIt != light2DObjectRoutingReasonsLastFrame.end()) {
                         ImGui::SeparatorText("Runtime Debug");
                         ImGui::Text("Compositor Ran: %s", light2DCompositorRanLastFrame ? "Yes" : "No");
                         ImGui::Text("Light Buffer: %s", light2DLightBufferHadContentLastFrame ? "Non-empty" : "Empty");
@@ -3700,7 +3844,7 @@ void Engine::renderInspectorPanel() {
                         ImGui::Text("Lit Sprite2D: %d", light2DLitSprite2DCountLastFrame);
                         ImGui::Text("Lit UI Images: %d", light2DLitWorldImageCountLastFrame);
                         ImGui::TextWrapped("%s", routingIt->second.c_str());
-                    }
+                    }*/
                 }
             }
 
@@ -3741,7 +3885,6 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Last Pressed: %s", obj.ui.buttonPressed ? "yes" : "no");
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeUi) {
@@ -3758,7 +3901,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "collider" && obj.hasCollider && sharedCollider) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.35f, 1.0f));
         bool removeCollider = false;
         bool changed = false;
@@ -3780,64 +3923,76 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Collider");
-            ImGui::Indent(10.0f);
 
-            const char* colliderTypes[] = { "Box", "Mesh", "Convex Mesh", "Capsule" };
-            int colliderType = static_cast<int>(obj.collider.type);
-            if (ImGui::Combo("Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
-                obj.collider.type = static_cast<ColliderType>(colliderType);
-                changed = true;
-            }
+            if (beginCompFields("##Fields_Collider")) {
+                const char* colliderTypes[] = { "Box", "Mesh", "Convex Mesh", "Capsule" };
+                int colliderType = static_cast<int>(obj.collider.type);
+                fieldRow("Type");
+                if (ImGui::Combo("##Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
+                    obj.collider.type = static_cast<ColliderType>(colliderType);
+                    changed = true;
+                }
 
-            if (obj.collider.type == ColliderType::Box) {
-                if (ImGui::DragFloat3("Box Size", &obj.collider.boxSize.x, 0.01f, 0.01f, 1000.0f, "%.3f")) {
-                    obj.collider.boxSize.x = std::max(0.01f, obj.collider.boxSize.x);
-                    obj.collider.boxSize.y = std::max(0.01f, obj.collider.boxSize.y);
-                    obj.collider.boxSize.z = std::max(0.01f, obj.collider.boxSize.z);
-                    changed = true;
+                if (obj.collider.type == ColliderType::Box) {
+                    fieldRow("Box Size");
+                    if (ImGui::DragFloat3("##BoxSize", &obj.collider.boxSize.x, 0.01f, 0.01f, 1000.0f, "%.3f")) {
+                        obj.collider.boxSize.x = std::max(0.01f, obj.collider.boxSize.x);
+                        obj.collider.boxSize.y = std::max(0.01f, obj.collider.boxSize.y);
+                        obj.collider.boxSize.z = std::max(0.01f, obj.collider.boxSize.z);
+                        changed = true;
+                    }
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                    if (ImGui::SmallButton("Match Object Scale")) {
+                        obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
+                        changed = true;
+                    }
+                } else if (obj.collider.type == ColliderType::Capsule) {
+                    float radius = std::max(0.05f, std::max(obj.collider.boxSize.x, obj.collider.boxSize.z) * 0.5f);
+                    float height = std::max(0.1f, obj.collider.boxSize.y);
+                    fieldRow("Radius");
+                    if (ImGui::DragFloat("##Radius", &radius, 0.01f, 0.05f, 5.0f, "%.3f")) {
+                        obj.collider.boxSize.x = obj.collider.boxSize.z = radius * 2.0f;
+                        changed = true;
+                    }
+                    fieldRow("Height");
+                    if (ImGui::DragFloat("##Height", &height, 0.01f, 0.1f, 10.0f, "%.3f")) {
+                        obj.collider.boxSize.y = height;
+                        changed = true;
+                    }
+                    noteRow("Capsule aligned to Y axis.");
+                } else {
+                    if (boolRow("Convex Hull", &obj.collider.convex)) { changed = true; }
+                    noteRow("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
                 }
-                if (ImGui::SmallButton("Match Object Scale")) {
-                    obj.collider.boxSize = glm::max(obj.scale, glm::vec3(0.01f));
-                    changed = true;
-                }
-            } else if (obj.collider.type == ColliderType::Capsule) {
-                float radius = std::max(0.05f, std::max(obj.collider.boxSize.x, obj.collider.boxSize.z) * 0.5f);
-                float height = std::max(0.1f, obj.collider.boxSize.y);
-                if (ImGui::DragFloat("Radius", &radius, 0.01f, 0.05f, 5.0f, "%.3f")) {
-                    obj.collider.boxSize.x = obj.collider.boxSize.z = radius * 2.0f;
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Height", &height, 0.01f, 0.1f, 10.0f, "%.3f")) {
-                    obj.collider.boxSize.y = height;
-                    changed = true;
-                }
-                ImGui::TextDisabled("Capsule aligned to Y axis.");
-            } else {
-                if (ImGui::Checkbox("Use Convex Hull (required for Rigidbody3D)", &obj.collider.convex)) {
-                    changed = true;
-                }
-                ImGui::TextDisabled("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
-            }
 
-            if (ImGui::DragFloat3("Offset", &obj.collider.offset.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
-                changed = true;
+                fieldRow("Offset");
+                if (ImGui::DragFloat3("##Offset", &obj.collider.offset.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+                    changed = true;
+                }
+
+                endCompFields();
             }
 
             ImGui::SeparatorText("Surface");
-            if (ImGui::DragFloat("Static Friction", &obj.collider.staticFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
-                obj.collider.staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Dynamic Friction", &obj.collider.dynamicFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
-                obj.collider.dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Restitution", &obj.collider.restitution, 0.01f, 0.0f, 1.0f, "%.2f")) {
-                obj.collider.restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
-                changed = true;
+            if (beginCompFields("##Fields_ColliderSurface")) {
+                fieldRow("Static Friction");
+                if (ImGui::DragFloat("##StaticFriction", &obj.collider.staticFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
+                    obj.collider.staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
+                    changed = true;
+                }
+                fieldRow("Dyn Friction");
+                if (ImGui::DragFloat("##DynFriction", &obj.collider.dynamicFriction, 0.01f, 0.0f, 4.0f, "%.2f")) {
+                    obj.collider.dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
+                    changed = true;
+                }
+                fieldRow("Restitution");
+                if (ImGui::DragFloat("##Restitution", &obj.collider.restitution, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                    obj.collider.restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
+                    changed = true;
+                }
+                endCompFields();
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeCollider) {
@@ -3852,7 +4007,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "player_controller" && obj.hasPlayerController && sharedPlayerController) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.45f, 0.7f, 1.0f));
         bool removePlayerController = false;
         bool changed = false;
@@ -3874,62 +4029,74 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("PlayerController");
-            ImGui::Indent(10.0f);
-            if (ImGui::DragFloat("Move Speed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
-                obj.playerController.moveSpeed = std::max(0.1f, obj.playerController.moveSpeed);
-                obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
-                changed = true;
+            if (beginCompFields("##Fields_PlayerController")) {
+                fieldRow("Move Speed");
+                if (ImGui::DragFloat("##MoveSpeed", &obj.playerController.moveSpeed, 0.1f, 0.1f, 100.0f, "%.2f")) {
+                    obj.playerController.moveSpeed = std::max(0.1f, obj.playerController.moveSpeed);
+                    obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
+                    changed = true;
+                }
+                fieldRow("Run Speed");
+                if (ImGui::DragFloat("##RunSpeed", &obj.playerController.runSpeed, 0.1f, 0.1f, 140.0f, "%.2f")) {
+                    obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
+                    changed = true;
+                }
+                fieldRow("Look Sens.");
+                if (ImGui::DragFloat("##LookSensitivity", &obj.playerController.lookSensitivity, 0.01f, 0.01f, 2.0f, "%.2f")) {
+                    obj.playerController.lookSensitivity = std::clamp(obj.playerController.lookSensitivity, 0.01f, 2.0f);
+                    changed = true;
+                }
+                fieldRow("Ground Accel");
+                if (ImGui::DragFloat("##GroundAccel", &obj.playerController.groundAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                    obj.playerController.groundAcceleration = std::clamp(obj.playerController.groundAcceleration, 0.0f, 200.0f);
+                    changed = true;
+                }
+                fieldRow("Air Accel");
+                if (ImGui::DragFloat("##AirAccel", &obj.playerController.airAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                    obj.playerController.airAcceleration = std::clamp(obj.playerController.airAcceleration, 0.0f, 200.0f);
+                    changed = true;
+                }
+                fieldRow("Braking");
+                if (ImGui::DragFloat("##Braking", &obj.playerController.braking, 0.1f, 0.0f, 200.0f, "%.2f")) {
+                    obj.playerController.braking = std::clamp(obj.playerController.braking, 0.0f, 200.0f);
+                    changed = true;
+                }
+                fieldRow("Min Surf Ctrl");
+                if (ImGui::DragFloat("##MinSurfaceControl", &obj.playerController.minSurfaceControl, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                    obj.playerController.minSurfaceControl = std::clamp(obj.playerController.minSurfaceControl, 0.0f, 1.0f);
+                    changed = true;
+                }
+                fieldRow("Slide Gravity");
+                if (ImGui::DragFloat("##SlideGravity", &obj.playerController.slideGravity, 0.1f, 0.0f, 120.0f, "%.2f")) {
+                    obj.playerController.slideGravity = std::clamp(obj.playerController.slideGravity, 0.0f, 120.0f);
+                    changed = true;
+                }
+                fieldRow("Platform Carry");
+                if (ImGui::DragFloat("##PlatformCarry", &obj.playerController.platformCarry, 0.01f, 0.0f, 3.0f, "%.2f")) {
+                    obj.playerController.platformCarry = std::clamp(obj.playerController.platformCarry, 0.0f, 3.0f);
+                    changed = true;
+                }
+                fieldRow("Height");
+                if (ImGui::DragFloat("##Height", &obj.playerController.height, 0.01f, 0.5f, 3.0f, "%.2f")) {
+                    obj.playerController.height = std::clamp(obj.playerController.height, 0.5f, 3.0f);
+                    obj.scale.y = obj.playerController.height;
+                    obj.collider.boxSize.y = obj.playerController.height;
+                    changed = true;
+                }
+                fieldRow("Radius");
+                if (ImGui::DragFloat("##Radius", &obj.playerController.radius, 0.01f, 0.2f, 1.2f, "%.2f")) {
+                    obj.playerController.radius = std::clamp(obj.playerController.radius, 0.2f, 1.2f);
+                    obj.scale.x = obj.scale.z = obj.playerController.radius * 2.0f;
+                    obj.collider.boxSize.x = obj.collider.boxSize.z = obj.playerController.radius * 2.0f;
+                    changed = true;
+                }
+                fieldRow("Jump Strength");
+                if (ImGui::DragFloat("##JumpStrength", &obj.playerController.jumpStrength, 0.1f, 0.1f, 30.0f, "%.1f")) {
+                    obj.playerController.jumpStrength = std::max(0.1f, obj.playerController.jumpStrength);
+                    changed = true;
+                }
+                endCompFields();
             }
-            if (ImGui::DragFloat("Run Speed", &obj.playerController.runSpeed, 0.1f, 0.1f, 140.0f, "%.2f")) {
-                obj.playerController.runSpeed = std::max(obj.playerController.moveSpeed, obj.playerController.runSpeed);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Look Sensitivity", &obj.playerController.lookSensitivity, 0.01f, 0.01f, 2.0f, "%.2f")) {
-                obj.playerController.lookSensitivity = std::clamp(obj.playerController.lookSensitivity, 0.01f, 2.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Ground Accel", &obj.playerController.groundAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
-                obj.playerController.groundAcceleration = std::clamp(obj.playerController.groundAcceleration, 0.0f, 200.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Air Accel", &obj.playerController.airAcceleration, 0.1f, 0.0f, 200.0f, "%.2f")) {
-                obj.playerController.airAcceleration = std::clamp(obj.playerController.airAcceleration, 0.0f, 200.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Braking", &obj.playerController.braking, 0.1f, 0.0f, 200.0f, "%.2f")) {
-                obj.playerController.braking = std::clamp(obj.playerController.braking, 0.0f, 200.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Min Surface Control", &obj.playerController.minSurfaceControl, 0.01f, 0.0f, 1.0f, "%.2f")) {
-                obj.playerController.minSurfaceControl = std::clamp(obj.playerController.minSurfaceControl, 0.0f, 1.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Slide Gravity", &obj.playerController.slideGravity, 0.1f, 0.0f, 120.0f, "%.2f")) {
-                obj.playerController.slideGravity = std::clamp(obj.playerController.slideGravity, 0.0f, 120.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Platform Carry", &obj.playerController.platformCarry, 0.01f, 0.0f, 3.0f, "%.2f")) {
-                obj.playerController.platformCarry = std::clamp(obj.playerController.platformCarry, 0.0f, 3.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Height", &obj.playerController.height, 0.01f, 0.5f, 3.0f, "%.2f")) {
-                obj.playerController.height = std::clamp(obj.playerController.height, 0.5f, 3.0f);
-                obj.scale.y = obj.playerController.height;
-                obj.collider.boxSize.y = obj.playerController.height;
-                changed = true;
-            }
-            if (ImGui::DragFloat("Radius", &obj.playerController.radius, 0.01f, 0.2f, 1.2f, "%.2f")) {
-                obj.playerController.radius = std::clamp(obj.playerController.radius, 0.2f, 1.2f);
-                obj.scale.x = obj.scale.z = obj.playerController.radius * 2.0f;
-                obj.collider.boxSize.x = obj.collider.boxSize.z = obj.playerController.radius * 2.0f;
-                changed = true;
-            }
-            if (ImGui::DragFloat("Jump Strength", &obj.playerController.jumpStrength, 0.1f, 0.1f, 30.0f, "%.1f")) {
-                obj.playerController.jumpStrength = std::max(0.1f, obj.playerController.jumpStrength);
-                changed = true;
-            }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removePlayerController) {
@@ -3952,7 +4119,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "rigidbody3d" && obj.hasRigidbody && sharedRigidbody) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.45f, 0.25f, 1.0f));
         bool removeRigidbody = false;
         bool changed = false;
@@ -3974,46 +4141,38 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Rigidbody3D");
-            ImGui::Indent(10.0f);
-            ImGui::TextDisabled("Collider required for physics.");
-            if (isUIObject(obj)) {
-                ImGui::TextDisabled("Rigidbody3D is for 3D objects (use Rigidbody2D for UI/canvas).");
-            }
-
-            if (ImGui::DragFloat("Mass", &obj.rigidbody.mass, 0.05f, 0.01f, 1000.0f, "%.2f")) {
-                obj.rigidbody.mass = std::max(0.01f, obj.rigidbody.mass);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Use Gravity", &obj.rigidbody.useGravity)) {
-                changed = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Kinematic", &obj.rigidbody.isKinematic)) {
-                changed = true;
-            }
-            if (ImGui::DragFloat("Linear Damping", &obj.rigidbody.linearDamping, 0.01f, 0.0f, 10.0f)) {
-                obj.rigidbody.linearDamping = std::clamp(obj.rigidbody.linearDamping, 0.0f, 10.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Angular Damping", &obj.rigidbody.angularDamping, 0.01f, 0.0f, 10.0f)) {
-                obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
-                changed = true;
+            if (beginCompFields("##Fields_Rigidbody3D")) {
+                noteRow("Collider required for physics.");
+                if (isUIObject(obj)) {
+                    noteRow("Rigidbody3D is for 3D objects (use Rigidbody2D for UI/canvas).");
+                }
+                fieldRow("Mass");
+                if (ImGui::DragFloat("##Mass", &obj.rigidbody.mass, 0.05f, 0.01f, 1000.0f, "%.2f")) {
+                    obj.rigidbody.mass = std::max(0.01f, obj.rigidbody.mass);
+                    changed = true;
+                }
+                if (boolRow("Use Gravity", &obj.rigidbody.useGravity)) { changed = true; }
+                if (boolRow("Kinematic", &obj.rigidbody.isKinematic)) { changed = true; }
+                fieldRow("Linear Damp");
+                if (ImGui::DragFloat("##LinearDamping", &obj.rigidbody.linearDamping, 0.01f, 0.0f, 10.0f)) {
+                    obj.rigidbody.linearDamping = std::clamp(obj.rigidbody.linearDamping, 0.0f, 10.0f);
+                    changed = true;
+                }
+                fieldRow("Angular Damp");
+                if (ImGui::DragFloat("##AngularDamping", &obj.rigidbody.angularDamping, 0.01f, 0.0f, 10.0f)) {
+                    obj.rigidbody.angularDamping = std::clamp(obj.rigidbody.angularDamping, 0.0f, 10.0f);
+                    changed = true;
+                }
+                endCompFields();
             }
             if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("Lock Rotation");
-                if (ImGui::Checkbox("Lock X", &obj.rigidbody.lockRotationX)) {
-                    changed = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Lock Y", &obj.rigidbody.lockRotationY)) {
-                    changed = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Checkbox("Lock Z", &obj.rigidbody.lockRotationZ)) {
-                    changed = true;
+                if (beginCompFields("##Fields_Rb3DConstraints")) {
+                    if (boolRow("Lock X", &obj.rigidbody.lockRotationX)) { changed = true; }
+                    if (boolRow("Lock Y", &obj.rigidbody.lockRotationY)) { changed = true; }
+                    if (boolRow("Lock Z", &obj.rigidbody.lockRotationZ)) { changed = true; }
+                    endCompFields();
                 }
             }
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeRigidbody) {
@@ -4028,7 +4187,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "rigidbody2d" && obj.hasRigidbody2D && sharedRigidbody2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.55f, 0.45f, 1.0f));
         bool removeRigidbody2D = false;
         bool changed = false;
@@ -4050,31 +4209,34 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Rigidbody2D");
-            ImGui::Indent(10.0f);
-            if (!isUIObject(obj)) {
-                ImGui::TextDisabled("Rigidbody2D is for UI/canvas objects only.");
-            }
-            if (ImGui::Checkbox("Use Gravity", &obj.rigidbody2D.useGravity)) {
-                changed = true;
-            }
-            if (ImGui::DragFloat("Gravity Scale", &obj.rigidbody2D.gravityScale, 0.05f, 0.0f, 10.0f, "%.2f")) {
-                obj.rigidbody2D.gravityScale = std::max(0.0f, obj.rigidbody2D.gravityScale);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Linear Damping", &obj.rigidbody2D.linearDamping, 0.01f, 0.0f, 10.0f)) {
-                obj.rigidbody2D.linearDamping = std::clamp(obj.rigidbody2D.linearDamping, 0.0f, 10.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat2("Velocity", &obj.rigidbody2D.velocity.x, 0.1f)) {
-                changed = true;
-            }
-            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextDisabled("Locks the object's Z-axis rotation.");
-                if (ImGui::Checkbox("Lock Rotation", &obj.rigidbody2D.lockRotation)) {
+            if (beginCompFields("##Fields_Rigidbody2D")) {
+                if (!isUIObject(obj)) {
+                    noteRow("Rigidbody2D is for UI/canvas objects only.");
+                }
+                if (boolRow("Use Gravity", &obj.rigidbody2D.useGravity)) { changed = true; }
+                fieldRow("Gravity Scale");
+                if (ImGui::DragFloat("##GravityScale", &obj.rigidbody2D.gravityScale, 0.05f, 0.0f, 10.0f, "%.2f")) {
+                    obj.rigidbody2D.gravityScale = std::max(0.0f, obj.rigidbody2D.gravityScale);
                     changed = true;
                 }
+                fieldRow("Linear Damp");
+                if (ImGui::DragFloat("##LinearDamping", &obj.rigidbody2D.linearDamping, 0.01f, 0.0f, 10.0f)) {
+                    obj.rigidbody2D.linearDamping = std::clamp(obj.rigidbody2D.linearDamping, 0.0f, 10.0f);
+                    changed = true;
+                }
+                fieldRow("Velocity");
+                if (ImGui::DragFloat2("##Velocity", &obj.rigidbody2D.velocity.x, 0.1f)) {
+                    changed = true;
+                }
+                endCompFields();
             }
-            ImGui::Unindent(10.0f);
+            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (beginCompFields("##Fields_Rb2DConstraints")) {
+                    noteRow("Locks the object's Z-axis rotation.");
+                    if (boolRow("Lock Rotation", &obj.rigidbody2D.lockRotation)) { changed = true; }
+                    endCompFields();
+                }
+            }
             ImGui::PopID();
         }
         if (removeRigidbody2D) {
@@ -4089,7 +4251,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "collider2d" && obj.hasCollider2D && sharedCollider2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.5f, 0.65f, 1.0f));
         bool removeCollider2D = false;
         bool changed = false;
@@ -4111,21 +4273,6 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Collider2D");
-            ImGui::Indent(10.0f);
-            if (!isUIObject(obj)) {
-                ImGui::TextDisabled("Collider2D is for UI/canvas objects only.");
-            }
-            const char* colliderTypes[] = { "Box", "Polygon", "Edge" };
-            int colliderType = static_cast<int>(obj.collider2D.type);
-            if (ImGui::Combo("Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
-                obj.collider2D.type = static_cast<Collider2DType>(colliderType);
-                if (obj.collider2D.type == Collider2DType::Polygon) {
-                    obj.collider2D.closed = true;
-                } else if (obj.collider2D.type == Collider2DType::Edge) {
-                    obj.collider2D.closed = false;
-                }
-                changed = true;
-            }
 
             auto ensureHexagon = [&](Collider2DComponent& col, const glm::vec2& size) {
                 if (!col.points.empty()) return;
@@ -4142,72 +4289,106 @@ void Engine::renderInspectorPanel() {
                 col.points = { glm::vec2(-half, 0.0f), glm::vec2(half, 0.0f) };
             };
 
-            if (obj.collider2D.type == Collider2DType::Box) {
-                if (ImGui::DragFloat2("Box Size", &obj.collider2D.boxSize.x, 0.1f, 0.01f, 10000.0f, "%.2f")) {
-                    obj.collider2D.boxSize.x = std::max(0.01f, obj.collider2D.boxSize.x);
-                    obj.collider2D.boxSize.y = std::max(0.01f, obj.collider2D.boxSize.y);
+            if (beginCompFields("##Fields_Collider2D")) {
+                if (!isUIObject(obj)) {
+                    noteRow("Collider2D is for UI/canvas objects only.");
+                }
+                const char* colliderTypes[] = { "Box", "Polygon", "Edge" };
+                int colliderType = static_cast<int>(obj.collider2D.type);
+                fieldRow("Type");
+                if (ImGui::Combo("##Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
+                    obj.collider2D.type = static_cast<Collider2DType>(colliderType);
+                    if (obj.collider2D.type == Collider2DType::Polygon) {
+                        obj.collider2D.closed = true;
+                    } else if (obj.collider2D.type == Collider2DType::Edge) {
+                        obj.collider2D.closed = false;
+                    }
                     changed = true;
                 }
-                if (ImGui::SmallButton("Match UI Size")) {
-                    obj.collider2D.boxSize = glm::max(obj.ui.size, glm::vec2(1.0f));
-                    changed = true;
-                }
-            } else if (obj.collider2D.type == Collider2DType::Polygon) {
-                ensureHexagon(obj.collider2D, glm::max(obj.ui.size, glm::vec2(1.0f)));
-                ImGui::TextDisabled("Points (local space)");
-                for (size_t i = 0; i < obj.collider2D.points.size(); ++i) {
-                    ImGui::PushID(static_cast<int>(i));
-                    if (ImGui::DragFloat2("##point", &obj.collider2D.points[i].x, 0.1f)) {
+
+                if (obj.collider2D.type == Collider2DType::Box) {
+                    fieldRow("Box Size");
+                    if (ImGui::DragFloat2("##BoxSize", &obj.collider2D.boxSize.x, 0.1f, 0.01f, 10000.0f, "%.2f")) {
+                        obj.collider2D.boxSize.x = std::max(0.01f, obj.collider2D.boxSize.x);
+                        obj.collider2D.boxSize.y = std::max(0.01f, obj.collider2D.boxSize.y);
                         changed = true;
                     }
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Remove")) {
-                        obj.collider2D.points.erase(obj.collider2D.points.begin() + static_cast<long>(i));
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                    if (ImGui::SmallButton("Match UI Size")) {
+                        obj.collider2D.boxSize = glm::max(obj.ui.size, glm::vec2(1.0f));
                         changed = true;
+                    }
+                    fieldRow("Offset");
+                    if (ImGui::DragFloat2("##Offset", &obj.collider2D.offset.x, 0.1f, -10000.0f, 10000.0f, "%.2f")) {
+                        changed = true;
+                    }
+                    endCompFields();
+                } else if (obj.collider2D.type == Collider2DType::Polygon) {
+                    ensureHexagon(obj.collider2D, glm::max(obj.ui.size, glm::vec2(1.0f)));
+                    noteRow("Points (local space)");
+                    endCompFields();
+                    for (size_t i = 0; i < obj.collider2D.points.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        if (ImGui::DragFloat2("##point", &obj.collider2D.points[i].x, 0.1f)) {
+                            changed = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Remove")) {
+                            obj.collider2D.points.erase(obj.collider2D.points.begin() + static_cast<long>(i));
+                            changed = true;
+                            ImGui::PopID();
+                            break;
+                        }
                         ImGui::PopID();
-                        break;
                     }
-                    ImGui::PopID();
-                }
-                if (ImGui::SmallButton("Add Point")) {
-                    obj.collider2D.points.push_back(glm::vec2(0.0f));
-                    changed = true;
-                }
-            } else if (obj.collider2D.type == Collider2DType::Edge) {
-                ensureEdge(obj.collider2D, glm::max(obj.ui.size, glm::vec2(1.0f)));
-                if (ImGui::Checkbox("Closed Loop", &obj.collider2D.closed)) {
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Thickness", &obj.collider2D.edgeThickness, 0.01f, 0.01f, 10.0f, "%.2f")) {
-                    obj.collider2D.edgeThickness = std::max(0.01f, obj.collider2D.edgeThickness);
-                    changed = true;
-                }
-                ImGui::TextDisabled("Points (local space)");
-                for (size_t i = 0; i < obj.collider2D.points.size(); ++i) {
-                    ImGui::PushID(static_cast<int>(i));
-                    if (ImGui::DragFloat2("##edgepoint", &obj.collider2D.points[i].x, 0.1f)) {
+                    if (ImGui::SmallButton("Add Point")) {
+                        obj.collider2D.points.push_back(glm::vec2(0.0f));
                         changed = true;
                     }
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Remove")) {
-                        obj.collider2D.points.erase(obj.collider2D.points.begin() + static_cast<long>(i));
+                    if (beginCompFields("##Fields_Collider2DOffsetPoly")) {
+                        fieldRow("Offset");
+                        if (ImGui::DragFloat2("##Offset", &obj.collider2D.offset.x, 0.1f, -10000.0f, 10000.0f, "%.2f")) {
+                            changed = true;
+                        }
+                        endCompFields();
+                    }
+                } else if (obj.collider2D.type == Collider2DType::Edge) {
+                    ensureEdge(obj.collider2D, glm::max(obj.ui.size, glm::vec2(1.0f)));
+                    if (boolRow("Closed Loop", &obj.collider2D.closed)) { changed = true; }
+                    fieldRow("Thickness");
+                    if (ImGui::DragFloat("##Thickness", &obj.collider2D.edgeThickness, 0.01f, 0.01f, 10.0f, "%.2f")) {
+                        obj.collider2D.edgeThickness = std::max(0.01f, obj.collider2D.edgeThickness);
                         changed = true;
+                    }
+                    noteRow("Points (local space)");
+                    endCompFields();
+                    for (size_t i = 0; i < obj.collider2D.points.size(); ++i) {
+                        ImGui::PushID(static_cast<int>(i));
+                        if (ImGui::DragFloat2("##edgepoint", &obj.collider2D.points[i].x, 0.1f)) {
+                            changed = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Remove")) {
+                            obj.collider2D.points.erase(obj.collider2D.points.begin() + static_cast<long>(i));
+                            changed = true;
+                            ImGui::PopID();
+                            break;
+                        }
                         ImGui::PopID();
-                        break;
                     }
-                    ImGui::PopID();
-                }
-                if (ImGui::SmallButton("Add Point")) {
-                    obj.collider2D.points.push_back(glm::vec2(0.0f));
-                    changed = true;
+                    if (ImGui::SmallButton("Add Point")) {
+                        obj.collider2D.points.push_back(glm::vec2(0.0f));
+                        changed = true;
+                    }
+                    if (beginCompFields("##Fields_Collider2DOffsetEdge")) {
+                        fieldRow("Offset");
+                        if (ImGui::DragFloat2("##Offset", &obj.collider2D.offset.x, 0.1f, -10000.0f, 10000.0f, "%.2f")) {
+                            changed = true;
+                        }
+                        endCompFields();
+                    }
                 }
             }
-
-            if (ImGui::DragFloat2("Offset", &obj.collider2D.offset.x, 0.1f, -10000.0f, 10000.0f, "%.2f")) {
-                changed = true;
-            }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeCollider2D) {
@@ -4222,7 +4403,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "parallax2d" && obj.hasParallaxLayer2D && sharedParallax2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.28f, 0.45f, 0.6f, 1.0f));
         bool removeParallax = false;
         bool changed = false;
@@ -4244,43 +4425,52 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("ParallaxLayer2D");
-            ImGui::Indent(10.0f);
-            if (!isUIObject(obj)) {
-                ImGui::TextDisabled("Parallax layers are for UI world objects.");
+            if (beginCompFields("##Fields_Parallax2D")) {
+                if (!isUIObject(obj)) {
+                    noteRow("Parallax layers are for UI world objects.");
+                }
+                fieldRow("Order");
+                if (ImGui::DragInt("##Order", &obj.parallaxLayer2D.order, 1.0f)) {
+                    changed = true;
+                }
+                int lowerCount = 0;
+                int higherCount = 0;
+                for (const auto& other : sceneObjects) {
+                    if (other.id == obj.id || !other.enabled) continue;
+                    if (!other.hasParallaxLayer2D || !other.parallaxLayer2D.enabled) continue;
+                    if (!isUIObject(other)) continue;
+                    if (other.parallaxLayer2D.order < obj.parallaxLayer2D.order) ++lowerCount;
+                    if (other.parallaxLayer2D.order > obj.parallaxLayer2D.order) ++higherCount;
+                }
+                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                ImGui::TextDisabled("Layer stack: %d behind, %d in front", lowerCount, higherCount);
+                fieldRow("Parallax Factor");
+                if (ImGui::DragFloat("##ParallaxFactor", &obj.parallaxLayer2D.factor, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                    obj.parallaxLayer2D.factor = std::clamp(obj.parallaxLayer2D.factor, 0.0f, 1.0f);
+                    changed = true;
+                }
+                if (HorizontalBoolRow("Repeat", "X", &obj.parallaxLayer2D.repeatX, "Y", &obj.parallaxLayer2D.repeatY))
+                {
+                    changed = true;
+                }
+                if (boolRow("Disable Culling", &obj.parallaxLayer2D.disableCulling)) { changed = true; }
+
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+                    ImGui::TextUnformatted("Prevents this parallax object from being culled when it moves outside the visible world overlay.");
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                }
+                fieldRow("Repeat Spacing");
+                if (ImGui::DragFloat2("##RepeatSpacing", &obj.parallaxLayer2D.repeatSpacing.x, 0.1f, 0.0f, 10000.0f, "%.1f")) {
+                    obj.parallaxLayer2D.repeatSpacing.x = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.x);
+                    obj.parallaxLayer2D.repeatSpacing.y = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.y);
+                    changed = true;
+                }
+                endCompFields();
             }
-            if (ImGui::DragInt("Order", &obj.parallaxLayer2D.order, 1.0f)) {
-                changed = true;
-            }
-            int lowerCount = 0;
-            int higherCount = 0;
-            for (const auto& other : sceneObjects) {
-                if (other.id == obj.id || !other.enabled) continue;
-                if (!other.hasParallaxLayer2D || !other.parallaxLayer2D.enabled) continue;
-                if (!isUIObject(other)) continue;
-                if (other.parallaxLayer2D.order < obj.parallaxLayer2D.order) ++lowerCount;
-                if (other.parallaxLayer2D.order > obj.parallaxLayer2D.order) ++higherCount;
-            }
-            ImGui::TextDisabled("Layer stack: %d behind, %d in front", lowerCount, higherCount);
-            if (ImGui::DragFloat("Parallax Factor", &obj.parallaxLayer2D.factor, 0.01f, 0.0f, 1.0f, "%.2f")) {
-                obj.parallaxLayer2D.factor = std::clamp(obj.parallaxLayer2D.factor, 0.0f, 1.0f);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Repeat X", &obj.parallaxLayer2D.repeatX)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Repeat Y", &obj.parallaxLayer2D.repeatY)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Disable Culling", &obj.parallaxLayer2D.disableCulling)) {
-                changed = true;
-            }
-            ImGui::TextDisabled("Keeps this parallax object rendering even when it moves outside the current world overlay.");
-            if (ImGui::DragFloat2("Repeat Spacing", &obj.parallaxLayer2D.repeatSpacing.x, 0.1f, 0.0f, 10000.0f, "%.1f")) {
-                obj.parallaxLayer2D.repeatSpacing.x = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.x);
-                obj.parallaxLayer2D.repeatSpacing.y = std::max(0.0f, obj.parallaxLayer2D.repeatSpacing.y);
-                changed = true;
-            }
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeParallax) {
@@ -4295,7 +4485,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "audio_source" && obj.hasAudioSource && sharedAudioSource) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.55f, 0.4f, 0.3f, 1.0f));
         bool removeAudioSource = false;
         bool changed = false;
@@ -4337,7 +4527,6 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("AudioSource");
-            ImGui::Indent(10.0f);
             auto& src = obj.audioSource;
             const std::string previousClipPath = src.clipPath;
 
@@ -4348,73 +4537,88 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
 
-            ImGui::Spacing();
             if (!src.clipPath.empty()) {
                 drawTrimmedPathText(src.clipPath, ImVec4(0.78f, 0.88f, 1.0f, 1.0f));
             }
 
-            if (ImGui::SliderFloat("Volume", &src.volume, 0.0f, 1.5f, "%.2f")) {
-                changed = true;
-                syncClipPreviewVolume(AudioPreviewContext::AudioSourceComponent, src.volume);
-            }
-            if (ImGui::Checkbox("Loop", &src.loop)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Play On Start", &src.playOnStart)) {
-                changed = true;
-            }
             const bool usePlanar2DAudio = isProject2DPipeline() || HasUIComponent(obj);
             const char* spatialBlendLabel = usePlanar2DAudio ? "Localization" : "Spatial Blend";
-            if (ImGui::SliderFloat(spatialBlendLabel, &src.spatialBlend, 0.0f, 1.0f, "%.2f")) {
-                src.spatialBlend = std::clamp(src.spatialBlend, 0.0f, 1.0f);
-                src.spatial = src.spatialBlend > 0.001f;
-                changed = true;
-            }
-            ImGui::TextDisabled(usePlanar2DAudio
-                ? "0 keeps audio global and centered. 1 fully uses world position for pan and falloff."
-                : "0 keeps audio centered. 1 uses full world placement.");
-
-            ImGui::BeginDisabled(src.spatialBlend <= 0.001f);
             const char* minDistanceLabel = usePlanar2DAudio ? "Near Distance" : "Min Distance";
             const char* maxDistanceLabel = usePlanar2DAudio ? "Far Distance" : "Max Distance";
-            if (ImGui::DragFloat(minDistanceLabel, &src.minDistance, 0.1f, 0.1f, 200.0f, "%.2f")) {
-                src.minDistance = std::max(0.1f, src.minDistance);
-                changed = true;
-            }
-            if (ImGui::DragFloat(maxDistanceLabel, &src.maxDistance, 0.1f, src.minDistance + 0.5f, 500.0f, "%.2f")) {
-                src.maxDistance = std::max(src.maxDistance, src.minDistance + 0.5f);
-                changed = true;
-            }
-            if (!usePlanar2DAudio) {
-                const char* rolloffModes[] = { "Logarithmic", "Linear", "Exponential", "Custom" };
-                int rolloffIndex = static_cast<int>(src.rolloffMode);
-                if (ImGui::Combo("Rolloff Mode", &rolloffIndex, rolloffModes, IM_ARRAYSIZE(rolloffModes))) {
-                    src.rolloffMode = static_cast<AudioRolloffMode>(rolloffIndex);
+
+            if (beginCompFields("##Fields_AudioSource")) {
+                fieldRow("Volume");
+                if (ImGui::SliderFloat("##Volume", &src.volume, 0.0f, 1.5f, "%.2f")) {
+                    changed = true;
+                    syncClipPreviewVolume(AudioPreviewContext::AudioSourceComponent, src.volume);
+                }
+                if (boolRow("Loop", &src.loop)) { changed = true; }
+                if (boolRow("Play On Start", &src.playOnStart)) { changed = true; }
+                fieldRow(spatialBlendLabel);
+                if (ImGui::SliderFloat("##SpatialBlend", &src.spatialBlend, 0.0f, 1.0f, "%.2f")) {
+                    src.spatialBlend = std::clamp(src.spatialBlend, 0.0f, 1.0f);
+                    src.spatial = src.spatialBlend > 0.001f;
                     changed = true;
                 }
-                if (src.rolloffMode != AudioRolloffMode::Custom) {
-                    if (ImGui::SliderFloat("Rolloff Factor", &src.rolloff, 0.1f, 4.0f, "%.2f")) {
-                        src.rolloff = std::max(0.1f, src.rolloff);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+                    ImGui::TextUnformatted(usePlanar2DAudio
+                    ? "0 keeps audio global and centered. 1 fully uses world position for pan and falloff."
+                    : "0 keeps audio centered. 1 uses full world placement.");
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                }
+                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                ImGui::BeginDisabled(src.spatialBlend <= 0.001f);
+                fieldRow(minDistanceLabel);
+                if (ImGui::DragFloat("##MinDist", &src.minDistance, 0.1f, 0.1f, 200.0f, "%.2f")) {
+                    src.minDistance = std::max(0.1f, src.minDistance);
+                    changed = true;
+                }
+                fieldRow(maxDistanceLabel);
+                if (ImGui::DragFloat("##MaxDist", &src.maxDistance, 0.1f, src.minDistance + 0.5f, 500.0f, "%.2f")) {
+                    src.maxDistance = std::max(src.maxDistance, src.minDistance + 0.5f);
+                    changed = true;
+                }
+                if (!usePlanar2DAudio) {
+                    const char* rolloffModes[] = { "Logarithmic", "Linear", "Exponential", "Custom" };
+                    int rolloffIndex = static_cast<int>(src.rolloffMode);
+                    fieldRow("Rolloff Mode");
+                    if (ImGui::Combo("##RolloffMode", &rolloffIndex, rolloffModes, IM_ARRAYSIZE(rolloffModes))) {
+                        src.rolloffMode = static_cast<AudioRolloffMode>(rolloffIndex);
                         changed = true;
+                    }
+                    if (src.rolloffMode != AudioRolloffMode::Custom) {
+                        fieldRow("Rolloff Factor");
+                        if (ImGui::SliderFloat("##RolloffFactor", &src.rolloff, 0.1f, 4.0f, "%.2f")) {
+                            src.rolloff = std::max(0.1f, src.rolloff);
+                            changed = true;
+                        }
+                    } else {
+                        fieldRow("Mid Distance");
+                        if (ImGui::SliderFloat("##MidDist", &src.customMidDistance, 0.0f, 1.0f, "%.2f")) {
+                            src.customMidDistance = std::clamp(src.customMidDistance, 0.0f, 1.0f);
+                            changed = true;
+                        }
+                        fieldRow("Mid Gain");
+                        if (ImGui::SliderFloat("##MidGain", &src.customMidGain, 0.0f, 1.0f, "%.2f")) {
+                            src.customMidGain = std::clamp(src.customMidGain, 0.0f, 1.0f);
+                            changed = true;
+                        }
+                        fieldRow("End Gain");
+                        if (ImGui::SliderFloat("##EndGain", &src.customEndGain, 0.0f, 1.0f, "%.2f")) {
+                            src.customEndGain = std::clamp(src.customEndGain, 0.0f, 1.0f);
+                            changed = true;
+                        }
                     }
                 } else {
-                    if (ImGui::SliderFloat("Mid Distance", &src.customMidDistance, 0.0f, 1.0f, "%.2f")) {
-                        src.customMidDistance = std::clamp(src.customMidDistance, 0.0f, 1.0f);
-                        changed = true;
-                    }
-                    if (ImGui::SliderFloat("Mid Gain", &src.customMidGain, 0.0f, 1.0f, "%.2f")) {
-                        src.customMidGain = std::clamp(src.customMidGain, 0.0f, 1.0f);
-                        changed = true;
-                    }
-                    if (ImGui::SliderFloat("End Gain", &src.customEndGain, 0.0f, 1.0f, "%.2f")) {
-                        src.customEndGain = std::clamp(src.customEndGain, 0.0f, 1.0f);
-                        changed = true;
-                    }
+                    noteRow("2D projects use planar left/right placement with the blend slider.");
                 }
-            } else {
-                ImGui::TextDisabled("2D projects use planar left/right placement with the blend slider.");
+                ImGui::EndDisabled();
+                endCompFields();
             }
-            ImGui::EndDisabled();
 
             const AudioClipPreview* clipPreview = audio.getPreview(src.clipPath);
             ImGui::Separator();
@@ -4430,7 +4634,6 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Load an audio clip to preview timing and waveform.");
             }
 
-            ImGui::Spacing();
             if (drawAudioPlayerIconButton(
                     "##AudioSourcePlayButton",
                     previewPlaying
@@ -4482,10 +4685,8 @@ void Engine::renderInspectorPanel() {
                 audio.seekPreview(src.clipPath, seekRatio * dur);
             }
 
-            ImGui::Spacing();
             drawAudioTimeReadout(cur, dur);
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeAudioSource) {
@@ -4503,7 +4704,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "ground_baked" && obj.hasGroundBakedType && sharedGroundBaked) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.28f, 0.5f, 0.34f, 1.0f));
         bool removeGroundBaked = false;
         bool changed = false;
@@ -4525,21 +4726,19 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("GroundBakedType");
-            ImGui::Indent(10.0f);
-
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
             }
-            if (ImGui::Checkbox("Include In Bake", &obj.groundBakedType.includeInBake)) {
-                changed = true;
+            if (beginCompFields("##Fields_GroundBaked")) {
+                if (boolRow("Include In Bake", &obj.groundBakedType.includeInBake)) { changed = true; }
+                fieldRow("Area Cost");
+                if (ImGui::DragFloat("##AreaCost", &obj.groundBakedType.areaCost, 0.05f, 0.1f, 100.0f, "%.2f")) {
+                    obj.groundBakedType.areaCost = std::clamp(obj.groundBakedType.areaCost, 0.1f, 100.0f);
+                    changed = true;
+                }
+                noteRow("Objects marked here are considered walkable during bake.");
+                endCompFields();
             }
-            if (ImGui::DragFloat("Area Cost", &obj.groundBakedType.areaCost, 0.05f, 0.1f, 100.0f, "%.2f")) {
-                obj.groundBakedType.areaCost = std::clamp(obj.groundBakedType.areaCost, 0.1f, 100.0f);
-                changed = true;
-            }
-            ImGui::TextDisabled("Objects marked here are considered walkable during bake.");
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeGroundBaked) {
@@ -4555,7 +4754,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "obstacle" && obj.hasObsticleObject && sharedObstacle) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.3f, 0.28f, 1.0f));
         bool removeObstacle = false;
         bool changed = false;
@@ -4577,21 +4776,19 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("ObsticleObject");
-            ImGui::Indent(10.0f);
-
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
             }
-            if (ImGui::Checkbox("Carve", &obj.obsticleObject.carve)) {
-                changed = true;
+            if (beginCompFields("##Fields_Obstacle")) {
+                if (boolRow("Carve", &obj.obsticleObject.carve)) { changed = true; }
+                fieldRow("Padding");
+                if (ImGui::DragFloat("##Padding", &obj.obsticleObject.padding, 0.02f, 0.0f, 10.0f, "%.2f")) {
+                    obj.obsticleObject.padding = std::clamp(obj.obsticleObject.padding, 0.0f, 10.0f);
+                    changed = true;
+                }
+                noteRow("Obstacle regions are removed from the baked walkable map.");
+                endCompFields();
             }
-            if (ImGui::DragFloat("Padding", &obj.obsticleObject.padding, 0.02f, 0.0f, 10.0f, "%.2f")) {
-                obj.obsticleObject.padding = std::clamp(obj.obsticleObject.padding, 0.0f, 10.0f);
-                changed = true;
-            }
-            ImGui::TextDisabled("Obstacle regions are removed from the baked walkable map.");
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeObstacle) {
@@ -4607,7 +4804,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "ai_agent" && obj.hasAIAgent && sharedAgent) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.32f, 0.4f, 0.58f, 1.0f));
         bool removeAgent = false;
         bool changed = false;
@@ -4629,54 +4826,49 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("AIAgent");
-            ImGui::Indent(10.0f);
-
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
                 aiPreviewAgentId = obj.id;
             }
-
-            if (ImGui::Checkbox("Use Target Object", &obj.aiAgent.useTargetObject)) {
-                changed = true;
-            }
-            if (obj.aiAgent.useTargetObject) {
-                if (drawSceneObjectReferenceSlot("Target Object", "##AIAgentTarget", obj.aiAgent.targetId, obj.id, "None (Target Object)")) {
-                    aiPreviewTargetId = obj.aiAgent.targetId;
+            if (beginCompFields("##Fields_AIAgent")) {
+                if (boolRow("Use Target", &obj.aiAgent.useTargetObject)) { changed = true; }
+                if (obj.aiAgent.useTargetObject) {
+                    endCompFields();
+                    if (drawSceneObjectReferenceSlot("Target Object", "##AIAgentTarget", obj.aiAgent.targetId, obj.id, "None (Target Object)")) {
+                        aiPreviewTargetId = obj.aiAgent.targetId;
+                        changed = true;
+                    }
+                    beginCompFields("##Fields_AIAgent2");
+                }
+                fieldRow("Destination");
+                if (ImGui::DragFloat3("##Destination", &obj.aiAgent.destination.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
                     changed = true;
                 }
+                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                if (ImGui::Button("Set To Current")) {
+                    obj.aiAgent.destination = obj.position;
+                    changed = true;
+                }
+                fieldRow("Speed");
+                if (ImGui::DragFloat("##Speed", &obj.aiAgent.speed, 0.05f, 0.05f, 100.0f, "%.2f")) {
+                    obj.aiAgent.speed = std::max(0.05f, obj.aiAgent.speed);
+                    changed = true;
+                }
+                fieldRow("Stop Distance");
+                if (ImGui::DragFloat("##StoppingDist", &obj.aiAgent.stoppingDistance, 0.01f, 0.0f, 25.0f, "%.2f")) {
+                    obj.aiAgent.stoppingDistance = std::clamp(obj.aiAgent.stoppingDistance, 0.0f, 25.0f);
+                    changed = true;
+                }
+                fieldRow("Repath Interval");
+                if (ImGui::DragFloat("##RepathInterval", &obj.aiAgent.repathInterval, 0.05f, 0.05f, 10.0f, "%.2f")) {
+                    obj.aiAgent.repathInterval = std::clamp(obj.aiAgent.repathInterval, 0.05f, 10.0f);
+                    changed = true;
+                }
+                if (boolRow("Auto Repath", &obj.aiAgent.autoRepath)) { changed = true; }
+                if (boolRow("Align To Path", &obj.aiAgent.alignToPath)) { changed = true; }
+                if (boolRow("Debug Draw Path", &obj.aiAgent.debugDrawPath)) { changed = true; }
+                endCompFields();
             }
-
-            if (ImGui::DragFloat3("Destination", &obj.aiAgent.destination.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::Button("Set Destination To Current")) {
-                obj.aiAgent.destination = obj.position;
-                changed = true;
-            }
-
-            if (ImGui::DragFloat("Speed", &obj.aiAgent.speed, 0.05f, 0.05f, 100.0f, "%.2f")) {
-                obj.aiAgent.speed = std::max(0.05f, obj.aiAgent.speed);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Stopping Distance", &obj.aiAgent.stoppingDistance, 0.01f, 0.0f, 25.0f, "%.2f")) {
-                obj.aiAgent.stoppingDistance = std::clamp(obj.aiAgent.stoppingDistance, 0.0f, 25.0f);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Repath Interval", &obj.aiAgent.repathInterval, 0.05f, 0.05f, 10.0f, "%.2f")) {
-                obj.aiAgent.repathInterval = std::clamp(obj.aiAgent.repathInterval, 0.05f, 10.0f);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Auto Repath", &obj.aiAgent.autoRepath)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Align To Path", &obj.aiAgent.alignToPath)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Debug Draw Path", &obj.aiAgent.debugDrawPath)) {
-                changed = true;
-            }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeAgent) {
@@ -4693,7 +4885,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "animation" && obj.hasAnimation && sharedAnimation) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.35f, 0.55f, 1.0f));
         bool removeAnimation = false;
         bool changed = false;
@@ -4734,7 +4926,6 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Animation");
-            ImGui::Indent(10.0f);
             NormalizeAnimationClipSlots(obj.animation);
             if (ImGui::Button("Open Animator")) {
                 showAnimationWindow = true;
@@ -4815,26 +5006,23 @@ void Engine::renderInspectorPanel() {
                 }
             }
             ImGui::TextDisabled("Clips: %zu", obj.animation.clips.size());
-            ImGui::TextDisabled("Keyframes: %zu | Tracks: %zu",
-                                displayKeyCount,
-                                displayTrackCount);
+            ImGui::TextDisabled("Keyframes: %zu | Tracks: %zu", displayKeyCount, displayTrackCount);
 
-            if (ImGui::DragFloat("Clip Length", &obj.animation.clipLength, 0.05f, 0.1f, 120.0f, "%.2f")) {
-                obj.animation.clipLength = std::max(0.1f, obj.animation.clipLength);
-                changed = true;
-            }
-            if (ImGui::DragFloat("Play Speed", &obj.animation.playSpeed, 0.05f, 0.05f, 8.0f, "%.2f")) {
-                obj.animation.playSpeed = std::max(0.05f, obj.animation.playSpeed);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Loop", &obj.animation.loop)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Play On Awake", &obj.animation.playOnAwake)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Apply On Scrub", &obj.animation.applyOnScrub)) {
-                changed = true;
+            if (beginCompFields("##Fields_Animation")) {
+                fieldRow("Clip Length");
+                if (ImGui::DragFloat("##ClipLength", &obj.animation.clipLength, 0.05f, 0.1f, 120.0f, "%.2f")) {
+                    obj.animation.clipLength = std::max(0.1f, obj.animation.clipLength);
+                    changed = true;
+                }
+                fieldRow("Play Speed");
+                if (ImGui::DragFloat("##PlaySpeed", &obj.animation.playSpeed, 0.05f, 0.05f, 8.0f, "%.2f")) {
+                    obj.animation.playSpeed = std::max(0.05f, obj.animation.playSpeed);
+                    changed = true;
+                }
+                if (boolRow("Loop", &obj.animation.loop)) { changed = true; }
+                if (boolRow("Play On Awake", &obj.animation.playOnAwake)) { changed = true; }
+                if (boolRow("Apply On Scrub", &obj.animation.applyOnScrub)) { changed = true; }
+                endCompFields();
             }
 
             if (ImGui::Button("Clear Keyframes")) {
@@ -4842,7 +5030,6 @@ void Engine::renderInspectorPanel() {
                 changed = true;
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeAnimation) {
@@ -4858,7 +5045,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "skeletal_animation" && obj.hasSkeletalAnimation && sharedSkeletal) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.4f, 0.6f, 1.0f));
         bool removeSkeletal = false;
         bool changed = false;
@@ -4880,50 +5067,43 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Skeletal");
-            ImGui::Indent(10.0f);
-
-            ModelSceneData sceneData;
-            std::string err;
-            bool hasClips = !obj.meshPath.empty() && getModelLoader().loadModelScene(obj.meshPath, sceneData, err) &&
-                            !sceneData.animations.empty();
-            if (hasClips) {
-                std::vector<const char*> clipNames;
-                clipNames.reserve(sceneData.animations.size());
-                for (const auto& clip : sceneData.animations) {
-                    clipNames.push_back(clip.name.c_str());
+            if (beginCompFields("##Fields_Skeletal")) {
+                ModelSceneData sceneData;
+                std::string err;
+                bool hasClips = !obj.meshPath.empty() && getModelLoader().loadModelScene(obj.meshPath, sceneData, err) &&
+                                !sceneData.animations.empty();
+                if (hasClips) {
+                    std::vector<const char*> clipNames;
+                    clipNames.reserve(sceneData.animations.size());
+                    for (const auto& clip : sceneData.animations) {
+                        clipNames.push_back(clip.name.c_str());
+                    }
+                    int clipIndex = std::clamp(obj.skeletal.clipIndex, 0, (int)clipNames.size() - 1);
+                    fieldRow("Clip");
+                    if (ImGui::Combo("##Clip", &clipIndex, clipNames.data(), (int)clipNames.size())) {
+                        obj.skeletal.clipIndex = clipIndex;
+                        obj.skeletal.time = 0.0f;
+                        changed = true;
+                    }
+                } else {
+                    noteRow("No animation clips found");
                 }
-                int clipIndex = std::clamp(obj.skeletal.clipIndex, 0, (int)clipNames.size() - 1);
-                if (ImGui::Combo("Clip", &clipIndex, clipNames.data(), (int)clipNames.size())) {
-                    obj.skeletal.clipIndex = clipIndex;
-                    obj.skeletal.time = 0.0f;
+                if (boolRow("Use Animation", &obj.skeletal.useAnimation)) { changed = true; }
+                fieldRow("Play Speed");
+                if (ImGui::DragFloat("##PlaySpeed", &obj.skeletal.playSpeed, 0.05f, 0.05f, 8.0f, "%.2f")) {
+                    obj.skeletal.playSpeed = std::max(0.05f, obj.skeletal.playSpeed);
                     changed = true;
                 }
-            } else {
-                ImGui::TextDisabled("No animation clips found");
+                if (boolRow("Loop", &obj.skeletal.loop)) { changed = true; }
+                if (boolRow("GPU Skinning", &obj.skeletal.useGpuSkinning)) { changed = true; }
+                if (boolRow("CPU Fallback", &obj.skeletal.allowCpuFallback)) { changed = true; }
+                fieldRow("Max Bones");
+                if (ImGui::DragInt("##MaxBones", &obj.skeletal.maxBones, 1, 8, 256)) {
+                    obj.skeletal.maxBones = std::clamp(obj.skeletal.maxBones, 8, 256);
+                    changed = true;
+                }
+                endCompFields();
             }
-
-            if (ImGui::Checkbox("Use Animation", &obj.skeletal.useAnimation)) {
-                changed = true;
-            }
-            if (ImGui::DragFloat("Play Speed", &obj.skeletal.playSpeed, 0.05f, 0.05f, 8.0f, "%.2f")) {
-                obj.skeletal.playSpeed = std::max(0.05f, obj.skeletal.playSpeed);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Loop", &obj.skeletal.loop)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("GPU Skinning", &obj.skeletal.useGpuSkinning)) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Allow CPU Fallback", &obj.skeletal.allowCpuFallback)) {
-                changed = true;
-            }
-            if (ImGui::DragInt("Max Bones", &obj.skeletal.maxBones, 1, 8, 256)) {
-                obj.skeletal.maxBones = std::clamp(obj.skeletal.maxBones, 8, 256);
-                changed = true;
-            }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeSkeletal) {
@@ -4939,7 +5119,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "reverb_zone" && obj.hasReverbZone && sharedReverb) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.4f, 0.45f, 0.6f, 1.0f));
         bool removeReverbZone = false;
         bool changed = false;
@@ -4961,107 +5141,84 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("ReverbZone");
-            ImGui::Indent(10.0f);
             auto& zone = obj.reverbZone;
 
-            const char* presets[] = { "Room", "Living Room", "Hall", "Forest", "Custom" };
-            int presetIndex = static_cast<int>(zone.preset);
-            if (ImGui::Combo("Preset", &presetIndex, presets, IM_ARRAYSIZE(presets))) {
-                ApplyReverbPreset(zone, static_cast<ReverbPreset>(presetIndex));
-                changed = true;
-            }
-
-            const char* shapes[] = { "Box", "Sphere" };
-            int shapeIndex = static_cast<int>(zone.shape);
-            if (ImGui::Combo("Shape", &shapeIndex, shapes, IM_ARRAYSIZE(shapes))) {
-                zone.shape = static_cast<ReverbZoneShape>(shapeIndex);
-                changed = true;
-            }
-
-            if (zone.shape == ReverbZoneShape::Sphere) {
-                if (ImGui::DragFloat("Radius", &zone.radius, 0.1f, 0.1f, 500.0f, "%.2f")) {
-                    zone.radius = std::max(0.1f, zone.radius);
+            if (beginCompFields("##Fields_ReverbZone")) {
+                const char* presets[] = { "Room", "Living Room", "Hall", "Forest", "Custom" };
+                int presetIndex = static_cast<int>(zone.preset);
+                fieldRow("Preset");
+                if (ImGui::Combo("##Preset", &presetIndex, presets, IM_ARRAYSIZE(presets))) {
+                    ApplyReverbPreset(zone, static_cast<ReverbPreset>(presetIndex));
                     changed = true;
                 }
-            } else {
-                if (ImGui::DragFloat3("Box Size", &zone.boxSize.x, 0.1f, 0.1f, 500.0f, "%.2f")) {
-                    zone.boxSize = glm::max(zone.boxSize, glm::vec3(0.1f));
+
+                const char* shapes[] = { "Box", "Sphere" };
+                int shapeIndex = static_cast<int>(zone.shape);
+                fieldRow("Shape");
+                if (ImGui::Combo("##Shape", &shapeIndex, shapes, IM_ARRAYSIZE(shapes))) {
+                    zone.shape = static_cast<ReverbZoneShape>(shapeIndex);
                     changed = true;
                 }
-            }
 
-            if (zone.shape == ReverbZoneShape::Sphere) {
-                if (ImGui::DragFloat("Min Distance", &zone.minDistance, 0.05f, 0.0f, 500.0f, "%.2f")) {
-                    zone.minDistance = std::max(0.0f, zone.minDistance);
-                    changed = true;
+                if (zone.shape == ReverbZoneShape::Sphere) {
+                    fieldRow("Radius");
+                    if (ImGui::DragFloat("##Radius", &zone.radius, 0.1f, 0.1f, 500.0f, "%.2f")) {
+                        zone.radius = std::max(0.1f, zone.radius);
+                        changed = true;
+                    }
+                    fieldRow("Min Distance");
+                    if (ImGui::DragFloat("##MinDist", &zone.minDistance, 0.05f, 0.0f, 500.0f, "%.2f")) {
+                        zone.minDistance = std::max(0.0f, zone.minDistance);
+                        changed = true;
+                    }
+                    fieldRow("Max Distance");
+                    if (ImGui::DragFloat("##MaxDist", &zone.maxDistance, 0.05f, zone.minDistance + 0.1f, 1000.0f, "%.2f")) {
+                        zone.maxDistance = std::max(zone.maxDistance, zone.minDistance + 0.1f);
+                        changed = true;
+                    }
+                } else {
+                    fieldRow("Box Size");
+                    if (ImGui::DragFloat3("##BoxSize", &zone.boxSize.x, 0.1f, 0.1f, 500.0f, "%.2f")) {
+                        zone.boxSize = glm::max(zone.boxSize, glm::vec3(0.1f));
+                        changed = true;
+                    }
+                    fieldRow("Blend Distance");
+                    if (ImGui::DragFloat("##BlendDist", &zone.blendDistance, 0.05f, 0.0f, 50.0f, "%.2f")) {
+                        zone.blendDistance = std::max(0.0f, zone.blendDistance);
+                        changed = true;
+                    }
                 }
-                if (ImGui::DragFloat("Max Distance", &zone.maxDistance, 0.05f, zone.minDistance + 0.1f, 1000.0f, "%.2f")) {
-                    zone.maxDistance = std::max(zone.maxDistance, zone.minDistance + 0.1f);
-                    changed = true;
-                }
-            } else if (ImGui::DragFloat("Blend Distance", &zone.blendDistance, 0.05f, 0.0f, 50.0f, "%.2f")) {
-                zone.blendDistance = std::max(0.0f, zone.blendDistance);
-                changed = true;
-            }
 
-            if (ImGui::SliderFloat("Room", &zone.room, -10000.0f, 0.0f, "%.0f dB")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
+                fieldRow("Room");
+                if (ImGui::SliderFloat("##Room", &zone.room, -10000.0f, 0.0f, "%.0f dB")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Room HF");
+                if (ImGui::SliderFloat("##RoomHF", &zone.roomHF, -10000.0f, 0.0f, "%.0f dB")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Room LF");
+                if (ImGui::SliderFloat("##RoomLF", &zone.roomLF, -10000.0f, 0.0f, "%.0f dB")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Decay Time");
+                if (ImGui::SliderFloat("##DecayTime", &zone.decayTime, 0.1f, 20.0f, "%.2f s")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Decay HF Ratio");
+                if (ImGui::SliderFloat("##DecayHFRatio", &zone.decayHFRatio, 0.1f, 2.0f, "%.2f")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Reflections");
+                if (ImGui::SliderFloat("##Reflections", &zone.reflections, -10000.0f, 1000.0f, "%.0f dB")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Reflect Delay");
+                if (ImGui::SliderFloat("##ReflectDelay", &zone.reflectionsDelay, 0.0f, 0.1f, "%.3f s")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Reverb");
+                if (ImGui::SliderFloat("##Reverb", &zone.reverb, -10000.0f, 2000.0f, "%.0f dB")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Reverb Delay");
+                if (ImGui::SliderFloat("##ReverbDelay", &zone.reverbDelay, 0.0f, 0.1f, "%.3f s")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("HF Reference");
+                if (ImGui::SliderFloat("##HFRef", &zone.hfReference, 1000.0f, 20000.0f, "%.0f Hz")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("LF Reference");
+                if (ImGui::SliderFloat("##LFRef", &zone.lfReference, 20.0f, 1000.0f, "%.0f Hz")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Room Rolloff");
+                if (ImGui::SliderFloat("##RoomRolloff", &zone.roomRolloffFactor, 0.0f, 10.0f, "%.2f")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Diffusion");
+                if (ImGui::SliderFloat("##Diffusion", &zone.diffusion, 0.0f, 100.0f, "%.0f")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                fieldRow("Density");
+                if (ImGui::SliderFloat("##Density", &zone.density, 0.0f, 100.0f, "%.0f")) { zone.preset = ReverbPreset::Custom; changed = true; }
+                endCompFields();
             }
-            if (ImGui::SliderFloat("Room HF", &zone.roomHF, -10000.0f, 0.0f, "%.0f dB")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Room LF", &zone.roomLF, -10000.0f, 0.0f, "%.0f dB")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Decay Time", &zone.decayTime, 0.1f, 20.0f, "%.2f s")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Decay HF Ratio", &zone.decayHFRatio, 0.1f, 2.0f, "%.2f")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Reflections", &zone.reflections, -10000.0f, 1000.0f, "%.0f dB")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Reflections Delay", &zone.reflectionsDelay, 0.0f, 0.1f, "%.3f s")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Reverb", &zone.reverb, -10000.0f, 2000.0f, "%.0f dB")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Reverb Delay", &zone.reverbDelay, 0.0f, 0.1f, "%.3f s")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("HF Reference", &zone.hfReference, 1000.0f, 20000.0f, "%.0f Hz")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("LF Reference", &zone.lfReference, 20.0f, 1000.0f, "%.0f Hz")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Room Rolloff Factor", &zone.roomRolloffFactor, 0.0f, 10.0f, "%.2f")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Diffusion", &zone.diffusion, 0.0f, 100.0f, "%.0f")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Density", &zone.density, 0.0f, 100.0f, "%.0f")) {
-                zone.preset = ReverbPreset::Custom;
-                changed = true;
-            }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeReverbZone) {
@@ -5076,7 +5233,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "camera" && obj.hasCamera && sharedCamera) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.35f, 0.65f, 1.0f));
         bool changed = false;
         bool removeCamera = false;
@@ -5095,45 +5252,44 @@ void Engine::renderInspectorPanel() {
         });
         if (header.open) {
             ImGui::PushID("Camera");
-            ImGui::Indent(10.0f);
-            const char* cameraTypes[] = { "Scene", "Player" };
-            int camType = static_cast<int>(obj.camera.type);
-            if (ImGui::Combo("Type", &camType, cameraTypes, IM_ARRAYSIZE(cameraTypes))) {
-                obj.camera.type = static_cast<SceneCameraType>(camType);
-                changed = true;
-            }
-
-            if (ImGui::SliderFloat("FOV", &obj.camera.fov, 20.0f, 120.0f, "%.0f deg")) {
-                changed = true;
-            }
-            if (ImGui::DragFloat("Near Clip", &obj.camera.nearClip, 0.01f, 0.01f, obj.camera.farClip - 0.01f, "%.3f")) {
-                obj.camera.nearClip = std::max(0.01f, std::min(obj.camera.nearClip, obj.camera.farClip - 0.01f));
-                changed = true;
-            }
-            if (ImGui::DragFloat("Far Clip", &obj.camera.farClip, 0.1f, obj.camera.nearClip + 0.05f, 1000.0f, "%.1f")) {
-                obj.camera.farClip = std::max(obj.camera.nearClip + 0.05f, obj.camera.farClip);
-                changed = true;
-            }
-            if (ImGui::Checkbox("Apply Post Processing", &obj.camera.applyPostFX)) {
-                changed = true;
-            }
-            bool project2D = isProject2DPipeline();
-            if (project2D) {
-                ImGui::TextDisabled("2D camera mode is controlled by Project Pipeline.");
-            } else {
-                if (ImGui::Checkbox("Legacy 2D Camera Override", &obj.camera.use2D)) {
+            if (beginCompFields("##Fields_Camera")) {
+                const char* cameraTypes[] = { "Scene", "Player" };
+                int camType = static_cast<int>(obj.camera.type);
+                fieldRow("Type");
+                if (ImGui::Combo("##Type", &camType, cameraTypes, IM_ARRAYSIZE(cameraTypes))) {
+                    obj.camera.type = static_cast<SceneCameraType>(camType);
                     changed = true;
                 }
-            }
-            bool cameraUses2D = project2D || obj.camera.use2D;
-            if (cameraUses2D) {
-                if (ImGui::DragFloat("Pixels Per Unit", &obj.camera.pixelsPerUnit, 1.0f, 1.0f, 2000.0f, "%.1f")) {
-                    obj.camera.pixelsPerUnit = std::max(1.0f, obj.camera.pixelsPerUnit);
+                fieldRow("FOV");
+                if (ImGui::SliderFloat("##FOV", &obj.camera.fov, 20.0f, 120.0f, "%.0f deg")) { changed = true; }
+                fieldRow("Near Clip");
+                if (ImGui::DragFloat("##NearClip", &obj.camera.nearClip, 0.01f, 0.01f, obj.camera.farClip - 0.01f, "%.3f")) {
+                    obj.camera.nearClip = std::max(0.01f, std::min(obj.camera.nearClip, obj.camera.farClip - 0.01f));
                     changed = true;
                 }
-                ImGui::TextDisabled("Uses X/Y for 2D view; Z stays fixed.");
+                fieldRow("Far Clip");
+                if (ImGui::DragFloat("##FarClip", &obj.camera.farClip, 0.1f, obj.camera.nearClip + 0.05f, 1000.0f, "%.1f")) {
+                    obj.camera.farClip = std::max(obj.camera.nearClip + 0.05f, obj.camera.farClip);
+                    changed = true;
+                }
+                if (boolRow("Apply Post FX", &obj.camera.applyPostFX)) { changed = true; }
+                bool project2D = isProject2DPipeline();
+                if (project2D) {
+                    noteRow("2D camera mode is controlled by Project Pipeline.");
+                } else {
+                    if (boolRow("Legacy 2D Cam", &obj.camera.use2D)) { changed = true; }
+                }
+                bool cameraUses2D = project2D || obj.camera.use2D;
+                if (cameraUses2D) {
+                    fieldRow("Pixels/Unit");
+                    if (ImGui::DragFloat("##PixelsPerUnit", &obj.camera.pixelsPerUnit, 1.0f, 1.0f, 2000.0f, "%.1f")) {
+                        obj.camera.pixelsPerUnit = std::max(1.0f, obj.camera.pixelsPerUnit);
+                        changed = true;
+                    }
+                    noteRow("Uses X/Y for 2D view; Z stays fixed.");
+                }
+                endCompFields();
             }
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeCamera) {
@@ -5149,7 +5305,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "camera_follow2d" && obj.hasCameraFollow2D && sharedCameraFollow2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.35f, 0.55f, 0.4f, 1.0f));
         bool changed = false;
         bool removeFollow = false;
@@ -5171,22 +5327,22 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("CameraFollow2D");
-            ImGui::Indent(10.0f);
             if (!obj.hasCamera) {
                 ImGui::TextDisabled("Requires a Camera component.");
             }
-
             if (drawSceneObjectReferenceSlot("Target", "##CameraFollowTarget", obj.cameraFollow2D.targetId, obj.id, "None (Target Object)")) {
                 changed = true;
             }
-            if (ImGui::DragFloat2("Offset", &obj.cameraFollow2D.offset.x, 0.1f)) {
-                changed = true;
+            if (beginCompFields("##Fields_CameraFollow2D")) {
+                fieldRow("Offset");
+                if (ImGui::DragFloat2("##Offset", &obj.cameraFollow2D.offset.x, 0.1f)) { changed = true; }
+                fieldRow("Smooth Time");
+                if (ImGui::DragFloat("##SmoothTime", &obj.cameraFollow2D.smoothTime, 0.01f, 0.0f, 10.0f, "%.2f s")) {
+                    obj.cameraFollow2D.smoothTime = std::max(0.0f, obj.cameraFollow2D.smoothTime);
+                    changed = true;
+                }
+                endCompFields();
             }
-            if (ImGui::DragFloat("Smooth Time", &obj.cameraFollow2D.smoothTime, 0.01f, 0.0f, 10.0f, "%.2f s")) {
-                obj.cameraFollow2D.smoothTime = std::max(0.0f, obj.cameraFollow2D.smoothTime);
-                changed = true;
-            }
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeFollow) {
@@ -5201,7 +5357,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "post_fx" && obj.hasPostFX) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.55f, 0.6f, 1.0f));
         bool changed = false;
         bool removePostFx = false;
@@ -5223,304 +5379,278 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("PostFX");
-            ImGui::Indent(10.0f);
             if (ImGui::CollapsingHeader("Volume", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Global Volume", &obj.postFx.isGlobal)) {
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Priority", &obj.postFx.priority, 0.05f, -100.0f, 100.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Blend Weight", &obj.postFx.blendWeight, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (!obj.postFx.isGlobal) {
-                    if (ImGui::DragFloat("Blend Radius", &obj.postFx.blendRadius, 0.1f, 0.1f, 1000.0f, "%.2f")) {
-                        obj.postFx.blendRadius = std::max(0.1f, obj.postFx.blendRadius);
-                        changed = true;
+                if (beginCompFields("##Fields_PFXVolume")) {
+                    if (boolRow("Global Volume", &obj.postFx.isGlobal)) { changed = true; }
+                    fieldRow("Priority");
+                    if (ImGui::DragFloat("##Priority", &obj.postFx.priority, 0.05f, -100.0f, 100.0f, "%.2f")) { changed = true; }
+                    fieldRow("Blend Weight");
+                    if (ImGui::SliderFloat("##BlendWeight", &obj.postFx.blendWeight, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    if (!obj.postFx.isGlobal) {
+                        fieldRow("Blend Radius");
+                        if (ImGui::DragFloat("##BlendRadius", &obj.postFx.blendRadius, 0.1f, 0.1f, 1000.0f, "%.2f")) {
+                            obj.postFx.blendRadius = std::max(0.1f, obj.postFx.blendRadius);
+                            changed = true;
+                        }
+                        noteRow("Local volumes use this object's transform and scale as bounds.");
                     }
-                    ImGui::TextDisabled("Local volumes use this object's transform and scale as bounds.");
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("HDR & Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("HDR Enabled", &obj.postFx.hdrEnabled)) {
-                    changed = true;
-                }
-                const char* toneMapperNames[] = { "None", "Reinhard", "ACES" };
-                int toneMapper = static_cast<int>(obj.postFx.toneMapper);
-                if (ImGui::Combo("Tone Mapper", &toneMapper, toneMapperNames, IM_ARRAYSIZE(toneMapperNames))) {
-                    obj.postFx.toneMapper = static_cast<PostFXToneMapper>(toneMapper);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("White Point", &obj.postFx.whitePoint, 0.25f, 16.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Output Gamma", &obj.postFx.gamma, 1.0f, 3.0f, "%.2f")) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXHDR")) {
+                    if (boolRow("HDR Enabled", &obj.postFx.hdrEnabled)) { changed = true; }
+                    const char* toneMapperNames[] = { "None", "Reinhard", "ACES" };
+                    int toneMapper = static_cast<int>(obj.postFx.toneMapper);
+                    fieldRow("Tone Mapper");
+                    if (ImGui::Combo("##ToneMapper", &toneMapper, toneMapperNames, IM_ARRAYSIZE(toneMapperNames))) {
+                        obj.postFx.toneMapper = static_cast<PostFXToneMapper>(toneMapper);
+                        changed = true;
+                    }
+                    fieldRow("White Point");
+                    if (ImGui::SliderFloat("##WhitePoint", &obj.postFx.whitePoint, 0.25f, 16.0f, "%.2f")) { changed = true; }
+                    fieldRow("Output Gamma");
+                    if (ImGui::SliderFloat("##OutputGamma", &obj.postFx.gamma, 1.0f, 3.0f, "%.2f")) { changed = true; }
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##Bloom", &obj.postFx.bloomEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXBloom")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledBloom", &obj.postFx.bloomEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.bloomEnabled);
+                    fieldRow("Threshold");
+                    if (ImGui::SliderFloat("##BloomThreshold", &obj.postFx.bloomThreshold, 0.0f, 4.0f, "%.2f")) { changed = true; }
+                    fieldRow("Soft Knee");
+                    if (ImGui::SliderFloat("##BloomSoftKnee", &obj.postFx.bloomSoftKnee, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Intensity");
+                    if (ImGui::SliderFloat("##BloomIntensity", &obj.postFx.bloomIntensity, 0.0f, 4.0f, "%.2f")) { changed = true; }
+                    fieldRow("Spread");
+                    if (ImGui::SliderFloat("##BloomSpread", &obj.postFx.bloomRadius, 0.5f, 4.5f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.bloomEnabled);
-                if (ImGui::SliderFloat("Threshold", &obj.postFx.bloomThreshold, 0.0f, 4.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Soft Knee", &obj.postFx.bloomSoftKnee, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Intensity##Bloom", &obj.postFx.bloomIntensity, 0.0f, 4.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Spread", &obj.postFx.bloomRadius, 0.5f, 4.5f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##ColorAdjust", &obj.postFx.colorAdjustEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXColor")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledColor", &obj.postFx.colorAdjustEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.colorAdjustEnabled);
+                    fieldRow("Exposure (EV)");
+                    if (ImGui::SliderFloat("##Exposure", &obj.postFx.exposure, -5.0f, 5.0f, "%.2f")) { changed = true; }
+                    fieldRow("Contrast");
+                    if (ImGui::SliderFloat("##Contrast", &obj.postFx.contrast, 0.0f, 2.5f, "%.2f")) { changed = true; }
+                    fieldRow("Saturation");
+                    if (ImGui::SliderFloat("##Saturation", &obj.postFx.saturation, 0.0f, 2.5f, "%.2f")) { changed = true; }
+                    fieldRow("Color Filter");
+                    if (ImGui::ColorEdit3("##ColorFilter", &obj.postFx.colorFilter.x)) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.colorAdjustEnabled);
-                if (ImGui::SliderFloat("Exposure (EV)", &obj.postFx.exposure, -5.0f, 5.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Contrast", &obj.postFx.contrast, 0.0f, 2.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Saturation", &obj.postFx.saturation, 0.0f, 2.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::ColorEdit3("Color Filter", &obj.postFx.colorFilter.x)) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##MotionBlur", &obj.postFx.motionBlurEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXMotionBlur")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledMotionBlur", &obj.postFx.motionBlurEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.motionBlurEnabled);
+                    fieldRow("Strength");
+                    if (ImGui::SliderFloat("##MBStrength", &obj.postFx.motionBlurStrength, 0.0f, 0.95f, "%.2f")) { changed = true; }
+                    fieldRow("Threshold");
+                    if (ImGui::SliderFloat("##MBThreshold", &obj.postFx.motionBlurThreshold, 0.0f, 0.25f, "%.3f")) { changed = true; }
+                    fieldRow("Clamp");
+                    if (ImGui::SliderFloat("##MBClamp", &obj.postFx.motionBlurClamp, 0.0f, 1.5f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.motionBlurEnabled);
-                if (ImGui::SliderFloat("Strength", &obj.postFx.motionBlurStrength, 0.0f, 0.95f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Threshold", &obj.postFx.motionBlurThreshold, 0.0f, 0.25f, "%.3f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Clamp", &obj.postFx.motionBlurClamp, 0.0f, 1.5f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Lens", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Vignette", &obj.postFx.vignetteEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXLens")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledVignette", &obj.postFx.vignetteEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Vignette");
+                    ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
+                    fieldRow("Intensity");
+                    if (ImGui::SliderFloat("##VigIntensity", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) { changed = true; }
+                    fieldRow("Smoothness");
+                    if (ImGui::SliderFloat("##VigSmoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledChromatic", &obj.postFx.chromaticAberrationEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Chromatic Aberr.");
+                    ImGui::BeginDisabled(!obj.postFx.chromaticAberrationEnabled);
+                    fieldRow("Fringe Amount");
+                    if (ImGui::SliderFloat("##FringeAmt", &obj.postFx.chromaticAmount, 0.0f, 0.01f, "%.4f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledSharpen", &obj.postFx.sharpenEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Sharpen");
+                    ImGui::BeginDisabled(!obj.postFx.sharpenEnabled);
+                    fieldRow("Sharpen Str.");
+                    if (ImGui::SliderFloat("##SharpenStr", &obj.postFx.sharpenStrength, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.vignetteEnabled);
-                if (ImGui::SliderFloat("Intensity##Vignette", &obj.postFx.vignetteIntensity, 0.0f, 1.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Smoothness", &obj.postFx.vignetteSmoothness, 0.05f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("Chromatic Aberration", &obj.postFx.chromaticAberrationEnabled)) {
-                    changed = true;
-                }
-                ImGui::BeginDisabled(!obj.postFx.chromaticAberrationEnabled);
-                if (ImGui::SliderFloat("Fringe Amount", &obj.postFx.chromaticAmount, 0.0f, 0.01f, "%.4f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("Sharpen", &obj.postFx.sharpenEnabled)) {
-                    changed = true;
-                }
-                ImGui::BeginDisabled(!obj.postFx.sharpenEnabled);
-                if (ImGui::SliderFloat("Sharpen Strength", &obj.postFx.sharpenStrength, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Ambient Occlusion", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##AO", &obj.postFx.ambientOcclusionEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXAO")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledAO", &obj.postFx.ambientOcclusionEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.ambientOcclusionEnabled);
+                    fieldRow("AO Radius");
+                    if (ImGui::SliderFloat("##AORadius", &obj.postFx.aoRadius, 0.0005f, 0.01f, "%.4f")) { changed = true; }
+                    fieldRow("AO Strength");
+                    if (ImGui::SliderFloat("##AOStrength", &obj.postFx.aoStrength, 0.0f, 2.0f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.ambientOcclusionEnabled);
-                if (ImGui::SliderFloat("AO Radius", &obj.postFx.aoRadius, 0.0005f, 0.01f, "%.4f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("AO Strength", &obj.postFx.aoStrength, 0.0f, 2.0f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Dither", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##Dither", &obj.postFx.ditherEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXDither")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledDither", &obj.postFx.ditherEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.ditherEnabled);
+                    fieldRow("Intensity");
+                    if (ImGui::SliderFloat("##DitherIntensity", &obj.postFx.ditherIntensity, 0.0f, 1.5f, "%.2f")) { changed = true; }
+                    fieldRow("Color Bit Depth");
+                    if (ImGui::SliderInt("##DitherColorBits", &obj.postFx.ditherColorBits, 1, 8, "%d bits")) { changed = true; }
+                    fieldRow("Dither Size");
+                    if (ImGui::SliderFloat("##DitherSize", &obj.postFx.ditherSize, 1.0f, 8.0f, "%.1f")) { changed = true; }
+                    fieldRow("Contrast");
+                    if (ImGui::SliderFloat("##DitherContrast", &obj.postFx.ditherContrast, -1.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Offset");
+                    if (ImGui::SliderFloat("##DitherOffset", &obj.postFx.ditherOffset, -1.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Dark Adjust");
+                    if (ImGui::SliderFloat("##DitherDarkAdj", &obj.postFx.ditherDarkAdjustment, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Pixelation");
+                    if (ImGui::SliderFloat("##DitherPixelation", &obj.postFx.ditherPixelation, 0.0f, 64.0f, "%.1f px")) { changed = true; }
+                    static const char* ditherPaletteNames[] = { "Full Color", "PS1 Warm", "PS1 Cool", "Mono", "Sepia" };
+                    int ditherPalette = static_cast<int>(obj.postFx.ditherPalette);
+                    fieldRow("Palette");
+                    if (ImGui::Combo("##DitherPalette", &ditherPalette, ditherPaletteNames, IM_ARRAYSIZE(ditherPaletteNames))) {
+                        obj.postFx.ditherPalette = static_cast<PostFXDitherPalette>(ditherPalette);
+                        changed = true;
+                    }
+                    static const char* ditherPatternNames[] = { "Classic 4x4", "Bayer 8x8", "Bayer 16x16", "Checker", "Hybrid PS1" };
+                    int ditherPattern = static_cast<int>(obj.postFx.ditherPattern);
+                    fieldRow("Pattern");
+                    if (ImGui::Combo("##DitherPattern", &ditherPattern, ditherPatternNames, IM_ARRAYSIZE(ditherPatternNames))) {
+                        obj.postFx.ditherPattern = static_cast<PostFXDitherPattern>(ditherPattern);
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.ditherEnabled);
-                if (ImGui::SliderFloat("Dither Intensity", &obj.postFx.ditherIntensity, 0.0f, 1.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderInt("Color Bit Depth", &obj.postFx.ditherColorBits, 1, 8, "%d bits")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Dither Size", &obj.postFx.ditherSize, 1.0f, 8.0f, "%.1f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Contrast", &obj.postFx.ditherContrast, -1.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Offset", &obj.postFx.ditherOffset, -1.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Dark Adjustment", &obj.postFx.ditherDarkAdjustment, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Pixelation", &obj.postFx.ditherPixelation, 0.0f, 64.0f, "%.1f px")) {
-                    changed = true;
-                }
-                static const char* ditherPaletteNames[] = {
-                    "Full Color",
-                    "PS1 Warm",
-                    "PS1 Cool",
-                    "Mono",
-                    "Sepia"
-                };
-                int ditherPalette = static_cast<int>(obj.postFx.ditherPalette);
-                if (ImGui::Combo("Palette", &ditherPalette, ditherPaletteNames, IM_ARRAYSIZE(ditherPaletteNames))) {
-                    obj.postFx.ditherPalette = static_cast<PostFXDitherPalette>(ditherPalette);
-                    changed = true;
-                }
-                static const char* ditherPatternNames[] = {
-                    "Classic 4x4",
-                    "Bayer 8x8",
-                    "Bayer 16x16",
-                    "Checker",
-                    "Hybrid PS1"
-                };
-                int ditherPattern = static_cast<int>(obj.postFx.ditherPattern);
-                if (ImGui::Combo("Pattern", &ditherPattern, ditherPatternNames, IM_ARRAYSIZE(ditherPatternNames))) {
-                    obj.postFx.ditherPattern = static_cast<PostFXDitherPattern>(ditherPattern);
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Static", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##Static", &obj.postFx.staticEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXStatic")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledStatic", &obj.postFx.staticEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.staticEnabled);
+                    fieldRow("Intensity");
+                    if (ImGui::SliderFloat("##StaticIntensity", &obj.postFx.staticIntensity, 0.0f, 1.5f, "%.2f")) { changed = true; }
+                    fieldRow("Grain Scale");
+                    if (ImGui::SliderFloat("##StaticGrainScale", &obj.postFx.staticGrainScale, 0.25f, 10.0f, "%.2f")) { changed = true; }
+                    fieldRow("Dark Influence");
+                    if (ImGui::SliderFloat("##StaticDarkInfluence", &obj.postFx.staticDarkAreaInfluence, 0.0f, 2.0f, "%.2f")) { changed = true; }
+                    fieldRow("Speed");
+                    if (ImGui::SliderFloat("##StaticSpeed", &obj.postFx.staticSpeed, 0.0f, 20.0f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.staticEnabled);
-                if (ImGui::SliderFloat("Intensity", &obj.postFx.staticIntensity, 0.0f, 1.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Grain Scale", &obj.postFx.staticGrainScale, 0.25f, 10.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Dark Area Influence", &obj.postFx.staticDarkAreaInfluence, 0.0f, 2.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Speed", &obj.postFx.staticSpeed, 0.0f, 20.0f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Static Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##StaticDistortion", &obj.postFx.staticDistortionEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXStaticDist")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledStaticDist", &obj.postFx.staticDistortionEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.staticDistortionEnabled);
+                    fieldRow("Horiz Jitter");
+                    if (ImGui::SliderFloat("##HorizJitter", &obj.postFx.staticDistortionHorizontalJitterAmount, 0.0f, 0.05f, "%.4f")) { changed = true; }
+                    fieldRow("Line Density");
+                    if (ImGui::SliderFloat("##LineDensity", &obj.postFx.staticDistortionLineDensity, 1.0f, 256.0f, "%.1f")) { changed = true; }
+                    fieldRow("Glitch Freq");
+                    if (ImGui::SliderFloat("##GlitchFreq", &obj.postFx.staticDistortionGlitchFrequency, 0.0f, 20.0f, "%.2f")) { changed = true; }
+                    fieldRow("Dist Strength");
+                    if (ImGui::SliderFloat("##DistStrength", &obj.postFx.staticDistortionStrength, 0.0f, 1.5f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.staticDistortionEnabled);
-                if (ImGui::SliderFloat("Horizontal Jitter Amount", &obj.postFx.staticDistortionHorizontalJitterAmount, 0.0f, 0.05f, "%.4f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Line Density", &obj.postFx.staticDistortionLineDensity, 1.0f, 256.0f, "%.1f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Glitch Frequency", &obj.postFx.staticDistortionGlitchFrequency, 0.0f, 20.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Distortion Strength", &obj.postFx.staticDistortionStrength, 0.0f, 1.5f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Lens Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##LensDistortion", &obj.postFx.lensDistortionEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXLensDist")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledLensDist", &obj.postFx.lensDistortionEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.lensDistortionEnabled);
+                    fieldRow("Dist Amount");
+                    if (ImGui::SliderFloat("##LensDistAmt", &obj.postFx.lensDistortionAmount, -1.0f, 1.0f, "%.3f")) { changed = true; }
+                    fieldRow("Edge Falloff");
+                    if (ImGui::SliderFloat("##LensEdgeFalloff", &obj.postFx.lensDistortionEdgeFalloff, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Center Offset");
+                    if (ImGui::DragFloat2("##LensCenterOffset", &obj.postFx.lensDistortionCenterOffset.x, 0.001f, -0.25f, 0.25f, "%.3f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.lensDistortionEnabled);
-                if (ImGui::SliderFloat("Distortion Amount", &obj.postFx.lensDistortionAmount, -1.0f, 1.0f, "%.3f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Edge Falloff", &obj.postFx.lensDistortionEdgeFalloff, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::DragFloat2("Center Offset", &obj.postFx.lensDistortionCenterOffset.x, 0.001f, -0.25f, 0.25f, "%.3f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("VHS Overlay", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##VHSOverlay", &obj.postFx.vhsOverlayEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXVHS")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledVHS", &obj.postFx.vhsOverlayEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.vhsOverlayEnabled);
+                    fieldRow("Opacity");
+                    if (ImGui::SliderFloat("##VHSOpacity", &obj.postFx.vhsOverlayOpacity, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Scanline Str.");
+                    if (ImGui::SliderFloat("##VHSScanline", &obj.postFx.vhsOverlayScanlineStrength, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Tape Noise");
+                    if (ImGui::SliderFloat("##VHSTapeNoise", &obj.postFx.vhsOverlayTapeNoise, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Chroma Bleed");
+                    if (ImGui::SliderFloat("##VHSChromaBleed", &obj.postFx.vhsOverlayChromaBleed, 0.0f, 0.02f, "%.4f")) { changed = true; }
+                    fieldRow("Band Height");
+                    if (ImGui::SliderFloat("##VHSBandHeight", &obj.postFx.vhsOverlayBottomNoiseBandHeight, 0.0f, 0.5f, "%.2f")) { changed = true; }
+                    fieldRow("Band Intensity");
+                    if (ImGui::SliderFloat("##VHSBandIntensity", &obj.postFx.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f, "%.2f")) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.vhsOverlayEnabled);
-                if (ImGui::SliderFloat("Opacity", &obj.postFx.vhsOverlayOpacity, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Scanline Strength", &obj.postFx.vhsOverlayScanlineStrength, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Tape Noise", &obj.postFx.vhsOverlayTapeNoise, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Chroma Bleed", &obj.postFx.vhsOverlayChromaBleed, 0.0f, 0.02f, "%.4f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Bottom Noise Band Height", &obj.postFx.vhsOverlayBottomNoiseBandHeight, 0.0f, 0.5f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Bottom Noise Band Intensity", &obj.postFx.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f, "%.2f")) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
             if (ImGui::CollapsingHeader("Wavy Effect", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Enabled##WavyEffect", &obj.postFx.wavyEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_PFXWavy")) {
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Checkbox("##EnabledWavy", &obj.postFx.wavyEnabled)) { changed = true; }
+                    ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
+                    ImGui::BeginDisabled(!obj.postFx.wavyEnabled);
+                    fieldRow("Amplitude");
+                    if (ImGui::SliderFloat("##WavyAmplitude", &obj.postFx.wavyAmplitude, 0.0f, 0.05f, "%.4f")) { changed = true; }
+                    fieldRow("Frequency");
+                    if (ImGui::SliderFloat("##WavyFrequency", &obj.postFx.wavyFrequency, 0.1f, 80.0f, "%.2f")) { changed = true; }
+                    fieldRow("Speed");
+                    if (ImGui::SliderFloat("##WavySpeed", &obj.postFx.wavySpeed, 0.0f, 20.0f, "%.2f")) { changed = true; }
+                    if (boolRow("Vertical", &obj.postFx.wavyVertical)) { changed = true; }
+                    ImGui::EndDisabled();
+                    endCompFields();
                 }
-                ImGui::BeginDisabled(!obj.postFx.wavyEnabled);
-                if (ImGui::SliderFloat("Amplitude", &obj.postFx.wavyAmplitude, 0.0f, 0.05f, "%.4f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Frequency", &obj.postFx.wavyFrequency, 0.1f, 80.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Speed##Wavy", &obj.postFx.wavySpeed, 0.0f, 20.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::Checkbox("Vertical Direction", &obj.postFx.wavyVertical)) {
-                    changed = true;
-                }
-                ImGui::EndDisabled();
             }
 
-            if (ImGui::CollapsingHeader("Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+            /*if (ImGui::CollapsingHeader("Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
                 static const Renderer::PostProcessStats zeroPostStats{};
                 const Renderer::PostProcessStats& postStats = rendererInitialized
                     ? renderer.getLastViewportPostStats()
@@ -5559,9 +5689,8 @@ void Engine::renderInspectorPanel() {
                 }
                 ImGui::TextDisabled("Highest-priority active volume wins; local volumes fade by blend radius.");
                 ImGui::TextDisabled("Wireframe/line mode auto-disables post effects.");
-            }
+            }*/
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removePostFx) {
@@ -5577,7 +5706,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "renderer" && obj.hasRenderer && sharedRenderer) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         bool rendererChanged = false;
         bool removeRenderer = false;
         auto rendererHeader = drawComponentHeader("Renderer", "Renderer", "renderer", nullptr, true, [&]() {
@@ -5605,7 +5734,6 @@ void Engine::renderInspectorPanel() {
                 removeRenderer);
         });
         if (rendererHeader.open) {
-            ImGui::Indent(10.0f);
             const char* renderLabel = "None";
             switch (obj.renderType) {
                 case RenderType::Cube: renderLabel = "Cube"; break;
@@ -6092,7 +6220,6 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            ImGui::Unindent(10.0f);
         }
         if (removeRenderer) {
             obj.hasRenderer = false;
@@ -6107,7 +6234,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "light" && obj.hasLight && sharedLight) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5f, 0.45f, 0.2f, 1.0f));
         bool changed = false;
         bool removeLight = false;
@@ -6147,84 +6274,66 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Light");
-            ImGui::Indent(10.0f);
-
-            int currentType = static_cast<int>(obj.light.type);
-            const char* typeLabels[] = { "Directional", "Point", "Spot", "Area" };
-            if (ImGui::Combo("Type", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
-                obj.light.type = (currentType == 0 ? LightType::Directional :
-                                  currentType == 1 ? LightType::Point :
-                                  currentType == 2 ? LightType::Spot : LightType::Area);
-                // Reset sensible defaults when type changes
-                if (obj.light.type == LightType::Directional) {
-                    obj.light.intensity = 1.0f;
-                } else if (obj.light.type == LightType::Point) {
-                    obj.light.range = 12.0f;
-                    obj.light.intensity = 2.0f;
-                } else if (obj.light.type == LightType::Spot) {
-                    obj.light.range = 15.0f;
-                    obj.light.intensity = 2.5f;
-                    obj.light.innerAngle = 15.0f;
-                    obj.light.outerAngle = 25.0f;
-                } else if (obj.light.type == LightType::Area) {
-                    obj.light.range = 10.0f;
-                    obj.light.intensity = 3.0f;
-                    obj.light.size = glm::vec2(2.0f, 2.0f);
-                    obj.light.edgeFade = 0.2f;
-                }
-                changed = true;
-            }
-
-            if (ImGui::ColorEdit3("Color", &obj.light.color.x)) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Intensity", &obj.light.intensity, 0.0f, 10.0f)) {
-                changed = true;
-            }
-            if (obj.light.type != LightType::Directional) {
-                if (ImGui::SliderFloat("Range", &obj.light.range, 0.0f, 50.0f)) {
-                    changed = true;
-                }
-            }
-
-            if (obj.light.type == LightType::Spot) {
-                if (ImGui::SliderFloat("Inner Angle", &obj.light.innerAngle, 1.0f, 90.0f)) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Outer Angle", &obj.light.outerAngle, obj.light.innerAngle, 120.0f)) {
-                    changed = true;
-                }
-            }
-
-            if (obj.light.type == LightType::Area) {
-                if (ImGui::DragFloat2("Size", &obj.light.size.x, 0.05f, 0.1f, 10.0f)) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Edge Softness", &obj.light.edgeFade, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-            }
-
-            if (obj.light.type != LightType::Directional) {
-                if (ImGui::Checkbox("Cast Shadows", &obj.light.castShadows)) {
-                    changed = true;
-                }
-                if (obj.light.castShadows) {
-                    if (ImGui::Checkbox("Soft Shadows", &obj.light.softShadows)) {
-                        changed = true;
+            if (beginCompFields("##Fields_Light")) {
+                int currentType = static_cast<int>(obj.light.type);
+                const char* typeLabels[] = { "Directional", "Point", "Spot", "Area" };
+                fieldRow("Type");
+                if (ImGui::Combo("##LightType", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
+                    obj.light.type = (currentType == 0 ? LightType::Directional :
+                                      currentType == 1 ? LightType::Point :
+                                      currentType == 2 ? LightType::Spot : LightType::Area);
+                    if (obj.light.type == LightType::Directional) {
+                        obj.light.intensity = 1.0f;
+                    } else if (obj.light.type == LightType::Point) {
+                        obj.light.range = 12.0f;
+                        obj.light.intensity = 2.0f;
+                    } else if (obj.light.type == LightType::Spot) {
+                        obj.light.range = 15.0f;
+                        obj.light.intensity = 2.5f;
+                        obj.light.innerAngle = 15.0f;
+                        obj.light.outerAngle = 25.0f;
+                    } else if (obj.light.type == LightType::Area) {
+                        obj.light.range = 10.0f;
+                        obj.light.intensity = 3.0f;
+                        obj.light.size = glm::vec2(2.0f, 2.0f);
+                        obj.light.edgeFade = 0.2f;
                     }
-                    if (ImGui::SliderFloat("Shadow Bias", &obj.light.shadowBias, 0.0001f, 0.20f, "%.4f")) {
-                        changed = true;
-                    }
-                    if (obj.light.softShadows) {
-                        if (ImGui::SliderFloat("Shadow Softness", &obj.light.shadowSoftness, 0.001f, 0.20f, "%.3f")) {
-                            changed = true;
+                    changed = true;
+                }
+                fieldRow("Color");
+                if (ImGui::ColorEdit3("##LightColor", &obj.light.color.x)) { changed = true; }
+                fieldRow("Intensity");
+                if (ImGui::SliderFloat("##LightIntensity", &obj.light.intensity, 0.0f, 10.0f)) { changed = true; }
+                if (obj.light.type != LightType::Directional) {
+                    fieldRow("Range");
+                    if (ImGui::SliderFloat("##LightRange", &obj.light.range, 0.0f, 50.0f)) { changed = true; }
+                }
+                if (obj.light.type == LightType::Spot) {
+                    fieldRow("Inner Angle");
+                    if (ImGui::SliderFloat("##InnerAngle", &obj.light.innerAngle, 1.0f, 90.0f)) { changed = true; }
+                    fieldRow("Outer Angle");
+                    if (ImGui::SliderFloat("##OuterAngle", &obj.light.outerAngle, obj.light.innerAngle, 120.0f)) { changed = true; }
+                }
+                if (obj.light.type == LightType::Area) {
+                    fieldRow("Size");
+                    if (ImGui::DragFloat2("##AreaSize", &obj.light.size.x, 0.05f, 0.1f, 10.0f)) { changed = true; }
+                    fieldRow("Edge Softness");
+                    if (ImGui::SliderFloat("##EdgeSoftness", &obj.light.edgeFade, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                }
+                if (obj.light.type != LightType::Directional) {
+                    if (boolRow("Cast Shadows", &obj.light.castShadows)) { changed = true; }
+                    if (obj.light.castShadows) {
+                        if (boolRow("Soft Shadows", &obj.light.softShadows)) { changed = true; }
+                        fieldRow("Shadow Bias");
+                        if (ImGui::SliderFloat("##ShadowBias", &obj.light.shadowBias, 0.0001f, 0.20f, "%.4f")) { changed = true; }
+                        if (obj.light.softShadows) {
+                            fieldRow("Shadow Softness");
+                            if (ImGui::SliderFloat("##ShadowSoftness", &obj.light.shadowSoftness, 0.001f, 0.20f, "%.3f")) { changed = true; }
                         }
                     }
                 }
+                endCompFields();
             }
-
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeLight) {
@@ -6240,7 +6349,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "light2d" && has2DWorldPackage() && obj.hasLight2D && sharedLight2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.62f, 0.54f, 0.18f, 1.0f));
         bool changed = false;
         bool removeLight2D = false;
@@ -6294,7 +6403,6 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("Light2D");
-            ImGui::Indent(10.0f);
 
             auto drawLayerMaskEditor = [&](const char* label, bool& targetAllLayers, uint32_t& targetLayerMask) {
                 if (ImGui::Checkbox(label, &targetAllLayers)) {
@@ -6321,153 +6429,166 @@ void Engine::renderInspectorPanel() {
                 }
             };
 
-            int currentType = static_cast<int>(obj.light2D.type);
-            const char* typeLabels[] = { "Point", "Spot", "Freeform", "Sprite", "Global" };
-            if (ImGui::Combo("Type", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
-                obj.light2D.type = static_cast<Light2DType>(std::clamp(currentType, 0, 4));
-                if (obj.light2D.type == Light2DType::Freeform && obj.light2D.shapePoints.size() < 3) {
-                    obj.light2D.shapePoints = {
-                        glm::vec2(-2.0f, -1.5f),
-                        glm::vec2(2.0f, -1.5f),
-                        glm::vec2(2.5f, 1.0f),
-                        glm::vec2(0.0f, 2.5f),
-                        glm::vec2(-2.5f, 1.0f)
-                    };
-                }
-                lighting2DRenderer.clearPolygonCache(obj.id);
-                UpdateLegacyTypeFromComponents(obj);
-                changed = true;
-            }
-
-            if (ImGui::ColorEdit4("Color", &obj.light2D.color.x)) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Intensity", &obj.light2D.intensity, 0.0f, 16.0f, "%.2f")) {
-                changed = true;
-            }
-            if (obj.light2D.type != Light2DType::Global) {
-                if (ImGui::DragFloat("Radius", &obj.light2D.radius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
-                    obj.light2D.radius = std::max(0.0f, obj.light2D.radius);
+            if (beginCompFields("##Fields_Light2D")) {
+                int currentType = static_cast<int>(obj.light2D.type);
+                const char* typeLabels[] = { "Point", "Spot", "Freeform", "Sprite", "Global" };
+                fieldRow("Type");
+                if (ImGui::Combo("##Light2DType", &currentType, typeLabels, IM_ARRAYSIZE(typeLabels))) {
+                    obj.light2D.type = static_cast<Light2DType>(std::clamp(currentType, 0, 4));
+                    if (obj.light2D.type == Light2DType::Freeform && obj.light2D.shapePoints.size() < 3) {
+                        obj.light2D.shapePoints = {
+                            glm::vec2(-2.0f, -1.5f),
+                            glm::vec2(2.0f, -1.5f),
+                            glm::vec2(2.5f, 1.0f),
+                            glm::vec2(0.0f, 2.5f),
+                            glm::vec2(-2.5f, 1.0f)
+                        };
+                    }
+                    lighting2DRenderer.clearPolygonCache(obj.id);
+                    UpdateLegacyTypeFromComponents(obj);
                     changed = true;
                 }
-                if (ImGui::DragFloat("Inner Radius", &obj.light2D.innerRadius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
-                    obj.light2D.innerRadius = std::max(0.0f, obj.light2D.innerRadius);
-                    obj.light2D.outerRadius = std::max(obj.light2D.outerRadius, obj.light2D.innerRadius);
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Outer Radius", &obj.light2D.outerRadius, 0.05f, obj.light2D.innerRadius, 4096.0f, "%.2f")) {
-                    obj.light2D.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius);
-                    obj.light2D.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Falloff Strength", &obj.light2D.falloffStrength, 0.01f, 8.0f, "%.2f")) {
-                    changed = true;
-                }
-            }
-
-            if (obj.light2D.type == Light2DType::Spot) {
-                if (ImGui::SliderFloat("Inner Spot Angle", &obj.light2D.innerSpotAngle, 0.0f, 360.0f, "%.1f")) {
-                    obj.light2D.outerSpotAngle = std::max(obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle);
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Outer Spot Angle", &obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle, 360.0f, "%.1f")) {
-                    changed = true;
-                }
-            }
-
-            int blendStyle = std::clamp(obj.light2D.blendStyle, 0, static_cast<int>(light2DBlendStyles.size()) - 1);
-            const char* currentBlend = light2DBlendStyles[static_cast<size_t>(blendStyle)].name.c_str();
-            if (ImGui::BeginCombo("Blend Style", currentBlend)) {
-                for (int i = 0; i < static_cast<int>(light2DBlendStyles.size()); ++i) {
-                    bool selected = (i == blendStyle);
-                    if (ImGui::Selectable(light2DBlendStyles[static_cast<size_t>(i)].name.c_str(), selected)) {
-                        obj.light2D.blendStyle = i;
+                fieldRow("Color");
+                if (ImGui::ColorEdit4("##Light2DColor", &obj.light2D.color.x)) { changed = true; }
+                fieldRow("Intensity");
+                if (ImGui::SliderFloat("##Light2DIntensity", &obj.light2D.intensity, 0.0f, 16.0f, "%.2f")) { changed = true; }
+                if (obj.light2D.type != Light2DType::Global) {
+                    fieldRow("Radius");
+                    if (ImGui::DragFloat("##Light2DRadius", &obj.light2D.radius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
+                        obj.light2D.radius = std::max(0.0f, obj.light2D.radius);
                         changed = true;
                     }
-                    if (selected) ImGui::SetItemDefaultFocus();
+                    fieldRow("Inner Radius");
+                    if (ImGui::DragFloat("##Light2DInnerRadius", &obj.light2D.innerRadius, 0.05f, 0.0f, 4096.0f, "%.2f")) {
+                        obj.light2D.innerRadius = std::max(0.0f, obj.light2D.innerRadius);
+                        obj.light2D.outerRadius = std::max(obj.light2D.outerRadius, obj.light2D.innerRadius);
+                        changed = true;
+                    }
+                    fieldRow("Outer Radius");
+                    if (ImGui::DragFloat("##Light2DOuterRadius", &obj.light2D.outerRadius, 0.05f, obj.light2D.innerRadius, 4096.0f, "%.2f")) {
+                        obj.light2D.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius);
+                        obj.light2D.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius);
+                        changed = true;
+                    }
+                    fieldRow("Falloff");
+                    if (ImGui::SliderFloat("##Light2DFalloff", &obj.light2D.falloffStrength, 0.01f, 8.0f, "%.2f")) { changed = true; }
                 }
-                ImGui::EndCombo();
-            }
-
-            const char* overlapLabels[] = { "Additive", "Max", "Alpha Blend" };
-            int overlapMode = static_cast<int>(obj.light2D.overlapOperation);
-            if (ImGui::Combo("Overlap", &overlapMode, overlapLabels, IM_ARRAYSIZE(overlapLabels))) {
-                obj.light2D.overlapOperation = static_cast<Light2DOverlapOperation>(std::clamp(overlapMode, 0, 2));
-                changed = true;
-            }
-            if (ImGui::DragInt("Light Order", &obj.light2D.lightOrder, 1.0f, -4096, 4096)) {
-                changed = true;
+                if (obj.light2D.type == Light2DType::Spot) {
+                    fieldRow("Inner Angle");
+                    if (ImGui::SliderFloat("##Light2DInnerAngle", &obj.light2D.innerSpotAngle, 0.0f, 360.0f, "%.1f")) {
+                        obj.light2D.outerSpotAngle = std::max(obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle);
+                        changed = true;
+                    }
+                    fieldRow("Outer Angle");
+                    if (ImGui::SliderFloat("##Light2DOuterAngle", &obj.light2D.outerSpotAngle, obj.light2D.innerSpotAngle, 360.0f, "%.1f")) { changed = true; }
+                }
+                fieldRow("Blend Style");
+                {
+                    int blendStyle = std::clamp(obj.light2D.blendStyle, 0, static_cast<int>(light2DBlendStyles.size()) - 1);
+                    const char* currentBlend = light2DBlendStyles[static_cast<size_t>(blendStyle)].name.c_str();
+                    if (ImGui::BeginCombo("##BlendStyle", currentBlend)) {
+                        for (int i = 0; i < static_cast<int>(light2DBlendStyles.size()); ++i) {
+                            bool selected = (i == blendStyle);
+                            if (ImGui::Selectable(light2DBlendStyles[static_cast<size_t>(i)].name.c_str(), selected)) {
+                                obj.light2D.blendStyle = i;
+                                changed = true;
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+                const char* overlapLabels[] = { "Additive", "Max", "Alpha Blend" };
+                int overlapMode = static_cast<int>(obj.light2D.overlapOperation);
+                fieldRow("Overlap");
+                if (ImGui::Combo("##Overlap", &overlapMode, overlapLabels, IM_ARRAYSIZE(overlapLabels))) {
+                    obj.light2D.overlapOperation = static_cast<Light2DOverlapOperation>(std::clamp(overlapMode, 0, 2));
+                    changed = true;
+                }
+                fieldRow("Light Order");
+                if (ImGui::DragInt("##LightOrder", &obj.light2D.lightOrder, 1.0f, -4096, 4096)) { changed = true; }
+                endCompFields();
             }
 
             drawLayerMaskEditor("Target All Layers", obj.light2D.targetAllLayers, obj.light2D.targetLayerMask);
 
             if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Checkbox("Cast Shadows", &obj.light2D.castsShadows)) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Shadow Strength", &obj.light2D.shadowStrength, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
+                if (beginCompFields("##Fields_L2DShadows")) {
+                    if (boolRow("Cast Shadows", &obj.light2D.castsShadows)) { changed = true; }
+                    fieldRow("Shadow Strength");
+                    if (ImGui::SliderFloat("##L2DShadowStr", &obj.light2D.shadowStrength, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("Volumetric")) {
-                if (ImGui::Checkbox("Enabled", &obj.light2D.volumetricEnabled)) {
-                    changed = true;
+                if (beginCompFields("##Fields_L2DVolumetric")) {
+                    if (boolRow("Enabled", &obj.light2D.volumetricEnabled)) { changed = true; }
+                    noteRow("Volumetric accumulation is scaffolded for a later pass.");
+                    endCompFields();
                 }
-                ImGui::TextDisabled("Volumetric accumulation is scaffolded for a later pass.");
             }
 
             if (ImGui::CollapsingHeader("Normal Maps")) {
-                const char* normalQualityLabels[] = { "Disabled", "Fast", "Accurate" };
-                int quality = static_cast<int>(obj.light2D.normalMapQuality);
-                if (ImGui::Combo("Quality", &quality, normalQualityLabels, IM_ARRAYSIZE(normalQualityLabels))) {
-                    obj.light2D.normalMapQuality = static_cast<Light2DNormalMapQuality>(std::clamp(quality, 0, 2));
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Distance", &obj.light2D.normalMapDistance, 0.05f, 0.0f, 64.0f, "%.2f")) {
-                    obj.light2D.normalMapDistance = std::max(0.0f, obj.light2D.normalMapDistance);
-                    changed = true;
+                if (beginCompFields("##Fields_L2DNormalMaps")) {
+                    const char* normalQualityLabels[] = { "Disabled", "Fast", "Accurate" };
+                    int quality = static_cast<int>(obj.light2D.normalMapQuality);
+                    fieldRow("Quality");
+                    if (ImGui::Combo("##NormalQuality", &quality, normalQualityLabels, IM_ARRAYSIZE(normalQualityLabels))) {
+                        obj.light2D.normalMapQuality = static_cast<Light2DNormalMapQuality>(std::clamp(quality, 0, 2));
+                        changed = true;
+                    }
+                    fieldRow("Distance");
+                    if (ImGui::DragFloat("##NormalDist", &obj.light2D.normalMapDistance, 0.05f, 0.0f, 64.0f, "%.2f")) {
+                        obj.light2D.normalMapDistance = std::max(0.0f, obj.light2D.normalMapDistance);
+                        changed = true;
+                    }
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("Distance Attenuation")) {
-                if (ImGui::Checkbox("Use Distance Exponent", &obj.light2D.useDistanceExponent)) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Distance Exponent", &obj.light2D.distanceExponent, 0.1f, 8.0f, "%.2f")) {
-                    changed = true;
+                if (beginCompFields("##Fields_L2DDistAtten")) {
+                    if (boolRow("Use Dist Exponent", &obj.light2D.useDistanceExponent)) { changed = true; }
+                    fieldRow("Dist Exponent");
+                    if (ImGui::SliderFloat("##DistExponent", &obj.light2D.distanceExponent, 0.1f, 8.0f, "%.2f")) { changed = true; }
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("Cookie")) {
-                char cookieBuffer[512] = {};
-                std::snprintf(cookieBuffer, sizeof(cookieBuffer), "%s", obj.light2D.cookieTexturePath.c_str());
-                if (ImGui::InputText("Texture", cookieBuffer, sizeof(cookieBuffer))) {
-                    obj.light2D.cookieTexturePath = cookieBuffer;
-                    changed = true;
-                }
-                if (ImGui::DragFloat2("Scale", &obj.light2D.cookieScale.x, 0.01f, 0.01f, 16.0f, "%.2f")) {
-                    obj.light2D.cookieScale.x = std::max(0.01f, obj.light2D.cookieScale.x);
-                    obj.light2D.cookieScale.y = std::max(0.01f, obj.light2D.cookieScale.y);
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Rotation", &obj.light2D.cookieRotation, 0.5f, -360.0f, 360.0f, "%.1f")) {
-                    changed = true;
+                if (beginCompFields("##Fields_L2DCookie")) {
+                    fieldRow("Texture");
+                    {
+                        char cookieBuffer[512] = {};
+                        std::snprintf(cookieBuffer, sizeof(cookieBuffer), "%s", obj.light2D.cookieTexturePath.c_str());
+                        if (ImGui::InputText("##CookieTex", cookieBuffer, sizeof(cookieBuffer))) {
+                            obj.light2D.cookieTexturePath = cookieBuffer;
+                            changed = true;
+                        }
+                    }
+                    fieldRow("Scale");
+                    if (ImGui::DragFloat2("##CookieScale", &obj.light2D.cookieScale.x, 0.01f, 0.01f, 16.0f, "%.2f")) {
+                        obj.light2D.cookieScale.x = std::max(0.01f, obj.light2D.cookieScale.x);
+                        obj.light2D.cookieScale.y = std::max(0.01f, obj.light2D.cookieScale.y);
+                        changed = true;
+                    }
+                    fieldRow("Rotation");
+                    if (ImGui::DragFloat("##CookieRotation", &obj.light2D.cookieRotation, 0.5f, -360.0f, 360.0f, "%.1f")) { changed = true; }
+                    endCompFields();
                 }
             }
 
             if (ImGui::CollapsingHeader("Flicker")) {
-                if (ImGui::Checkbox("Enabled", &obj.light2D.flicker.enabled)) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Speed", &obj.light2D.flicker.speed, 0.01f, 64.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::SliderFloat("Amount", &obj.light2D.flicker.amount, 0.0f, 1.0f, "%.2f")) {
-                    changed = true;
-                }
-                if (ImGui::DragFloat("Seed", &obj.light2D.flicker.seed, 0.05f, -1000.0f, 1000.0f, "%.2f")) {
-                    changed = true;
+                if (beginCompFields("##Fields_L2DFlicker")) {
+                    if (boolRow("Enabled", &obj.light2D.flicker.enabled)) { changed = true; }
+                    fieldRow("Speed");
+                    if (ImGui::SliderFloat("##FlickerSpeed", &obj.light2D.flicker.speed, 0.01f, 64.0f, "%.2f")) { changed = true; }
+                    fieldRow("Amount");
+                    if (ImGui::SliderFloat("##FlickerAmount", &obj.light2D.flicker.amount, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Seed");
+                    if (ImGui::DragFloat("##FlickerSeed", &obj.light2D.flicker.seed, 0.05f, -1000.0f, 1000.0f, "%.2f")) { changed = true; }
+                    endCompFields();
                 }
             }
 
@@ -6511,11 +6632,12 @@ void Engine::renderInspectorPanel() {
                     }
                     ImGui::EndDisabled();
 
-                    if (ImGui::SliderFloat("Feather", &obj.light2D.freeformFeather, 0.0f, 4.0f, "%.2f")) {
-                        changed = true;
-                    }
-                    if (ImGui::SliderFloat("Edge Falloff", &obj.light2D.freeformEdgeFalloff, 0.1f, 8.0f, "%.2f")) {
-                        changed = true;
+                    if (beginCompFields("##Fields_L2DShape")) {
+                        fieldRow("Feather");
+                        if (ImGui::SliderFloat("##L2DFeather", &obj.light2D.freeformFeather, 0.0f, 4.0f, "%.2f")) { changed = true; }
+                        fieldRow("Edge Falloff");
+                        if (ImGui::SliderFloat("##L2DEdgeFalloff", &obj.light2D.freeformEdgeFalloff, 0.1f, 8.0f, "%.2f")) { changed = true; }
+                        endCompFields();
                     }
 
                     const Light2DPolygonCache& cache = lighting2DRenderer.updatePolygonCache(obj.id, obj.light2D);
@@ -6530,7 +6652,6 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeLight2D) {
@@ -6552,7 +6673,7 @@ void Engine::renderInspectorPanel() {
     }
 
     if (inspectorComponentKey == "shadow_caster2d" && obj.hasShadowCaster2D && sharedShadowCaster2D) {
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.26f, 0.36f, 0.48f, 1.0f));
         bool changed = false;
         bool removeShadowCaster2D = false;
@@ -6597,16 +6718,13 @@ void Engine::renderInspectorPanel() {
         }
         if (header.open) {
             ImGui::PushID("ShadowCaster2D");
-            ImGui::Indent(10.0f);
 
-            if (ImGui::Checkbox("Self Shadow", &obj.shadowCaster2D.castsSelfShadow)) {
-                changed = true;
-            }
-            if (ImGui::SliderFloat("Strength", &obj.shadowCaster2D.shadowStrength, 0.0f, 1.0f, "%.2f")) {
-                changed = true;
-            }
-            if (ImGui::Checkbox("Target All Layers", &obj.shadowCaster2D.targetAllLayers)) {
-                changed = true;
+            if (beginCompFields("##Fields_ShadowCaster2D")) {
+                if (boolRow("Self Shadow", &obj.shadowCaster2D.castsSelfShadow)) { changed = true; }
+                fieldRow("Strength");
+                if (ImGui::SliderFloat("##SC2DStrength", &obj.shadowCaster2D.shadowStrength, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                if (boolRow("Target All Layers", &obj.shadowCaster2D.targetAllLayers)) { changed = true; }
+                endCompFields();
             }
             if (!obj.shadowCaster2D.targetAllLayers && ImGui::TreeNode("Target Layers")) {
                 for (int layerIndex = 0; layerIndex < 32; ++layerIndex) {
@@ -6677,7 +6795,6 @@ void Engine::renderInspectorPanel() {
                                    shadowError.empty() ? "Invalid shadow caster shape." : shadowError.c_str());
             }
 
-            ImGui::Unindent(10.0f);
             ImGui::PopID();
         }
         if (removeShadowCaster2D) {
@@ -6789,7 +6906,7 @@ void Engine::renderInspectorPanel() {
             if (ImGui::MenuItem("Remove Component")) {
                 scriptToRemove = static_cast<int>(i);
             }
-        });
+        }, iconScript);
         if (header.enabledChanged) {
             scriptsChanged = true;
         }
@@ -8264,7 +8381,7 @@ void Engine::renderConsolePanel() {
                           consoleWrapText ? textWidth : 0.0f);
 
             draw->PopClipRect();
-            ImGui::Dummy(ImVec2(0.0f, 3.0f));
+            ImGui::Dummy(ImVec2(0.0f, 1.0f));
             ImGui::PopID();
         }
     }
