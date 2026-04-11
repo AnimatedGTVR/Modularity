@@ -1102,6 +1102,15 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
         wrapper << "    return (cpp && cpp->SetRigidbodyRotation(glm::vec3(rotation.x, rotation.y, rotation.z))) ? 1 : 0;\n";
         wrapper << "}\n\n";
+        wrapper << "float Modu_GetProjectGravityScale(ModuScriptContext* ctx) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    return cpp ? cpp->GetProjectGravityScale() : 1.0f;\n";
+        wrapper << "}\n\n";
+        wrapper << "void Modu_SetProjectGravityScale(ModuScriptContext* ctx, float scale) {\n";
+        wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
+        wrapper << "    if (!cpp) return;\n";
+        wrapper << "    cpp->SetProjectGravityScale(scale);\n";
+        wrapper << "}\n\n";
         wrapper << "int Modu_EnsureCapsuleCollider(ModuScriptContext* ctx, float height, float radius) {\n";
         wrapper << "    ScriptContext* cpp = ModuAsCpp(ctx);\n";
         wrapper << "    return (cpp && cpp->EnsureCapsuleCollider(height, radius)) ? 1 : 0;\n";

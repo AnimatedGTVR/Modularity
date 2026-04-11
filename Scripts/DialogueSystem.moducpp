@@ -1,4 +1,4 @@
-#include "ModuCPP"
+add ModuCPP;
 #include "DialoguePortShared.h"
 
 #include <algorithm>
@@ -8,8 +8,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-using namespace ModuCPP;
-
 public class DialogueSystem : ModuBehaviour
 {
     inspector
@@ -61,9 +59,8 @@ public class DialogueSystem : ModuBehaviour
         AutoSave(config);
     }
 
-    void Begin(MODU_obj, float dt)
+    void Begin()
     {
-        (void)dt;
         if (!ctx.object) return;
 
         DialogueConfig config = loadConfig(ctx);
@@ -73,13 +70,13 @@ public class DialogueSystem : ModuBehaviour
         TryAutoOpenOnBegin(ctx, state, config);
     }
 
-    void TickUpdate(MODU_obj, float dt)
+    void TickUpdate()
     {
         if (!ctx.object) return;
 
         DialogueConfig config = loadConfig(ctx);
         DialogueRuntimeState& state = g_runtimeStates[ctx.object->id];
-        const float dtSafe = std::max(0.0f, dt);
+        const float dtSafe = std::max(0.0f, time.deltaTime);
 
         ConsumeInteractionRequest(ctx, state, config);
         TryAutoOpenOnBegin(ctx, state, config);

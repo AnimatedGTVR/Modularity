@@ -1533,7 +1533,7 @@ void Engine::renderLauncher() {
                 }
 
                 ImGui::Spacing();
-                const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+                const char* pipelineOptions[] = { "3D Pipeline", "2.5D Pipeline (Experimental)", "2D Pipeline" };
                 ImGui::TextUnformatted("Pipeline");
                 ImGui::SetNextItemWidth(-1);
                 ImGui::Combo("##Pipeline", &projectManager.newProjectPipelineMode, pipelineOptions, IM_ARRAYSIZE(pipelineOptions));
@@ -1992,7 +1992,7 @@ void Engine::renderNewProjectDialog() {
 
         ImGui::Spacing();
 
-        const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+        const char* pipelineOptions[] = { "3D Pipeline", "2.5D Pipeline (Experimental)", "2D Pipeline" };
         ImGui::SetNextItemWidth(-1);
         ImGui::Combo("Pipeline", &projectManager.newProjectPipelineMode, pipelineOptions, IM_ARRAYSIZE(pipelineOptions));
         ImGui::TextDisabled("This can be changed later in Project Settings.");
@@ -2464,10 +2464,10 @@ void Engine::renderProjectBrowserPanel() {
         bool buildSettingsChanged = false;
 
         if (ImGui::CollapsingHeader("Project Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
-            int pipelineIndex = static_cast<int>(projectManager.currentProject.pipeline);
-            const char* pipelineOptions[] = { "3D Pipeline", "2D Pipeline" };
+            int pipelineIndex = ProjectPipelineToUiIndex(projectManager.currentProject.pipeline);
+            const char* pipelineOptions[] = { "3D Pipeline", "2.5D Pipeline (Experimental)", "2D Pipeline" };
             if (ImGui::Combo("Mode", &pipelineIndex, pipelineOptions, IM_ARRAYSIZE(pipelineOptions))) {
-                projectManager.currentProject.pipeline = static_cast<ProjectPipeline>(std::clamp(pipelineIndex, 0, 1));
+                projectManager.currentProject.pipeline = ProjectPipelineFromUiIndex(pipelineIndex);
                 projectManager.currentProject.saveProjectFile();
                 applyProjectPipelineDefaults(false);
                 projectManager.currentProject.hasUnsavedChanges = true;
@@ -2507,9 +2507,128 @@ void Engine::renderProjectBrowserPanel() {
                     editorSettingsChanged = true;
                 }
                 ImGui::EndDisabled();
+            } else if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline25D) {
+                ImGui::TextDisabled("2.5D projects keep 2D world overlay enabled without forcing pure 2D camera mode.");
+                ImGui::SeparatorText("2D Overlay Editing");
+                ImGui::TextDisabled("These controls affect the 2D/world overlay editor grid only.");
+                if (ImGui::Checkbox("Pixel Grid Snap", &pixelGridSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!pixelGridSnapEnabled);
+                if (ImGui::DragInt("Snap Step (px)", &pixelGridSnapStep, 1.0f, 1, 64)) {
+                    pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                ImGui::SeparatorText("2.5D Presentation");
+                ImGui::TextDisabled("These controls affect the TM/vexel presentation layer.");
+                auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
+
+                if (ImGui::Checkbox("Pitch Stretch", &tmPresentation.lookPitchStretchEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!tmPresentation.lookPitchStretchEnabled);
+                if (ImGui::DragFloat("Stretch Strength", &tmPresentation.lookPitchStretchStrength, 0.01f, 0.0f, 1.5f, "%.2f")) {
+                    tmPresentation.lookPitchStretchStrength = std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f);
+                    editorSettingsChanged = true;
+                }
+                if (ImGui::DragFloat("Compress Strength", &tmPresentation.lookPitchCompressStrength, 0.01f, 0.0f, 1.5f, "%.2f")) {
+                    tmPresentation.lookPitchCompressStrength = std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f);
+                    editorSettingsChanged = true;
+                }
+                if (ImGui::DragFloat("Shear Strength", &tmPresentation.lookPitchShearStrength, 0.01f, 0.0f, 1.0f, "%.2f")) {
+                    tmPresentation.lookPitchShearStrength = std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                if (ImGui::Checkbox("World Snap", &tmPresentation.presentationSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!tmPresentation.presentationSnapEnabled);
+                if (ImGui::DragFloat("World Snap Step", &tmPresentation.presentationSnapStep, 0.005f, 0.001f, 8.0f, "%.3f")) {
+                    tmPresentation.presentationSnapStep = std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                if (ImGui::Checkbox("Camera-Relative Snap", &tmPresentation.cameraRelativeSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!tmPresentation.cameraRelativeSnapEnabled);
+                if (ImGui::DragFloat("Camera Snap Step", &tmPresentation.cameraRelativeSnapStep, 0.005f, 0.001f, 8.0f, "%.3f")) {
+                    tmPresentation.cameraRelativeSnapStep = std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                if (ImGui::Checkbox("Vertex Snap", &tmPresentation.vertexSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!tmPresentation.vertexSnapEnabled);
+                if (ImGui::DragFloat("Vertex Snap Step", &tmPresentation.vertexSnapStep, 0.0025f, 0.0005f, 4.0f, "%.4f")) {
+                    tmPresentation.vertexSnapStep = std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                if (ImGui::Checkbox("Screen Snap", &tmPresentation.screenSnapEnabled)) editorSettingsChanged = true;
+                ImGui::BeginDisabled(!tmPresentation.screenSnapEnabled);
+                if (ImGui::DragFloat("Screen Snap Step (px)", &tmPresentation.screenSnapStep, 0.25f, 0.25f, 16.0f, "%.2f")) {
+                    tmPresentation.screenSnapStep = std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f);
+                    editorSettingsChanged = true;
+                }
+                ImGui::EndDisabled();
+
+                if (ImGui::Button("Use High Precision")) {
+                    tmPresentation.presentationSnapEnabled = false;
+                    tmPresentation.cameraRelativeSnapEnabled = false;
+                    tmPresentation.vertexSnapEnabled = false;
+                    tmPresentation.screenSnapEnabled = false;
+                    editorSettingsChanged = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Use Retro Snap")) {
+                    tmPresentation.presentationSnapEnabled = true;
+                    tmPresentation.presentationSnapStep = 0.125f;
+                    tmPresentation.cameraRelativeSnapEnabled = true;
+                    tmPresentation.cameraRelativeSnapStep = 0.125f;
+                    tmPresentation.vertexSnapEnabled = true;
+                    tmPresentation.vertexSnapStep = 0.0625f;
+                    tmPresentation.screenSnapEnabled = true;
+                    tmPresentation.screenSnapStep = 2.0f;
+                    editorSettingsChanged = true;
+                }
             } else {
                 ImGui::TextDisabled("2D world overlay remains optional in 3D projects.");
             }
+        }
+
+        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ProjectPhysicsSettings& physicsSettings = projectManager.currentProject.physicsSettings;
+            int massUnitIndex = static_cast<int>(physicsSettings.massUnit);
+            const char* massUnitOptions[] = { "Kilograms (kg)", "Grams (g)", "Pounds (lb)", "Ounces (oz)" };
+            if (ImGui::Combo("Mass Units", &massUnitIndex, massUnitOptions, IM_ARRAYSIZE(massUnitOptions))) {
+                const ProjectMassUnit previousUnit = physicsSettings.massUnit;
+                const ProjectMassUnit nextUnit = static_cast<ProjectMassUnit>(
+                    std::clamp(massUnitIndex, 0, static_cast<int>(IM_ARRAYSIZE(massUnitOptions)) - 1));
+                if (previousUnit != nextUnit) {
+                    const float previousScale = std::max(0.000001f, ProjectMassUnitToKilograms(previousUnit));
+                    const float nextScale = std::max(0.000001f, ProjectMassUnitToKilograms(nextUnit));
+                    for (SceneObject& obj : sceneObjects) {
+                        if (!obj.hasRigidbody) continue;
+                        obj.rigidbody.mass = std::max(0.0001f, obj.rigidbody.mass * (previousScale / nextScale));
+                    }
+                    physicsSettings.massUnit = nextUnit;
+                    projectManager.currentProject.saveProjectFile();
+                    projectManager.currentProject.hasUnsavedChanges = true;
+                    physics.setProjectSettings(physicsSettings);
+                    if ((isPlaying || specMode || testMode) && physics.isReady()) {
+                        physics.onPlayStart(sceneObjects);
+                    }
+                }
+            }
+
+            float gravityScale = physicsSettings.globalGravityScale;
+            if (ImGui::DragFloat("Global Gravity Scale", &gravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                physicsSettings.globalGravityScale = std::clamp(gravityScale, 0.0f, 10.0f);
+                projectManager.currentProject.saveProjectFile();
+                projectManager.currentProject.hasUnsavedChanges = true;
+                physics.setProjectSettings(physicsSettings);
+            }
+
+            ImGui::TextDisabled("3D and 2D runtime gravity use this project-wide multiplier.");
         }
 
         if (ImGui::CollapsingHeader("Player / Viewport", ImGuiTreeNodeFlags_DefaultOpen)) {

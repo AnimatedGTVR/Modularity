@@ -1,3 +1,5 @@
+add ModuCPP;
+
 #include "DialoguePortShared.h"
 
 #include <algorithm>
@@ -41,9 +43,7 @@ public class MainMenuController : ModuBehaviour {
         AutoSave(config);
     }
 
-    void Begin(MODU_obj, float dt) {
-        (void)dt;
-        MODU_SCRIPT(ctx);
+    void Begin() {
         if (!ctx.object) return;
         MenuConfig config = loadConfig(ctx);
         MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
@@ -56,8 +56,8 @@ public class MainMenuController : ModuBehaviour {
         state.initialized = true;
     }
 
-    void TickUpdate(MODU_obj, float dt) {
-        MODU_SCRIPT(ctx);
+    void TickUpdate() {
+        float dt = time.deltaTime;
         if (!ctx.object || dt <= 0.0f) return;
 
         MenuConfig config = loadConfig(ctx);

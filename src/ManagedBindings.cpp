@@ -225,6 +225,16 @@ int modu_ctx_teleport_rigidbody(ScriptContext* ctx, float px, float py, float pz
     return ctx->TeleportRigidbody(glm::vec3(px, py, pz), glm::vec3(rx, ry, rz)) ? 1 : 0;
 }
 
+float modu_ctx_get_project_gravity_scale(ScriptContext* ctx) {
+    if (!ctx) return 1.0f;
+    return ctx->GetProjectGravityScale();
+}
+
+void modu_ctx_set_project_gravity_scale(ScriptContext* ctx, float scale) {
+    if (!ctx) return;
+    ctx->SetProjectGravityScale(scale);
+}
+
 int modu_ctx_raycast_closest_detailed(ScriptContext* ctx, float ox, float oy, float oz,
                                       float dx, float dy, float dz, float distance,
                                       float* hitPosX, float* hitPosY, float* hitPosZ,
@@ -626,7 +636,7 @@ int modu_imgui_accept_scene_object_drop(int* outId) {
 
 ManagedNativeApi BuildManagedNativeApi() {
     ManagedNativeApi api;
-    api.version = 6;
+    api.version = 7;
     api.getObjectId = modu_ctx_get_object_id;
     api.getPosition = modu_ctx_get_position;
     api.setPosition = modu_ctx_set_position;
@@ -733,5 +743,7 @@ ManagedNativeApi BuildManagedNativeApi() {
     api.playAudioOneShot = modu_ctx_play_audio_one_shot;
     api.markDirty = modu_ctx_mark_dirty;
     api.ensureCapsuleCollider = modu_ctx_ensure_capsule_collider;
+    api.getProjectGravityScale = modu_ctx_get_project_gravity_scale;
+    api.setProjectGravityScale = modu_ctx_set_project_gravity_scale;
     return api;
 }

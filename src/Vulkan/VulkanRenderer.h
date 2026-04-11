@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Common.h"
+#include "../../include/Skybox/Skybox.h"
 #include <array>
 #include <unordered_map>
 #include "../ThirdParty/glfw/include/GLFW/glfw3.h"
@@ -34,6 +35,7 @@ public:
                           float nearPlane,
                           float farPlane);
     void setSkyboxTimeOfDay(float timeOfDay);
+    void setSkyboxSettings(const SkyboxSettings& settings);
     void clearViewportSceneData();
     void clearGameSceneData();
     ImTextureID getViewportSceneTextureID() const;
@@ -169,8 +171,10 @@ private:
     bool createSceneTextureFromFile(const std::string& path, SceneTexture& outTexture);
     const SceneTexture* getOrCreateSceneTexture(const std::string& path);
     const SceneMaterialSet* getOrCreateSceneMaterialSet(const SceneInstance& instance);
+    bool ensureSkyboxDescriptorSet();
     void destroySceneTexture(SceneTexture& texture);
     void destroySceneMaterialSet(SceneMaterialSet& materialSet);
+    void destroySkyboxDescriptorSet();
     void clearSceneTextureCache();
     void clearSceneMaterialSetCache();
     bool ensureSceneTarget(SceneTarget& target);
@@ -282,14 +286,19 @@ private:
     VkSampler uiSampler = VK_NULL_HANDLE;
     VkDescriptorSetLayout sceneDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout sceneLightingDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout skyboxDescriptorSetLayout = VK_NULL_HANDLE;
     VkPipeline scenePipelineDefault = VK_NULL_HANDLE;
     VkPipeline scenePipelineScroll = VK_NULL_HANDLE;
     VkPipeline skyboxPipeline = VK_NULL_HANDLE;
+    VkDescriptorSet skyboxDescriptorSet = VK_NULL_HANDLE;
+    std::string skyboxDescriptorKey;
+    bool skyboxHasScrollTexture = false;
     SceneTarget viewportSceneTarget{};
     SceneTarget gameSceneTarget{};
     SceneCameraData viewportCameraData{};
     SceneCameraData gameCameraData{};
     float skyboxTimeOfDay = 0.5f;
+    SkyboxSettings skyboxSettings;
     std::vector<SceneInstance> viewportSceneInstances;
     std::vector<SceneInstance> gameSceneInstances;
     std::vector<SceneLightInstance> viewportSceneLights;

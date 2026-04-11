@@ -6,6 +6,7 @@
 #include "../ThirdParty/imgui/backends/imgui_impl_vulkan.h"
 #include "../../include/ThirdParty/stb_image.h"
 
+#include <algorithm>
 #include <set>
 #include <cstdlib>
 #include <cstring>
@@ -48,8 +49,12 @@ struct SceneLightingGpu {
 
 struct SkyboxPushConstants {
     alignas(16) glm::mat4 viewProj = glm::mat4(1.0f);
-    // x = timeOfDay
-    alignas(16) glm::vec4 params = glm::vec4(0.5f, 0.0f, 0.0f, 0.0f);
+    // x = timeOfDay, y = mode, z = hasScrollTexture, w = verticalInfluence
+    alignas(16) glm::vec4 params = glm::vec4(0.5f, 0.0f, 0.0f, 0.18f);
+    // x = scrollRepeatX, y = scrollRepeatY, z = viewportWidth, w = viewportHeight
+    alignas(16) glm::vec4 scroll = glm::vec4(2.0f, 1.0f, 1.0f, 1.0f);
+    // x = yawOffset, y = pitchRadians, z = lookSensitivity
+    alignas(16) glm::vec4 camera = glm::vec4(0.0f);
 };
 
 std::string filenameOf(const std::string& path) {
@@ -389,6 +394,19 @@ void VulkanRenderer::setSkyboxTimeOfDay(float timeOfDay) {
     }
 #else
     (void)timeOfDay;
+#endif
+}
+
+void VulkanRenderer::setSkyboxSettings(const SkyboxSettings& settings) {
+#if MODULARITY_HAS_VULKAN
+    skyboxSettings = settings;
+    skyboxSettings.scrollingRepeatX = std::max(0.01f, skyboxSettings.scrollingRepeatX);
+    skyboxSettings.scrollingRepeatY = std::max(0.01f, skyboxSettings.scrollingRepeatY);
+    skyboxSettings.scrollingLookSensitivity = std::max(0.0f, skyboxSettings.scrollingLookSensitivity);
+    skyboxSettings.scrollingVerticalInfluence = std::clamp(skyboxSettings.scrollingVerticalInfluence, 0.0f, 1.0f);
+    destroySkyboxDescriptorSet();
+#else
+    (void)settings;
 #endif
 }
 
@@ -986,6 +1004,7 @@ bool VulkanRenderer::createScenePipelineResources() {
         scenePipelineLayout != VK_NULL_HANDLE &&
         sceneDescriptorSetLayout != VK_NULL_HANDLE &&
         sceneLightingDescriptorSetLayout != VK_NULL_HANDLE &&
+        skyboxDescriptorSetLayout != VK_NULL_HANDLE &&
         sceneSampler != VK_NULL_HANDLE &&
         sceneSamplerPoint != VK_NULL_HANDLE &&
         viewportSceneLighting.descriptorSet != VK_NULL_HANDLE &&
@@ -1133,6 +1152,25 @@ bool VulkanRenderer::createScenePipelineResources() {
         }
     }
 
+    if (skyboxDescriptorSetLayout == VK_NULL_HANDLE) {
+        std::array<VkDescriptorSetLayoutBinding, 3> textureBindings{};
+        for (uint32_t i = 0; i < textureBindings.size(); ++i) {
+            textureBindings[i].binding = i;
+            textureBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            textureBindings[i].descriptorCount = 1;
+            textureBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(textureBindings.size());
+        layoutInfo.pBindings = textureBindings.data();
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &skyboxDescriptorSetLayout) != VK_SUCCESS) {
+            setError("vkCreateDescriptorSetLayout failed for skybox textures.");
+            return false;
+        }
+    }
+
     VkShaderModule materialVertModule = VK_NULL_HANDLE;
     VkShaderModule materialFragModule = VK_NULL_HANDLE;
     VkShaderModule materialScrollFragModule = VK_NULL_HANDLE;
@@ -1158,9 +1196,10 @@ bool VulkanRenderer::createScenePipelineResources() {
         pushRange.size = static_cast<uint32_t>(std::max(sizeof(SceneDrawPushConstants),
                                                         sizeof(SkyboxPushConstants)));
 
-        std::array<VkDescriptorSetLayout, 2> setLayouts = {
+        std::array<VkDescriptorSetLayout, 3> setLayouts = {
             sceneDescriptorSetLayout,
-            sceneLightingDescriptorSetLayout
+            sceneLightingDescriptorSetLayout,
+            skyboxDescriptorSetLayout
         };
         VkPipelineLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1676,10 +1715,32 @@ void VulkanRenderer::renderSceneTarget(VkCommandBuffer cmd,
         // Skybox pass (draw first).
         glm::mat4 skyView = glm::mat4(glm::mat3(view));
         glm::mat4 skyViewProj = proj * skyView;
+        if (!ensureSkyboxDescriptorSet()) {
+            vkCmdEndRenderPass(cmd);
+            return;
+        }
         SkyboxPushConstants skyPush{};
         skyPush.viewProj = skyViewProj;
         skyPush.params.x = skyboxTimeOfDay;
+        skyPush.params.y = static_cast<float>(static_cast<int>(skyboxSettings.mode));
+        skyPush.params.z = skyboxHasScrollTexture ? 1.0f : 0.0f;
+        skyPush.params.w = skyboxSettings.scrollingVerticalInfluence;
+        skyPush.scroll.x = skyboxSettings.scrollingRepeatX;
+        skyPush.scroll.y = skyboxSettings.scrollingRepeatY;
+        skyPush.scroll.z = static_cast<float>(std::max(1u, target.width));
+        skyPush.scroll.w = static_cast<float>(std::max(1u, target.height));
+        skyPush.camera.x = std::atan2(forward.x, -forward.z) / (2.0f * 3.14159265359f);
+        skyPush.camera.y = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
+        skyPush.camera.z = skyboxSettings.scrollingLookSensitivity;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline);
+        vkCmdBindDescriptorSets(cmd,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                scenePipelineLayout,
+                                2,
+                                1,
+                                &skyboxDescriptorSet,
+                                0,
+                                nullptr);
         vkCmdPushConstants(cmd,
                            scenePipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1774,6 +1835,10 @@ void VulkanRenderer::destroyScenePipelineResources() {
     if (sceneLightingDescriptorSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, sceneLightingDescriptorSetLayout, nullptr);
         sceneLightingDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (skyboxDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, skyboxDescriptorSetLayout, nullptr);
+        skyboxDescriptorSetLayout = VK_NULL_HANDLE;
     }
     if (sceneRenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(device, sceneRenderPass, nullptr);
@@ -2476,6 +2541,89 @@ const VulkanRenderer::SceneMaterialSet* VulkanRenderer::getOrCreateSceneMaterial
     return &inserted.first->second;
 }
 
+bool VulkanRenderer::ensureSkyboxDescriptorSet() {
+    if (device == VK_NULL_HANDLE ||
+        imguiDescriptorPool == VK_NULL_HANDLE ||
+        skyboxDescriptorSetLayout == VK_NULL_HANDLE ||
+        sceneSampler == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    std::string key;
+    key.reserve(skyboxSettings.sunTexturePath.size() +
+                skyboxSettings.moonTexturePath.size() +
+                skyboxSettings.scrollingTexturePath.size() + 3);
+    key += skyboxSettings.sunTexturePath;
+    key += '|';
+    key += skyboxSettings.moonTexturePath;
+    key += '|';
+    key += skyboxSettings.scrollingTexturePath;
+    if (skyboxDescriptorSet != VK_NULL_HANDLE && skyboxDescriptorKey == key) {
+        return true;
+    }
+
+    destroySkyboxDescriptorSet();
+
+    const SceneTexture* sunTexture = getOrCreateSceneTexture(skyboxSettings.sunTexturePath);
+    if (!sunTexture || sunTexture->imageView == VK_NULL_HANDLE) {
+        sunTexture = &whiteSceneTexture;
+    }
+    const SceneTexture* moonTexture = getOrCreateSceneTexture(skyboxSettings.moonTexturePath);
+    if (!moonTexture || moonTexture->imageView == VK_NULL_HANDLE) {
+        moonTexture = &whiteSceneTexture;
+    }
+    const SceneTexture* scrollTexture = getOrCreateSceneTexture(skyboxSettings.scrollingTexturePath);
+    if (!scrollTexture || scrollTexture->imageView == VK_NULL_HANDLE) {
+        scrollTexture = &whiteSceneTexture;
+    }
+    if (!sunTexture || !moonTexture || !scrollTexture ||
+        sunTexture->imageView == VK_NULL_HANDLE ||
+        moonTexture->imageView == VK_NULL_HANDLE ||
+        scrollTexture->imageView == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo allocDs{};
+    allocDs.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocDs.descriptorPool = imguiDescriptorPool;
+    allocDs.descriptorSetCount = 1;
+    allocDs.pSetLayouts = &skyboxDescriptorSetLayout;
+    if (vkAllocateDescriptorSets(device, &allocDs, &skyboxDescriptorSet) != VK_SUCCESS) {
+        skyboxDescriptorSet = VK_NULL_HANDLE;
+        return false;
+    }
+
+    std::array<VkDescriptorImageInfo, 3> imageInfos{};
+    imageInfos[0].sampler = sceneSampler;
+    imageInfos[0].imageView = sunTexture->imageView;
+    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[1].sampler = sceneSampler;
+    imageInfos[1].imageView = moonTexture->imageView;
+    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageInfos[2].sampler = (sceneSamplerPoint != VK_NULL_HANDLE) ? sceneSamplerPoint : sceneSampler;
+    imageInfos[2].imageView = scrollTexture->imageView;
+    imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
+    for (uint32_t i = 0; i < descriptorWrites.size(); ++i) {
+        descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[i].dstSet = skyboxDescriptorSet;
+        descriptorWrites[i].dstBinding = i;
+        descriptorWrites[i].descriptorCount = 1;
+        descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrites[i].pImageInfo = &imageInfos[i];
+    }
+    vkUpdateDescriptorSets(device,
+                           static_cast<uint32_t>(descriptorWrites.size()),
+                           descriptorWrites.data(),
+                           0,
+                           nullptr);
+
+    skyboxDescriptorKey = std::move(key);
+    skyboxHasScrollTexture = !skyboxSettings.scrollingTexturePath.empty() && scrollTexture != &whiteSceneTexture;
+    return true;
+}
+
 void VulkanRenderer::destroySceneTexture(SceneTexture& texture) {
     if (texture.imageView != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
         vkDestroyImageView(device, texture.imageView, nullptr);
@@ -2502,6 +2650,17 @@ void VulkanRenderer::destroySceneMaterialSet(SceneMaterialSet& materialSet) {
     materialSet.descriptorSet = VK_NULL_HANDLE;
 }
 
+void VulkanRenderer::destroySkyboxDescriptorSet() {
+    if (skyboxDescriptorSet != VK_NULL_HANDLE &&
+        device != VK_NULL_HANDLE &&
+        imguiDescriptorPool != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(device, imguiDescriptorPool, 1, &skyboxDescriptorSet);
+    }
+    skyboxDescriptorSet = VK_NULL_HANDLE;
+    skyboxDescriptorKey.clear();
+    skyboxHasScrollTexture = false;
+}
+
 void VulkanRenderer::clearSceneMaterialSetCache() {
     for (auto& entry : sceneMaterialSetCache) {
         destroySceneMaterialSet(entry.second);
@@ -2510,6 +2669,7 @@ void VulkanRenderer::clearSceneMaterialSetCache() {
 }
 
 void VulkanRenderer::clearSceneTextureCache() {
+    destroySkyboxDescriptorSet();
     clearSceneMaterialSetCache();
     for (auto& entry : sceneTextureCache) {
         destroySceneTexture(entry.second);

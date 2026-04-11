@@ -1,11 +1,11 @@
-#include "ModuCPP"
+add ModuCPP;
 #include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
 
 public class AnimationWindow : ModuBehaviour {
-    void RenderEditorWindow(MODU_obj) {
+    void RenderEditorWindow() {
         ImGui::TextUnformatted("Simple Animation");
         ImGui::Separator();
 
@@ -143,7 +143,7 @@ public class AnimationWindow : ModuBehaviour {
         }
     }
 
-    void ExitRenderEditorWindow(MODU_obj) {
+    void ExitRenderEditorWindow() {
         (void)ctx;
     }
 }

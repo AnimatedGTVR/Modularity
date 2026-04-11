@@ -832,8 +832,14 @@ void Engine::renderHierarchyPanel() {
             if (ImGui::MenuItem("Plane")) addObject(ObjectType::Plane, "Plane");
             if (ImGui::MenuItem("Torus")) addObject(ObjectType::Torus, "Torus");
             if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
-            if (ImGui::MenuItem("2.5D Object")) addObject(ObjectType::Sprite25D, "2.5D Object");
+            if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
             if (ImGui::MenuItem("Mirror")) addObject(ObjectType::Mirror, "Mirror");
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("MMesh")) {
+            if (ImGui::MenuItem("Cube")) createMMeshPrimitive("Cube");
+            if (ImGui::MenuItem("Sphere")) createMMeshPrimitive("Sphere");
+            if (ImGui::MenuItem("Plane")) createMMeshPrimitive("Plane");
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Lights")) {
@@ -974,7 +980,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Plane"))   addObject(ObjectType::Plane, "Plane");
                 if (ImGui::MenuItem("Torus"))   addObject(ObjectType::Torus, "Torus");
                 if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
-                if (ImGui::MenuItem("2.5D Object")) addObject(ObjectType::Sprite25D, "2.5D Object");
+                if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
                 if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
                 ImGui::EndMenu();
             }
@@ -986,6 +992,18 @@ void Engine::renderHierarchyPanel() {
                     if (ImGui::MenuItem("Cube"))   createRMeshPrimitive("Cube");
                     if (ImGui::MenuItem("Sphere")) createRMeshPrimitive("Sphere");
                     if (ImGui::MenuItem("Plane"))  createRMeshPrimitive("Plane");
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("MMesh"))
+            {
+                if (ImGui::BeginMenu("Primitives"))
+                {
+                    if (ImGui::MenuItem("Cube"))   createMMeshPrimitive("Cube");
+                    if (ImGui::MenuItem("Sphere")) createMMeshPrimitive("Sphere");
+                    if (ImGui::MenuItem("Plane"))  createMMeshPrimitive("Plane");
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenu();
@@ -3711,7 +3729,11 @@ void Engine::renderInspectorPanel() {
                     if (hasSpritesheetPackage() && ImGui::SmallButton("Import Sheet##UISpriteSheet")) {
                         pendingSpriteSheetPath = obj.albedoTexturePath;
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
-                        importSpriteSheetAsSprite2D = (obj.ui.type == UIElementType::Sprite2D);
+                        importSpriteSheetTarget = (obj.type == ObjectType::Sprite25D)
+                            ? SpriteSheetImportTarget::Sprite25D
+                            : ((obj.ui.type == UIElementType::Sprite2D)
+                                ? SpriteSheetImportTarget::Sprite2D
+                                : SpriteSheetImportTarget::UIImage);
                         showImportSpriteSheetDialog = true;
                     }
                 }
@@ -3930,6 +3952,11 @@ void Engine::renderInspectorPanel() {
                 fieldRow("Type");
                 if (ImGui::Combo("##Type", &colliderType, colliderTypes, IM_ARRAYSIZE(colliderTypes))) {
                     obj.collider.type = static_cast<ColliderType>(colliderType);
+                    if (obj.collider.type == ColliderType::Mesh) {
+                        obj.collider.convex = false;
+                    } else if (obj.collider.type == ColliderType::ConvexMesh) {
+                        obj.collider.convex = true;
+                    }
                     changed = true;
                 }
 
@@ -3961,8 +3988,13 @@ void Engine::renderInspectorPanel() {
                     }
                     noteRow("Capsule aligned to Y axis.");
                 } else {
-                    if (boolRow("Convex Hull", &obj.collider.convex)) { changed = true; }
-                    noteRow("Uses mesh from the object (OBJ/Model). Non-convex is static-only.");
+                    if (obj.collider.type == ColliderType::Mesh) {
+                        obj.collider.convex = false;
+                        noteRow("Uses the render mesh as a triangle mesh. Static-only in PhysX.");
+                    } else {
+                        obj.collider.convex = true;
+                        noteRow("Uses the render mesh as a convex hull. Required for dynamic mesh bodies.");
+                    }
                 }
 
                 fieldRow("Offset");
@@ -4111,6 +4143,9 @@ void Engine::renderInspectorPanel() {
                 obj.hasRigidbody = true;
                 obj.rigidbody.enabled = true;
                 obj.rigidbody.useGravity = true;
+                obj.rigidbody.lockRotationX = true;
+                obj.rigidbody.lockRotationY = false;
+                obj.rigidbody.lockRotationZ = true;
             }
             playerControllerSectionChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
@@ -4143,13 +4178,25 @@ void Engine::renderInspectorPanel() {
             ImGui::PushID("Rigidbody3D");
             if (beginCompFields("##Fields_Rigidbody3D")) {
                 noteRow("Collider required for physics.");
-                if (isUIObject(obj)) {
+                if (UsesUIOnly2DPhysics(obj)) {
                     noteRow("Rigidbody3D is for 3D objects (use Rigidbody2D for UI/canvas).");
                 }
-                fieldRow("Mass");
-                if (ImGui::DragFloat("##Mass", &obj.rigidbody.mass, 0.05f, 0.01f, 1000.0f, "%.2f")) {
-                    obj.rigidbody.mass = std::max(0.01f, obj.rigidbody.mass);
+                const float massUnitScale = std::max(0.000001f,
+                    ProjectMassUnitToKilograms(projectManager.currentProject.physicsSettings.massUnit));
+                const float minDisplayMass = std::max(0.0001f, 0.01f / massUnitScale);
+                const std::string massLabel = std::string("Mass (") +
+                    ProjectMassUnitSuffix(projectManager.currentProject.physicsSettings.massUnit) + ")";
+                fieldRow(massLabel.c_str());
+                if (ImGui::DragFloat("##Mass", &obj.rigidbody.mass, minDisplayMass * 0.05f, minDisplayMass, 1000000.0f, "%.3f")) {
+                    obj.rigidbody.mass = std::max(minDisplayMass, obj.rigidbody.mass);
                     changed = true;
+                }
+                if (boolRow("Custom Center Of Mass", &obj.rigidbody.useCustomCenterOfMass)) { changed = true; }
+                if (obj.rigidbody.useCustomCenterOfMass) {
+                    fieldRow("Center Of Mass");
+                    if (ImGui::DragFloat3("##CenterOfMass", &obj.rigidbody.centerOfMass.x, 0.01f, -1000.0f, 1000.0f, "%.3f")) {
+                        changed = true;
+                    }
                 }
                 if (boolRow("Use Gravity", &obj.rigidbody.useGravity)) { changed = true; }
                 if (boolRow("Kinematic", &obj.rigidbody.isKinematic)) { changed = true; }
@@ -4210,7 +4257,7 @@ void Engine::renderInspectorPanel() {
         if (header.open) {
             ImGui::PushID("Rigidbody2D");
             if (beginCompFields("##Fields_Rigidbody2D")) {
-                if (!isUIObject(obj)) {
+                if (!UsesUIOnly2DPhysics(obj)) {
                     noteRow("Rigidbody2D is for UI/canvas objects only.");
                 }
                 if (boolRow("Use Gravity", &obj.rigidbody2D.useGravity)) { changed = true; }
@@ -4290,7 +4337,7 @@ void Engine::renderInspectorPanel() {
             };
 
             if (beginCompFields("##Fields_Collider2D")) {
-                if (!isUIObject(obj)) {
+                if (!UsesUIOnly2DPhysics(obj)) {
                     noteRow("Collider2D is for UI/canvas objects only.");
                 }
                 const char* colliderTypes[] = { "Box", "Polygon", "Edge" };
@@ -5274,9 +5321,13 @@ void Engine::renderInspectorPanel() {
                 }
                 if (boolRow("Apply Post FX", &obj.camera.applyPostFX)) { changed = true; }
                 bool project2D = isProject2DPipeline();
+                bool project25D = isProject25DPipeline();
                 if (project2D) {
                     noteRow("2D camera mode is controlled by Project Pipeline.");
                 } else {
+                    if (project25D) {
+                        noteRow("2.5D projects keep perspective cameras by default; use Legacy 2D Cam only when you want an orthographic shot.");
+                    }
                     if (boolRow("Legacy 2D Cam", &obj.camera.use2D)) { changed = true; }
                 }
                 bool cameraUses2D = project2D || obj.camera.use2D;
@@ -5867,7 +5918,9 @@ void Engine::renderInspectorPanel() {
                     if (hasSpritesheetPackage() && ImGui::SmallButton("Import Sheet##WorldSpriteSheet")) {
                         pendingSpriteSheetPath = obj.albedoTexturePath;
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s", obj.name.c_str());
-                        importSpriteSheetAsSprite2D = false;
+                        importSpriteSheetTarget = isProject25DPipeline()
+                            ? SpriteSheetImportTarget::Sprite25D
+                            : SpriteSheetImportTarget::UIImage;
                         showImportSpriteSheetDialog = true;
                     }
                 }
@@ -6145,76 +6198,99 @@ void Engine::renderInspectorPanel() {
             if (obj.renderType == RenderType::Model || IsRawMeshPath(obj.meshPath)) {
                 ImGui::Spacing();
                 ImGui::Separator();
-                ImGui::TextDisabled(IsRawMeshPath(obj.meshPath) ? "RMesh Info" : "Model Info");
-
-                const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
-                if (meshInfo) {
+                if (IsMMeshPath(obj.meshPath)) {
+                    ImGui::TextDisabled("MMesh Info");
                     ImGui::Text("Source File:");
-                    ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
+                    ImGui::TextDisabled("%s", fs::path(obj.meshPath).filename().string().c_str());
+
+                    std::string loadError;
+                    const auto* renderData = tmRenderer.getMeshCache().getOrLoad(obj.meshPath, loadError);
+                    if (renderData) {
+                        ImGui::Spacing();
+                        ImGui::Text("Submeshes: %d", static_cast<int>(renderData->submeshes.size()));
+                        ImGui::Text("Triangles: %u", renderData->totalTriangleCount);
+                    } else if (!loadError.empty()) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", loadError.c_str());
+                    }
 
                     ImGui::Spacing();
-
-                    ImGui::Text("Vertices: %d", meshInfo->vertexCount);
-                    ImGui::Text("Faces: %d", meshInfo->faceCount);
-                    ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
-                    ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
-
-                    ImGui::Spacing();
-
-                    if (ImGui::Button(IsRawMeshPath(obj.meshPath) ? "Reload RMesh" : "Reload Model", ImVec2(-1, 0))) {
-                        bool reloaded = false;
-                        if (obj.meshSourceIndex >= 0) {
-                            ModelSceneData sceneData;
-                            std::string err;
-                            if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                                int sourceIndex = obj.meshSourceIndex;
-                                if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                    obj.meshId = sceneData.meshIndices[sourceIndex];
-                                    reloaded = true;
-                                }
-                            }
-                        }
-                        if (!reloaded) {
-                            ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                            if (result.success) {
-                                obj.meshId = result.meshIndex;
-                                reloaded = true;
-                            } else {
-                                addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
-                            }
-                        }
-                        if (reloaded) {
-                            addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
-                        }
+                    if (ImGui::Button("Reload MMesh", ImVec2(-1, 0))) {
+                        tmRenderer.getMeshCache().clear();
+                        tmOpenGLRenderer.invalidateCaches();
+                        addConsoleMessage("Reloaded MMesh cache", ConsoleMessageType::Success);
                     }
                 } else {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
-                    ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
+                    ImGui::TextDisabled(IsRawMeshPath(obj.meshPath) ? "RMesh Info" : "Model Info");
 
-                    if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
-                        bool reloaded = false;
-                        if (obj.meshSourceIndex >= 0) {
-                            ModelSceneData sceneData;
-                            std::string err;
-                            if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                                int sourceIndex = obj.meshSourceIndex;
-                                if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                    obj.meshId = sceneData.meshIndices[sourceIndex];
-                                    reloaded = true;
+                    const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+                    if (meshInfo) {
+                        ImGui::Text("Source File:");
+                        ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
+
+                        ImGui::Spacing();
+
+                        ImGui::Text("Vertices: %d", meshInfo->vertexCount);
+                        ImGui::Text("Faces: %d", meshInfo->faceCount);
+                        ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
+                        ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
+
+                        ImGui::Spacing();
+
+                        if (ImGui::Button(IsRawMeshPath(obj.meshPath) ? "Reload RMesh" : "Reload Model", ImVec2(-1, 0))) {
+                            bool reloaded = false;
+                            if (obj.meshSourceIndex >= 0) {
+                                ModelSceneData sceneData;
+                                std::string err;
+                                if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                                    int sourceIndex = obj.meshSourceIndex;
+                                    if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                                        obj.meshId = sceneData.meshIndices[sourceIndex];
+                                        reloaded = true;
+                                    }
                                 }
                             }
-                        }
-                        if (!reloaded) {
-                            ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                            if (result.success) {
-                                obj.meshId = result.meshIndex;
-                                reloaded = true;
-                            } else {
-                                addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                            if (!reloaded) {
+                                ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                                if (result.success) {
+                                    obj.meshId = result.meshIndex;
+                                    reloaded = true;
+                                } else {
+                                    addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                                }
+                            }
+                            if (reloaded) {
+                                addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
                             }
                         }
-                        if (reloaded) {
-                            addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
+                        ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
+
+                        if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
+                            bool reloaded = false;
+                            if (obj.meshSourceIndex >= 0) {
+                                ModelSceneData sceneData;
+                                std::string err;
+                                if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
+                                    int sourceIndex = obj.meshSourceIndex;
+                                    if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
+                                        obj.meshId = sceneData.meshIndices[sourceIndex];
+                                        reloaded = true;
+                                    }
+                                }
+                            }
+                            if (!reloaded) {
+                                ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
+                                if (result.success) {
+                                    obj.meshId = result.meshIndex;
+                                    reloaded = true;
+                                } else {
+                                    addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
+                                }
+                            }
+                            if (reloaded) {
+                                addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
+                            }
                         }
                     }
                 }
@@ -7238,7 +7314,8 @@ void Engine::renderInspectorPanel() {
     }
     ImGui::SetNextWindowSize(ImVec2(360.0f, 420.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopup("AddComponentPopup")) {
-        bool isUIType = isUIObject(obj);
+        const bool usesUIOnly2DPhysics = UsesUIOnly2DPhysics(obj);
+        const bool supports3DWorldComponents = !usesUIOnly2DPhysics;
         auto applyUiDefaults = [](SceneObject& target, UIElementType type) {
             target.ui.type = type;
             switch (type) {
@@ -7289,23 +7366,23 @@ void Engine::renderInspectorPanel() {
             entries.push_back({path, enabled, action});
         };
 
-        addEntry("Physics/Rigidbody 3D", !obj.hasRigidbody && !isUIType, [&]() {
+        addEntry("Physics/Rigidbody 3D", !obj.hasRigidbody && supports3DWorldComponents, [&]() {
             obj.hasRigidbody = true;
             obj.rigidbody = RigidbodyComponent{};
             componentChanged = true;
         });
-        addEntry("Physics/Rigidbody 2D", !obj.hasRigidbody2D && isUIType, [&]() {
+        addEntry("Physics/Rigidbody 2D", !obj.hasRigidbody2D && usesUIOnly2DPhysics, [&]() {
             obj.hasRigidbody2D = true;
             obj.rigidbody2D = Rigidbody2DComponent{};
             componentChanged = true;
         });
-        addEntry("Physics/Collider 2D", !obj.hasCollider2D && isUIType, [&]() {
+        addEntry("Physics/Collider 2D", !obj.hasCollider2D && usesUIOnly2DPhysics, [&]() {
             obj.hasCollider2D = true;
             obj.collider2D = Collider2DComponent{};
             obj.collider2D.boxSize = glm::max(obj.ui.size, glm::vec2(1.0f));
             componentChanged = true;
         });
-        addEntry("Physics/Parallax Layer 2D", !obj.hasParallaxLayer2D && isUIType, [&]() {
+        addEntry("Physics/Parallax Layer 2D", !obj.hasParallaxLayer2D && usesUIOnly2DPhysics, [&]() {
             obj.hasParallaxLayer2D = true;
             obj.parallaxLayer2D = ParallaxLayer2DComponent{};
             componentChanged = true;
@@ -7321,6 +7398,9 @@ void Engine::renderInspectorPanel() {
             obj.rigidbody.enabled = true;
             obj.rigidbody.useGravity = true;
             obj.rigidbody.isKinematic = false;
+            obj.rigidbody.lockRotationX = true;
+            obj.rigidbody.lockRotationY = false;
+            obj.rigidbody.lockRotationZ = true;
             obj.scale = glm::vec3(obj.playerController.radius * 2.0f, obj.playerController.height, obj.playerController.radius * 2.0f);
             syncLocalTransform(obj);
             componentChanged = true;
@@ -7330,25 +7410,25 @@ void Engine::renderInspectorPanel() {
             obj.audioSource = AudioSourceComponent{};
             componentChanged = true;
         });
-        addEntry("Audio/Reverb Zone", !obj.hasReverbZone && !isUIType, [&]() {
+        addEntry("Audio/Reverb Zone", !obj.hasReverbZone && supports3DWorldComponents, [&]() {
             obj.hasReverbZone = true;
             obj.reverbZone = ReverbZoneComponent{};
             obj.reverbZone.boxSize = glm::max(obj.scale, glm::vec3(1.0f));
             componentChanged = true;
         });
-        addEntry("AI Pathfinding/GroundBakedType", !obj.hasGroundBakedType && !isUIType, [&]() {
+        addEntry("AI Pathfinding/GroundBakedType", !obj.hasGroundBakedType && supports3DWorldComponents, [&]() {
             obj.hasGroundBakedType = true;
             obj.groundBakedType = GroundBakedTypeComponent{};
             showAIPathfindingWindow = true;
             componentChanged = true;
         });
-        addEntry("AI Pathfinding/ObsticleObject", !obj.hasObsticleObject && !isUIType, [&]() {
+        addEntry("AI Pathfinding/ObsticleObject", !obj.hasObsticleObject && supports3DWorldComponents, [&]() {
             obj.hasObsticleObject = true;
             obj.obsticleObject = ObsticleObjectComponent{};
             showAIPathfindingWindow = true;
             componentChanged = true;
         });
-        addEntry("AI Pathfinding/AI Agent", !obj.hasAIAgent && !isUIType, [&]() {
+        addEntry("AI Pathfinding/AI Agent", !obj.hasAIAgent && supports3DWorldComponents, [&]() {
             obj.hasAIAgent = true;
             obj.aiAgent = AIAgentComponent{};
             obj.aiAgent.destination = obj.position;
@@ -7871,6 +7951,9 @@ void Engine::renderInspectorPanel() {
                     target.hasRigidbody = true;
                     target.rigidbody.enabled = true;
                     target.rigidbody.useGravity = true;
+                    target.rigidbody.lockRotationX = true;
+                    target.rigidbody.lockRotationY = false;
+                    target.rigidbody.lockRotationZ = true;
                 }
             });
             propagated = true;
@@ -9192,13 +9275,46 @@ void Engine::renderDialogs() {
             importSpriteSheetRows = std::max(1, importSpriteSheetRows);
             ImGui::DragFloat("FPS", &importSpriteSheetFps, 0.1f, 1.0f, 120.0f, "%.1f");
             importSpriteSheetFps = std::clamp(importSpriteSheetFps, 1.0f, 120.0f);
-            if (!has2DWorldPackage()) {
-                importSpriteSheetAsSprite2D = false;
-                ImGui::BeginDisabled();
-                ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
-                ImGui::EndDisabled();
-            } else {
-                ImGui::Checkbox("Create Sprite2D", &importSpriteSheetAsSprite2D);
+
+            auto spriteSheetTargetLabel = [](SpriteSheetImportTarget target) {
+                switch (target) {
+                    case SpriteSheetImportTarget::Sprite25D: return "2.5D Sprite";
+                    case SpriteSheetImportTarget::Sprite2D: return "Sprite2D";
+                    case SpriteSheetImportTarget::UIImage:
+                    default:
+                        return "UI Image";
+                }
+            };
+
+            if (!has2DWorldPackage() && importSpriteSheetTarget == SpriteSheetImportTarget::Sprite2D) {
+                importSpriteSheetTarget = isProject25DPipeline()
+                    ? SpriteSheetImportTarget::Sprite25D
+                    : SpriteSheetImportTarget::UIImage;
+            }
+
+            if (ImGui::BeginCombo("Create As", spriteSheetTargetLabel(importSpriteSheetTarget))) {
+                const bool imageSelected = importSpriteSheetTarget == SpriteSheetImportTarget::UIImage;
+                if (ImGui::Selectable("UI Image", imageSelected)) {
+                    importSpriteSheetTarget = SpriteSheetImportTarget::UIImage;
+                }
+                if (imageSelected) ImGui::SetItemDefaultFocus();
+
+                const bool sprite25DSelected = importSpriteSheetTarget == SpriteSheetImportTarget::Sprite25D;
+                if (ImGui::Selectable("2.5D Sprite", sprite25DSelected)) {
+                    importSpriteSheetTarget = SpriteSheetImportTarget::Sprite25D;
+                }
+
+                if (has2DWorldPackage()) {
+                    const bool sprite2DSelected = importSpriteSheetTarget == SpriteSheetImportTarget::Sprite2D;
+                    if (ImGui::Selectable("Sprite2D", sprite2DSelected)) {
+                        importSpriteSheetTarget = SpriteSheetImportTarget::Sprite2D;
+                    }
+                } else {
+                    ImGui::BeginDisabled();
+                    ImGui::Selectable("Sprite2D (requires moduengine.2d-world)", false);
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndCombo();
             }
 
             ImGui::Spacing();
@@ -9222,18 +9338,35 @@ void Engine::renderDialogs() {
                     baseName = fs::path(pendingSpriteSheetPath).stem().string();
                 }
 
-                ObjectType type = importSpriteSheetAsSprite2D ? ObjectType::Sprite2D : ObjectType::UIImage;
-                int canvasId = -1;
-                for (const auto& obj : sceneObjects) {
-                    if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
-                        canvasId = obj.id;
+                ObjectType type = ObjectType::UIImage;
+                switch (importSpriteSheetTarget) {
+                    case SpriteSheetImportTarget::Sprite25D:
+                        type = ObjectType::Sprite25D;
                         break;
-                    }
+                    case SpriteSheetImportTarget::Sprite2D:
+                        type = ObjectType::Sprite2D;
+                        break;
+                    case SpriteSheetImportTarget::UIImage:
+                    default:
+                        type = ObjectType::UIImage;
+                        break;
                 }
-                if (canvasId < 0) {
-                    addObject(ObjectType::Canvas, "Canvas");
-                    if (!sceneObjects.empty()) {
-                        canvasId = sceneObjects.back().id;
+
+                const bool needsCanvasParent =
+                    (type == ObjectType::UIImage || type == ObjectType::Sprite2D);
+                int canvasId = -1;
+                if (needsCanvasParent) {
+                    for (const auto& obj : sceneObjects) {
+                        if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
+                            canvasId = obj.id;
+                            break;
+                        }
+                    }
+                    if (canvasId < 0) {
+                        addObject(ObjectType::Canvas, "Canvas");
+                        if (!sceneObjects.empty()) {
+                            canvasId = sceneObjects.back().id;
+                        }
                     }
                 }
 
@@ -9256,7 +9389,7 @@ void Engine::renderDialogs() {
                         created.ui.size.x = std::max(1.0f, static_cast<float>(texW) / static_cast<float>(created.ui.spriteSheetColumns));
                         created.ui.size.y = std::max(1.0f, static_cast<float>(texH) / static_cast<float>(created.ui.spriteSheetRows));
                     }
-                    if (canvasId >= 0) {
+                    if (needsCanvasParent && canvasId >= 0) {
                         setParent(created.id, canvasId);
                     }
                     projectManager.currentProject.hasUnsavedChanges = true;

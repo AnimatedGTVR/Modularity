@@ -154,6 +154,8 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     bool AddRigidbodyTorque(const glm::vec3& torque);
     bool AddRigidbodyAngularImpulse(const glm::vec3& impulse);
     bool SetRigidbodyYaw(float yawDegrees);
+    float GetProjectGravityScale() const;
+    void SetProjectGravityScale(float scale);
     bool RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                         glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr,
                         float* hitDistance = nullptr) const;

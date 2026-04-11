@@ -1,11 +1,7 @@
-#include "ModuCPP"
-
-using namespace ModuCPP;
+add ModuCPP;
 
 public class RigidbodyTest : ModuBehaviour {
-    void Script_OnInspector(MODU_obj) {
-        MODU_SCRIPT(ctx);
-
+    void Script_OnInspector() {
         auto& config = Config<RigidbodyTestConfig>();
         bindConfig(ctx, config);
         auto& state = State<RigidbodyTestState>();
@@ -48,10 +44,7 @@ public class RigidbodyTest : ModuBehaviour {
         }
     }
 
-    void Begin(MODU_obj, float dt) {
-        (void)dt;
-        MODU_SCRIPT(ctx);
-
+    void Begin() {
         auto& config = Config<RigidbodyTestConfig>();
         bindConfig(ctx, config);
         auto& state = State<RigidbodyTestState>();

@@ -2145,6 +2145,7 @@ void Engine::renderFileBrowserPanel() {
                     }
                     if (fileBrowser.isModelFile(entry)) {
                         bool isObj = fileBrowser.isOBJFile(entry);
+                        bool isMMesh = IsMMeshPath(entry.path());
                         if (ImGui::MenuItem("Import to Scene")) {
                             std::string defaultName = entry.path().stem().string();
                             if (isObj) {
@@ -2164,7 +2165,7 @@ void Engine::renderFileBrowserPanel() {
                                 importModelToScene(entry.path().string(), "");
                             }
                         }
-                        if (ImGui::MenuItem("Convert to Raw Mesh")) {
+                        if (!isMMesh && ImGui::MenuItem("Convert to Raw Mesh")) {
                             convertModelToRawMesh(entry.path().string());
                         }
                     }
@@ -2184,6 +2185,21 @@ void Engine::renderFileBrowserPanel() {
                     if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
                         if (hasSpriteEditorPackage() && ImGui::MenuItem("Open in Pixel Sprite Editor")) {
                             loadPixelSpriteDocument(entry.path());
+                        }
+                        if (ImGui::MenuItem("Create 2.5D Sprite")) {
+                            addObject(ObjectType::Sprite25D, entry.path().stem().string());
+                            if (!sceneObjects.empty()) {
+                                SceneObject& created = sceneObjects.back();
+                                created.albedoTexturePath = entry.path().string();
+                                created.material.textureFilter = MaterialProperties::TextureFilter::Point;
+                                if (Texture* tex = renderer.getTexture(created.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
+                                    if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
+                                        created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
+                                                                    static_cast<float>(tex->GetHeight()));
+                                    }
+                                }
+                                projectManager.currentProject.hasUnsavedChanges = true;
+                            }
                         }
                         if (has2DWorldPackage() && ImGui::MenuItem("Create Sprite2D")) {
                             int canvasId = -1;
@@ -2220,7 +2236,11 @@ void Engine::renderFileBrowserPanel() {
                             pendingSpriteSheetPath = entry.path().string();
                             std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
                                           entry.path().stem().string().c_str());
-                            importSpriteSheetAsSprite2D = true;
+                            importSpriteSheetTarget = isProject25DPipeline()
+                                ? SpriteSheetImportTarget::Sprite25D
+                                : (has2DWorldPackage()
+                                    ? SpriteSheetImportTarget::Sprite2D
+                                    : SpriteSheetImportTarget::UIImage);
                             importSpriteSheetColumns = 4;
                             importSpriteSheetRows = 4;
                             importSpriteSheetFps = 12.0f;
@@ -2406,6 +2426,7 @@ void Engine::renderFileBrowserPanel() {
                 if (fileBrowser.isModelFile(entry)) {
                     bool isObj = fileBrowser.isOBJFile(entry);
                     bool isRaw = IsRawMeshPath(entry.path());
+                    bool isMMesh = IsMMeshPath(entry.path());
                     if (ImGui::MenuItem("Import to Scene")) {
                         std::string defaultName = entry.path().stem().string();
                         if (isObj) {
@@ -2425,7 +2446,7 @@ void Engine::renderFileBrowserPanel() {
                             importModelToScene(entry.path().string(), "");
                         }
                     }
-                    if (!isRaw && ImGui::MenuItem("Convert to Raw Mesh")) {
+                    if (!isRaw && !isMMesh && ImGui::MenuItem("Convert to Raw Mesh")) {
                         convertModelToRawMesh(entry.path().string());
                     }
                 }
@@ -2445,6 +2466,21 @@ void Engine::renderFileBrowserPanel() {
                 if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
                     if (hasSpriteEditorPackage() && ImGui::MenuItem("Open in Pixel Sprite Editor")) {
                         loadPixelSpriteDocument(entry.path());
+                    }
+                    if (ImGui::MenuItem("Create 2.5D Sprite")) {
+                        addObject(ObjectType::Sprite25D, entry.path().stem().string());
+                        if (!sceneObjects.empty()) {
+                            SceneObject& created = sceneObjects.back();
+                            created.albedoTexturePath = entry.path().string();
+                            created.material.textureFilter = MaterialProperties::TextureFilter::Point;
+                            if (Texture* tex = renderer.getTexture(created.albedoTexturePath, MaterialProperties::TextureFilter::Point)) {
+                                if (tex->GetWidth() > 0 && tex->GetHeight() > 0) {
+                                    created.ui.size = glm::vec2(static_cast<float>(tex->GetWidth()),
+                                                                static_cast<float>(tex->GetHeight()));
+                                }
+                            }
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                        }
                     }
                     if (has2DWorldPackage() && ImGui::MenuItem("Create Sprite2D")) {
                         int canvasId = -1;
@@ -2481,7 +2517,11 @@ void Engine::renderFileBrowserPanel() {
                         pendingSpriteSheetPath = entry.path().string();
                         std::snprintf(importSpriteSheetName, sizeof(importSpriteSheetName), "%s",
                                       entry.path().stem().string().c_str());
-                        importSpriteSheetAsSprite2D = true;
+                        importSpriteSheetTarget = isProject25DPipeline()
+                            ? SpriteSheetImportTarget::Sprite25D
+                            : (has2DWorldPackage()
+                                ? SpriteSheetImportTarget::Sprite2D
+                                : SpriteSheetImportTarget::UIImage);
                         importSpriteSheetColumns = 4;
                         importSpriteSheetRows = 4;
                         importSpriteSheetFps = 12.0f;

@@ -1,12 +1,10 @@
-#include "ModuCPP"
+add ModuCPP;
 #include "DialoguePortShared.h"
 
 #include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
-using namespace ModuCPP;
-
 public class InteractableObject : ModuBehaviour
 {
     inspector
@@ -52,9 +50,8 @@ public class InteractableObject : ModuBehaviour
         AutoSave(config);
     }
 
-    void Begin(MODU_obj, float dt)
+    void Begin()
     {
-        (void)dt;
         if (!ctx.object) return;
 
         const InteractableConfig config = loadConfig(ctx);
@@ -63,9 +60,8 @@ public class InteractableObject : ModuBehaviour
         applySelectedState(ctx, config);
     }
 
-    void TickUpdate(MODU_obj, float dt)
+    void TickUpdate()
     {
-        (void)dt;
         if (!ctx.object) return;
 
         InteractableConfig config = loadConfig(ctx);

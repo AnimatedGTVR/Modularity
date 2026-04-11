@@ -30,11 +30,14 @@ struct FieldSpec {
     FieldVisibility visibility = FieldVisibility::Private;
     FieldKind kind = FieldKind::Custom;
     std::string rawType;
+    std::string baseType;
+    std::vector<std::string> arrayDimensions;
     std::string name;
     std::string initializer;
     std::optional<std::string> rangeMinExpr;
     std::optional<std::string> rangeMaxExpr;
     std::optional<std::string> stepExpr;
+    bool persist = false;
 };
 
 struct MethodSpec {
@@ -47,11 +50,16 @@ struct MethodSpec {
     bool contextIsPointer = false;
     std::string contextParamName;
     bool hasManualPrelude = false;
+    bool autoInjectedContext = false;
+    bool autoInjectedDeltaTime = false;
+    bool hasDeltaTimeParam = false;
+    std::string deltaTimeParamName = "dt";
 };
 
 struct ClassSpec {
     std::string name;
     std::vector<std::string> includeDirectives;
+    std::vector<std::string> usingDirectives;
     std::vector<FieldSpec> fields;
     std::vector<MethodSpec> methods;
     std::string inspectorBlock;
@@ -59,6 +67,7 @@ struct ClassSpec {
 };
 
 size_t findTopLevelChar(const std::string& text, char needle);
+bool isVoidReturnType(const std::string& returnType);
 
 std::string trimCopy(const std::string& value) {
     size_t start = 0;
@@ -639,21 +648,90 @@ bool isListType(const std::string& rawType) {
     return normalized == "list<sceneobj*>" || normalized == "list<sceneobject*>";
 }
 
-FieldKind publicFieldKindForType(const std::string& rawType) {
+bool isLifecycleMethodName(const std::string& name) {
+    static const std::unordered_set<std::string> kNames = {
+        "Begin",
+        "TickUpdate",
+        "Update",
+        "Spec",
+        "TestEditor",
+        "RenderEditorWindow",
+        "ExitRenderEditorWindow",
+        "Script_OnInspector"
+    };
+    return kNames.find(name) != kNames.end();
+}
+
+bool looksLikeDeltaTimeParameter(const std::string& parameter) {
+    const std::string lower = toLowerCopy(removeWhitespaceCopy(parameter));
+    return lower.find("floatdt") != std::string::npos ||
+           lower.find("doubledt") != std::string::npos ||
+           lower.find("floatdeltatime") != std::string::npos ||
+           lower.find("doubledeltatime") != std::string::npos;
+}
+
+std::string mapScriptBaseTypeToCpp(const std::string& rawType) {
     const std::string normalized = toLowerCopy(removeWhitespaceCopy(rawType));
+    if (normalized == "string") return "std::string";
+    if (normalized == "vector2" || normalized == "vec2") return "glm::vec2";
+    if (normalized == "vector3" || normalized == "vec3") return "glm::vec3";
+    return rawType;
+}
+
+bool parseArrayType(const std::string& rawType,
+                    std::string& outBaseType,
+                    std::vector<std::string>& outDimensions) {
+    std::string remaining = trimCopy(rawType);
+    outDimensions.clear();
+
+    while (!remaining.empty() && remaining.back() == ']') {
+        const size_t open = remaining.rfind('[');
+        if (open == std::string::npos) {
+            return false;
+        }
+        const std::string dim = trimCopy(remaining.substr(open + 1, remaining.size() - open - 2));
+        if (dim.empty()) {
+            return false;
+        }
+        outDimensions.insert(outDimensions.begin(), dim);
+        remaining = trimCopy(remaining.substr(0, open));
+    }
+
+    outBaseType = remaining;
+    return true;
+}
+
+FieldKind publicFieldKindForType(const std::string& rawType) {
+    std::string baseType;
+    std::vector<std::string> dims;
+    if (!parseArrayType(rawType, baseType, dims)) {
+        return FieldKind::Custom;
+    }
+    if (!dims.empty()) return FieldKind::Custom;
+
+    const std::string normalized = toLowerCopy(removeWhitespaceCopy(baseType));
     if (normalized == "float") return FieldKind::Float;
     if (normalized == "int") return FieldKind::Int;
     if (normalized == "bool") return FieldKind::Bool;
-    if (normalized == "vec3" || normalized == "glm::vec3") return FieldKind::Vec3;
+    if (normalized == "vec3" || normalized == "glm::vec3" ||
+        normalized == "vector3") return FieldKind::Vec3;
     if (normalized == "string" || normalized == "std::string") return FieldKind::String;
-    if (isListType(rawType)) return FieldKind::ObjectList;
+    if (isListType(baseType)) return FieldKind::ObjectList;
     return FieldKind::Custom;
 }
 
 std::string mapScriptTypeToCpp(const std::string& rawType) {
-    const std::string normalized = toLowerCopy(removeWhitespaceCopy(rawType));
-    if (normalized == "string") return "std::string";
-    return rawType;
+    std::string baseType;
+    std::vector<std::string> dims;
+    if (!parseArrayType(rawType, baseType, dims)) {
+        return mapScriptBaseTypeToCpp(rawType);
+    }
+
+    std::string cppType = mapScriptBaseTypeToCpp(baseType);
+    for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
+        cppType = "std::array<" + cppType + ", " + *it + ">";
+    }
+    return cppType;
 }
 
 bool stripAndParseFieldAnnotations(std::string& declaration, FieldSpec& outField, std::string& error) {
@@ -833,13 +911,92 @@ bool parseFieldDecl(const std::string& fieldDecl, FieldSpec& outField, std::stri
         error = "Unable to parse field type for: " + outField.name;
         return false;
     }
-
-    if (outField.visibility == FieldVisibility::Public) {
-        outField.kind = publicFieldKindForType(outField.rawType);
-    } else {
-        outField.kind = FieldKind::Custom;
+    if (!parseArrayType(outField.rawType, outField.baseType, outField.arrayDimensions)) {
+        error = "Unable to parse array type for: " + outField.name;
+        return false;
     }
 
+    outField.kind = publicFieldKindForType(outField.rawType);
+
+    return true;
+}
+
+bool lowerParameterDecl(const std::string& rawParam, std::string& outLowered,
+                        std::string& outParamName, bool& outIsContext, bool& outContextIsPointer,
+                        bool& outIsDelta, std::string& error) {
+    std::string param = trimCopy(rawParam);
+    outLowered.clear();
+    outParamName.clear();
+    outIsContext = false;
+    outContextIsPointer = false;
+    outIsDelta = false;
+    if (param.empty()) {
+        return true;
+    }
+
+    if (param == "MODU_obj") {
+        outLowered = "ScriptContext& ctx";
+        outParamName = "ctx";
+        outIsContext = true;
+        return true;
+    }
+
+    const std::string lowerParam = toLowerCopy(param);
+    if (lowerParam.find("scriptcontext") != std::string::npos) {
+        outParamName = extractParamName(param);
+        if (outParamName.empty()) {
+            error = "Unable to parse ScriptContext parameter name.";
+            return false;
+        }
+        outLowered = param;
+        outIsContext = true;
+        outContextIsPointer = param.find('*') != std::string::npos;
+        return true;
+    }
+
+    outIsDelta = looksLikeDeltaTimeParameter(param);
+
+    std::string defaultExpr;
+    const size_t eqPos = findTopLevelChar(param, '=');
+    if (eqPos != std::string::npos) {
+        defaultExpr = trimCopy(param.substr(eqPos + 1));
+        param = trimCopy(param.substr(0, eqPos));
+    }
+
+    bool isRef = false;
+    if (param.rfind("ref ", 0) == 0) {
+        isRef = true;
+        param = trimCopy(param.substr(4));
+    }
+
+    outParamName = extractParamName(param);
+    if (outParamName.empty()) {
+        outLowered = rawParam;
+        return true;
+    }
+
+    const size_t namePos = param.rfind(outParamName);
+    if (namePos == std::string::npos) {
+        outLowered = rawParam;
+        return true;
+    }
+
+    std::string typePart = trimCopy(param.substr(0, namePos));
+    if (typePart.empty()) {
+        outLowered = rawParam;
+        return true;
+    }
+
+    if (isRef) {
+        typePart = mapScriptTypeToCpp(typePart) + "&";
+    } else {
+        typePart = mapScriptTypeToCpp(typePart);
+    }
+
+    outLowered = typePart + " " + outParamName;
+    if (!defaultExpr.empty()) {
+        outLowered += " = " + defaultExpr;
+    }
     return true;
 }
 
@@ -866,9 +1023,18 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
         error = "Unsupported ModuCPP method declaration (unmatched '('): " + signature;
         return false;
     }
-    for (size_t i = closeParen + 1; i < signature.size(); ++i) {
-        if (std::isspace(static_cast<unsigned char>(signature[i])) == 0) {
+    const std::string trailing = trimCopy(signature.substr(closeParen + 1));
+    bool hasExpressionBody = false;
+    std::string expressionBody;
+    if (!trailing.empty()) {
+        if (trailing.rfind("to ", 0) != 0) {
             error = "Unsupported ModuCPP method declaration (trailing tokens): " + signature;
+            return false;
+        }
+        hasExpressionBody = true;
+        expressionBody = trimCopy(trailing.substr(3));
+        if (expressionBody.empty()) {
+            error = "Expression-bodied member is missing its body: " + signature;
             return false;
         }
     }
@@ -897,15 +1063,20 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     }
 
     outMethod.name = beforeParen.substr(nameStart, nameEnd - nameStart);
-    outMethod.returnType = trimCopy(beforeParen.substr(0, nameStart));
+    outMethod.returnType = mapScriptTypeToCpp(trimCopy(beforeParen.substr(0, nameStart)));
     if (outMethod.returnType.empty()) {
         error = "Unsupported ModuCPP method declaration (missing return type): " + signature;
         return false;
     }
     outMethod.originalParams = trimCopy(signature.substr(openParen + 1, closeParen - openParen - 1));
     outMethod.body = body;
+    if (hasExpressionBody) {
+        outMethod.body = isVoidReturnType(outMethod.returnType)
+            ? (expressionBody + ";")
+            : ("return " + expressionBody + ";");
+    }
     {
-        const std::string bodyStripped = stripCommentsPreserveLayout(body);
+        const std::string bodyStripped = stripCommentsPreserveLayout(outMethod.body);
         static const std::regex moduScriptPattern(R"(\bMODU_SCRIPT\s*\()");
         outMethod.hasManualPrelude = std::regex_search(bodyStripped, moduScriptPattern);
     }
@@ -915,38 +1086,60 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     transpiledParams.reserve(params.size());
 
     for (const std::string& rawParam : params) {
-        std::string param = trimCopy(rawParam);
-        if (param.empty()) continue;
+        std::string loweredParam;
+        std::string paramName;
+        bool isContext = false;
+        bool contextIsPointer = false;
+        bool isDelta = false;
+        if (!lowerParameterDecl(rawParam, loweredParam, paramName, isContext, contextIsPointer,
+                                isDelta, error)) {
+            error = "Unable to parse parameter in method '" + outMethod.name + "': " + error;
+            return false;
+        }
+        if (trimCopy(loweredParam).empty()) continue;
 
-        if (param == "MODU_obj") {
+        if (isContext) {
             if (outMethod.hasContext) {
                 error = "Multiple context parameters found in method: " + outMethod.name;
                 return false;
             }
+            outMethod.hasContext = true;
+            outMethod.contextParamName = paramName.empty() ? "ctx" : paramName;
+            outMethod.contextIsPointer = contextIsPointer;
+        }
+        if (isDelta && !paramName.empty()) {
+            outMethod.deltaTimeParamName = paramName;
+            outMethod.hasDeltaTimeParam = true;
+        }
+
+        transpiledParams.push_back(loweredParam);
+    }
+
+    if (isLifecycleMethodName(outMethod.name)) {
+        if (!outMethod.hasContext) {
             outMethod.hasContext = true;
             outMethod.contextParamName = "ctx";
             outMethod.contextIsPointer = false;
-            transpiledParams.emplace_back("ScriptContext& ctx");
-            continue;
+            outMethod.autoInjectedContext = true;
+            transpiledParams.insert(transpiledParams.begin(), "ScriptContext& ctx");
         }
 
-        const std::string lowerParam = toLowerCopy(param);
-        if (lowerParam.find("scriptcontext") != std::string::npos) {
-            if (outMethod.hasContext) {
-                error = "Multiple context parameters found in method: " + outMethod.name;
-                return false;
+        if (outMethod.name != "Script_OnInspector") {
+            bool hasDelta = false;
+            for (const std::string& rawParam : params) {
+                if (looksLikeDeltaTimeParameter(rawParam)) {
+                    hasDelta = true;
+                    break;
+                }
             }
-            std::string paramName = extractParamName(param);
-            if (paramName.empty()) {
-                error = "Unable to parse ScriptContext parameter name in method: " + outMethod.name;
-                return false;
+            if (!hasDelta && outMethod.name != "RenderEditorWindow" &&
+                outMethod.name != "ExitRenderEditorWindow") {
+                outMethod.autoInjectedDeltaTime = true;
+                outMethod.deltaTimeParamName = "dt";
+                outMethod.hasDeltaTimeParam = true;
+                transpiledParams.push_back("float dt");
             }
-            outMethod.hasContext = true;
-            outMethod.contextParamName = paramName;
-            outMethod.contextIsPointer = param.find('*') != std::string::npos;
         }
-
-        transpiledParams.push_back(param);
     }
 
     std::ostringstream joined;
@@ -1073,6 +1266,149 @@ std::string stripIncludeDirectives(const std::string& sourceText) {
     return out.str();
 }
 
+std::string normalizeModuPackageLines(const std::string& sourceText) {
+    std::istringstream input(sourceText);
+    std::ostringstream out;
+    std::string line;
+    static const std::regex addPattern(R"(^(\s*)add\s+([A-Za-z_][A-Za-z0-9_:]*)\s*;\s*$)");
+    static const std::regex usingPattern(R"(^(\s*)using\s+([A-Za-z_][A-Za-z0-9_:]*)\s*;\s*$)");
+
+    while (std::getline(input, line)) {
+        std::smatch match;
+        if (std::regex_match(line, match, addPattern)) {
+            const std::string indent = match[1].str();
+            const std::string packageName = match[2].str();
+            out << indent << "#include \"" << packageName << "\"\n";
+            continue;
+        }
+        if (std::regex_match(line, match, usingPattern) &&
+            trimCopy(line).rfind("using namespace", 0) != 0) {
+            const std::string indent = match[1].str();
+            const std::string packageName = match[2].str();
+            out << indent << "using namespace " << packageName << ";\n";
+            continue;
+        }
+        out << line << "\n";
+    }
+    return out.str();
+}
+
+std::string convertPublicEnumsToCpp(const std::string& sourceText) {
+    const std::string stripped = stripCommentsPreserveLayout(sourceText);
+    static const std::regex enumPattern(R"(\bpublic\s+enum\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+
+    std::string out;
+    size_t cursor = 0;
+    auto begin = std::sregex_iterator(stripped.begin(), stripped.end(), enumPattern);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        const std::smatch& match = *it;
+        const size_t matchPos = static_cast<size_t>(match.position());
+        const size_t matchLen = static_cast<size_t>(match.length());
+        const std::string enumName = match[1].str();
+        const size_t openBrace = stripped.find('{', matchPos + matchLen);
+        if (openBrace == std::string::npos) {
+            continue;
+        }
+        const size_t closeBrace = findMatchingBrace(stripped, openBrace);
+        if (closeBrace == std::string::npos) {
+            continue;
+        }
+
+        out += sourceText.substr(cursor, matchPos - cursor);
+        out += "enum class " + enumName;
+        out += sourceText.substr(matchPos + matchLen, openBrace - (matchPos + matchLen) + 1);
+        out += sourceText.substr(openBrace + 1, closeBrace - openBrace - 1);
+        out += "}";
+
+        size_t next = closeBrace + 1;
+        while (next < sourceText.size() &&
+               std::isspace(static_cast<unsigned char>(sourceText[next])) != 0) {
+            out.push_back(sourceText[next]);
+            ++next;
+        }
+        if (next >= sourceText.size() || sourceText[next] != ';') {
+            out += ";";
+        } else {
+            out.push_back(';');
+            ++next;
+        }
+        cursor = next;
+    }
+    out += sourceText.substr(cursor);
+    return out;
+}
+
+std::string normalizeModuSource(const std::string& sourceText) {
+    return convertPublicEnumsToCpp(normalizeModuPackageLines(sourceText));
+}
+
+void replaceRegexAll(std::string& text, const std::regex& pattern, const std::string& replacement) {
+    text = std::regex_replace(text, pattern, replacement);
+}
+
+std::string rewriteSurfaceSyntax(const std::string& sourceText) {
+    std::string out = sourceText;
+
+    replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
+    replaceRegexAll(out, std::regex(R"(\b([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Z][A-Za-z0-9_]*)\b)"),
+                    "$1::$2");
+    // Fully qualify 'time.' to avoid ambiguity with the C standard library ::time() function
+    // when 'using namespace ::ModuCPP' is in scope.
+    replaceRegexAll(out, std::regex(R"(\btime\s*\.)"), "::ModuCPP::time.");
+    replaceRegexAll(out, std::regex(R"(\bref\s+([A-Za-z_][A-Za-z0-9_]*)\b)"), "$1");
+    replaceRegexAll(out, std::regex(R"((^|[^:A-Za-z0-9_])Vector2\b)"), "$1glm::vec2");
+    replaceRegexAll(out, std::regex(R"((^|[^:A-Za-z0-9_])Vector3\b)"), "$1glm::vec3");
+    replaceRegexAll(out, std::regex(R"((^|[^:A-Za-z0-9_])string\b)"), "$1std::string");
+    replaceRegexAll(out,
+                    std::regex(R"(\b([A-Za-z_][A-Za-z0-9_\[\]\(\)]*)\s*\.\s*Length\s*\(\s*\))"),
+                    "glm::length($1)");
+    replaceRegexAll(out,
+                    std::regex(R"(\b([A-Za-z_][A-Za-z0-9_\[\]\(\)]*)\s*\.\s*Dot\s*\(\s*([^\)]+?)\s*\))"),
+                    "glm::dot($1, $2)");
+    replaceRegexAll(out,
+                    std::regex(R"(\b([A-Za-z_][A-Za-z0-9_\[\]\(\)]*)\s*\.\s*IsEmpty\s*\(\s*\))"),
+                    "$1.empty()");
+
+    static const std::regex arrayDeclPattern(
+        R"((^|[;{}\n]\s*)([A-Za-z_][A-Za-z0-9_:<>]*)\s*((?:\[[^\]]+\])+)\s+([A-Za-z_][A-Za-z0-9_]*))");
+    std::string rebuilt;
+    size_t cursor = 0;
+    auto begin = std::sregex_iterator(out.begin(), out.end(), arrayDeclPattern);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        const std::smatch& match = *it;
+        const size_t pos = static_cast<size_t>(match.position());
+        const size_t len = static_cast<size_t>(match.length());
+        rebuilt += out.substr(cursor, pos - cursor);
+
+        const std::string prefix = match[1].str();
+        const std::string baseType = match[2].str();
+        const std::string dimsText = match[3].str();
+        const std::string name = match[4].str();
+
+        std::vector<std::string> dims;
+        size_t dimCursor = 0;
+        while (dimCursor < dimsText.size()) {
+            const size_t open = dimsText.find('[', dimCursor);
+            const size_t close = dimsText.find(']', open == std::string::npos ? dimCursor : open);
+            if (open == std::string::npos || close == std::string::npos) break;
+            dims.push_back(trimCopy(dimsText.substr(open + 1, close - open - 1)));
+            dimCursor = close + 1;
+        }
+
+        std::string cppType = mapScriptBaseTypeToCpp(baseType);
+        for (auto dimIt = dims.rbegin(); dimIt != dims.rend(); ++dimIt) {
+            cppType = "std::array<" + cppType + ", " + *dimIt + ">";
+        }
+
+        rebuilt += prefix + cppType + " " + name;
+        cursor = pos + len;
+    }
+    rebuilt += out.substr(cursor);
+    return rebuilt;
+}
+
 bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string& error) {
     std::istringstream input(sourceText);
     std::string line;
@@ -1189,7 +1525,15 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
                 }
                 ++parenDepth;
             }
-            else if (c == ')') parenDepth = std::max(0, parenDepth - 1);
+            else if (c == ')') {
+                parenDepth = std::max(0, parenDepth - 1);
+                // Once the parameter list closes, any subsequent '<'/'>' are comparison
+                // operators (not template brackets), so reset angle depth to avoid
+                // mis-tracking expressions like 'clip < ctx.GetSpriteClipCount()'.
+                if (sawParenInSignature && parenDepth == 0 && braceDepth == 0) {
+                    angleDepth = 0;
+                }
+            }
             else if (c == '<') ++angleDepth;
             else if (c == '>') angleDepth = std::max(0, angleDepth - 1);
             else if (c == '[') ++bracketDepth;
@@ -1266,8 +1610,24 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
             continue;
         }
 
-        std::string fieldDecl = bodyRaw.substr(i, nextSemicolon - i + 1);
-        if (std::optional<size_t> missingSemicolonOffset = findLikelyMissingSemicolonInFieldDecl(fieldDecl)) {
+        std::string statementDecl = bodyRaw.substr(i, nextSemicolon - i + 1);
+        const std::string statementTrimmed = trimCopy(statementDecl);
+        if (findTopLevelChar(statementTrimmed, '(') != std::string::npos) {
+            MethodSpec method;
+            std::string methodSignature = statementTrimmed;
+            if (!methodSignature.empty() && methodSignature.back() == ';') {
+                methodSignature.pop_back();
+                methodSignature = trimCopy(methodSignature);
+            }
+            std::string methodError;
+            if (parseMethodDecl(methodSignature, std::string(), method, methodError)) {
+                outClass.methods.push_back(std::move(method));
+                i = nextSemicolon + 1;
+                continue;
+            }
+        }
+
+        if (std::optional<size_t> missingSemicolonOffset = findLikelyMissingSemicolonInFieldDecl(statementDecl)) {
             error = formatLocatedParseError(
                 "Missing ';'",
                 sourceText,
@@ -1275,7 +1635,7 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
             return false;
         }
         FieldSpec field;
-        if (parseFieldDecl(fieldDecl, field, error)) {
+        if (parseFieldDecl(statementDecl, field, error)) {
             if (!fieldNames.insert(field.name).second) {
                 error = "Duplicate field name in ModuCPP class: " + field.name;
                 return false;
@@ -1299,12 +1659,27 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     const std::string supportNs = "ModuCPPTranspiled_" + sanitizeIdentifier(spec.name);
     const std::string configType = spec.name + "Config";
     const std::string stateType = spec.name + "State";
+    const std::string strippedInspector = stripCommentsPreserveLayout(spec.inspectorBlock);
+
+    auto fieldReferencedByInspector = [&](const std::string& fieldName) {
+        if (fieldName.empty() || strippedInspector.empty()) return false;
+        const std::regex pattern("\\b" + fieldName + "\\b");
+        return std::regex_search(strippedInspector, pattern);
+    };
+
+    auto fieldPersists = [&](const FieldSpec& field) {
+        return field.visibility == FieldVisibility::Public || fieldReferencedByInspector(field.name);
+    };
 
     std::unordered_set<std::string> listFields;
     std::vector<std::string> customPublicFieldNames;
+    bool hasAutoInspectorFields = false;
     for (const FieldSpec& field : spec.fields) {
-        if (field.visibility == FieldVisibility::Public && field.kind == FieldKind::ObjectList) {
+        if (fieldPersists(field) && field.kind == FieldKind::ObjectList) {
             listFields.insert(field.name);
+        }
+        if (field.visibility == FieldVisibility::Public) {
+            hasAutoInspectorFields = true;
         }
         if (field.visibility == FieldVisibility::Public && field.kind == FieldKind::Custom) {
             customPublicFieldNames.push_back(field.name + " : " + field.rawType);
@@ -1351,6 +1726,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         emitInclude(rewriteIncludeDirective(includeDirective, sourcePath));
     }
     emitInclude("#include <algorithm>");
+    emitInclude("#include <array>");
     emitInclude("#include <cctype>");
     emitInclude("#include <cstddef>");
     emitInclude("#include <cstdlib>");
@@ -1358,6 +1734,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     emitInclude("#include <string>");
     emitInclude("#include <vector>");
     out << "\n";
+    out << "using namespace ::ModuCPP;\n\n";
 
     const std::string passthrough = stripIncludeDirectives(spec.passthroughCode);
     if (!trimCopy(passthrough).empty()) {
@@ -1365,19 +1742,20 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     }
 
     out << "namespace " << supportNs << " {\n\n";
+    out << "using namespace ::ModuCPP;\n\n";
     out << "struct " << configType << " {\n";
     for (const FieldSpec& field : spec.fields) {
-        if (field.visibility != FieldVisibility::Public) continue;
+        if (!fieldPersists(field)) continue;
         if (field.kind == FieldKind::ObjectList) {
             out << "    std::string " << field.name << "Raw";
             if (!field.initializer.empty()) {
-                out << " = " << field.initializer;
+                out << " = " << rewriteSurfaceSyntax(field.initializer);
             }
             out << ";\n";
         } else {
             out << "    " << mapScriptTypeToCpp(field.rawType) << " " << field.name;
             if (!field.initializer.empty()) {
-                out << " = " << field.initializer;
+                out << " = " << rewriteSurfaceSyntax(field.initializer);
             }
             out << ";\n";
         }
@@ -1386,10 +1764,10 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
     out << "struct " << stateType << " {\n";
     for (const FieldSpec& field : spec.fields) {
-        if (field.visibility != FieldVisibility::Private) continue;
+        if (fieldPersists(field)) continue;
         out << "    " << mapScriptTypeToCpp(field.rawType) << " " << field.name;
         if (!field.initializer.empty()) {
-            out << " = " << field.initializer;
+            out << " = " << rewriteSurfaceSyntax(field.initializer);
         }
         out << ";\n";
     }
@@ -1599,11 +1977,16 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "}\n\n";
 
     out << "inline void BindConfig(ScriptContext& ctx, " << configType << "& config) {\n";
-    bool hasPublicFields = false;
+    bool hasPersistedFields = false;
     for (const FieldSpec& field : spec.fields) {
-        if (field.visibility != FieldVisibility::Public) continue;
-        hasPublicFields = true;
+        if (!fieldPersists(field)) continue;
+        hasPersistedFields = true;
         if (field.kind == FieldKind::Custom) {
+            if (field.arrayDimensions.size() == 1) {
+                out << "    ::ModuCPP::BindArray(ctx, \"" << field.name << "\", config." << field.name << ");\n";
+            } else if (field.arrayDimensions.size() == 2) {
+                out << "    ::ModuCPP::BindArray2D(ctx, \"" << field.name << "\", config." << field.name << ");\n";
+            }
             continue;
         }
         if (field.kind == FieldKind::ObjectList) {
@@ -1612,16 +1995,16 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "    ::ModuCPP::BindSetting(ctx, \"" << field.name << "\", config." << field.name << ");\n";
         }
     }
-    if (!hasPublicFields) {
+    if (!hasPersistedFields) {
         out << "    (void)ctx;\n";
         out << "    (void)config;\n";
     }
     out << "}\n\n";
     out << "} // namespace " << supportNs << "\n\n";
 
-    auto findPublicFieldByName = [&](const std::string& fieldName) -> const FieldSpec* {
+    auto findPersistedFieldByName = [&](const std::string& fieldName) -> const FieldSpec* {
         for (const FieldSpec& field : spec.fields) {
-            if (field.visibility == FieldVisibility::Public && field.name == fieldName) {
+            if (fieldPersists(field) && field.name == fieldName) {
                 return &field;
             }
         }
@@ -1657,7 +2040,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "    " << supportNs << "::BindConfig(ctx, config);\n";
             out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
             for (const FieldSpec& field : spec.fields) {
-                if (field.visibility != FieldVisibility::Public) continue;
+                if (!fieldPersists(field)) continue;
                 if (field.kind == FieldKind::ObjectList) {
                     out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
                 } else {
@@ -1665,7 +2048,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 }
             }
             for (const FieldSpec& field : spec.fields) {
-                if (field.visibility != FieldVisibility::Private) continue;
+                if (fieldPersists(field)) continue;
                 out << "    auto& " << field.name << " = state." << field.name << ";\n";
             }
         }
@@ -1783,7 +2166,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     return false;
                 }
 
-                const FieldSpec* field = findPublicFieldByName(expr);
+                const FieldSpec* field = findPersistedFieldByName(expr);
                 if (field && field->kind == FieldKind::Float) {
                     const std::string stepExpr = field->stepExpr.value_or("0.01f");
                     out << indent << "changed |= ImGui::DragFloat(" << labelExpr
@@ -1869,7 +2252,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "ObjectList(value) or ObjectList(label, value) expected.",
                                      labelExpr, expr)) return false;
-                const FieldSpec* field = findPublicFieldByName(expr);
+                const FieldSpec* field = findPersistedFieldByName(expr);
                 if (field && field->kind == FieldKind::ObjectList) {
                     std::string uiLabel = inspectorLabelFromExpression(expr);
                     if (args.size() == 2) {
@@ -2198,7 +2581,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "    }\n";
         }
         out << "}\n\n";
-    } else if (hasPublicFields && !hasInspectorMethod) {
+    } else if (hasAutoInspectorFields && !hasInspectorMethod) {
         out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnInspector(ScriptContext& ctx) {\n";
         out << "    MODU_SCRIPT(ctx);\n";
         out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
@@ -2254,8 +2637,15 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "}\n\n";
     }
 
+    // Forward-declare all methods so they can call each other regardless of definition order.
     for (const MethodSpec& method : spec.methods) {
-        std::string transformedBody = transformEachSyntax(method.body, listFields, supportNs,
+        out << method.returnType << " " << method.name << "(" << method.transpiledParams << ");\n";
+    }
+    out << "\n";
+
+    for (const MethodSpec& method : spec.methods) {
+        std::string rewrittenBody = rewriteSurfaceSyntax(method.body);
+        std::string transformedBody = transformEachSyntax(rewrittenBody, listFields, supportNs,
                                                           method.hasContext, error);
         if (!error.empty()) {
             return {};
@@ -2264,6 +2654,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ") {\n";
         if (method.hasContext) {
             const bool manualPreludeMode = method.hasManualPrelude && spec.fields.empty();
+            if (method.hasDeltaTimeParam) {
+                out << "    ::ModuCPP::time.deltaTime = " << method.deltaTimeParamName << ";\n";
+            }
             if (!manualPreludeMode) {
                 if (method.contextIsPointer) {
                     if (isVoidReturnType(method.returnType)) {
@@ -2281,9 +2674,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     out << "    " << supportNs << "::BindConfig(ctx, config);\n";
                     out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
                     for (const FieldSpec& field : spec.fields) {
-                        if (field.visibility == FieldVisibility::Public) {
+                        if (fieldPersists(field)) {
                             if (field.kind == FieldKind::ObjectList) {
-                                out << "    const std::string& " << field.name << " = config." << field.name << "Raw;\n";
+                                out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
                             } else {
                                 out << "    auto& " << field.name << " = config." << field.name << ";\n";
                             }
@@ -2293,7 +2686,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     }
                 }
             }
-        } else if (!spec.fields.empty()) {
+        } else {
             out << "    ScriptContext* _moduCtxPtr = ::ModuCPP::ctxPtr();\n";
             if (isVoidReturnType(method.returnType)) {
                 out << "    if (!_moduCtxPtr) return;\n";
@@ -2301,23 +2694,36 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << "    if (!_moduCtxPtr) return {};\n";
             }
             out << "    ScriptContext& ctx = *_moduCtxPtr;\n";
-            out << "    auto* obj = ctx.object;\n";
-            out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
-            out << "    " << supportNs << "::BindConfig(ctx, config);\n";
-            out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
-            for (const FieldSpec& field : spec.fields) {
-                if (field.visibility == FieldVisibility::Public) {
-                    if (field.kind == FieldKind::ObjectList) {
-                        out << "    const std::string& " << field.name << " = config." << field.name << "Raw;\n";
+            if (method.hasDeltaTimeParam) {
+                out << "    ::ModuCPP::time.deltaTime = " << method.deltaTimeParamName << ";\n";
+            }
+            out << "    MODU_SCRIPT(ctx);\n";
+            if (!spec.fields.empty()) {
+                out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
+                out << "    " << supportNs << "::BindConfig(ctx, config);\n";
+                out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
+                for (const FieldSpec& field : spec.fields) {
+                    if (fieldPersists(field)) {
+                        if (field.kind == FieldKind::ObjectList) {
+                            out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
+                        } else {
+                            out << "    auto& " << field.name << " = config." << field.name << ";\n";
+                        }
                     } else {
-                        out << "    auto& " << field.name << " = config." << field.name << ";\n";
+                        out << "    auto& " << field.name << " = state." << field.name << ";\n";
                     }
-                } else {
-                    out << "    auto& " << field.name << " = state." << field.name << ";\n";
                 }
             }
         }
-        out << transformedBody << "\n";
+        // Wrap the user body in a nested scope when parameters were auto-injected
+        // (e.g. 'float dt') so that re-declarations in the body (e.g. 'float dt = time.deltaTime')
+        // don't shadow the injected parameters and cause a compile error.
+        const bool needsBodyScope = method.autoInjectedContext || method.autoInjectedDeltaTime;
+        if (needsBodyScope) {
+            out << "    {\n" << transformedBody << "\n    }\n";
+        } else {
+            out << transformedBody << "\n";
+        }
         out << "}\n\n";
     }
 
@@ -2344,20 +2750,21 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     outResult = ModuCPPTranspileResult{};
 
     const std::string ext = toLowerCopy(sourcePath.extension().string());
-    const std::string stripped = stripCommentsPreserveLayout(sourceText);
+    const std::string normalizedSource = normalizeModuSource(sourceText);
+    const std::string stripped = stripCommentsPreserveLayout(normalizedSource);
     const std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*ModuBehaviour\b)");
     const bool hasHighLevelClass = std::regex_search(stripped, classPattern);
 
     // Allow .moducpp as a thin frontend type for legacy/native C++ scripts during migration.
     // When high-level class syntax is absent, pass the source through unchanged.
     if (ext == ".moducpp" && !hasHighLevelClass) {
-        outResult.generatedSource = sourceText;
+        outResult.generatedSource = normalizedSource;
         outResult.className = sourcePath.stem().string();
         return true;
     }
 
     ClassSpec parsed;
-    if (!parseClass(sourceText, parsed, error)) {
+    if (!parseClass(normalizedSource, parsed, error)) {
         return false;
     }
 

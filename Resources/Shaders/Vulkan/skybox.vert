@@ -3,6 +3,8 @@
 layout(push_constant) uniform SkyboxPushConstants {
     mat4 viewProj;
     vec4 params;
+    vec4 scroll;
+    vec4 camera;
 } uSky;
 
 layout(location = 0) out vec3 outDir;

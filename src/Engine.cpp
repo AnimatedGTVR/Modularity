@@ -2,6 +2,7 @@
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
 #include "ModelLoader.h"
+#include "Render25D/MMeshLoader.h"
 #include "RuntimeContent.h"
 #include <iostream>
 #include <fstream>
@@ -30,6 +31,17 @@ constexpr int kRuntimeInternalHeight = 720;
 bool IsNativeBinaryPath(const fs::path& path) {
     const std::string ext = path.extension().string();
     return ext == ".so" || ext == ".dll" || ext == ".dylib";
+}
+
+int AllocateNextRig25DNodeId(const std::vector<SceneObject>& objects) {
+    int nextNodeId = 0;
+    for (const SceneObject& obj : objects) {
+        if (!obj.hasRig25DNode || obj.rig25DNode.nodeId < 0) {
+            continue;
+        }
+        nextNodeId = std::max(nextNodeId, obj.rig25DNode.nodeId + 1);
+    }
+    return nextNodeId;
 }
 
 ConsoleMessageType DiagnosticConsoleType(Modularity::ScriptDiagnosticSeverity severity) {
@@ -527,7 +539,7 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
         case ObjectType::Sprite25D:
             obj.hasUI = true;
             obj.ui.type = UIElementType::Sprite2D;
-            obj.ui.label = "2.5D Object";
+            obj.ui.label = "2.5D Sprite";
             obj.ui.size = glm::vec2(128.0f, 128.0f);
             obj.scale = glm::vec3(1.0f);
             break;
@@ -854,6 +866,13 @@ bool Engine::isProject2DPipeline() const {
     return projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D;
 }
 
+bool Engine::isProject25DPipeline() const {
+    if (!projectManager.currentProject.isLoaded) {
+        return false;
+    }
+    return projectManager.currentProject.pipeline == ProjectPipeline::Pipeline25D;
+}
+
 bool Engine::is2DWorldEditingEnabled() const {
     return isProject2DPipeline() || uiWorldMode;
 }
@@ -875,9 +894,114 @@ void Engine::applyProjectPipelineDefaults(bool force) {
             snapValue[1] = step;
             snapValue[2] = step;
         }
+    } else if (isProject25DPipeline()) {
+        uiWorldMode = false;
+        if (force && !useSnap) {
+            useSnap = true;
+        }
     } else if (force) {
         uiWorldMode = false;
     }
+}
+
+bool Engine::renderTMViewportPass(const Camera& renderCamera,
+                                  int width,
+                                  int height,
+                                  float fovDeg,
+                                  float nearPlane,
+                                  float farPlane,
+                                  unsigned int* outTexture,
+                                  Modularity::Render25D::TMRenderer::RenderStats* outStats,
+                                  std::string* outError,
+                                  int previewSlot) {
+    using namespace Modularity::Render25D;
+
+    unsigned int textureId = 0;
+    TMRenderer::RenderStats renderStats;
+    std::string error;
+
+    if (width <= 0 || height <= 0) {
+        error = "TM renderer received an invalid viewport size";
+    } else if (renderCamera.orthographic) {
+        error = "TM renderer requires a perspective camera";
+    } else {
+        TMScene scene;
+        TMSceneBuilder::BuildStats buildStats;
+        tmSceneBuilder.buildFromSceneObjects(sceneObjects, scene, buildStats);
+        (void)buildStats;
+
+        nearPlane = std::max(0.01f, nearPlane);
+        farPlane = std::max(nearPlane + 0.01f, farPlane);
+        const glm::vec3 cameraForward =
+            (glm::dot(renderCamera.front, renderCamera.front) > 1e-6f)
+                ? glm::normalize(renderCamera.front)
+                : glm::vec3(0.0f, 0.0f, -1.0f);
+
+        TMRenderContext context;
+        context.view = renderCamera.getViewMatrix();
+        context.projection = glm::perspective(glm::radians(fovDeg),
+                                              static_cast<float>(width) /
+                                                  static_cast<float>(std::max(1, height)),
+                                              nearPlane,
+                                              farPlane);
+        context.cameraPosition = renderCamera.position;
+        context.cameraForward = cameraForward;
+        context.viewportWidth = width;
+        context.viewportHeight = height;
+        context.maxVisibleDistance = std::max(64.0f, farPlane);
+        context.skyboxTimeOfDay = sceneTimeOfDay;
+        context.skyboxSettings = sceneSkyboxSettings;
+        context.presentationSettings = tmOpenGLRenderer.getPresentationSettings();
+
+        const bool ok = [&]() {
+            if (previewSlot >= 0) {
+                textureId = tmOpenGLRenderer.renderPreview(tmRenderer, context, scene, previewSlot,
+                                                           renderStats, error);
+                return textureId != 0;
+            }
+            const bool rendered = tmOpenGLRenderer.renderViewport(tmRenderer, context, scene,
+                                                                  renderStats, error);
+            textureId = tmOpenGLRenderer.getViewportTexture();
+            return rendered && textureId != 0;
+        }();
+        if (ok) {
+            textureId = (previewSlot >= 0) ? textureId : tmOpenGLRenderer.getViewportTexture();
+        }
+    }
+
+    if (outTexture != nullptr) {
+        *outTexture = textureId;
+    }
+    if (outStats != nullptr) {
+        *outStats = renderStats;
+    }
+    if (outError != nullptr) {
+        *outError = error;
+    }
+    return textureId != 0 && error.empty();
+}
+
+unsigned int Engine::getActiveSceneTexture() const {
+    if (isProject25DPipeline()) {
+        const unsigned int tmTexture = tmOpenGLRenderer.getViewportTexture();
+        if (tmTexture != 0) {
+            return tmTexture;
+        }
+    }
+    return renderer.getViewportTexture();
+}
+
+std::string Engine::buildTMOverlayLabel(const Modularity::Render25D::TMRenderer::RenderStats& stats,
+                                        const std::string& error) const {
+    if (!error.empty()) {
+        return "TM Active | " + error;
+    }
+    return "TM Active | Seg " + std::to_string(stats.visibleSegments) +
+           " | Floor " + std::to_string(stats.floorCommands) +
+           " | Models " + std::to_string(stats.modelCommands) +
+           " | Cull " + std::to_string(stats.frustumRejectedModels) +
+           " | Infl " + std::to_string(stats.presentationBoundsModels) +
+           " | Skip " + std::to_string(stats.skippedFrustumCullingModels);
 }
 
 namespace {
@@ -1118,6 +1242,36 @@ RawMeshAsset buildSphereRMesh(int slices = 24, int stacks = 16) {
     mesh.hasNormals = true;
     mesh.hasUVs = true;
     return mesh;
+}
+
+Modularity::Render25D::MMeshAsset buildMMeshFromRawMesh(const RawMeshAsset& raw) {
+    using namespace Modularity::Render25D;
+
+    MMeshAsset asset;
+    asset.vertices = raw.positions;
+    asset.indices.reserve(raw.faces.size() * 3u);
+    for (const glm::u32vec3& face : raw.faces) {
+        asset.indices.push_back(face.x);
+        asset.indices.push_back(face.y);
+        asset.indices.push_back(face.z);
+    }
+    asset.uvs = raw.uvs;
+    asset.normals = raw.normals;
+    asset.hasUVs = !asset.uvs.empty() && asset.uvs.size() == asset.vertices.size();
+    asset.hasNormals = !asset.normals.empty() && asset.normals.size() == asset.vertices.size();
+    asset.boundsMin = raw.boundsMin;
+    asset.boundsMax = raw.boundsMax;
+
+    MMeshMaterialRef material;
+    material.name = "Default";
+    asset.materials.push_back(std::move(material));
+
+    MMeshSurface surface;
+    surface.indexOffset = 0;
+    surface.indexCount = static_cast<uint32_t>(asset.indices.size());
+    surface.materialIndex = 0;
+    asset.surfaces.push_back(surface);
+    return asset;
 }
 } // namespace
 #pragma endregion
@@ -1720,6 +1874,15 @@ fs::path ResolveRuntimeSourcePath(const std::string& value, const fs::path& proj
     fs::path candidate = projectRoot / input;
     fs::path absolute = fs::absolute(candidate, ec);
     if (ec) absolute = candidate;
+    if (!fs::exists(absolute)) {
+        fs::path cwdCandidate = fs::current_path(ec) / input;
+        if (!ec) {
+            fs::path cwdAbsolute = fs::absolute(cwdCandidate, ec);
+            if (!ec && fs::exists(cwdAbsolute)) {
+                return cwdAbsolute.lexically_normal();
+            }
+        }
+    }
     return absolute.lexically_normal();
 }
 
@@ -1937,6 +2100,15 @@ bool RemapSceneObjectForRuntime(SceneObject& obj,
     return true;
 }
 
+bool RemapSkyboxSettingsForRuntime(SkyboxSettings& settings,
+                                   RuntimeExportStager& stager,
+                                   std::string& error) {
+    if (!stager.stageFileReference(settings.sunTexturePath, "Textures", error)) return false;
+    if (!stager.stageFileReference(settings.moonTexturePath, "Textures", error)) return false;
+    if (!stager.stageFileReference(settings.scrollingTexturePath, "Textures", error)) return false;
+    return true;
+}
+
 bool StageRuntimeScene(const fs::path& sourceScenePath,
                        const std::string& sceneName,
                        RuntimeExportStager& stager,
@@ -1946,7 +2118,8 @@ bool StageRuntimeScene(const fs::path& sourceScenePath,
     int nextId = 0;
     int sceneVersion = 20;
     float timeOfDay = -1.0f;
-    if (!SceneSerializer::loadSceneDeferred(sourceScenePath, sceneObjects, nextId, sceneVersion, &timeOfDay)) {
+    SkyboxSettings skyboxSettings;
+    if (!SceneSerializer::loadSceneDeferred(sourceScenePath, sceneObjects, nextId, sceneVersion, &timeOfDay, &skyboxSettings)) {
         error = "Failed to load scene for runtime export: " + sourceScenePath.string();
         return false;
     }
@@ -1957,12 +2130,20 @@ bool StageRuntimeScene(const fs::path& sourceScenePath,
             return false;
         }
     }
+    if (!RemapSkyboxSettingsForRuntime(skyboxSettings, stager, error)) {
+        error = "Scene '" + sceneName + "': " + error;
+        return false;
+    }
 
     const fs::path runtimeScenePath = runtimeRoot / "Assets" / "Scenes" / (sceneName + ".scene");
     if (!EnsureDirectoryForFile(runtimeScenePath, error)) {
         return false;
     }
-    if (!SceneSerializer::saveScene(runtimeScenePath, sceneObjects, nextId, timeOfDay < 0.0f ? 0.5f : timeOfDay)) {
+    if (!SceneSerializer::saveScene(runtimeScenePath,
+                                    sceneObjects,
+                                    nextId,
+                                    timeOfDay < 0.0f ? 0.5f : timeOfDay,
+                                    skyboxSettings)) {
         error = "Failed to save staged runtime scene: " + runtimeScenePath.string();
         return false;
     }
@@ -2564,6 +2745,26 @@ float Engine::getSceneTimeOfDay() {
     return sceneTimeOfDay;
 }
 
+void Engine::applySceneSkyboxSettings(const SkyboxSettings& settings) {
+    sceneSkyboxSettings = settings;
+    sceneSkyboxSettings.scrollingRepeatX = std::max(0.01f, sceneSkyboxSettings.scrollingRepeatX);
+    sceneSkyboxSettings.scrollingRepeatY = std::max(0.01f, sceneSkyboxSettings.scrollingRepeatY);
+    sceneSkyboxSettings.scrollingLookSensitivity = std::max(0.0f, sceneSkyboxSettings.scrollingLookSensitivity);
+    sceneSkyboxSettings.scrollingVerticalInfluence = std::clamp(sceneSkyboxSettings.scrollingVerticalInfluence, 0.0f, 1.0f);
+
+    if (Skybox* skybox = renderer.getSkybox()) {
+        skybox->setSettings(sceneSkyboxSettings);
+    }
+
+    if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+        vulkanRenderer->setSkyboxSettings(sceneSkyboxSettings);
+    }
+}
+
+SkyboxSettings Engine::getSceneSkyboxSettings() const {
+    return sceneSkyboxSettings;
+}
+
 void Engine::getSceneViewportInternalResolution(int& outWidth, int& outHeight) const {
     if (!playerMode && viewportWidth > 0 && viewportHeight > 0) {
         outWidth = std::clamp(viewportWidth, 1, 8192);
@@ -2748,6 +2949,7 @@ bool Engine::initRenderer() {
     try {
         renderer.initialize();
         rendererInitialized = true;
+        applySceneSkyboxSettings(sceneSkyboxSettings);
         applySceneTimeOfDay(sceneTimeOfDay);
         return true;
     } catch (...) {
@@ -2784,6 +2986,7 @@ bool Engine::initVulkanRenderer() {
     }
 
     vulkanRendererInitialized = true;
+    applySceneSkyboxSettings(sceneSkyboxSettings);
     applySceneTimeOfDay(sceneTimeOfDay);
     addConsoleMessage("Initialized Vulkan backend (experimental).", ConsoleMessageType::Info);
     addConsoleMessage("Vulkan viewport preview supports built-in GLSL materials, albedo/overlay/normal textures, scene lights, and sky time-of-day.",
@@ -3095,33 +3298,43 @@ void Engine::run() {
             int runtimeRenderWidth = kRuntimeInternalWidth;
             int runtimeRenderHeight = kRuntimeInternalHeight;
             getRuntimeInternalResolution(runtimeRenderWidth, runtimeRenderHeight);
-            glm::mat4 view = camera.getViewMatrix();
             float renderFov = buildSettings.editorCameraFov;
             float renderNear = buildSettings.editorCameraNear;
             float renderFar = buildSettings.editorCameraFar;
+            Camera activeRenderCamera = camera;
             if (playerMode) {
                 if (runtimeCameraObject) {
                     const SceneObject* runtimeCam = runtimeCameraObject;
+                    activeRenderCamera = makeCameraFromObject(*runtimeCam);
                     renderFov = runtimeCam->camera.fov;
                     renderNear = std::max(0.01f, runtimeCam->camera.nearClip);
                     renderFar = std::max(renderNear + 0.01f, runtimeCam->camera.farClip);
                 }
             }
-            glm::mat4 proj = glm::perspective(glm::radians(renderFov),
-                                              static_cast<float>(runtimeRenderWidth) /
-                                                  static_cast<float>(std::max(1, runtimeRenderHeight)),
-                                              renderNear,
-                                              renderFar);
-
             profiler.beginOpenGlGpuFrame();
-            renderer.beginRender(view, proj, camera.position);
-            renderer.renderScene(camera, sceneObjects, selectedObjectId,
-                                 renderFov,
-                                 renderNear,
-                                 renderFar,
-                                 false,
-                                 &selectedObjectIds);
-            renderer.endRender();
+            if (isProject25DPipeline()) {
+                renderTMViewportPass(activeRenderCamera,
+                                     runtimeRenderWidth,
+                                     runtimeRenderHeight,
+                                     renderFov,
+                                     renderNear,
+                                     renderFar);
+            } else {
+                glm::mat4 view = activeRenderCamera.getViewMatrix();
+                glm::mat4 proj = glm::perspective(glm::radians(renderFov),
+                                                  static_cast<float>(runtimeRenderWidth) /
+                                                      static_cast<float>(std::max(1, runtimeRenderHeight)),
+                                                  renderNear,
+                                                  renderFar);
+                renderer.beginRender(view, proj, activeRenderCamera.position);
+                renderer.renderScene(activeRenderCamera, sceneObjects, selectedObjectId,
+                                     renderFov,
+                                     renderNear,
+                                     renderFar,
+                                     false,
+                                     &selectedObjectIds);
+                renderer.endRender();
+            }
             profiler.endOpenGlGpuFrame();
             if (runtime2DProfileThisFrame) {
                 profileRenderSubmissionMs += Runtime2DMsSince(renderSubmissionStart, Runtime2DClock::now());
@@ -3462,6 +3675,27 @@ void Engine::importOBJToScene(const std::string& filepath, const std::string& ob
 }
 
 void Engine::importModelToScene(const std::string& filepath, const std::string& objectName) {
+    if (IsMMeshPath(filepath)) {
+        recordState("importMMesh");
+        int id = nextObjectId++;
+        std::string name = objectName.empty() ? fs::path(filepath).stem().string() : objectName;
+
+        SceneObject obj(name, ObjectType::Empty, id);
+        obj.hasRenderer = true;
+        obj.renderType = RenderType::Model;
+        obj.type = ObjectType::Model;
+        obj.meshPath = filepath;
+        obj.meshId = -1;
+        sceneObjects.push_back(obj);
+        markRuntimeScriptBindingsDirty();
+        setPrimarySelection(id);
+        if (projectManager.currentProject.isLoaded) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        addConsoleMessage("Imported MMesh: " + name, ConsoleMessageType::Success);
+        return;
+    }
+
     recordState("importModel");
     auto& modelLoader = getModelLoader();
     ModelSceneData sceneData;
@@ -3792,6 +4026,76 @@ void Engine::createRMeshPrimitive(const std::string& primitiveName) {
     fileBrowser.needsRefresh = true;
 
     importModelToScene(filePath.string(), primitiveName);
+}
+
+void Engine::createMMeshPrimitive(const std::string& primitiveName) {
+    using namespace Modularity::Render25D;
+
+    if (!projectManager.currentProject.isLoaded) {
+        addConsoleMessage("Load a project before creating MMesh primitives", ConsoleMessageType::Warning);
+        return;
+    }
+
+    fs::path root = projectManager.currentProject.assetsPath / "Models" / "MMeshes" / "Primitives";
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    if (ec) {
+        addConsoleMessage("Failed to create MMesh folder: " + root.string(), ConsoleMessageType::Error);
+        return;
+    }
+
+    RawMeshAsset raw;
+    if (primitiveName == "Cube") {
+        raw = buildCubeRMesh();
+    } else if (primitiveName == "Sphere") {
+        raw = buildSphereRMesh();
+    } else if (primitiveName == "Plane") {
+        raw = buildPlaneRMesh();
+    } else {
+        addConsoleMessage("Unknown MMesh primitive: " + primitiveName, ConsoleMessageType::Warning);
+        return;
+    }
+
+    MMeshAsset asset = buildMMeshFromRawMesh(raw);
+    MMeshLoader loader;
+
+    fs::path filePath = root / (primitiveName + ".mmesh");
+    if (fs::exists(filePath)) {
+        int suffix = 1;
+        fs::path candidate;
+        do {
+            candidate = root / (primitiveName + "_" + std::to_string(suffix) + ".mmesh");
+            ++suffix;
+        } while (fs::exists(candidate));
+        filePath = candidate;
+    }
+
+    std::string error;
+    if (!loader.saveAsset(asset, filePath.string(), error)) {
+        addConsoleMessage("Failed to save MMesh primitive: " + error, ConsoleMessageType::Error);
+        return;
+    }
+
+    fileBrowser.needsRefresh = true;
+    importModelToScene(filePath.string(), primitiveName);
+}
+
+void Engine::createPipelineDefaultSceneObjects() {
+    if (isProject25DPipeline()) {
+        addObject(ObjectType::Plane, "TM Floor");
+        if (!sceneObjects.empty()) {
+            SceneObject& floor = sceneObjects.back();
+            floor.position = glm::vec3(0.0f, 0.0f, 0.0f);
+            floor.rotation = glm::vec3(270.0f, 0.0f, 0.0f);
+            floor.scale = glm::vec3(32.0f, 32.0f, 1.0f);
+            floor.localPosition = floor.position;
+            floor.localRotation = NormalizeEulerDegrees(floor.rotation);
+            floor.localScale = floor.scale;
+        }
+        return;
+    }
+
+    addObject(ObjectType::Cube, "Cube");
 }
 #pragma endregion
 
@@ -4716,6 +5020,9 @@ void Engine::updatePlayerController(float delta) {
     player->rigidbody.enabled = true;
     player->rigidbody.useGravity = true;
     player->rigidbody.isKinematic = false;
+    player->rigidbody.lockRotationX = true;
+    player->rigidbody.lockRotationY = false;
+    player->rigidbody.lockRotationZ = true;
 
     // Mouse look when game viewport is focused
     if (gameViewportFocused || gameViewCursorLocked) {
@@ -4776,10 +5083,6 @@ void Engine::updatePlayerController(float delta) {
                                             &hitActorId, &hitActorVelocity,
                                             &hitStaticFriction, &hitDynamicFriction);
     bool grounded = hitGround && hitNormal.y > 0.25f && hitDist <= capsuleHalf + 0.2f && pc.verticalVelocity <= 0.35f;
-    if (!hitGround) {
-        // Fallback to simple height check to avoid regressions if queries fail
-        grounded = player->position.y <= capsuleHalf + 0.12f && pc.verticalVelocity <= 0.35f;
-    }
 
     (void)hitActorId;
     (void)hitStaticFriction;
@@ -4847,12 +5150,8 @@ void Engine::updatePlayerController(float delta) {
 
     if (grounded) {
         pc.verticalVelocity = 0.0f;
-        if (!havePhysVel) {
-            if (hitGround) {
-                player->position.y = std::max(player->position.y, hitPos.y + capsuleHalf);
-            } else {
-                player->position.y = capsuleHalf;
-            }
+        if (!havePhysVel && hitGround) {
+            player->position.y = std::max(player->position.y, hitPos.y + capsuleHalf);
         }
         if (key(GLFW_KEY_SPACE)) {
             pc.verticalVelocity = pc.jumpStrength;
@@ -4894,7 +5193,7 @@ void Engine::updateRigidbody2D(float delta) {
     Runtime2DClock::time_point narrowphaseEnd;
 
     refreshSceneObjectIndexCache();
-    const float gravity = -9.81f;
+    const float gravity = -9.81f * std::max(0.0f, projectManager.currentProject.physicsSettings.globalGravityScale);
     const float minEdgeThickness = 0.01f;
     struct UiHierarchyCache {
         const std::vector<SceneObject>& objects;
@@ -5044,7 +5343,7 @@ void Engine::updateRigidbody2D(float delta) {
     float broadPhaseExtentSum = 0.0f;
     size_t broadPhaseExtentCount = 0;
     for (auto& obj : sceneObjects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !HasUIComponent(obj)) continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !UsesUIOnly2DPhysics(obj)) continue;
         bool hasDynamic = obj.hasRigidbody2D && obj.rigidbody2D.enabled;
         bool hasCollider2D = obj.hasCollider2D && obj.collider2D.enabled;
         if (!hasDynamic && !hasCollider2D) continue;
@@ -6131,6 +6430,7 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     sceneLoadNextId = 0;
     sceneLoadVersion = 9;
     sceneLoadTimeOfDay = -1.0f;
+    sceneLoadSkyboxSettings = SkyboxSettings{};
     showLauncher = true;
     projectLoadStartTime = glfwGetTime();
     launcherLoadingPreviewPath.clear();
@@ -6143,17 +6443,24 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     if (!fs::exists(scenePath)) {
         sceneLoadInProgress = false;
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
+        applySceneSkyboxSettings(SkyboxSettings{});
         applySceneTimeOfDay(0.5f);
-        addObject(ObjectType::Cube, "Cube");
+        createPipelineDefaultSceneObjects();
         showLauncher = false;
         return;
     }
 
-    if (!SceneSerializer::loadSceneDeferred(scenePath, sceneLoadObjects, sceneLoadNextId, sceneLoadVersion, &sceneLoadTimeOfDay)) {
+    if (!SceneSerializer::loadSceneDeferred(scenePath,
+                                            sceneLoadObjects,
+                                            sceneLoadNextId,
+                                            sceneLoadVersion,
+                                            &sceneLoadTimeOfDay,
+                                            &sceneLoadSkyboxSettings)) {
         sceneLoadInProgress = false;
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
+        applySceneSkyboxSettings(SkyboxSettings{});
         applySceneTimeOfDay(0.5f);
-        addObject(ObjectType::Cube, "Cube");
+        createPipelineDefaultSceneObjects();
         showLauncher = false;
         return;
     }
@@ -6246,13 +6553,13 @@ void Engine::finalizeDeferredSceneLoad() {
 
     recordState("sceneLoaded");
     addConsoleMessage("Loaded scene: " + sceneLoadSceneName, ConsoleMessageType::Success);
-    if (sceneLoadTimeOfDay >= 0.0f) {
-        applySceneTimeOfDay(sceneLoadTimeOfDay);
-    }
+    applySceneSkyboxSettings(sceneLoadSkyboxSettings);
+    applySceneTimeOfDay(sceneLoadTimeOfDay >= 0.0f ? sceneLoadTimeOfDay : 0.5f);
 
     // Deferred loading can complete after play mode was already entered.
     // Rebuild runtime systems so physics/audio always match the loaded scene.
     if (isPlaying || specMode || testMode) {
+        updateHierarchyWorldTransforms();
         physics.onPlayStart(sceneObjects);
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
@@ -6282,6 +6589,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     }
 
     projectManager.currentProject = std::move(result.project);
+    physics.setProjectSettings(projectManager.currentProject.physicsSettings);
     projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
     vulkanMaterialFeatureWarningShown = false;
     packageManager.setProjectRoot(projectManager.currentProject.projectPath);
@@ -6519,6 +6827,7 @@ void Engine::applyAutoStartMode() {
             glfwSetInputMode(editorWindow, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         }
     }
+    updateHierarchyWorldTransforms();
     physics.onPlayStart(sceneObjects);
     audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
     audio.onPlayStart(sceneObjects);
@@ -7618,9 +7927,7 @@ void Engine::createNewProject(const char* name, const char* location) {
     fs::create_directories(basePath);
 
     Project newProject(name, basePath);
-    newProject.pipeline = (projectManager.newProjectPipelineMode == 1)
-        ? ProjectPipeline::Pipeline2D
-        : ProjectPipeline::Pipeline3D;
+    newProject.pipeline = ProjectPipelineFromUiIndex(projectManager.newProjectPipelineMode);
     newProject.rendererBackend = (projectManager.newProjectRendererMode == 1)
         ? Modularity::GraphicsBackend::Vulkan
         : Modularity::GraphicsBackend::OpenGL;
@@ -7680,7 +7987,7 @@ void Engine::createNewProject(const char* name, const char* location) {
         clearSelection();
         nextObjectId = 0;
 
-        addObject(ObjectType::Cube, "Cube");
+        createPipelineDefaultSceneObjects();
 
         fs::path contentRoot = projectManager.currentProject.usesNewLayout
             ? projectManager.currentProject.assetsPath
@@ -7708,7 +8015,8 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         addConsoleMessage("Created new project: " + std::string(name), ConsoleMessageType::Success);
         addConsoleMessage("Project location: " + newProject.projectPath.string(), ConsoleMessageType::Info);
-        addConsoleMessage("Pipeline: " + std::string(isProject2DPipeline() ? "2D" : "3D"), ConsoleMessageType::Info);
+        addConsoleMessage("Pipeline: " + std::string(ProjectPipelineLabel(projectManager.currentProject.pipeline)),
+                          ConsoleMessageType::Info);
         if (importedPackages) {
             addConsoleMessage("Imported installed packages from: " + importedFromProject, ConsoleMessageType::Info);
         }
@@ -7736,7 +8044,7 @@ void Engine::loadRecentScenes() {
         return;
     } else {
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
-        addObject(ObjectType::Cube, "Cube");
+        createPipelineDefaultSceneObjects();
         recordState("sceneLoaded");
     }
 
@@ -7763,7 +8071,7 @@ void Engine::saveProjectPreview() {
     int height = renderer.getHeight();
     if (width <= 0 || height <= 0) return;
 
-    unsigned int texId = renderer.getViewportTexture();
+    unsigned int texId = getActiveSceneTexture();
     if (!texId) return;
 
     fs::path previewPath = getProjectPreviewPath(projectManager.currentProject.projectPath);
@@ -7785,7 +8093,7 @@ void Engine::saveCurrentScene() {
 
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
     float timeOfDay = getSceneTimeOfDay();
-    if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay)) {
+    if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay, getSceneSkyboxSettings())) {
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
         saveProjectPreview();
@@ -7805,7 +8113,8 @@ void Engine::loadScene(const std::string& sceneName) {
     fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     int sceneVersion = 9;
     float loadedTimeOfDay = -1.0f;
-    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion, &loadedTimeOfDay)) {
+    SkyboxSettings loadedSkyboxSettings;
+    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion, &loadedTimeOfDay, &loadedSkyboxSettings)) {
         markRuntimeScriptBindingsDirty();
         initializeLocalTransformsFromWorld(sceneVersion);
         rebuildSkeletalBindings();
@@ -7817,9 +8126,8 @@ void Engine::loadScene(const std::string& sceneName) {
         clearSelection();
         recordState("sceneLoaded");
         addConsoleMessage("Loaded scene: " + sceneName, ConsoleMessageType::Success);
-        if (loadedTimeOfDay >= 0.0f) {
-            applySceneTimeOfDay(loadedTimeOfDay);
-        }
+        applySceneSkyboxSettings(loadedSkyboxSettings);
+        applySceneTimeOfDay(loadedTimeOfDay >= 0.0f ? loadedTimeOfDay : 0.5f);
     } else {
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
     }
@@ -7841,9 +8149,10 @@ void Engine::createNewScene(const std::string& sceneName) {
 
     projectManager.currentProject.currentSceneName = sceneName;
     projectManager.currentProject.hasUnsavedChanges = true;
+    applySceneSkyboxSettings(SkyboxSettings{});
     applySceneTimeOfDay(0.5f);
 
-    addObject(ObjectType::Cube, "Cube");
+    createPipelineDefaultSceneObjects();
     saveCurrentScene();
     recordState("newScene");
 
@@ -7939,6 +8248,14 @@ void Engine::duplicateSelected() {
         newObj.animation = it->animation;
         newObj.hasSkeletalAnimation = it->hasSkeletalAnimation;
         newObj.skeletal = it->skeletal;
+        newObj.hasRig25DRoot = it->hasRig25DRoot;
+        newObj.rig25DRoot = it->rig25DRoot;
+        newObj.hasRig25DNode = it->hasRig25DNode;
+        newObj.rig25DNode = it->rig25DNode;
+        if (newObj.hasRig25DNode) {
+            newObj.rig25DNode.nodeId = AllocateNextRig25DNodeId(sceneObjects);
+            newObj.rig25DNode.nodeName = newObj.name;
+        }
         newObj.ui = it->ui;
         
         sceneObjects.push_back(newObj);
@@ -8005,6 +8322,10 @@ void Engine::pasteClipboard() {
         copy.localRotation = NormalizeEulerDegrees(copy.rotation);
         copy.localScale = copy.scale;
         copy.localInitialized = true;
+        if (copy.hasRig25DNode) {
+            copy.rig25DNode.nodeId = AllocateNextRig25DNodeId(sceneObjects);
+            copy.rig25DNode.nodeName = copy.name;
+        }
 
         sceneObjects.push_back(std::move(copy));
         newIds.push_back(newId);
@@ -8568,6 +8889,19 @@ bool Engine::getRigidbodyAngularVelocityFromScript(int id, glm::vec3& outVelocit
 
 bool Engine::teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
     return physics.setActorPose(id, position, rotationDeg);
+}
+
+float Engine::getProjectGravityScaleFromScript() const {
+    if (!projectManager.currentProject.isLoaded) return 1.0f;
+    return projectManager.currentProject.physicsSettings.globalGravityScale;
+}
+
+void Engine::setProjectGravityScaleFromScript(float scale) {
+    if (!projectManager.currentProject.isLoaded) return;
+    projectManager.currentProject.physicsSettings.globalGravityScale = std::max(0.0f, scale);
+    projectManager.currentProject.saveProjectFile();
+    projectManager.currentProject.hasUnsavedChanges = true;
+    physics.setProjectSettings(projectManager.currentProject.physicsSettings);
 }
 
 bool Engine::addRigidbodyForceFromScript(int id, const glm::vec3& force) {
@@ -9922,6 +10256,35 @@ void Engine::loadEditorUserSettings() {
             pixelGridSnapEnabled = (value == "1" || value == "true" || value == "yes");
         } else if (key == "pixelGridSnapStep") {
             try { pixelGridSnapStep = std::clamp(std::stoi(value), 1, 64); } catch (...) {}
+        } else if (key == "tmPresentationPitchStretchEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().lookPitchStretchEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmPresentationPitchStretchStrength") {
+            try { tmOpenGLRenderer.getPresentationSettings().lookPitchStretchStrength = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchCompressStrength") {
+            try { tmOpenGLRenderer.getPresentationSettings().lookPitchCompressStrength = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchShearStrength") {
+            try { tmOpenGLRenderer.getPresentationSettings().lookPitchShearStrength = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationWorldSnapEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().presentationSnapEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmPresentationWorldSnapStep") {
+            try { tmOpenGLRenderer.getPresentationSettings().presentationSnapStep = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationCameraSnapEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().cameraRelativeSnapEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmPresentationCameraSnapStep") {
+            try { tmOpenGLRenderer.getPresentationSettings().cameraRelativeSnapStep = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationVertexSnapEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().vertexSnapEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmPresentationVertexSnapStep") {
+            try { tmOpenGLRenderer.getPresentationSettings().vertexSnapStep = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationScreenSnapEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().screenSnapEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmPresentationScreenSnapStep") {
+            try { tmOpenGLRenderer.getPresentationSettings().screenSnapStep = std::stof(value); } catch (...) {}
         } else if (key == "showGameProfiler") {
             showGameProfiler = (value == "1" || value == "true" || value == "yes");
         } else if (key == "revealDebugSectionsAndMenus") {
@@ -10046,6 +10409,16 @@ void Engine::loadEditorUserSettings() {
     sceneViewportRenderHeight = std::clamp(sceneViewportRenderHeight, 64, 8192);
     light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
+    {
+        auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
+        tmPresentation.lookPitchStretchStrength = std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f);
+        tmPresentation.lookPitchCompressStrength = std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f);
+        tmPresentation.lookPitchShearStrength = std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f);
+        tmPresentation.presentationSnapStep = std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f);
+        tmPresentation.cameraRelativeSnapStep = std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f);
+        tmPresentation.vertexSnapStep = std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f);
+        tmPresentation.screenSnapStep = std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f);
+    }
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
     audioPreviewVolume = std::clamp(audioPreviewVolume, 0.0f, 2.0f);
 
@@ -10173,6 +10546,21 @@ void Engine::saveEditorUserSettings() const {
     file << "showUIWorldGrid=" << (showUIWorldGrid ? "1" : "0") << "\n";
     file << "pixelGridSnapEnabled=" << (pixelGridSnapEnabled ? "1" : "0") << "\n";
     file << "pixelGridSnapStep=" << std::clamp(pixelGridSnapStep, 1, 64) << "\n";
+    {
+        const auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
+        file << "tmPresentationPitchStretchEnabled=" << (tmPresentation.lookPitchStretchEnabled ? "1" : "0") << "\n";
+        file << "tmPresentationPitchStretchStrength=" << std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f) << "\n";
+        file << "tmPresentationPitchCompressStrength=" << std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f) << "\n";
+        file << "tmPresentationPitchShearStrength=" << std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f) << "\n";
+        file << "tmPresentationWorldSnapEnabled=" << (tmPresentation.presentationSnapEnabled ? "1" : "0") << "\n";
+        file << "tmPresentationWorldSnapStep=" << std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f) << "\n";
+        file << "tmPresentationCameraSnapEnabled=" << (tmPresentation.cameraRelativeSnapEnabled ? "1" : "0") << "\n";
+        file << "tmPresentationCameraSnapStep=" << std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f) << "\n";
+        file << "tmPresentationVertexSnapEnabled=" << (tmPresentation.vertexSnapEnabled ? "1" : "0") << "\n";
+        file << "tmPresentationVertexSnapStep=" << std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f) << "\n";
+        file << "tmPresentationScreenSnapEnabled=" << (tmPresentation.screenSnapEnabled ? "1" : "0") << "\n";
+        file << "tmPresentationScreenSnapStep=" << std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f) << "\n";
+    }
     file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";
     file << "revealDebugSectionsAndMenus=" << (revealDebugSectionsAndMenus ? "1" : "0") << "\n";
     file << "collisionWireframe=" << (collisionWireframe ? "1" : "0") << "\n";

@@ -475,13 +475,15 @@ struct ScriptComponent {
 struct RigidbodyComponent {
     bool enabled = true;
     float mass = 1.0f;
+    bool useCustomCenterOfMass = false;
+    glm::vec3 centerOfMass = glm::vec3(0.0f);
     bool useGravity = true;
     bool isKinematic = false;
     float linearDamping = 0.05f;
     float angularDamping = 0.05f;
-    bool lockRotationX = true;
+    bool lockRotationX = false;
     bool lockRotationY = false;
-    bool lockRotationZ = true;
+    bool lockRotationZ = false;
 };
 
 enum class ColliderType {
@@ -696,6 +698,16 @@ struct AIAgentComponent {
     bool debugDrawPath = true;
 };
 
+struct Rig25DRootComponent {
+    bool enabled = true;
+};
+
+struct Rig25DNodeComponent {
+    bool enabled = true;
+    int nodeId = -1;
+    std::string nodeName;
+};
+
 class SceneObject {
 public:
     std::string name;
@@ -772,6 +784,10 @@ public:
     AnimationComponent animation;
     bool hasSkeletalAnimation = false;
     SkeletalAnimationComponent skeletal;
+    bool hasRig25DRoot = false;
+    Rig25DRootComponent rig25DRoot;
+    bool hasRig25DNode = false;
+    Rig25DNodeComponent rig25DNode;
     UIElementComponent ui;
     std::vector<std::string> inspectorComponentOrder;
     int nextInspectorScriptId = 1;
@@ -804,12 +820,48 @@ inline bool IsRawMeshPath(const std::string& path) {
     return IsRawMeshPath(fs::path(path));
 }
 
+inline bool IsMMeshPath(const fs::path& path) {
+    if (path.empty()) return false;
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".mmesh";
+}
+
+inline bool IsMMeshPath(const std::string& path) {
+    if (path.empty()) return false;
+    return IsMMeshPath(fs::path(path));
+}
+
 inline bool IsObjectEnabledInHierarchy(const SceneObject& obj) {
     return obj.enabled && obj.hierarchyEnabled;
 }
 
 inline bool HasUIComponent(const SceneObject& obj) {
     return obj.hasUI && obj.ui.type != UIElementType::None;
+}
+
+inline bool UsesUIOnly2DPhysics(const SceneObject& obj) {
+    return HasUIComponent(obj) && obj.type != ObjectType::Sprite25D;
+}
+
+inline bool HasRig25DRootComponent(const SceneObject& obj) {
+    return obj.hasRig25DRoot;
+}
+
+inline bool HasRig25DNodeComponent(const SceneObject& obj) {
+    return obj.hasRig25DNode;
+}
+
+inline bool IsRig25DObject(const SceneObject& obj) {
+    return HasRig25DRootComponent(obj) || HasRig25DNodeComponent(obj);
+}
+
+inline bool IsRig25DNodeTargetable(const SceneObject& obj) {
+    return HasRig25DNodeComponent(obj) && obj.rig25DNode.nodeId >= 0;
+}
+
+inline bool IsPipeline25DOnlyRigObject(const SceneObject& obj) {
+    return IsRig25DObject(obj);
 }
 
 inline float GetAudioSpatialBlend(const AudioSourceComponent& src) {
@@ -850,6 +902,8 @@ inline const std::vector<std::string>& GetDefaultInspectorComponentOrderTemplate
         "ground_baked",
         "obstacle",
         "ai_agent",
+        "rig25d_root",
+        "rig25d_node",
         "animation",
         "skeletal_animation",
         "reverb_zone",
@@ -882,7 +936,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     obj.nextInspectorScriptId = nextScriptId;
 
     std::vector<std::string> presentKeys;
-    presentKeys.reserve(21 + obj.scripts.size());
+    presentKeys.reserve(23 + obj.scripts.size());
     if (HasUIComponent(obj)) presentKeys.push_back("ui");
     if (obj.hasCollider) presentKeys.push_back("collider");
     if (obj.hasPlayerController) presentKeys.push_back("player_controller");
@@ -894,6 +948,8 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     if (obj.hasGroundBakedType) presentKeys.push_back("ground_baked");
     if (obj.hasObsticleObject) presentKeys.push_back("obstacle");
     if (obj.hasAIAgent) presentKeys.push_back("ai_agent");
+    if (obj.hasRig25DRoot) presentKeys.push_back("rig25d_root");
+    if (obj.hasRig25DNode) presentKeys.push_back("rig25d_node");
     if (obj.hasAnimation) presentKeys.push_back("animation");
     if (obj.hasSkeletalAnimation) presentKeys.push_back("skeletal_animation");
     if (obj.hasReverbZone) presentKeys.push_back("reverb_zone");

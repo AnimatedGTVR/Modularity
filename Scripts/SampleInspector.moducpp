@@ -1,26 +1,28 @@
-#include "ModuCPP"
+add ModuCPP;
 
-using namespace ModuCPP;
-
-public class SampleInspector : ModuBehaviour {
+public class SampleInspector : ModuBehaviour
+{
     public bool autoRotate = false;
-    public vec3 spinSpeed = vec3(0.0f, 45.0f, 0.0f);
-    public vec3 offset = vec3(0.0f, 1.0f, 0.0f);
+    public Vector3 spinSpeed = Vector3(0.0f, 45.0f, 0.0f);
+    public Vector3 offset = Vector3(0.0f, 1.0f, 0.0f);
     public string targetName = "MyTarget";
 
-    void ApplyAutoRotate(MODU_obj, float dt) {
+    void ApplyAutoRotate()
+    {
         if (!obj || !autoRotate) return;
 
-        if (ctx.HasRigidbody() && !obj->rigidbody.isKinematic) {
-            if (ctx.SetRigidbodyAngularVelocity(glm::radians(spinSpeed))) {
+        float dt = time.deltaTime;
+        if (ctx.HasRigidbody() && !obj->rigidbody.isKinematic)
+        {
+            if (ctx.SetRigidbodyAngularVelocity(glm::radians(spinSpeed)))
                 return;
-            }
         }
 
         ctx.SetRotation(obj->rotation + spinSpeed * dt);
     }
 
-    void Script_OnInspector(MODU_obj) {
+    void Script_OnInspector()
+    {
         ImGui::TextUnformatted("SampleInspector");
         ImGui::Separator();
 
@@ -33,34 +35,25 @@ public class SampleInspector : ModuBehaviour {
             ctx.SaveAutoSettings();
         }
 
-        if (obj) {
+        if (obj)
+        {
             ImGui::TextDisabled("Attached to: %s (id=%d)", obj->name.c_str(), obj->id);
-            if (ImGui::Button("Apply Offset To Self")) {
+            if (ImGui::Button("Apply Offset To Self"))
                 ctx.SetPosition(obj->position + offset);
-            }
         }
 
-        if (ImGui::Button("Nudge Target")) {
-            if (SceneObject* target = ctx.ResolveObjectRef(targetName)) {
+        if (ImGui::Button("Nudge Target"))
+        {
+            if (SceneObject* target = ctx.ResolveObjectRef(targetName))
                 target->position += offset;
-            }
         }
     }
 
-    void Begin(MODU_obj, float dt) {
-        (void)dt;
-    }
+    void Begin() {}
 
-    void Spec(MODU_obj, float dt) {
-        ApplyAutoRotate(ctx, dt);
-    }
+    void Spec() to ApplyAutoRotate();
 
-    void TestEditor(MODU_obj, float dt) {
-        ApplyAutoRotate(ctx, dt);
-    }
+    void TestEditor() to ApplyAutoRotate();
 
-    void TickUpdate(MODU_obj, float dt) {
-        ApplyAutoRotate(ctx, dt);
-    }
+    void TickUpdate() to ApplyAutoRotate();
 }
-

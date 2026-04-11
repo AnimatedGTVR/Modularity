@@ -1,18 +1,13 @@
-#include "ModuCPP"
-
-using namespace ModuCPP;
+add ModuCPP;
 
 public class StandaloneMovementController : ModuBehaviour {
-    void Script_OnInspector(MODU_obj) {
-        MODU_SCRIPT(ctx);
+    void Script_OnInspector() {
         auto& config = Config<StandaloneMovementControllerConfig>();
         bindConfig(ctx, config);
         ctx.DrawStandaloneMovementInspector(config.settings, &config.showDebug);
     }
 
-    void Begin(MODU_obj, float dt) {
-        (void)dt;
-        MODU_SCRIPT(ctx);
+    void Begin() {
         if (!obj) return;
 
         auto& config = Config<StandaloneMovementControllerConfig>();
@@ -28,8 +23,8 @@ public class StandaloneMovementController : ModuBehaviour {
         }
     }
 
-    void TickUpdate(MODU_obj, float dt) {
-        MODU_SCRIPT(ctx);
+    void TickUpdate() {
+        float dt = time.deltaTime;
         if (!obj || dt <= 0.0f) return;
 
         auto& config = Config<StandaloneMovementControllerConfig>();

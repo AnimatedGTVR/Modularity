@@ -1,11 +1,7 @@
-#include "ModuCPP"
-
-using namespace ModuCPP;
+add ModuCPP;
 
 public class SampleInspectorSimplified : ModuBehaviour {
-    void Script_OnInspector(MODU_obj) {
-        MODU_SCRIPT(ctx);
-
+    void Script_OnInspector() {
         auto& config = Config<SampleInspectorSimpleConfig>();
         bindConfig(ctx, config);
 
@@ -36,25 +32,22 @@ public class SampleInspectorSimplified : ModuBehaviour {
         }
     }
 
-    void Spec(MODU_obj, float dt) {
-        MODU_SCRIPT(ctx);
+    void Spec() {
         auto& config = Config<SampleInspectorSimpleConfig>();
         bindConfig(ctx, config);
-        ApplyAutoRotate(ctx, config, dt);
+        ApplyAutoRotate(ctx, config, time.deltaTime);
     }
 
-    void TestEditor(MODU_obj, float dt) {
-        MODU_SCRIPT(ctx);
+    void TestEditor() {
         auto& config = Config<SampleInspectorSimpleConfig>();
         bindConfig(ctx, config);
-        ApplyAutoRotate(ctx, config, dt);
+        ApplyAutoRotate(ctx, config, time.deltaTime);
     }
 
-    void TickUpdate(MODU_obj, float dt) {
-        MODU_SCRIPT(ctx);
+    void TickUpdate() {
         auto& config = Config<SampleInspectorSimpleConfig>();
         bindConfig(ctx, config);
-        ApplyAutoRotate(ctx, config, dt);
+        ApplyAutoRotate(ctx, config, time.deltaTime);
     }
 }
 

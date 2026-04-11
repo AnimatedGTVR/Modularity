@@ -1,11 +1,16 @@
 #include "ModelLoader.h"
 #include <algorithm>
-#include <iostream>
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <cstdint>
 #include <cstring>
-#include <unordered_set>
 #include <functional>
+#include <unordered_set>
 #include <assimp/material.h>
 #include "ThirdParty/glm/gtc/quaternion.hpp"
 
@@ -35,6 +40,267 @@ constexpr uint32_t kRMeshFlagUVs = 1u << 1;
 constexpr uint32_t kRMeshFlagFaceMaterials = 1u << 2;
 constexpr uint32_t kRMeshFlagFaceIslands = 1u << 3;
 constexpr uint32_t kRMeshFlagEdges = 1u << 4;
+
+enum class BlendCompressionKind {
+    Unknown,
+    Native,
+    GZip,
+    ZStd
+};
+
+enum class BlendContainerFormat {
+    Unknown,
+    Legacy,
+    ExtendedV5Plus
+};
+
+struct ScopedImportedTempFile {
+    fs::path path;
+
+    ~ScopedImportedTempFile() {
+        if (path.empty()) {
+            return;
+        }
+
+        std::error_code ec;
+        fs::remove(path, ec);
+    }
+};
+
+bool IsUsableScene(const aiScene* scene) {
+    return scene != nullptr &&
+           (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) == 0 &&
+           scene->mRootNode != nullptr;
+}
+
+bool HasBlendExtension(const std::string& filepath) {
+    std::string ext = fs::path(filepath).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".blend";
+}
+
+BlendCompressionKind DetectBlendCompression(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return BlendCompressionKind::Unknown;
+    }
+
+    std::array<unsigned char, 8> bytes{};
+    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    const std::streamsize readCount = file.gcount();
+    if (readCount < 4) {
+        return BlendCompressionKind::Unknown;
+    }
+
+    if (readCount >= 7 && std::memcmp(bytes.data(), "BLENDER", 7) == 0) {
+        return BlendCompressionKind::Native;
+    }
+    if (bytes[0] == 0x1f && bytes[1] == 0x8b) {
+        return BlendCompressionKind::GZip;
+    }
+    if (bytes[0] == 0x28 && bytes[1] == 0xB5 && bytes[2] == 0x2F && bytes[3] == 0xFD) {
+        return BlendCompressionKind::ZStd;
+    }
+    return BlendCompressionKind::Unknown;
+}
+
+BlendContainerFormat DetectBlendContainerFormat(const fs::path& path, std::string* detail = nullptr) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return BlendContainerFormat::Unknown;
+    }
+
+    std::array<char, 20> bytes{};
+    file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    const std::streamsize readCount = file.gcount();
+    if (readCount < 12) {
+        return BlendContainerFormat::Unknown;
+    }
+
+    if (std::memcmp(bytes.data(), "BLENDER", 7) != 0) {
+        return BlendContainerFormat::Unknown;
+    }
+
+    const char pointerCode = bytes[7];
+    if (pointerCode == '-' || pointerCode == '_') {
+        return BlendContainerFormat::Legacy;
+    }
+
+    if (readCount >= 17 && detail) {
+        *detail = std::string(bytes.data() + 7, 10);
+    }
+    return BlendContainerFormat::ExtendedV5Plus;
+}
+
+std::string QuoteShellArg(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (char ch : value) {
+        if (ch == '"') {
+            quoted += "\\\"";
+        } else {
+            quoted += ch;
+        }
+    }
+    quoted += "\"";
+    return quoted;
+#else
+    std::string quoted = "'";
+    for (char ch : value) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += ch;
+        }
+    }
+    quoted += "'";
+    return quoted;
+#endif
+}
+
+bool RunCommandCapture(const std::string& command, std::string& output) {
+    std::array<char, 256> buffer{};
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        output = "Failed to spawn process: " + command;
+        return false;
+    }
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+
+#ifdef _WIN32
+    const int returnCode = _pclose(pipe);
+#else
+    const int returnCode = pclose(pipe);
+#endif
+    return returnCode == 0;
+}
+
+fs::path MakeTempBlendPath(const fs::path& sourcePath) {
+    std::error_code ec;
+    fs::path tempDir = fs::temp_directory_path(ec);
+    if (ec || tempDir.empty()) {
+        tempDir = sourcePath.parent_path();
+    }
+
+    std::string stem = sourcePath.stem().string();
+    if (stem.empty()) {
+        stem = "blend";
+    }
+    for (char& ch : stem) {
+        if (!std::isalnum(static_cast<unsigned char>(ch))) {
+            ch = '_';
+        }
+    }
+
+    const auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        fs::path candidate = tempDir /
+            ("modularity_" + stem + "_" + std::to_string(timestamp) + "_" + std::to_string(attempt) + ".blend");
+        if (!fs::exists(candidate, ec)) {
+            return candidate;
+        }
+    }
+
+    return tempDir / ("modularity_" + stem + ".blend");
+}
+
+bool DecompressZstdBlend(const std::string& filepath, fs::path& outPath, std::string& errorMsg) {
+    outPath = MakeTempBlendPath(fs::path(filepath));
+    std::error_code ec;
+    fs::remove(outPath, ec);
+
+    std::string command = "zstd -d -q -f -o " + QuoteShellArg(outPath.string()) + " " + QuoteShellArg(filepath) + " 2>&1";
+    std::string commandOutput;
+    if (!RunCommandCapture(command, commandOutput)) {
+        errorMsg =
+            "Blender file uses Zstandard compression, which Assimp cannot read directly. "
+            "Automatic decompression via zstd failed";
+        if (!commandOutput.empty()) {
+            errorMsg += ": " + commandOutput;
+            while (!errorMsg.empty() &&
+                   (errorMsg.back() == '\n' || errorMsg.back() == '\r')) {
+                errorMsg.pop_back();
+            }
+        } else {
+            errorMsg += ".";
+        }
+        errorMsg += " Re-save the .blend without compression or export to glTF/FBX.";
+        return false;
+    }
+
+    if (!fs::exists(outPath, ec) || ec) {
+        errorMsg =
+            "Blender file uses Zstandard compression, but the temporary decompressed .blend was not created. "
+            "Re-save the .blend without compression or export to glTF/FBX.";
+        return false;
+    }
+
+    return true;
+}
+
+bool DescribeUnsupportedBlendFormat(const fs::path& path, std::string& errorMsg) {
+    std::string detail;
+    const BlendContainerFormat format = DetectBlendContainerFormat(path, &detail);
+    if (format != BlendContainerFormat::ExtendedV5Plus) {
+        return false;
+    }
+
+    errorMsg =
+        "Unsupported .blend format: this file uses the newer Blender 5+ container/header format";
+    if (!detail.empty()) {
+        errorMsg += " (" + detail + ")";
+    }
+    errorMsg +=
+        ". The bundled Assimp importer only supports legacy .blend files. "
+        "Export to glTF/FBX/OBJ or save/export from an older Blender version.";
+    return true;
+}
+
+const aiScene* ReadSceneWithBlendFallback(Assimp::Importer& importer,
+                                          const std::string& filepath,
+                                          unsigned int importFlags,
+                                          ScopedImportedTempFile& tempFile,
+                                          std::string& errorMsg) {
+    const aiScene* scene = importer.ReadFile(filepath, importFlags);
+    if (IsUsableScene(scene) || !HasBlendExtension(filepath)) {
+        return scene;
+    }
+
+    if (DescribeUnsupportedBlendFormat(fs::path(filepath), errorMsg)) {
+        return nullptr;
+    }
+
+    const BlendCompressionKind compression = DetectBlendCompression(filepath);
+    if (compression == BlendCompressionKind::ZStd) {
+        if (!DecompressZstdBlend(filepath, tempFile.path, errorMsg)) {
+            return nullptr;
+        }
+
+        if (DescribeUnsupportedBlendFormat(tempFile.path, errorMsg)) {
+            return nullptr;
+        }
+
+        scene = importer.ReadFile(tempFile.path.string(), importFlags);
+        if (!IsUsableScene(scene)) {
+            errorMsg = "Assimp error after decompressing Zstandard-compressed .blend: " +
+                       std::string(importer.GetErrorString());
+        }
+        return scene;
+    }
+
+    if (compression == BlendCompressionKind::Unknown) {
+        errorMsg =
+            "Invalid or unsupported .blend container. Expected native Blender data, gzip, or Zstandard-compressed data.";
+    }
+    return scene;
+}
 
 void recomputeRawBounds(RawMeshAsset& mesh) {
     mesh.boundsMin = glm::vec3(FLT_MAX);
@@ -448,10 +714,14 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
         aiProcess_ValidateDataStructure;  // Validate the imported data
     
     // Load the model
-    const aiScene* scene = importer.ReadFile(filepath, importFlags);
-    
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        result.errorMessage = "Assimp error: " + std::string(importer.GetErrorString());
+    ScopedImportedTempFile tempFile;
+    std::string importError;
+    const aiScene* scene = ReadSceneWithBlendFallback(importer, filepath, importFlags, tempFile, importError);
+
+    if (!IsUsableScene(scene)) {
+        result.errorMessage = importError.empty()
+            ? "Assimp error: " + std::string(importer.GetErrorString())
+            : importError;
         return result;
     }
     
@@ -600,9 +870,13 @@ bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& ou
         aiProcess_SortByPType |
         aiProcess_ValidateDataStructure;
 
-    const aiScene* scene = importer.ReadFile(filepath, importFlags);
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        errorMsg = "Assimp error: " + std::string(importer.GetErrorString());
+    ScopedImportedTempFile tempFile;
+    std::string importError;
+    const aiScene* scene = ReadSceneWithBlendFallback(importer, filepath, importFlags, tempFile, importError);
+    if (!IsUsableScene(scene)) {
+        errorMsg = importError.empty()
+            ? "Assimp error: " + std::string(importer.GetErrorString())
+            : importError;
         return false;
     }
 
@@ -681,9 +955,13 @@ bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string&
         aiProcess_GenSmoothNormals |
         aiProcess_FlipUVs;
 
-    const aiScene* scene = localImporter.ReadFile(inputFile, importFlags);
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        errorMsg = "Assimp error: " + std::string(localImporter.GetErrorString());
+    ScopedImportedTempFile tempFile;
+    std::string importError;
+    const aiScene* scene = ReadSceneWithBlendFallback(localImporter, inputFile, importFlags, tempFile, importError);
+    if (!IsUsableScene(scene)) {
+        errorMsg = importError.empty()
+            ? "Assimp error: " + std::string(localImporter.GetErrorString())
+            : importError;
         return false;
     }
 
@@ -1450,9 +1728,13 @@ bool ModelLoader::buildRawMeshFromScene(const std::string& filepath, RawMeshAsse
         aiProcess_GenSmoothNormals |
         aiProcess_FlipUVs;
 
-    const aiScene* scene = localImporter.ReadFile(filepath, importFlags);
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
-        errorMsg = "Assimp error: " + std::string(localImporter.GetErrorString());
+    ScopedImportedTempFile tempFile;
+    std::string importError;
+    const aiScene* scene = ReadSceneWithBlendFallback(localImporter, filepath, importFlags, tempFile, importError);
+    if (!IsUsableScene(scene)) {
+        errorMsg = importError.empty()
+            ? "Assimp error: " + std::string(localImporter.GetErrorString())
+            : importError;
         return false;
     }
 

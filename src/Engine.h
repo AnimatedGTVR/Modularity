@@ -4,6 +4,9 @@
 #include "SceneObject.h"
 #include "Camera.h"
 #include "Rendering.h"
+#include "Render25D/TMOpenGLRenderer.h"
+#include "Render25D/TMSceneBuilder.h"
+#include "Render25D/TMRenderer.h"
 #include "Lighting2D.h"
 #include "ProjectManager.h"
 #include "EditorUI.h"
@@ -52,6 +55,12 @@ enum class ViewportToolbarCorner {
     TopRight = 3
 };
 
+enum class SpriteSheetImportTarget {
+    UIImage = 0,
+    Sprite25D = 1,
+    Sprite2D = 2
+};
+
 class Engine {
     friend void window_size_callback(GLFWwindow* window, int width, int height);
 private:
@@ -59,6 +68,9 @@ private:
     GLFWwindow* editorWindow = nullptr;
     Modularity::GraphicsBackend graphicsBackend = Modularity::GraphicsBackend::OpenGL;
     Renderer renderer;
+    Modularity::Render25D::TMRenderer tmRenderer;
+    Modularity::Render25D::TMOpenGLRenderer tmOpenGLRenderer;
+    Modularity::Render25D::TMSceneBuilder tmSceneBuilder;
     Lighting2DRenderer lighting2DRenderer;
     std::unique_ptr<Modularity::VulkanRenderer> vulkanRenderer;
     Camera camera;
@@ -206,7 +218,7 @@ private:
     int importSpriteSheetColumns = 4;
     int importSpriteSheetRows = 4;
     float importSpriteSheetFps = 12.0f;
-    bool importSpriteSheetAsSprite2D = true;
+    SpriteSheetImportTarget importSpriteSheetTarget = SpriteSheetImportTarget::Sprite2D;
     
     char fileBrowserSearch[256] = "";
     float fileBrowserIconScale = 1.0f;  // 0.5 to 2.0 range
@@ -692,6 +704,8 @@ private:
     int sceneLoadVersion = 9;
     float sceneLoadTimeOfDay = -1.0f;
     float sceneTimeOfDay = 0.5f;
+    SkyboxSettings sceneLoadSkyboxSettings;
+    SkyboxSettings sceneSkyboxSettings;
     bool specMode = false;
     bool testMode = false;
     bool collisionWireframe = false;
@@ -771,6 +785,8 @@ private:
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
     void convertModelToRawMesh(const std::string& filepath);
     void createRMeshPrimitive(const std::string& primitiveName);
+    void createMMeshPrimitive(const std::string& primitiveName);
+    void createPipelineDefaultSceneObjects();
     bool ensureMeshEditTarget(SceneObject* obj);
     bool syncMeshEditToGPU(SceneObject* obj);
     bool saveMeshEditAsset(std::string& error);
@@ -867,8 +883,22 @@ private:
     void saveEditorUserSettings() const;
     void exportEditorThemeLayout();
     bool isProject2DPipeline() const;
+    bool isProject25DPipeline() const;
     bool is2DWorldEditingEnabled() const;
     void applyProjectPipelineDefaults(bool force = false);
+    bool renderTMViewportPass(const Camera& renderCamera,
+                              int width,
+                              int height,
+                              float fovDeg,
+                              float nearPlane,
+                              float farPlane,
+                              unsigned int* outTexture = nullptr,
+                              Modularity::Render25D::TMRenderer::RenderStats* outStats = nullptr,
+                              std::string* outError = nullptr,
+                              int previewSlot = -1);
+    unsigned int getActiveSceneTexture() const;
+    std::string buildTMOverlayLabel(const Modularity::Render25D::TMRenderer::RenderStats& stats,
+                                    const std::string& error) const;
     int resolveSpriteSheetFrame(const SceneObject& obj) const;
     glm::vec2 getSpriteDisplaySize(const SceneObject& obj) const;
     std::array<ImVec2, 4> buildSpriteSheetUvs(const SceneObject& obj) const;
@@ -903,6 +933,8 @@ private:
     void createNewScene(const std::string& sceneName);
     void applySceneTimeOfDay(float timeOfDay);
     float getSceneTimeOfDay();
+    void applySceneSkyboxSettings(const SkyboxSettings& settings);
+    SkyboxSettings getSceneSkyboxSettings() const;
     
     // Scene object management
     void addObject(ObjectType type, const std::string& baseName);
@@ -987,6 +1019,8 @@ public:
     bool setRigidbodyAngularVelocityFromScript(int id, const glm::vec3& velocity);
     bool getRigidbodyAngularVelocityFromScript(int id, glm::vec3& outVelocity);
     bool teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg);
+    float getProjectGravityScaleFromScript() const;
+    void setProjectGravityScaleFromScript(float scale);
     bool addRigidbodyForceFromScript(int id, const glm::vec3& force);
     bool addRigidbodyImpulseFromScript(int id, const glm::vec3& impulse);
     bool addRigidbodyTorqueFromScript(int id, const glm::vec3& torque);

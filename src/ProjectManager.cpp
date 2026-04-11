@@ -1,6 +1,7 @@
 #include "ProjectManager.h"
 #include "Rendering.h"
 #include "ModelLoader.h"
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
@@ -31,6 +32,32 @@ std::string GetPlatformDefaultProjectsPath() {
     }
 #endif
     return (fs::current_path() / "Projects").string();
+}
+
+ProjectMassUnit ParseProjectMassUnit(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "grams" || value == "gram" || value == "g" || value == "1") {
+        return ProjectMassUnit::Grams;
+    }
+    if (value == "pounds" || value == "pound" || value == "lb" || value == "lbs" || value == "2") {
+        return ProjectMassUnit::Pounds;
+    }
+    if (value == "ounces" || value == "ounce" || value == "oz" || value == "3") {
+        return ProjectMassUnit::Ounces;
+    }
+    return ProjectMassUnit::Kilograms;
+}
+
+const char* SerializeProjectMassUnit(ProjectMassUnit unit) {
+    switch (unit) {
+        case ProjectMassUnit::Grams: return "Grams";
+        case ProjectMassUnit::Pounds: return "Pounds";
+        case ProjectMassUnit::Ounces: return "Ounces";
+        case ProjectMassUnit::Kilograms:
+        default:
+            return "Kilograms";
+    }
 }
 
 } // namespace
@@ -147,18 +174,14 @@ bool Project::load(const fs::path& projectFilePath) {
             } else if (line.find("lastScene=") == 0) {
                 currentSceneName = line.substr(10);
             } else if (line.find("pipeline=") == 0) {
-                std::string value = line.substr(9);
-                std::string lower = value;
-                std::transform(lower.begin(), lower.end(), lower.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (lower == "2d" || lower == "pipeline2d" || lower == "1") {
-                    pipeline = ProjectPipeline::Pipeline2D;
-                } else {
-                    pipeline = ProjectPipeline::Pipeline3D;
-                }
+                pipeline = ParseProjectPipeline(line.substr(9));
             } else if (line.find("renderer=") == 0) {
                 std::string value = line.substr(9);
                 rendererBackend = Modularity::GraphicsBackendFromString(value);
+            } else if (line.find("physicsMassUnit=") == 0) {
+                physicsSettings.massUnit = ParseProjectMassUnit(line.substr(16));
+            } else if (line.find("physicsGlobalGravityScale=") == 0) {
+                physicsSettings.globalGravityScale = std::max(0.0f, std::stof(line.substr(26)));
             }
         }
         file.close();
@@ -179,8 +202,10 @@ void Project::saveProjectFile() const {
     std::ofstream file(projectPath / "project.modu");
     file << "name=" << name << "\n";
     file << "lastScene=" << currentSceneName << "\n";
-    file << "pipeline=" << (pipeline == ProjectPipeline::Pipeline2D ? "2D" : "3D") << "\n";
+    file << "pipeline=" << SerializeProjectPipeline(pipeline) << "\n";
     file << "renderer=" << Modularity::ToString(rendererBackend) << "\n";
+    file << "physicsMassUnit=" << SerializeProjectMassUnit(physicsSettings.massUnit) << "\n";
+    file << "physicsGlobalGravityScale=" << std::max(0.0f, physicsSettings.globalGravityScale) << "\n";
     file.close();
 }
 
@@ -389,15 +414,23 @@ bool ProjectManager::loadProject(const std::string& path) {
 bool SceneSerializer::saveScene(const fs::path& filePath,
                                 const std::vector<SceneObject>& objects,
                                 int nextId,
-                                float timeOfDay) {
+                                float timeOfDay,
+                                const SkyboxSettings& skyboxSettings) {
     try {
         std::ofstream file(filePath);
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=21\n";
+        file << "version=24\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
+        file << "skyboxMode=" << static_cast<int>(skyboxSettings.mode) << "\n";
+        file << "skyboxSunTexture=" << skyboxSettings.sunTexturePath << "\n";
+        file << "skyboxMoonTexture=" << skyboxSettings.moonTexturePath << "\n";
+        file << "skyboxScrollTexture=" << skyboxSettings.scrollingTexturePath << "\n";
+        file << "skyboxScrollRepeat=" << skyboxSettings.scrollingRepeatX << "," << skyboxSettings.scrollingRepeatY << "\n";
+        file << "skyboxScrollLookSensitivity=" << skyboxSettings.scrollingLookSensitivity << "\n";
+        file << "skyboxScrollVerticalInfluence=" << skyboxSettings.scrollingVerticalInfluence << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
 
@@ -430,6 +463,8 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             if (obj.hasRigidbody) {
                 file << "rbEnabled=" << (obj.rigidbody.enabled ? 1 : 0) << "\n";
                 file << "rbMass=" << obj.rigidbody.mass << "\n";
+                file << "rbUseCustomCenterOfMass=" << (obj.rigidbody.useCustomCenterOfMass ? 1 : 0) << "\n";
+                file << "rbCenterOfMass=" << obj.rigidbody.centerOfMass.x << "," << obj.rigidbody.centerOfMass.y << "," << obj.rigidbody.centerOfMass.z << "\n";
                 file << "rbUseGravity=" << (obj.rigidbody.useGravity ? 1 : 0) << "\n";
                 file << "rbKinematic=" << (obj.rigidbody.isKinematic ? 1 : 0) << "\n";
                 file << "rbLinearDamping=" << obj.rigidbody.linearDamping << "\n";
@@ -572,6 +607,16 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
                 file << "aiAgentAutoRepath=" << (obj.aiAgent.autoRepath ? 1 : 0) << "\n";
                 file << "aiAgentAlignToPath=" << (obj.aiAgent.alignToPath ? 1 : 0) << "\n";
                 file << "aiAgentDebugDrawPath=" << (obj.aiAgent.debugDrawPath ? 1 : 0) << "\n";
+            }
+            file << "hasRig25DRoot=" << (obj.hasRig25DRoot ? 1 : 0) << "\n";
+            if (obj.hasRig25DRoot) {
+                file << "rig25dRootEnabled=" << (obj.rig25DRoot.enabled ? 1 : 0) << "\n";
+            }
+            file << "hasRig25DNode=" << (obj.hasRig25DNode ? 1 : 0) << "\n";
+            if (obj.hasRig25DNode) {
+                file << "rig25dNodeEnabled=" << (obj.rig25DNode.enabled ? 1 : 0) << "\n";
+                file << "rig25dNodeId=" << obj.rig25DNode.nodeId << "\n";
+                file << "rig25dNodeName=" << obj.rig25DNode.nodeName << "\n";
             }
             file << "hasAnimation=" << (obj.hasAnimation ? 1 : 0) << "\n";
             if (obj.hasAnimation) {
@@ -1179,6 +1224,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"hasRigidbody", +[](SceneObject& obj, const std::string& value) { obj.hasRigidbody = std::stoi(value) != 0; }},
         {"rbEnabled", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.enabled = std::stoi(value) != 0; }},
         {"rbMass", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.mass = std::stof(value); }},
+        {"rbUseCustomCenterOfMass", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.useCustomCenterOfMass = std::stoi(value) != 0; }},
+        {"rbCenterOfMass", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.rigidbody.centerOfMass); }},
         {"rbUseGravity", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.useGravity = std::stoi(value) != 0; }},
         {"rbKinematic", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.isKinematic = std::stoi(value) != 0; }},
         {"rbLinearDamping", +[](SceneObject& obj, const std::string& value) { obj.rigidbody.linearDamping = std::stof(value); }},
@@ -1300,6 +1347,12 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"aiAgentAutoRepath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.autoRepath = std::stoi(value) != 0; }},
         {"aiAgentAlignToPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.alignToPath = std::stoi(value) != 0; }},
         {"aiAgentDebugDrawPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.debugDrawPath = std::stoi(value) != 0; }},
+        {"hasRig25DRoot", +[](SceneObject& obj, const std::string& value) { obj.hasRig25DRoot = std::stoi(value) != 0; }},
+        {"rig25dRootEnabled", +[](SceneObject& obj, const std::string& value) { obj.rig25DRoot.enabled = std::stoi(value) != 0; obj.hasRig25DRoot = true; }},
+        {"hasRig25DNode", +[](SceneObject& obj, const std::string& value) { obj.hasRig25DNode = std::stoi(value) != 0; }},
+        {"rig25dNodeEnabled", +[](SceneObject& obj, const std::string& value) { obj.rig25DNode.enabled = std::stoi(value) != 0; obj.hasRig25DNode = true; }},
+        {"rig25dNodeId", +[](SceneObject& obj, const std::string& value) { obj.rig25DNode.nodeId = std::stoi(value); obj.hasRig25DNode = true; }},
+        {"rig25dNodeName", +[](SceneObject& obj, const std::string& value) { obj.rig25DNode.nodeName = value; obj.hasRig25DNode = true; }},
         {"hasAnimation", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = std::stoi(value) != 0; }},
         {"animEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.enabled = std::stoi(value) != 0; }},
         {"animClipAsset", +[](SceneObject& obj, const std::string& value) { obj.hasAnimation = true; obj.animation.clipAssetPath = value; }},
@@ -1768,7 +1821,8 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                                std::vector<SceneObject>& objects,
                                int& nextId,
                                int& outVersion,
-                               float* outTimeOfDay) {
+                               float* outTimeOfDay,
+                               SkyboxSettings* outSkyboxSettings) {
     try {
         std::ifstream file(filePath);
         if (!file.is_open()) return false;
@@ -1778,6 +1832,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         SceneObject* currentObj = nullptr;
         int sceneVersion = 20;
         float sceneTimeOfDay = -1.0f;
+        SkyboxSettings sceneSkyboxSettings;
 
         while (std::getline(file, line)) {
             size_t first = line.find_first_not_of(" \t\r\n");
@@ -1812,6 +1867,27 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
                 nextId = std::stoi(value);
             } else if (key == "timeOfDay") {
                 sceneTimeOfDay = std::stof(value);
+            } else if (key == "skyboxMode") {
+                int mode = std::stoi(value);
+                sceneSkyboxSettings.mode = (mode == static_cast<int>(SkyboxMode::Scrolling))
+                    ? SkyboxMode::Scrolling
+                    : SkyboxMode::Procedural;
+            } else if (key == "skyboxSunTexture") {
+                sceneSkyboxSettings.sunTexturePath = value;
+            } else if (key == "skyboxMoonTexture") {
+                sceneSkyboxSettings.moonTexturePath = value;
+            } else if (key == "skyboxScrollTexture") {
+                sceneSkyboxSettings.scrollingTexturePath = value;
+            } else if (key == "skyboxScrollRepeat") {
+                size_t commaPos = value.find(',');
+                if (commaPos != std::string::npos) {
+                    sceneSkyboxSettings.scrollingRepeatX = std::max(0.01f, std::stof(value.substr(0, commaPos)));
+                    sceneSkyboxSettings.scrollingRepeatY = std::max(0.01f, std::stof(value.substr(commaPos + 1)));
+                }
+            } else if (key == "skyboxScrollLookSensitivity") {
+                sceneSkyboxSettings.scrollingLookSensitivity = std::max(0.0f, std::stof(value));
+            } else if (key == "skyboxScrollVerticalInfluence") {
+                sceneSkyboxSettings.scrollingVerticalInfluence = std::clamp(std::stof(value), 0.0f, 1.0f);
             } else if (currentObj) {
                 const auto& handlers = GetSceneObjectKeyHandlers();
                 auto handlerIt = handlers.find(key);
@@ -2011,6 +2087,9 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         if (outTimeOfDay) {
             *outTimeOfDay = sceneTimeOfDay;
         }
+        if (outSkyboxSettings) {
+            *outSkyboxSettings = sceneSkyboxSettings;
+        }
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load scene: " << e.what() << std::endl;
@@ -2022,7 +2101,8 @@ bool SceneSerializer::loadSceneDeferred(const fs::path& filePath,
                                        std::vector<SceneObject>& objects,
                                        int& nextId,
                                        int& outVersion,
-                                       float* outTimeOfDay) {
+                                       float* outTimeOfDay,
+                                       SkyboxSettings* outSkyboxSettings) {
     struct DeferGuard {
         bool previous = false;
         explicit DeferGuard(bool enable) {
@@ -2035,5 +2115,5 @@ bool SceneSerializer::loadSceneDeferred(const fs::path& filePath,
     };
 
     DeferGuard guard(true);
-    return loadScene(filePath, objects, nextId, outVersion, outTimeOfDay);
+    return loadScene(filePath, objects, nextId, outVersion, outTimeOfDay, outSkyboxSettings);
 }

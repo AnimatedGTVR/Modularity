@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Common.h"
+#include "ProjectManager.h"
 #include "SceneObject.h"
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -15,6 +17,7 @@ public:
     bool init();
     void shutdown();
     bool isReady() const;
+    void setProjectSettings(const ProjectPhysicsSettings& settings);
     bool setLinearVelocity(int id, const glm::vec3& velocity);
     bool setAngularVelocity(int id, const glm::vec3& velocity);
     bool setActorYaw(int id, float yawDegrees);
@@ -41,6 +44,14 @@ private:
         physx::PxRigidActor* actor = nullptr;
         bool isDynamic = false;
         bool isKinematic = false;
+        bool hasWorldBakedStaticMesh = false;
+        bool gravityDisabled = false;
+        float linearDamping = 0.0f;
+        float angularDamping = 0.0f;
+        float massKg = 0.0f;
+        bool useCustomCenterOfMass = false;
+        glm::vec3 centerOfMass = glm::vec3(0.0f);
+        uint32_t angularLockMask = 0;
     };
 
     physx::PxDefaultAllocator mAllocator;
@@ -50,15 +61,16 @@ private:
     physx::PxDefaultCpuDispatcher* mDispatcher = nullptr;
     physx::PxScene* mScene = nullptr;
     physx::PxMaterial* mDefaultMaterial = nullptr;
-    physx::PxRigidStatic* mGroundPlane = nullptr;
     physx::PxCookingParams mCookParams{physx::PxTolerancesScale()};
+    ProjectPhysicsSettings mProjectSettings;
 
     std::unordered_map<int, ActorRecord> mActors;
 
     void clearActors();
-    void createGroundPlane();
+    void applySceneGravity();
     ActorRecord createActorFor(const SceneObject& obj) const;
-    bool attachColliderShape(physx::PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const;
+    bool attachColliderShape(physx::PxRigidActor* actor, const SceneObject& obj, bool isDynamic,
+                             bool bakeWorldSpaceStaticMesh) const;
     bool attachPrimitiveShape(physx::PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const;
     bool gatherMeshData(const SceneObject& obj, std::vector<physx::PxVec3>& vertices, std::vector<uint32_t>& indices) const;
     physx::PxTriangleMesh* cookTriangleMesh(const std::vector<physx::PxVec3>& vertices,

@@ -638,7 +638,35 @@ void PackageManager::applyToBuildConfig(ScriptBuildConfig& config) const {
         const PackageInfo* pkg = findPackage(id);
         if (!pkg) continue;
 
-        for (const auto& dir : pkg->includeDirs) {
+        std::vector<fs::path> resolvedIncludeDirs = pkg->includeDirs;
+        if (pkg->registryPackage && resolvedIncludeDirs.empty()) {
+            auto appendIncludeRoot = [&](const fs::path& candidate) {
+                if (candidate.empty()) return;
+                std::error_code ec;
+                if (!fs::exists(candidate, ec) || !fs::is_directory(candidate, ec)) {
+                    return;
+                }
+                const fs::path normalized = normalizePath(candidate);
+                if (!containsPath(resolvedIncludeDirs, normalized)) {
+                    resolvedIncludeDirs.push_back(normalized);
+                }
+            };
+
+            fs::path packageRoot = projectRegistryPackagePath(*pkg);
+            std::error_code ec;
+            if (!fs::exists(packageRoot, ec) || !fs::is_directory(packageRoot, ec)) {
+                packageRoot = findVersionedPackageAtAnyVersion(globalPackagesFolder(), *pkg).value_or(fs::path());
+            }
+            if (packageRoot.empty()) {
+                packageRoot = pkg->registrySourcePath;
+            }
+
+            appendIncludeRoot(packageRoot);
+            appendIncludeRoot(packageRoot / "include");
+            appendIncludeRoot(packageRoot / "inc");
+        }
+
+        for (const auto& dir : resolvedIncludeDirs) {
             if (!containsPath(config.includeDirs, dir)) {
                 config.includeDirs.push_back(normalizePath(dir));
             }

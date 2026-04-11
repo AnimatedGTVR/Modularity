@@ -409,9 +409,6 @@ bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float gro
     bool grounded = hitGround && hitNormal.y > 0.25f &&
                     hitDist <= capsuleHalf + groundSnap &&
                     verticalVelocity <= 0.35f;
-    if (!hitGround) {
-        grounded = object->position.y <= capsuleHalf + 0.12f && verticalVelocity <= 0.35f;
-    }
     if (outHitPos) *outHitPos = hitPos;
     if (outHitGround) *outHitGround = hitGround;
     if (outHitNormal) *outHitNormal = hitNormal;
@@ -580,8 +577,8 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
 
     if (grounded) {
         state.verticalVelocity = 0.0f;
-        if (!havePhysVel) {
-            object->position.y = hitGround ? std::max(object->position.y, hitPos.y + capsuleHalf) : capsuleHalf;
+        if (!havePhysVel && hitGround) {
+            object->position.y = std::max(object->position.y, hitPos.y + capsuleHalf);
         }
         if (IsJumpDown()) {
             state.verticalVelocity = jumpStrength;
@@ -949,7 +946,8 @@ bool ScriptContext::HasRigidbody() const {
 }
 
 bool ScriptContext::HasRigidbody2D() const {
-    return isUIObject(object) && object->hasRigidbody2D && object->rigidbody2D.enabled;
+    return object && UsesUIOnly2DPhysics(*object) &&
+           object->hasRigidbody2D && object->rigidbody2D.enabled;
 }
 
 bool ScriptContext::EnsureCapsuleCollider(float height, float radius) {
@@ -1071,6 +1069,16 @@ bool ScriptContext::AddRigidbodyAngularImpulse(const glm::vec3& impulse) {
 bool ScriptContext::SetRigidbodyYaw(float yawDegrees) {
     if (!engine || !object || !HasRigidbody()) return false;
     return engine->setRigidbodyYawFromScript(object->id, yawDegrees);
+}
+
+float ScriptContext::GetProjectGravityScale() const {
+    if (!engine) return 1.0f;
+    return engine->getProjectGravityScaleFromScript();
+}
+
+void ScriptContext::SetProjectGravityScale(float scale) {
+    if (!engine) return;
+    engine->setProjectGravityScaleFromScript(scale);
 }
 
 bool ScriptContext::RaycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,

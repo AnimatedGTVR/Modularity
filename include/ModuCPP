@@ -20,6 +20,32 @@ namespace ModuCPP {
 
 using vec2 = glm::vec2;
 using vec3 = glm::vec3;
+using Vector2 = vec2;
+using Vector3 = vec3;
+using string = std::string;
+
+namespace Math {
+template <typename T>
+inline T Max(const T& a, const T& b) {
+    return std::max(a, b);
+}
+
+template <typename T>
+inline T Min(const T& a, const T& b) {
+    return std::min(a, b);
+}
+
+template <typename T>
+inline T Clamp(const T& value, const T& minValue, const T& maxValue) {
+    return std::clamp(value, minValue, maxValue);
+}
+
+template <typename T>
+inline T Abs(const T& value) {
+    using std::abs;
+    return abs(value);
+}
+} // namespace Math
 
 namespace detail {
 inline thread_local ScriptContext* gCtx = nullptr;
@@ -154,6 +180,19 @@ inline ScriptContext* ctxPtr() {
 
 inline ScriptContext& ctx() {
     return *detail::gCtx;
+}
+
+inline float GetProjectGravityScale() {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        return scriptCtx->GetProjectGravityScale();
+    }
+    return 1.0f;
+}
+
+inline void SetProjectGravityScale(float scale) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        scriptCtx->SetProjectGravityScale(scale);
+    }
 }
 
 template <typename T>
@@ -489,8 +528,22 @@ inline bool TryMoveRigidbody2D(ScriptContext& ctx,
     return true;
 }
 
+inline bool TryMoveRigidbody2D(ScriptContext& ctx,
+                               const vec2& targetVelocity, float acceleration, float drag, float dt,
+                               vec2& outVelocity) {
+    return TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt, &outVelocity);
+}
+
 inline bool TryMoveRigidbody2D(const vec2& targetVelocity, float acceleration, float drag, float dt,
                                vec2* outVelocity = nullptr) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        return TryMoveRigidbody2D(*scriptCtx, targetVelocity, acceleration, drag, dt, outVelocity);
+    }
+    return false;
+}
+
+inline bool TryMoveRigidbody2D(const vec2& targetVelocity, float acceleration, float drag, float dt,
+                               vec2& outVelocity) {
     if (ScriptContext* scriptCtx = ctxPtr()) {
         return TryMoveRigidbody2D(*scriptCtx, targetVelocity, acceleration, drag, dt, outVelocity);
     }
@@ -591,6 +644,12 @@ struct AudioFacade {
 };
 
 inline const AudioFacade audio{};
+
+struct TimeFacade {
+    float deltaTime = 0.0f;
+};
+
+inline thread_local TimeFacade time{};
 
 struct SpriteFacade {
     bool HasClips() const {

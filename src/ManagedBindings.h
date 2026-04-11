@@ -43,6 +43,8 @@ int modu_ctx_add_rigidbody_angular_impulse(ScriptContext* ctx, float x, float y,
 int modu_ctx_set_rigidbody_yaw(ScriptContext* ctx, float yawDegrees);
 int modu_ctx_set_rigidbody_rotation(ScriptContext* ctx, float x, float y, float z);
 int modu_ctx_teleport_rigidbody(ScriptContext* ctx, float px, float py, float pz, float rx, float ry, float rz);
+float modu_ctx_get_project_gravity_scale(ScriptContext* ctx);
+void modu_ctx_set_project_gravity_scale(ScriptContext* ctx, float scale);
 int modu_ctx_raycast_closest_detailed(ScriptContext* ctx, float ox, float oy, float oz,
                                       float dx, float dy, float dz, float distance,
                                       float* hitPosX, float* hitPosY, float* hitPosZ,
@@ -243,6 +245,9 @@ struct ManagedNativeApi {
     int (*playAudioOneShot)(ScriptContext* ctx, const char* clipPath, float volumeScale) = nullptr;
     void (*markDirty)(ScriptContext* ctx) = nullptr;
     int (*ensureCapsuleCollider)(ScriptContext* ctx, float height, float radius) = nullptr;
+    // Version 7+ additions.
+    float (*getProjectGravityScale)(ScriptContext* ctx) = nullptr;
+    void (*setProjectGravityScale)(ScriptContext* ctx, float scale) = nullptr;
 };
 
 ManagedNativeApi BuildManagedNativeApi();

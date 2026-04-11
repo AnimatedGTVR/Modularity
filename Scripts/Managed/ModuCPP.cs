@@ -169,6 +169,8 @@ namespace ModuCPP {
         public IntPtr PlayAudioOneShot;
         public IntPtr MarkDirty;
         public IntPtr EnsureCapsuleCollider;
+        public IntPtr GetProjectGravityScale;
+        public IntPtr SetProjectGravityScale;
     }
 
     internal unsafe static class Native {
@@ -279,6 +281,8 @@ namespace ModuCPP {
         public static PlayAudioOneShotFn PlayAudioOneShot;
         public static MarkDirtyFn MarkDirty;
         public static EnsureCapsuleColliderFn EnsureCapsuleCollider;
+        public static GetProjectGravityScaleFn GetProjectGravityScale;
+        public static SetProjectGravityScaleFn SetProjectGravityScale;
 
         public static void BindDelegates() {
             GetObjectId = Marshal.GetDelegateForFunctionPointer<GetObjectIdFn>(Api.GetObjectId);
@@ -689,6 +693,16 @@ namespace ModuCPP {
             } else {
                 EnsureCapsuleCollider = (_, _, _) => 0;
             }
+            if (Api.Version >= 7 && Api.GetProjectGravityScale != IntPtr.Zero) {
+                GetProjectGravityScale = Marshal.GetDelegateForFunctionPointer<GetProjectGravityScaleFn>(Api.GetProjectGravityScale);
+            } else {
+                GetProjectGravityScale = _ => 1f;
+            }
+            if (Api.Version >= 7 && Api.SetProjectGravityScale != IntPtr.Zero) {
+                SetProjectGravityScale = Marshal.GetDelegateForFunctionPointer<SetProjectGravityScaleFn>(Api.SetProjectGravityScale);
+            } else {
+                SetProjectGravityScale = (_, _) => { };
+            }
         }
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -910,6 +924,10 @@ namespace ModuCPP {
         public unsafe delegate void MarkDirtyFn(IntPtr ctx);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public unsafe delegate int EnsureCapsuleColliderFn(IntPtr ctx, float height, float radius);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate float GetProjectGravityScaleFn(IntPtr ctx);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public unsafe delegate void SetProjectGravityScaleFn(IntPtr ctx, float scale);
     }
 
     public struct ModuObject {
@@ -1196,6 +1214,11 @@ namespace ModuCPP {
         public bool TeleportRigidbody(Vec3 position, Vec3 rotationDegrees) {
             return Native.TeleportRigidbody(handle, position.X, position.Y, position.Z,
                                             rotationDegrees.X, rotationDegrees.Y, rotationDegrees.Z) != 0;
+        }
+
+        public float ProjectGravityScale {
+            get => Native.GetProjectGravityScale(handle);
+            set => Native.SetProjectGravityScale(handle, value);
         }
 
         public bool RaycastClosestDetailed(Vec3 origin, Vec3 direction, float distance, out RaycastHit hit) {

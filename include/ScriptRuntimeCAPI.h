@@ -37,6 +37,8 @@ int Modu_SetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3 velocity);
 int Modu_AddRigidbodyForce(ModuScriptContext* ctx, ModuVec3 force);
 int Modu_GetRigidbodyVelocity(ModuScriptContext* ctx, ModuVec3* outVelocity);
 int Modu_SetRigidbodyRotation(ModuScriptContext* ctx, ModuVec3 rotation);
+float Modu_GetProjectGravityScale(ModuScriptContext* ctx);
+void Modu_SetProjectGravityScale(ModuScriptContext* ctx, float scale);
 int Modu_EnsureCapsuleCollider(ModuScriptContext* ctx, float height, float radius);
 int Modu_EnsureRigidbody(ModuScriptContext* ctx, int useGravity, int kinematic);
 int Modu_HasAnimation(ModuScriptContext* ctx);
