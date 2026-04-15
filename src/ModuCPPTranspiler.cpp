@@ -23,6 +23,7 @@ enum class FieldKind {
     Vec3,
     String,
     ObjectList,
+    DialogueLines,
     Custom
 };
 
@@ -34,10 +35,27 @@ struct FieldSpec {
     std::vector<std::string> arrayDimensions;
     std::string name;
     std::string initializer;
+    std::optional<std::string> inspectorHeader;
+    std::optional<std::string> sliderMinExpr;
+    std::optional<std::string> sliderMaxExpr;
+    std::optional<std::string> soundSetLabel;
     std::optional<std::string> rangeMinExpr;
     std::optional<std::string> rangeMaxExpr;
     std::optional<std::string> stepExpr;
+    bool hasObjectRefAttribute = false;
+    bool hasObjectListAttribute = false;
+    bool hasDialogueLinesAttribute = false;
+    bool hasSliderAttribute = false;
+    bool hasClipGridPairAttribute = false;
+    bool hasSeparatorAttribute = false;
+    bool hasInspectorMetadata = false;
     bool persist = false;
+};
+
+struct SubScriptSpec {
+    std::string name;
+    std::string rawDefinition;
+    std::vector<FieldSpec> fields;
 };
 
 struct MethodSpec {
@@ -46,6 +64,7 @@ struct MethodSpec {
     std::string originalParams;
     std::string transpiledParams;
     std::string body;
+    bool isStatic = false;
     bool hasContext = false;
     bool contextIsPointer = false;
     std::string contextParamName;
@@ -61,6 +80,7 @@ struct ClassSpec {
     std::vector<std::string> includeDirectives;
     std::vector<std::string> usingDirectives;
     std::vector<FieldSpec> fields;
+    std::vector<SubScriptSpec> subScripts;
     std::vector<MethodSpec> methods;
     std::string inspectorBlock;
     std::string passthroughCode;
@@ -79,6 +99,23 @@ std::string trimCopy(const std::string& value) {
         --end;
     }
     return value.substr(start, end - start);
+}
+
+bool isIdentifierStartChar(char c) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    return std::isalpha(uc) != 0 || c == '_';
+}
+
+bool isIdentifierChar(char c) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    return std::isalnum(uc) != 0 || c == '_';
+}
+
+size_t skipWhitespace(const std::string& text, size_t pos) {
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+        ++pos;
+    }
+    return pos;
 }
 
 size_t lineStartFromOffset(const std::string& text, size_t offset) {
@@ -409,6 +446,58 @@ size_t findMatchingParen(const std::string& text, size_t openParenPos) {
     return std::string::npos;
 }
 
+size_t findMatchingBracket(const std::string& text, size_t openBracketPos) {
+    if (openBracketPos >= text.size() || text[openBracketPos] != '[') return std::string::npos;
+    int depth = 1;
+    bool inString = false;
+    bool inChar = false;
+    bool escaped = false;
+
+    for (size_t i = openBracketPos + 1; i < text.size(); ++i) {
+        const char c = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inChar) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '\'') {
+                inChar = false;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            inString = true;
+            escaped = false;
+            continue;
+        }
+        if (c == '\'') {
+            inChar = true;
+            escaped = false;
+            continue;
+        }
+        if (c == '[') {
+            ++depth;
+        } else if (c == ']') {
+            --depth;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+    return std::string::npos;
+}
+
 size_t findTopLevelChar(const std::string& text, char needle) {
     int parenDepth = 0;
     int angleDepth = 0;
@@ -671,11 +760,20 @@ bool looksLikeDeltaTimeParameter(const std::string& parameter) {
 }
 
 std::string mapScriptBaseTypeToCpp(const std::string& rawType) {
-    const std::string normalized = toLowerCopy(removeWhitespaceCopy(rawType));
+    std::string normalizedType = trimCopy(rawType);
+    size_t dotPos = 0;
+    while ((dotPos = normalizedType.find('.', dotPos)) != std::string::npos) {
+        normalizedType.replace(dotPos, 1, "::");
+        dotPos += 2;
+    }
+
+    const std::string normalized = toLowerCopy(removeWhitespaceCopy(normalizedType));
     if (normalized == "string") return "std::string";
     if (normalized == "vector2" || normalized == "vec2") return "glm::vec2";
     if (normalized == "vector3" || normalized == "vec3") return "glm::vec3";
-    return rawType;
+    if (normalized == "sceneobj*" || normalized == "sceneobject*") return "SceneObject*";
+    if (normalized == "sceneobj" || normalized == "sceneobject") return "SceneObject";
+    return normalizedType;
 }
 
 bool parseArrayType(const std::string& rawType,
@@ -690,14 +788,26 @@ bool parseArrayType(const std::string& rawType,
             return false;
         }
         const std::string dim = trimCopy(remaining.substr(open + 1, remaining.size() - open - 2));
-        if (dim.empty()) {
-            return false;
-        }
         outDimensions.insert(outDimensions.begin(), dim);
         remaining = trimCopy(remaining.substr(0, open));
     }
 
     outBaseType = remaining;
+    return true;
+}
+
+bool parseListType(const std::string& rawType, std::string& outElementType) {
+    std::string trimmed = trimCopy(rawType);
+    if (trimmed.rfind("List<", 0) != 0 || trimmed.back() != '>') {
+        return false;
+    }
+
+    const std::string inner = trimCopy(trimmed.substr(5, trimmed.size() - 6));
+    if (inner.empty()) {
+        return false;
+    }
+
+    outElementType = inner;
     return true;
 }
 
@@ -707,9 +817,24 @@ FieldKind publicFieldKindForType(const std::string& rawType) {
     if (!parseArrayType(rawType, baseType, dims)) {
         return FieldKind::Custom;
     }
-    if (!dims.empty()) return FieldKind::Custom;
+
+    std::string listElementType;
+    if (parseListType(baseType, listElementType)) {
+        dims.push_back("");
+        baseType = listElementType;
+    }
 
     const std::string normalized = toLowerCopy(removeWhitespaceCopy(baseType));
+    if (dims.size() == 1 && trimCopy(dims[0]).empty()) {
+        if (normalized == "dialogueport::dialogueline") return FieldKind::DialogueLines;
+        if (normalized == "sceneobj*" || normalized == "sceneobject*" ||
+            normalized == "sceneobj" || normalized == "sceneobject") {
+            return FieldKind::ObjectList;
+        }
+        return FieldKind::Custom;
+    }
+    if (!dims.empty()) return FieldKind::Custom;
+
     if (normalized == "float") return FieldKind::Float;
     if (normalized == "int") return FieldKind::Int;
     if (normalized == "bool") return FieldKind::Bool;
@@ -727,24 +852,200 @@ std::string mapScriptTypeToCpp(const std::string& rawType) {
         return mapScriptBaseTypeToCpp(rawType);
     }
 
+    std::string listElementType;
+    if (parseListType(baseType, listElementType)) {
+        dims.push_back("");
+        baseType = listElementType;
+    }
+
     std::string cppType = mapScriptBaseTypeToCpp(baseType);
     for (auto it = dims.rbegin(); it != dims.rend(); ++it) {
-        cppType = "std::array<" + cppType + ", " + *it + ">";
+        if (trimCopy(*it).empty()) {
+            cppType = "std::vector<" + cppType + ">";
+        } else {
+            cppType = "std::array<" + cppType + ", " + *it + ">";
+        }
     }
     return cppType;
 }
 
+bool parseFieldAttributeBlock(const std::string& attributeText, FieldSpec& outField, std::string& error) {
+    std::string trimmed = trimCopy(attributeText);
+    if (trimmed.empty()) {
+        return true;
+    }
+
+    const size_t openParen = findTopLevelChar(trimmed, '(');
+    std::string name = trimCopy(trimmed);
+    std::string args;
+    if (openParen != std::string::npos) {
+        const size_t closeParen = findMatchingParen(trimmed, openParen);
+        if (closeParen == std::string::npos) {
+            error = "Field attribute has unmatched '(' near: [" + trimmed + "]";
+            return false;
+        }
+        name = trimCopy(trimmed.substr(0, openParen));
+        args = trimCopy(trimmed.substr(openParen + 1, closeParen - openParen - 1));
+        if (!trimCopy(trimmed.substr(closeParen + 1)).empty()) {
+            error = "Unexpected tokens after field attribute: [" + trimmed + "]";
+            return false;
+        }
+    }
+
+    if (name == "Header") {
+        const std::vector<std::string> parts = args.empty() ? std::vector<std::string>{} : splitTopLevel(args, ',');
+        if (parts.size() != 1) {
+            error = "[Header(title)] requires exactly one argument.";
+            return false;
+        }
+        outField.inspectorHeader = trimCopy(parts[0]);
+        if (outField.inspectorHeader->empty()) {
+            error = "[Header(title)] argument cannot be empty.";
+            return false;
+        }
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "Slider") {
+        const std::vector<std::string> parts = splitTopLevel(args, ',');
+        if (parts.size() != 2) {
+            error = "[Slider(min, max)] requires exactly two arguments.";
+            return false;
+        }
+        outField.hasSliderAttribute = true;
+        outField.sliderMinExpr = trimCopy(parts[0]);
+        outField.sliderMaxExpr = trimCopy(parts[1]);
+        if (outField.sliderMinExpr->empty() || outField.sliderMaxExpr->empty()) {
+            error = "[Slider(min, max)] arguments cannot be empty.";
+            return false;
+        }
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "ObjectRef") {
+        if (!args.empty()) {
+            error = "[ObjectRef] does not take arguments.";
+            return false;
+        }
+        outField.hasObjectRefAttribute = true;
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "ObjectList") {
+        if (!args.empty()) {
+            error = "[ObjectList] does not take arguments.";
+            return false;
+        }
+        outField.hasObjectListAttribute = true;
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "DialogueLines") {
+        if (!args.empty()) {
+            error = "[DialogueLines] does not take arguments.";
+            return false;
+        }
+        outField.hasDialogueLinesAttribute = true;
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "ClipGridPair") {
+        if (!args.empty()) {
+            error = "[ClipGridPair] does not take arguments.";
+            return false;
+        }
+        outField.hasClipGridPairAttribute = true;
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "Separator") {
+        if (!args.empty()) {
+            error = "[Separator] does not take arguments.";
+            return false;
+        }
+        outField.hasSeparatorAttribute = true;
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "SoundSet") {
+        const std::vector<std::string> parts = splitTopLevel(args, ',');
+        if (parts.size() != 1) {
+            error = "[SoundSet(label)] requires exactly one argument.";
+            return false;
+        }
+        outField.soundSetLabel = trimCopy(parts[0]);
+        if (outField.soundSetLabel->empty()) {
+            error = "[SoundSet(label)] argument cannot be empty.";
+            return false;
+        }
+        outField.hasInspectorMetadata = true;
+        return true;
+    }
+    if (name == "range") {
+        const std::vector<std::string> parts = splitTopLevel(args, ',');
+        if (parts.size() != 2) {
+            error = "@range requires two arguments: @range(min, max)";
+            return false;
+        }
+        outField.rangeMinExpr = trimCopy(parts[0]);
+        outField.rangeMaxExpr = trimCopy(parts[1]);
+        if (outField.rangeMinExpr->empty() || outField.rangeMaxExpr->empty()) {
+            error = "@range arguments cannot be empty.";
+            return false;
+        }
+        return true;
+    }
+    if (name == "step") {
+        const std::vector<std::string> parts = splitTopLevel(args, ',');
+        if (parts.size() != 1) {
+            error = "@step requires one argument: @step(value)";
+            return false;
+        }
+        outField.stepExpr = trimCopy(parts[0]);
+        if (outField.stepExpr->empty()) {
+            error = "@step argument cannot be empty.";
+            return false;
+        }
+        return true;
+    }
+
+    error = "Unsupported field attribute '" + name +
+            "'. Supported attributes: [Header], [Slider], [ObjectRef], [ObjectList], [DialogueLines], [ClipGridPair], [Separator], [SoundSet], @range, @step.";
+    return false;
+}
+
 bool stripAndParseFieldAnnotations(std::string& declaration, FieldSpec& outField, std::string& error) {
+    std::string working = trimCopy(declaration);
+    size_t cursor = 0;
+    while (cursor < working.size()) {
+        while (cursor < working.size() &&
+               std::isspace(static_cast<unsigned char>(working[cursor])) != 0) {
+            ++cursor;
+        }
+        if (cursor >= working.size() || working[cursor] != '[') {
+            break;
+        }
+        const size_t close = findMatchingBracket(working, cursor);
+        if (close == std::string::npos) {
+            error = "Field attribute has unmatched '[' near: " + working.substr(cursor);
+            return false;
+        }
+        if (!parseFieldAttributeBlock(working.substr(cursor + 1, close - cursor - 1), outField, error)) {
+            return false;
+        }
+        cursor = close + 1;
+    }
+
     std::string cleaned;
-    cleaned.reserve(declaration.size());
+    cleaned.reserve(working.size());
 
     bool inString = false;
     bool inChar = false;
     bool escaped = false;
 
-    size_t i = 0;
-    while (i < declaration.size()) {
-        const char c = declaration[i];
+    size_t i = cursor;
+    while (i < working.size()) {
+        const char c = working[i];
         if (inString) {
             cleaned.push_back(c);
             if (escaped) {
@@ -793,25 +1094,25 @@ bool stripAndParseFieldAnnotations(std::string& declaration, FieldSpec& outField
 
         size_t nameStart = i + 1;
         size_t nameEnd = nameStart;
-        while (nameEnd < declaration.size()) {
-            const unsigned char ch = static_cast<unsigned char>(declaration[nameEnd]);
-            if (std::isalnum(ch) == 0 && declaration[nameEnd] != '_') break;
+        while (nameEnd < working.size()) {
+            const unsigned char ch = static_cast<unsigned char>(working[nameEnd]);
+            if (std::isalnum(ch) == 0 && working[nameEnd] != '_') break;
             ++nameEnd;
         }
-        if (nameEnd == nameStart || nameEnd >= declaration.size() || declaration[nameEnd] != '(') {
-            error = "Invalid field annotation syntax near: " + declaration.substr(i);
+        if (nameEnd == nameStart || nameEnd >= working.size() || working[nameEnd] != '(') {
+            error = "Invalid field annotation syntax near: " + working.substr(i);
             return false;
         }
 
-        const std::string annotationName = declaration.substr(nameStart, nameEnd - nameStart);
+        const std::string annotationName = working.substr(nameStart, nameEnd - nameStart);
         const size_t argsOpen = nameEnd;
-        const size_t argsClose = findMatchingParen(declaration, argsOpen);
+        const size_t argsClose = findMatchingParen(working, argsOpen);
         if (argsClose == std::string::npos) {
-            error = "Field annotation has unmatched '(' near: " + declaration.substr(i);
+            error = "Field annotation has unmatched '(' near: " + working.substr(i);
             return false;
         }
 
-        const std::string args = declaration.substr(argsOpen + 1, argsClose - argsOpen - 1);
+        const std::string args = working.substr(argsOpen + 1, argsClose - argsOpen - 1);
         if (annotationName == "range") {
             const std::vector<std::string> parts = splitTopLevel(args, ',');
             if (parts.size() != 2) {
@@ -861,6 +1162,10 @@ bool parseFieldDecl(const std::string& fieldDecl, FieldSpec& outField, std::stri
         return false;
     }
 
+    if (!stripAndParseFieldAnnotations(trimmed, outField, error)) {
+        return false;
+    }
+
     const std::string publicPrefix = "public ";
     const std::string privatePrefix = "private ";
     if (trimmed.rfind(publicPrefix, 0) == 0) {
@@ -871,10 +1176,6 @@ bool parseFieldDecl(const std::string& fieldDecl, FieldSpec& outField, std::stri
         trimmed = trimCopy(trimmed.substr(privatePrefix.size()));
     } else {
         error = "ModuCPP field is missing 'public' or 'private': " + fieldDecl;
-        return false;
-    }
-
-    if (!stripAndParseFieldAnnotations(trimmed, outField, error)) {
         return false;
     }
 
@@ -916,7 +1217,20 @@ bool parseFieldDecl(const std::string& fieldDecl, FieldSpec& outField, std::stri
         return false;
     }
 
+    std::string listElementType;
+    if (parseListType(outField.baseType, listElementType)) {
+        outField.baseType = listElementType;
+        outField.arrayDimensions.push_back("");
+    }
+
     outField.kind = publicFieldKindForType(outField.rawType);
+    if (outField.hasDialogueLinesAttribute) {
+        outField.kind = FieldKind::DialogueLines;
+    } else if (outField.hasObjectListAttribute) {
+        outField.kind = FieldKind::ObjectList;
+    } else if (outField.hasObjectRefAttribute && outField.kind == FieldKind::Custom) {
+        outField.kind = FieldKind::String;
+    }
 
     return true;
 }
@@ -1063,7 +1377,15 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     }
 
     outMethod.name = beforeParen.substr(nameStart, nameEnd - nameStart);
-    outMethod.returnType = mapScriptTypeToCpp(trimCopy(beforeParen.substr(0, nameStart)));
+    {
+        std::string rawReturn = trimCopy(beforeParen.substr(0, nameStart));
+        static const std::regex staticPrefix(R"(^static\s+)");
+        if (std::regex_search(rawReturn, staticPrefix)) {
+            outMethod.isStatic = true;
+            rawReturn = std::regex_replace(rawReturn, staticPrefix, "");
+        }
+        outMethod.returnType = mapScriptTypeToCpp(rawReturn);
+    }
     if (outMethod.returnType.empty()) {
         error = "Unsupported ModuCPP method declaration (missing return type): " + signature;
         return false;
@@ -1266,6 +1588,233 @@ std::string stripIncludeDirectives(const std::string& sourceText) {
     return out.str();
 }
 
+std::string withDefaultFieldVisibility(const std::string& declaration, const char* visibilityKeyword) {
+    std::string trimmed = trimCopy(declaration);
+    size_t cursor = 0;
+    while (cursor < trimmed.size()) {
+        cursor = skipWhitespace(trimmed, cursor);
+        if (cursor >= trimmed.size() || trimmed[cursor] != '[') {
+            break;
+        }
+        const size_t close = findMatchingBracket(trimmed, cursor);
+        if (close == std::string::npos) {
+            break;
+        }
+        cursor = close + 1;
+    }
+
+    const size_t tokenStart = skipWhitespace(trimmed, cursor);
+    if (trimmed.compare(tokenStart, 7, "public ") == 0 ||
+        trimmed.compare(tokenStart, 8, "private ") == 0 ||
+        trimmed.compare(tokenStart, 7, "public:") == 0 ||
+        trimmed.compare(tokenStart, 8, "private:") == 0) {
+        return trimmed;
+    }
+
+    return trimCopy(trimmed.substr(0, tokenStart)) +
+           (tokenStart > 0 ? " " : "") +
+           std::string(visibilityKeyword) + " " +
+           trimmed.substr(tokenStart);
+}
+
+bool tryParseSubScriptStruct(const std::string& structName,
+                             const std::string& bodyRaw,
+                             const std::string& bodyClean,
+                             SubScriptSpec& outSpec) {
+    outSpec.name = structName;
+    outSpec.rawDefinition = bodyRaw;
+
+    std::set<std::string> fieldNames;
+    size_t i = 0;
+    while (i < bodyClean.size()) {
+        while (i < bodyClean.size() && std::isspace(static_cast<unsigned char>(bodyClean[i])) != 0) {
+            ++i;
+        }
+        if (i >= bodyClean.size()) break;
+
+        size_t nextSemicolon = std::string::npos;
+        size_t nextOpenBrace = std::string::npos;
+        int parenDepth = 0;
+        int angleDepth = 0;
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        bool inString = false;
+        bool inChar = false;
+        bool escaped = false;
+
+        for (size_t j = i; j < bodyClean.size(); ++j) {
+            const char c = bodyClean[j];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inString = false;
+                continue;
+            }
+            if (inChar) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '\'') inChar = false;
+                continue;
+            }
+
+            if (c == '"') {
+                inString = true;
+                escaped = false;
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                escaped = false;
+                continue;
+            }
+
+            if (c == '(') ++parenDepth;
+            else if (c == ')') angleDepth = 0, parenDepth = std::max(0, parenDepth - 1);
+            else if (c == '<') ++angleDepth;
+            else if (c == '>') angleDepth = std::max(0, angleDepth - 1);
+            else if (c == '[') ++bracketDepth;
+            else if (c == ']') bracketDepth = std::max(0, bracketDepth - 1);
+            else if (c == '{') {
+                if (parenDepth == 0 && angleDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
+                    nextOpenBrace = j;
+                    break;
+                }
+                ++braceDepth;
+            } else if (c == '}') {
+                braceDepth = std::max(0, braceDepth - 1);
+            }
+
+            if (parenDepth == 0 && angleDepth == 0 && bracketDepth == 0 && braceDepth == 0 && c == ';') {
+                nextSemicolon = j;
+                break;
+            }
+        }
+
+        if (nextSemicolon == std::string::npos && nextOpenBrace == std::string::npos) {
+            break;
+        }
+
+        if (nextOpenBrace != std::string::npos &&
+            (nextSemicolon == std::string::npos || nextOpenBrace < nextSemicolon)) {
+            const size_t methodCloseBrace = findMatchingBrace(bodyClean, nextOpenBrace);
+            if (methodCloseBrace == std::string::npos) {
+                return false;
+            }
+            i = methodCloseBrace + 1;
+            if (i < bodyClean.size() && bodyClean[i] == ';') {
+                ++i;
+            }
+            continue;
+        }
+
+        std::string statementDecl = bodyRaw.substr(i, nextSemicolon - i + 1);
+        const std::string statementTrimmed = trimCopy(statementDecl);
+        if (statementTrimmed.empty() || statementTrimmed == "public:" || statementTrimmed == "private:") {
+            i = nextSemicolon + 1;
+            continue;
+        }
+
+        FieldSpec field;
+        std::string fieldError;
+        if (!parseFieldDecl(withDefaultFieldVisibility(statementDecl, "public"), field, fieldError)) {
+            i = nextSemicolon + 1;
+            continue;
+        }
+        if (!fieldNames.insert(field.name).second) {
+            return false;
+        }
+        outSpec.fields.push_back(std::move(field));
+        i = nextSemicolon + 1;
+    }
+
+    return !outSpec.fields.empty();
+}
+
+std::vector<SubScriptSpec> parseSubScriptStructs(const std::string& sourceText) {
+    std::vector<SubScriptSpec> subScripts;
+    const std::string stripped = stripCommentsPreserveLayout(sourceText);
+    static const std::regex structPattern(R"(\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+
+    for (auto it = std::sregex_iterator(stripped.begin(), stripped.end(), structPattern);
+         it != std::sregex_iterator(); ++it) {
+        const std::smatch& match = *it;
+        const size_t matchPos = static_cast<size_t>(match.position());
+        const size_t matchLen = static_cast<size_t>(match.length());
+        const size_t openBrace = stripped.find('{', matchPos + matchLen);
+        if (openBrace == std::string::npos) {
+            continue;
+        }
+        const size_t closeBrace = findMatchingBrace(stripped, openBrace);
+        if (closeBrace == std::string::npos) {
+            continue;
+        }
+
+        SubScriptSpec spec;
+        const std::string bodyRaw = sourceText.substr(openBrace + 1, closeBrace - openBrace - 1);
+        const std::string bodyClean = stripped.substr(openBrace + 1, closeBrace - openBrace - 1);
+        if (!tryParseSubScriptStruct(match[1].str(), bodyRaw, bodyClean, spec)) {
+            continue;
+        }
+        subScripts.push_back(std::move(spec));
+    }
+
+    return subScripts;
+}
+
+std::string stripStructDefinitionsByName(const std::string& sourceText,
+                                         const std::unordered_set<std::string>& structNames) {
+    if (structNames.empty()) return sourceText;
+
+    std::string stripped = stripCommentsPreserveLayout(sourceText);
+    std::string result = sourceText;
+    static const std::regex structPattern(R"(\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+
+    size_t searchPos = 0;
+    while (searchPos < stripped.size()) {
+        std::smatch match;
+        auto begin = stripped.cbegin() + static_cast<std::ptrdiff_t>(searchPos);
+        if (!std::regex_search(begin, stripped.cend(), match, structPattern)) {
+            break;
+        }
+
+        const size_t matchPos = searchPos + static_cast<size_t>(match.position());
+        const size_t matchLen = static_cast<size_t>(match.length());
+        const std::string structName = match[1].str();
+        if (structNames.find(structName) == structNames.end()) {
+            searchPos = matchPos + matchLen;
+            continue;
+        }
+
+        const size_t openBrace = stripped.find('{', matchPos + matchLen);
+        if (openBrace == std::string::npos) {
+            searchPos = matchPos + matchLen;
+            continue;
+        }
+        const size_t closeBrace = findMatchingBrace(stripped, openBrace);
+        if (closeBrace == std::string::npos) {
+            searchPos = matchPos + matchLen;
+            continue;
+        }
+
+        size_t endPos = closeBrace + 1;
+        while (endPos < stripped.size() &&
+               std::isspace(static_cast<unsigned char>(stripped[endPos])) != 0) {
+            ++endPos;
+        }
+        if (endPos < stripped.size() && stripped[endPos] == ';') {
+            ++endPos;
+        }
+
+        for (size_t i = matchPos; i < endPos; ++i) {
+            result[i] = ' ';
+            stripped[i] = ' ';
+        }
+        searchPos = endPos;
+    }
+
+    return result;
+}
+
 std::string normalizeModuPackageLines(const std::string& sourceText) {
     std::istringstream input(sourceText);
     std::ostringstream out;
@@ -1322,16 +1871,23 @@ std::string convertPublicEnumsToCpp(const std::string& sourceText) {
         out += "}";
 
         size_t next = closeBrace + 1;
+        // Peek past whitespace to detect an explicit semicolon in the source.
+        size_t semiCheck = next;
+        while (semiCheck < sourceText.size() &&
+               std::isspace(static_cast<unsigned char>(sourceText[semiCheck])) != 0) {
+            ++semiCheck;
+        }
+        const bool hadExplicitSemi = (semiCheck < sourceText.size() && sourceText[semiCheck] == ';');
+        // Emit the semicolon immediately after } so it does not end up on the
+        // next line (which would prefix the following declaration with ";").
+        out += ";";
         while (next < sourceText.size() &&
                std::isspace(static_cast<unsigned char>(sourceText[next])) != 0) {
             out.push_back(sourceText[next]);
             ++next;
         }
-        if (next >= sourceText.size() || sourceText[next] != ';') {
-            out += ";";
-        } else {
-            out.push_back(';');
-            ++next;
+        if (hadExplicitSemi) {
+            ++next; // consume the explicit semicolon already in the source
         }
         cursor = next;
     }
@@ -1339,8 +1895,89 @@ std::string convertPublicEnumsToCpp(const std::string& sourceText) {
     return out;
 }
 
+// Strip leading "public " / "private " from each line of a SubScript struct
+// body so the emitted C++ struct has plain member declarations.
+static std::string stripStructBodyAccessSpecifiers(const std::string& body) {
+    std::string result;
+    result.reserve(body.size());
+    size_t i = 0;
+    while (i < body.size()) {
+        const size_t lineStart = i;
+        // Advance past leading whitespace on this line segment.
+        while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) {
+            ++i;
+        }
+        const size_t wsLen = i - lineStart;
+        if (body.compare(i, 7, "public ") == 0) {
+            result.append(body, lineStart, wsLen);
+            i += 7; // skip "public "
+        } else if (body.compare(i, 8, "private ") == 0) {
+            result.append(body, lineStart, wsLen);
+            i += 8; // skip "private "
+        } else {
+            result.append(body, lineStart, wsLen);
+        }
+        // Copy the rest of the line up to and including the newline.
+        while (i < body.size() && body[i] != '\n') {
+            result += body[i++];
+        }
+        if (i < body.size()) {
+            result += body[i++]; // the '\n'
+        }
+    }
+    return result;
+}
+
+std::string convertSubScriptsToCpp(const std::string& sourceText) {
+    const std::string stripped = stripCommentsPreserveLayout(sourceText);
+    static const std::regex subScriptPattern(R"(\bSubScript\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+
+    std::string out;
+    size_t cursor = 0;
+    for (auto it = std::sregex_iterator(stripped.begin(), stripped.end(), subScriptPattern);
+         it != std::sregex_iterator(); ++it) {
+        const std::smatch& match = *it;
+        const size_t matchPos = static_cast<size_t>(match.position());
+        const size_t matchLen = static_cast<size_t>(match.length());
+
+        const size_t openBrace = stripped.find('{', matchPos + matchLen);
+        if (openBrace == std::string::npos) continue;
+        const size_t closeBrace = findMatchingBrace(stripped, openBrace);
+        if (closeBrace == std::string::npos) continue;
+
+        // Everything before this SubScript declaration.
+        out += sourceText.substr(cursor, matchPos - cursor);
+        // "struct TypeName" instead of "SubScript TypeName".
+        out += "struct " + match[1].str();
+        // Spacing / anything between the name and the opening brace.
+        out += sourceText.substr(matchPos + matchLen, openBrace - (matchPos + matchLen) + 1);
+        // Struct body with "public "/"private " prefixes stripped so that
+        // each member becomes a plain C++ field declaration.
+        const std::string bodyRaw = sourceText.substr(openBrace + 1, closeBrace - openBrace - 1);
+        out += stripStructBodyAccessSpecifiers(bodyRaw);
+        // Closing brace with a mandatory semicolon (C++ structs require it).
+        out += "}";
+        size_t next = closeBrace + 1;
+        size_t semiCheck = next;
+        while (semiCheck < sourceText.size() &&
+               std::isspace(static_cast<unsigned char>(sourceText[semiCheck])) != 0) {
+            ++semiCheck;
+        }
+        const bool hadExplicitSemi = (semiCheck < sourceText.size() && sourceText[semiCheck] == ';');
+        out += ";";
+        while (next < sourceText.size() &&
+               std::isspace(static_cast<unsigned char>(sourceText[next])) != 0) {
+            out += sourceText[next++];
+        }
+        if (hadExplicitSemi) ++next;
+        cursor = next;
+    }
+    out += sourceText.substr(cursor);
+    return out;
+}
+
 std::string normalizeModuSource(const std::string& sourceText) {
-    return convertPublicEnumsToCpp(normalizeModuPackageLines(sourceText));
+    return convertSubScriptsToCpp(convertPublicEnumsToCpp(normalizeModuPackageLines(sourceText)));
 }
 
 void replaceRegexAll(std::string& text, const std::regex& pattern, const std::string& replacement) {
@@ -1353,6 +1990,8 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
     replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
     replaceRegexAll(out, std::regex(R"(\b([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Z][A-Za-z0-9_]*)\b)"),
                     "$1::$2");
+    replaceRegexAll(out, std::regex(R"(\bModuEngine::FPS\b)"), "::ModuCPP::ModuEngine.FPS");
+    replaceRegexAll(out, std::regex(R"(\bModuCPP::FPS\b)"), "::ModuCPP::ModuEngine.FPS");
     // Fully qualify 'time.' to avoid ambiguity with the C standard library ::time() function
     // when 'using namespace ::ModuCPP' is in scope.
     replaceRegexAll(out, std::regex(R"(\btime\s*\.)"), "::ModuCPP::time.");
@@ -1370,8 +2009,91 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
                     std::regex(R"(\b([A-Za-z_][A-Za-z0-9_\[\]\(\)]*)\s*\.\s*IsEmpty\s*\(\s*\))"),
                     "$1.empty()");
 
+    std::string timerRewritten;
+    timerRewritten.reserve(out.size() + 64);
+    size_t timerCursor = 0;
+    for (size_t i = 0; i < out.size();) {
+        if (!isIdentifierStartChar(out[i])) {
+            ++i;
+            continue;
+        }
+
+        const size_t identStart = i;
+        size_t identEnd = i + 1;
+        while (identEnd < out.size() && isIdentifierChar(out[identEnd])) {
+            ++identEnd;
+        }
+
+        size_t probe = skipWhitespace(out, identEnd);
+        if (probe >= out.size() || out[probe] != '.') {
+            i = identEnd;
+            continue;
+        }
+
+        probe = skipWhitespace(out, probe + 1);
+        std::string replacementPrefix;
+        size_t methodEnd = probe;
+        if (out.compare(probe, 5, "Start") == 0 &&
+            (probe + 5 >= out.size() || !isIdentifierChar(out[probe + 5]))) {
+            replacementPrefix = "::ModuCPP::StartTimer";
+            methodEnd = probe + 5;
+        } else if (out.compare(probe, 5, "Ready") == 0 &&
+                   (probe + 5 >= out.size() || !isIdentifierChar(out[probe + 5]))) {
+            replacementPrefix = "::ModuCPP::TimerReady";
+            methodEnd = probe + 5;
+        } else {
+            i = identEnd;
+            continue;
+        }
+
+        const size_t openParen = skipWhitespace(out, methodEnd);
+        if (replacementPrefix == "::ModuCPP::TimerReady" &&
+            (openParen >= out.size() || out[openParen] != '(')) {
+            timerRewritten += out.substr(timerCursor, identStart - timerCursor);
+            const std::string ident = trimCopy(out.substr(identStart, identEnd - identStart));
+            timerRewritten += replacementPrefix;
+            timerRewritten += "(";
+            timerRewritten += ident;
+            timerRewritten += ")";
+
+            timerCursor = methodEnd;
+            i = methodEnd;
+            continue;
+        }
+
+        if (openParen >= out.size() || out[openParen] != '(') {
+            i = identEnd;
+            continue;
+        }
+
+        const size_t closeParen = findMatchingParen(out, openParen);
+        if (closeParen == std::string::npos) {
+            i = identEnd;
+            continue;
+        }
+
+        timerRewritten += out.substr(timerCursor, identStart - timerCursor);
+        const std::string ident = trimCopy(out.substr(identStart, identEnd - identStart));
+        const std::string args = trimCopy(out.substr(openParen + 1, closeParen - openParen - 1));
+        timerRewritten += replacementPrefix;
+        timerRewritten += "(";
+        timerRewritten += ident;
+        if (!args.empty()) {
+            timerRewritten += ", ";
+            timerRewritten += args;
+        }
+        timerRewritten += ")";
+
+        timerCursor = closeParen + 1;
+        i = closeParen + 1;
+    }
+    if (timerCursor < out.size()) {
+        timerRewritten += out.substr(timerCursor);
+    }
+    out.swap(timerRewritten);
+
     static const std::regex arrayDeclPattern(
-        R"((^|[;{}\n]\s*)([A-Za-z_][A-Za-z0-9_:<>]*)\s*((?:\[[^\]]+\])+)\s+([A-Za-z_][A-Za-z0-9_]*))");
+        R"((^|[;{}\n]\s*)([A-Za-z_][A-Za-z0-9_:.<>]*)\s*((?:\[[^\]]*\])+)\s+([A-Za-z_][A-Za-z0-9_]*))");
     std::string rebuilt;
     size_t cursor = 0;
     auto begin = std::sregex_iterator(out.begin(), out.end(), arrayDeclPattern);
@@ -1399,7 +2121,11 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
 
         std::string cppType = mapScriptBaseTypeToCpp(baseType);
         for (auto dimIt = dims.rbegin(); dimIt != dims.rend(); ++dimIt) {
-            cppType = "std::array<" + cppType + ", " + *dimIt + ">";
+            if (trimCopy(*dimIt).empty()) {
+                cppType = "std::vector<" + cppType + ">";
+            } else {
+                cppType = "std::array<" + cppType + ", " + *dimIt + ">";
+            }
         }
 
         rebuilt += prefix + cppType + " " + name;
@@ -1420,10 +2146,10 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
     }
 
     const std::string stripped = stripCommentsPreserveLayout(sourceText);
-    std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*ModuBehaviour\b)");
+    std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*Modu(?:Behaviour|Node)\b)");
     std::smatch classMatch;
     if (!std::regex_search(stripped, classMatch, classPattern)) {
-        error = "No ModuCPP class found. Expected: public class <Name> : ModuBehaviour";
+        error = "No ModuCPP class found. Expected: public class <Name> : ModuNode or ModuBehaviour";
         return false;
     }
 
@@ -1460,6 +2186,7 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
     if (classEnd <= sourceText.size()) {
         outClass.passthroughCode += sourceText.substr(classEnd);
     }
+    outClass.subScripts = parseSubScriptStructs(outClass.passthroughCode);
 
     const size_t bodyStart = classOpenBrace + 1;
     const size_t bodyLen = classCloseBrace - bodyStart;
@@ -1612,18 +2339,24 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
 
         std::string statementDecl = bodyRaw.substr(i, nextSemicolon - i + 1);
         const std::string statementTrimmed = trimCopy(statementDecl);
-        if (findTopLevelChar(statementTrimmed, '(') != std::string::npos) {
+        const size_t statementParen = findTopLevelChar(statementTrimmed, '(');
+        if (statementParen != std::string::npos) {
+            const size_t statementAssign = findTopLevelChar(statementTrimmed, '=');
+            const bool looksLikeFieldInitializer =
+                statementAssign != std::string::npos && statementAssign < statementParen;
             MethodSpec method;
             std::string methodSignature = statementTrimmed;
             if (!methodSignature.empty() && methodSignature.back() == ';') {
                 methodSignature.pop_back();
                 methodSignature = trimCopy(methodSignature);
             }
-            std::string methodError;
-            if (parseMethodDecl(methodSignature, std::string(), method, methodError)) {
-                outClass.methods.push_back(std::move(method));
-                i = nextSemicolon + 1;
-                continue;
+            if (!looksLikeFieldInitializer) {
+                std::string methodError;
+                if (parseMethodDecl(methodSignature, std::string(), method, methodError)) {
+                    outClass.methods.push_back(std::move(method));
+                    i = nextSemicolon + 1;
+                    continue;
+                }
             }
         }
 
@@ -1647,7 +2380,14 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
         i = nextSemicolon + 1;
     }
 
-    if (outClass.methods.empty() && trimCopy(outClass.inspectorBlock).empty()) {
+    bool hasInspectorDrivenField = false;
+    for (const FieldSpec& field : outClass.fields) {
+        if (field.visibility == FieldVisibility::Public || field.hasInspectorMetadata) {
+            hasInspectorDrivenField = true;
+            break;
+        }
+    }
+    if (outClass.methods.empty() && trimCopy(outClass.inspectorBlock).empty() && !hasInspectorDrivenField) {
         error = "ModuCPP class has no methods to transpile.";
         return false;
     }
@@ -1660,31 +2400,508 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     const std::string configType = spec.name + "Config";
     const std::string stateType = spec.name + "State";
     const std::string strippedInspector = stripCommentsPreserveLayout(spec.inspectorBlock);
+    std::unordered_set<std::string> clipGridFollowerFieldNames;
+    std::unordered_map<std::string, const SubScriptSpec*> subScriptByType;
+    for (const SubScriptSpec& subScript : spec.subScripts) {
+        subScriptByType.emplace(toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript.name))), &subScript);
+    }
 
-    auto fieldReferencedByInspector = [&](const std::string& fieldName) {
-        if (fieldName.empty() || strippedInspector.empty()) return false;
-        const std::regex pattern("\\b" + fieldName + "\\b");
-        return std::regex_search(strippedInspector, pattern);
+    auto findSubScriptByType = [&](const std::string& typeName) -> const SubScriptSpec* {
+        const auto it = subScriptByType.find(toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(typeName))));
+        return it == subScriptByType.end() ? nullptr : it->second;
+    };
+
+    auto fieldUsesSupportedSubScript = [&](const FieldSpec& field) -> bool {
+        if (field.kind != FieldKind::Custom) {
+            return false;
+        }
+        if (findSubScriptByType(field.baseType) == nullptr) {
+            return false;
+        }
+        if (field.arrayDimensions.empty()) {
+            return true;
+        }
+        return field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty();
+    };
+
+    std::unordered_set<std::string> reachableSubScriptTypes;
+    std::function<void(const std::string&)> markReachableSubScript = [&](const std::string& typeName) {
+        const SubScriptSpec* subScript = findSubScriptByType(typeName);
+        if (!subScript) {
+            return;
+        }
+        const std::string normalized = toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript->name)));
+        if (!reachableSubScriptTypes.insert(normalized).second) {
+            return;
+        }
+        for (const FieldSpec& nestedField : subScript->fields) {
+            markReachableSubScript(nestedField.baseType);
+        }
     };
 
     auto fieldPersists = [&](const FieldSpec& field) {
-        return field.visibility == FieldVisibility::Public || fieldReferencedByInspector(field.name);
+        return field.visibility == FieldVisibility::Public ||
+               field.hasInspectorMetadata ||
+               clipGridFollowerFieldNames.find(field.name) != clipGridFollowerFieldNames.end();
     };
 
     std::unordered_set<std::string> listFields;
     std::vector<std::string> customPublicFieldNames;
     bool hasAutoInspectorFields = false;
+    bool needsDialoguePortSupport = false;
+    bool needsDialogueLinesSupport = strippedInspector.find("DialogueLines") != std::string::npos;
+    auto fieldNeedsDialogueLinesSupport = [&](const FieldSpec& field) {
+        if (field.kind == FieldKind::DialogueLines || field.hasDialogueLinesAttribute) {
+            return true;
+        }
+        if (field.arrayDimensions.size() != 1 || !trimCopy(field.arrayDimensions[0]).empty()) {
+            return false;
+        }
+        return toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(field.baseType))) == "dialogueport::dialogueline";
+    };
     for (const FieldSpec& field : spec.fields) {
         if (fieldPersists(field) && field.kind == FieldKind::ObjectList) {
             listFields.insert(field.name);
         }
-        if (field.visibility == FieldVisibility::Public) {
+        if (field.kind == FieldKind::ObjectList ||
+            field.kind == FieldKind::DialogueLines ||
+            field.hasObjectRefAttribute ||
+            field.hasObjectListAttribute ||
+            field.hasDialogueLinesAttribute) {
+            needsDialoguePortSupport = true;
+        }
+        if (fieldNeedsDialogueLinesSupport(field)) {
+            needsDialogueLinesSupport = true;
+        }
+        if (field.visibility == FieldVisibility::Public || field.hasInspectorMetadata) {
             hasAutoInspectorFields = true;
         }
-        if (field.visibility == FieldVisibility::Public && field.kind == FieldKind::Custom) {
+        if (field.visibility == FieldVisibility::Public &&
+            field.kind == FieldKind::Custom &&
+            !fieldUsesSupportedSubScript(field)) {
             customPublicFieldNames.push_back(field.name + " : " + field.rawType);
         }
+        if (fieldPersists(field) && fieldUsesSupportedSubScript(field)) {
+            markReachableSubScript(field.baseType);
+        }
     }
+    for (const SubScriptSpec& subScript : spec.subScripts) {
+        for (const FieldSpec& field : subScript.fields) {
+            if (field.kind == FieldKind::ObjectList ||
+                field.kind == FieldKind::DialogueLines ||
+                field.hasObjectRefAttribute ||
+                field.hasObjectListAttribute ||
+                field.hasDialogueLinesAttribute) {
+                needsDialoguePortSupport = true;
+            }
+            if (fieldNeedsDialogueLinesSupport(field)) {
+                needsDialogueLinesSupport = true;
+            }
+        }
+    }
+
+    std::ostringstream out;
+    std::unordered_map<std::string, std::string> rewrittenSyntaxCache;
+    std::unordered_map<std::string, std::string> mappedTypeCache;
+
+    auto cachedRewriteSurfaceSyntax = [&](const std::string& text) -> const std::string& {
+        const auto it = rewrittenSyntaxCache.find(text);
+        if (it != rewrittenSyntaxCache.end()) {
+            return it->second;
+        }
+        return rewrittenSyntaxCache.emplace(text, rewriteSurfaceSyntax(text)).first->second;
+    };
+
+    auto cachedMapScriptTypeToCpp = [&](const std::string& typeName) -> const std::string& {
+        const auto it = mappedTypeCache.find(typeName);
+        if (it != mappedTypeCache.end()) {
+            return it->second;
+        }
+        return mappedTypeCache.emplace(typeName, mapScriptTypeToCpp(typeName)).first->second;
+    };
+
+    auto findDirectionalClipWalkField = [&](size_t idleFieldIndex) -> const FieldSpec* {
+        for (size_t j = idleFieldIndex + 1; j < spec.fields.size(); ++j) {
+            const FieldSpec& candidate = spec.fields[j];
+            if (candidate.arrayDimensions.size() == 2 &&
+                candidate.arrayDimensions[0] == "4" &&
+                candidate.arrayDimensions[1] == "4" &&
+                toLowerCopy(removeWhitespaceCopy(candidate.baseType)) == "int") {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    };
+
+    for (size_t i = 0; i < spec.fields.size(); ++i) {
+        const FieldSpec& field = spec.fields[i];
+        if (!field.hasClipGridPairAttribute) {
+            continue;
+        }
+        const FieldSpec* walkField = findDirectionalClipWalkField(i);
+        if (walkField) {
+            clipGridFollowerFieldNames.insert(walkField->name);
+        }
+    }
+
+    auto emitAutoInspectorField = [&](size_t fieldIndex, const FieldSpec& field,
+                                      std::unordered_set<std::string>& skippedFieldNames) -> bool {
+        if (!fieldPersists(field) || skippedFieldNames.find(field.name) != skippedFieldNames.end()) {
+            return true;
+        }
+
+        const std::string indent = "    ";
+        const std::string fieldAccess = "config." + field.name;
+        const std::string label = inspectorLabelFromFieldName(field.name);
+
+        if (field.inspectorHeader.has_value()) {
+            out << indent << "ImGui::TextUnformatted(" << *field.inspectorHeader << ");\n";
+            out << indent << "ImGui::Separator();\n";
+        }
+        if (field.hasSeparatorAttribute) {
+            out << indent << "ImGui::Separator();\n";
+        }
+
+        if (field.hasClipGridPairAttribute) {
+            if (!(field.arrayDimensions.size() == 1 && field.arrayDimensions[0] == "4" &&
+                  toLowerCopy(removeWhitespaceCopy(field.baseType)) == "int")) {
+                error = "[ClipGridPair] field '" + field.name + "' must be an int[4] array.";
+                return false;
+            }
+            const FieldSpec* walkField = findDirectionalClipWalkField(fieldIndex);
+            if (!walkField) {
+                error = "[ClipGridPair] field '" + field.name + "' requires a following int[4][4] field.";
+                return false;
+            }
+            out << indent << "changed |= EditDirectionalClipGrid(" << fieldAccess
+                << ", config." << walkField->name << ");\n";
+            skippedFieldNames.insert(walkField->name);
+            return true;
+        }
+
+        if (field.soundSetLabel.has_value()) {
+            if (field.arrayDimensions.empty() || toLowerCopy(removeWhitespaceCopy(field.baseType)) != "string") {
+                error = "[SoundSet] field '" + field.name + "' must use a string array type.";
+                return false;
+            }
+            out << indent << "changed |= EditSoundSet(" << *field.soundSetLabel
+                << ", " << fieldAccess << ");\n";
+            return true;
+        }
+
+        if (field.hasSliderAttribute &&
+            field.kind != FieldKind::Float &&
+            field.kind != FieldKind::Int &&
+            field.kind != FieldKind::Vec3) {
+            error = "[Slider] field '" + field.name + "' must be a float, int, or vec3.";
+            return false;
+        }
+
+        if (field.kind == FieldKind::Float) {
+            if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
+                out << indent << "changed |= ImGui::SliderFloat(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ", " << *field.sliderMinExpr
+                    << ", " << *field.sliderMaxExpr << ");\n";
+            } else {
+                out << indent << "changed |= ImGui::DragFloat(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ", " << field.stepExpr.value_or("0.01f")
+                    << ", " << field.rangeMinExpr.value_or("0.0f")
+                    << ", " << field.rangeMaxExpr.value_or("0.0f") << ");\n";
+            }
+            return true;
+        }
+        if (field.kind == FieldKind::Int) {
+            if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
+                out << indent << "changed |= ImGui::SliderInt(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ", static_cast<int>(" << *field.sliderMinExpr
+                    << "), static_cast<int>(" << *field.sliderMaxExpr << "));\n";
+            } else if (field.rangeMinExpr.has_value() && field.rangeMaxExpr.has_value()) {
+                out << indent << "changed |= ImGui::SliderInt(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ", static_cast<int>(" << field.rangeMinExpr.value()
+                    << "), static_cast<int>(" << field.rangeMaxExpr.value() << "));\n";
+            } else {
+                out << indent << "changed |= ImGui::InputInt(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ");\n";
+            }
+            return true;
+        }
+        if (field.kind == FieldKind::Bool) {
+            out << indent << "changed |= ImGui::Checkbox(\"" << escapeCStringLiteral(label)
+                << "\", &" << fieldAccess << ");\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Vec3) {
+            if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
+                out << indent << "changed |= ImGui::SliderFloat3(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ".x, " << *field.sliderMinExpr
+                    << ", " << *field.sliderMaxExpr << ", \"%.3f\");\n";
+            } else {
+                out << indent << "changed |= ImGui::DragFloat3(\"" << escapeCStringLiteral(label)
+                    << "\", &" << fieldAccess << ".x, " << field.stepExpr.value_or("0.01f")
+                    << ", " << field.rangeMinExpr.value_or("-1000.0f")
+                    << ", " << field.rangeMaxExpr.value_or("1000.0f")
+                    << ", \"%.3f\");\n";
+            }
+            return true;
+        }
+        if (field.kind == FieldKind::String) {
+            if (field.hasObjectRefAttribute) {
+                out << indent << "changed |= DialoguePort::DrawObjectRefInput(ctx, \""
+                    << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
+            } else {
+                out << indent << "{\n";
+                out << indent << "    std::vector<char> buffer(512, '\\0');\n";
+                out << indent << "    std::snprintf(buffer.data(), buffer.size(), \"%s\", " << fieldAccess << ".c_str());\n";
+                out << indent << "    if (ImGui::InputText(\"" << escapeCStringLiteral(label)
+                    << "\", buffer.data(), buffer.size())) {\n";
+                out << indent << "        " << fieldAccess << " = buffer.data();\n";
+                out << indent << "        changed = true;\n";
+                out << indent << "    }\n";
+                out << indent << "}\n";
+            }
+            return true;
+        }
+        if (field.kind == FieldKind::ObjectList) {
+            const std::string changedVar = "_moduChanged_" + std::to_string(fieldIndex);
+            out << indent << "{\n";
+            out << indent << "    const bool " << changedVar << " = DialoguePort::DrawObjectRefListEditor(ctx, \""
+                << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
+            out << indent << "    changed |= " << changedVar << ";\n";
+            out << indent << "    if (" << changedVar << ") {\n";
+            out << indent << "        ctx.SetSetting(\"" << field.name
+                << "\", DialoguePort::SerializeObjectRefs(" << fieldAccess << "));\n";
+            out << indent << "    }\n";
+            out << indent << "}\n";
+            return true;
+        }
+        if (field.kind == FieldKind::DialogueLines) {
+            const std::string changedVar = "_moduChanged_" + std::to_string(fieldIndex);
+            out << indent << "{\n";
+            out << indent << "    const bool " << changedVar << " = " << supportNs
+                << "::DrawDialogueLinesEditor(ctx, "
+                << fieldAccess << ");\n";
+            out << indent << "    changed |= " << changedVar << ";\n";
+            out << indent << "    if (" << changedVar << ") {\n";
+            out << indent << "        ctx.SetSetting(\"" << field.name
+                << "\", DialoguePort::SerializeDialogueLines(" << fieldAccess << "));\n";
+            out << indent << "    }\n";
+            out << indent << "}\n";
+            return true;
+        }
+
+        if (findSubScriptByType(field.baseType) != nullptr) {
+            const std::string changedVar = "_moduChanged_" + std::to_string(fieldIndex);
+            out << indent << "{\n";
+            if (field.arrayDimensions.empty()) {
+                out << indent << "    const bool " << changedVar << " = ::ModuCPP::EditSubScript(\""
+                    << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
+                out << indent << "    changed |= " << changedVar << ";\n";
+                out << indent << "    if (" << changedVar << ") {\n";
+                out << indent << "        ctx.SetSetting(\"" << field.name
+                    << "\", ::ModuCPP::SerializeSubScript(" << fieldAccess << "));\n";
+                out << indent << "    }\n";
+            } else if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                out << indent << "    const bool " << changedVar << " = ::ModuCPP::EditSubScriptArray(\""
+                    << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
+                out << indent << "    changed |= " << changedVar << ";\n";
+                out << indent << "    if (" << changedVar << ") {\n";
+                out << indent << "        ctx.SetSetting(\"" << field.name
+                    << "\", ::ModuCPP::SerializeSubScriptArray(" << fieldAccess << "));\n";
+                out << indent << "    }\n";
+            } else {
+                error = "SubScript field '" + field.name + "' only supports singular values or one-dimensional dynamic arrays.";
+                return false;
+            }
+            out << indent << "}\n";
+            return true;
+        }
+
+        return true;
+    };
+
+    auto fieldLooksLikeDialogueLineArray = [&](const FieldSpec& field) {
+        return field.arrayDimensions.size() == 1 &&
+               trimCopy(field.arrayDimensions[0]).empty() &&
+               toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(field.baseType))) ==
+                   "dialogueport::dialogueline";
+    };
+
+    auto fieldLooksLikeStringArray = [&](const FieldSpec& field) {
+        return field.arrayDimensions.size() == 1 &&
+               trimCopy(field.arrayDimensions[0]).empty() &&
+               toLowerCopy(removeWhitespaceCopy(field.baseType)) == "string";
+    };
+
+    auto fieldLooksLikeObjectRefString = [&](const FieldSpec& field) {
+        if (toLowerCopy(removeWhitespaceCopy(field.baseType)) != "string" || !field.arrayDimensions.empty()) {
+            return false;
+        }
+        const std::string lowerName = toLowerCopy(field.name);
+        return lowerName.find("ref") != std::string::npos;
+    };
+
+    auto subScriptFieldSerializeExpr = [&](const FieldSpec& field, const std::string& valueExpr)
+        -> std::optional<std::string> {
+        if (field.kind == FieldKind::Float || field.kind == FieldKind::Int) {
+            return "std::to_string(" + valueExpr + ")";
+        }
+        if (field.kind == FieldKind::Bool) {
+            return "(" + valueExpr + " ? \"1\" : \"0\")";
+        }
+        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
+            return valueExpr;
+        }
+        if (field.kind == FieldKind::Vec3) {
+            return "std::to_string(" + valueExpr + ".x) + \",\" + std::to_string(" + valueExpr +
+                   ".y) + \",\" + std::to_string(" + valueExpr + ".z)";
+        }
+        if (fieldLooksLikeStringArray(field) || field.kind == FieldKind::ObjectList) {
+            return supportNs + "::SerializeObjectRefs(" + valueExpr + ")";
+        }
+        if (fieldLooksLikeDialogueLineArray(field) || field.kind == FieldKind::DialogueLines) {
+            return "DialoguePort::SerializeDialogueLines(" + valueExpr + ")";
+        }
+        if (findSubScriptByType(field.baseType) != nullptr) {
+            if (field.arrayDimensions.empty()) {
+                return "::ModuCPP::SerializeSubScript(" + valueExpr + ")";
+            }
+            if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                return "::ModuCPP::SerializeSubScriptArray(" + valueExpr + ")";
+            }
+        }
+        if (field.arrayDimensions.empty()) {
+            return "std::to_string(static_cast<int>(" + valueExpr + "))";
+        }
+        return std::nullopt;
+    };
+
+    auto emitSubScriptFieldDeserialize = [&](size_t fieldIndex,
+                                             const FieldSpec& field,
+                                             const std::string& encodedExpr,
+                                             const std::string& valueExpr) -> bool {
+        if (field.kind == FieldKind::Float) {
+            out << "        " << valueExpr << " = fields.size() > " << fieldIndex << " ? std::strtof(("
+                << encodedExpr << ").c_str(), nullptr) : " << valueExpr << ";\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Int) {
+            out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                << " = std::atoi((" << encodedExpr << ").c_str());\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Bool) {
+            out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                << " = (Trim(" << encodedExpr << ") == \"1\" || Trim(" << encodedExpr << ") == \"true\");\n";
+            return true;
+        }
+        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
+            out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr << " = " << encodedExpr << ";\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Vec3) {
+            out << "        if (fields.size() > " << fieldIndex << ") std::sscanf((" << encodedExpr
+                << ").c_str(), \"%f,%f,%f\", &" << valueExpr << ".x, &" << valueExpr
+                << ".y, &" << valueExpr << ".z);\n";
+            return true;
+        }
+        if (fieldLooksLikeStringArray(field) || field.kind == FieldKind::ObjectList) {
+            out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                << " = " << supportNs << "::DeserializeObjectRefs(" << encodedExpr << ");\n";
+            return true;
+        }
+        if (fieldLooksLikeDialogueLineArray(field) || field.kind == FieldKind::DialogueLines) {
+            out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                << " = DialoguePort::DeserializeDialogueLines(" << encodedExpr << ");\n";
+            return true;
+        }
+        if (const SubScriptSpec* subScript = findSubScriptByType(field.baseType)) {
+            if (field.arrayDimensions.empty()) {
+                out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                        << " = ::ModuCPP::DeserializeSubScript<" << mapScriptBaseTypeToCpp(subScript->name)
+                    << ">(" << encodedExpr << ");\n";
+                return true;
+            }
+            if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                    << " = ::ModuCPP::DeserializeSubScriptArray<" << mapScriptBaseTypeToCpp(subScript->name)
+                    << ">(" << encodedExpr << ");\n";
+                return true;
+            }
+        }
+        if (field.arrayDimensions.empty()) {
+                out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr
+                << " = static_cast<" << cachedMapScriptTypeToCpp(field.rawType) << ">(std::atoi(("
+                << encodedExpr << ").c_str()));\n";
+            return true;
+        }
+        error = "Unsupported SubScript field deserialization for '" + field.name + "' in " + spec.name + ".";
+        return false;
+    };
+
+    auto emitSubScriptFieldEdit = [&](const FieldSpec& field,
+                                      const std::string& labelLiteral,
+                                      const std::string& valueExpr) -> bool {
+        if (field.kind == FieldKind::Float) {
+            out << "        changed |= ImGui::DragFloat(" << labelLiteral << ", &" << valueExpr
+                << ", 0.01f, 0.0f, 0.0f);\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Int) {
+            out << "        changed |= ImGui::InputInt(" << labelLiteral << ", &" << valueExpr << ");\n";
+            return true;
+        }
+        if (field.kind == FieldKind::Bool) {
+            out << "        changed |= ImGui::Checkbox(" << labelLiteral << ", &" << valueExpr << ");\n";
+            return true;
+        }
+        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
+            if (fieldLooksLikeObjectRefString(field)) {
+                out << "        changed |= DialoguePort::DrawObjectRefInput(ctx, " << labelLiteral
+                    << ", " << valueExpr << ");\n";
+            } else {
+                out << "        changed |= ::ModuCPP::EditString(" << labelLiteral << ", " << valueExpr << ");\n";
+            }
+            return true;
+        }
+        if (field.kind == FieldKind::Vec3) {
+            out << "        changed |= ImGui::DragFloat3(" << labelLiteral << ", &" << valueExpr
+                << ".x, 0.01f, -1000.0f, 1000.0f, \"%.3f\");\n";
+            return true;
+        }
+        if (fieldLooksLikeStringArray(field) || field.kind == FieldKind::ObjectList) {
+            out << "        changed |= DialoguePort::DrawObjectRefListEditor(ctx, " << labelLiteral
+                << ", " << valueExpr << ");\n";
+            return true;
+        }
+        if (fieldLooksLikeDialogueLineArray(field) || field.kind == FieldKind::DialogueLines) {
+            out << "        changed |= " << supportNs << "::DrawDialogueLinesEditor(ctx, " << valueExpr << ");\n";
+            return true;
+        }
+        if (findSubScriptByType(field.baseType) != nullptr) {
+            if (field.arrayDimensions.empty()) {
+                out << "        changed |= ::ModuCPP::EditSubScript(" << labelLiteral << ", " << valueExpr << ");\n";
+                return true;
+            }
+            if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                out << "        changed |= ::ModuCPP::EditSubScriptArray(" << labelLiteral << ", " << valueExpr << ");\n";
+                return true;
+            }
+        }
+        if (field.arrayDimensions.empty()) {
+            out << "        {\n";
+            out << "            int enumValue = static_cast<int>(" << valueExpr << ");\n";
+            out << "            if (ImGui::InputInt(" << labelLiteral << ", &enumValue)) {\n";
+                out << "                " << valueExpr << " = static_cast<" << cachedMapScriptTypeToCpp(field.rawType)
+                << ">(enumValue);\n";
+            out << "                changed = true;\n";
+            out << "            }\n";
+            out << "        }\n";
+            return true;
+        }
+        error = "Unsupported SubScript field inspector for '" + field.name + "' in " + spec.name + ".";
+        return false;
+    };
+
     bool hasInspectorMethod = false;
     for (const MethodSpec& method : spec.methods) {
         if (method.name == "Script_OnInspector") {
@@ -1710,7 +2927,6 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         return {};
     }
 
-    std::ostringstream out;
     out << "// Generated from \"" << sourcePath.lexically_normal().generic_string() << "\" by ModuCPP transpiler.\n";
 
     std::unordered_set<std::string> emittedIncludes;
@@ -1732,30 +2948,90 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     emitInclude("#include <cstdlib>");
     emitInclude("#include <cstdio>");
     emitInclude("#include <string>");
+    emitInclude("#include <unordered_map>");
     emitInclude("#include <vector>");
     out << "\n";
     out << "using namespace ::ModuCPP;\n\n";
 
-    const std::string passthrough = stripIncludeDirectives(spec.passthroughCode);
+    std::unordered_set<std::string> emittedReachableSubScriptNames;
+    for (const SubScriptSpec& subScript : spec.subScripts) {
+        const std::string normalizedSubScript =
+            toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript.name)));
+        if (reachableSubScriptTypes.find(normalizedSubScript) != reachableSubScriptTypes.end()) {
+            emittedReachableSubScriptNames.insert(subScript.name);
+        }
+    }
+
+    const std::string normalizedPassthrough =
+        cachedRewriteSurfaceSyntax(stripIncludeDirectives(spec.passthroughCode));
+    const std::string passthrough =
+        stripStructDefinitionsByName(normalizedPassthrough, emittedReachableSubScriptNames);
+    for (const SubScriptSpec& subScript : spec.subScripts) {
+        const std::string normalizedSubScript =
+            toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript.name)));
+        if (reachableSubScriptTypes.find(normalizedSubScript) == reachableSubScriptTypes.end()) {
+            continue;
+        }
+
+        out << "struct " << mapScriptBaseTypeToCpp(subScript.name) << " {\n";
+        for (const FieldSpec& field : subScript.fields) {
+            if (field.kind == FieldKind::ObjectList) {
+                out << "    std::vector<std::string> " << field.name;
+                if (!field.initializer.empty()) {
+                    out << " = " << supportNs << "::DeserializeObjectRefs("
+                        << cachedRewriteSurfaceSyntax(field.initializer) << ")";
+                }
+                out << ";\n";
+            } else if (field.kind == FieldKind::DialogueLines) {
+                out << "    std::vector<DialoguePort::DialogueLine> " << field.name;
+                if (!field.initializer.empty()) {
+                    out << " = DialoguePort::DeserializeDialogueLines("
+                        << cachedRewriteSurfaceSyntax(field.initializer) << ")";
+                }
+                out << ";\n";
+            } else {
+                out << "    " << cachedMapScriptTypeToCpp(field.rawType) << " " << field.name;
+                if (!field.initializer.empty()) {
+                    out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
+                }
+                out << ";\n";
+            }
+        }
+        out << "};\n\n";
+    }
     if (!trimCopy(passthrough).empty()) {
         out << passthrough << "\n";
+    }
+    if (needsDialoguePortSupport && spec.passthroughCode.find("DialoguePortShared.h") == std::string::npos) {
+        out << "#include \"" << (sourcePath.parent_path() / "DialoguePortShared.h").string() << "\"\n";
     }
 
     out << "namespace " << supportNs << " {\n\n";
     out << "using namespace ::ModuCPP;\n\n";
+    if (needsDialoguePortSupport) {
+        out << "using namespace DialoguePort;\n\n";
+    }
     out << "struct " << configType << " {\n";
     for (const FieldSpec& field : spec.fields) {
         if (!fieldPersists(field)) continue;
         if (field.kind == FieldKind::ObjectList) {
-            out << "    std::string " << field.name << "Raw";
+            out << "    std::vector<std::string> " << field.name;
             if (!field.initializer.empty()) {
-                out << " = " << rewriteSurfaceSyntax(field.initializer);
+                out << " = " << supportNs << "::DeserializeObjectRefs("
+                    << cachedRewriteSurfaceSyntax(field.initializer) << ")";
+            }
+            out << ";\n";
+        } else if (field.kind == FieldKind::DialogueLines) {
+            out << "    std::vector<DialoguePort::DialogueLine> " << field.name;
+            if (!field.initializer.empty()) {
+                out << " = DialoguePort::DeserializeDialogueLines("
+                    << cachedRewriteSurfaceSyntax(field.initializer) << ")";
             }
             out << ";\n";
         } else {
-            out << "    " << mapScriptTypeToCpp(field.rawType) << " " << field.name;
+            out << "    " << cachedMapScriptTypeToCpp(field.rawType) << " " << field.name;
             if (!field.initializer.empty()) {
-                out << " = " << rewriteSurfaceSyntax(field.initializer);
+                out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
             }
             out << ";\n";
         }
@@ -1765,9 +3041,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "struct " << stateType << " {\n";
     for (const FieldSpec& field : spec.fields) {
         if (fieldPersists(field)) continue;
-        out << "    " << mapScriptTypeToCpp(field.rawType) << " " << field.name;
+        out << "    " << cachedMapScriptTypeToCpp(field.rawType) << " " << field.name;
         if (!field.initializer.empty()) {
-            out << " = " << rewriteSurfaceSyntax(field.initializer);
+            out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
         }
         out << ";\n";
     }
@@ -1892,6 +3168,25 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "    return resolved;\n";
     out << "}\n\n";
 
+    out << "inline std::vector<SceneObject*> ResolveObjectList(ScriptContext& ctx,\n";
+    out << "                                              const std::vector<std::string>& refs) {\n";
+    out << "    std::vector<SceneObject*> resolved;\n";
+    out << "    resolved.reserve(refs.size());\n";
+    out << "    for (const std::string& ref : refs) {\n";
+    out << "        resolved.push_back(ResolveSceneObjectRef(ctx, ref));\n";
+    out << "    }\n";
+    out << "    return resolved;\n";
+    out << "}\n\n";
+
+    if (needsDialogueLinesSupport) {
+        out << "inline bool DrawDialogueLinesEditor(ScriptContext& ctx,\n";
+        out << "                                      std::vector<DialoguePort::DialogueLine>& lines) {\n";
+        out << "    static std::unordered_map<const void*, int> selectedByLines;\n";
+        out << "    int& selectedIndex = selectedByLines[static_cast<const void*>(&lines)];\n";
+        out << "    return DialoguePort::DrawDialogueLineEditor(ctx, lines, selectedIndex);\n";
+        out << "}\n\n";
+    }
+
     out << "inline void SetResolvedObjectEnabled(ScriptContext& ctx, SceneObject* obj, bool enabled) {\n";
     out << "    if (!obj) return;\n";
     out << "    bool changed = false;\n";
@@ -1976,13 +3271,180 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "    return changed;\n";
     out << "}\n\n";
 
+    // SubScriptSerializer specializations must be defined in ::ModuCPP::detail at
+    // global (non-nested) scope.  If we are currently inside the transpiled
+    // namespace we have to close it first, then reopen it afterwards for the
+    // remaining BindConfig / helper code.
+    const bool hasReachableSubScripts = std::any_of(
+        spec.subScripts.begin(), spec.subScripts.end(),
+        [&](const SubScriptSpec& ss) {
+            return reachableSubScriptTypes.count(
+                       toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(ss.name)))) > 0;
+        });
+    if (hasReachableSubScripts) {
+        out << "} // namespace " << supportNs << "\n\n";
+    }
+
+    for (const SubScriptSpec& subScript : spec.subScripts) {
+        const std::string normalizedSubScript =
+            toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript.name)));
+        if (reachableSubScriptTypes.find(normalizedSubScript) == reachableSubScriptTypes.end()) {
+            continue;
+        }
+        out << "namespace ModuCPP::detail {\n";
+        // Bring in the transpiled-namespace helpers (SerializeObjectRefs,
+        // DeserializeObjectRefs, Trim, …) so the specialization body can use
+        // them without full qualification.
+        out << "using namespace " << supportNs << ";\n";
+        out << "template <> struct SubScriptSerializer<" << mapScriptBaseTypeToCpp(subScript.name) << "> {\n";
+        out << "    static std::string Serialize(const " << mapScriptBaseTypeToCpp(subScript.name) << "& value) {\n";
+        out << "        std::vector<std::string> fields;\n";
+        out << "        fields.reserve(" << subScript.fields.size() << ");\n";
+        for (const FieldSpec& field : subScript.fields) {
+            const std::optional<std::string> expr = subScriptFieldSerializeExpr(field, "value." + field.name);
+            if (!expr.has_value()) {
+                error = "Unsupported SubScript field serialization for '" + field.name + "' in " + subScript.name + ".";
+                return {};
+            }
+            out << "        fields.push_back(" << *expr << ");\n";
+        }
+        out << "        return " << supportNs << "::JoinEscaped(fields, '|');\n";
+        out << "    }\n";
+        out << "    static " << mapScriptBaseTypeToCpp(subScript.name) << " Deserialize(const std::string& encoded) {\n";
+        out << "        " << mapScriptBaseTypeToCpp(subScript.name) << " value{};\n";
+        out << "        if (encoded.empty()) return value;\n";
+        out << "        const std::vector<std::string> fields = " << supportNs << "::SplitEscaped(encoded, '|');\n";
+        for (size_t fieldIndex = 0; fieldIndex < subScript.fields.size(); ++fieldIndex) {
+            if (!emitSubScriptFieldDeserialize(fieldIndex, subScript.fields[fieldIndex],
+                                               "fields[" + std::to_string(fieldIndex) + "]",
+                                               "value." + subScript.fields[fieldIndex].name)) {
+                return {};
+            }
+        }
+        out << "        return value;\n";
+        out << "    }\n";
+        out << "    static std::string SerializeArray(const std::vector<" << mapScriptBaseTypeToCpp(subScript.name)
+            << ">& values) {\n";
+        out << "        std::vector<std::string> encoded;\n";
+        out << "        encoded.reserve(values.size());\n";
+        out << "        for (const auto& item : values) {\n";
+        out << "            encoded.push_back(Serialize(item));\n";
+        out << "        }\n";
+        out << "        return " << supportNs << "::JoinEscaped(encoded, '\\t');\n";
+        out << "    }\n";
+        out << "    static std::vector<" << mapScriptBaseTypeToCpp(subScript.name)
+            << "> DeserializeArray(const std::string& encoded) {\n";
+        out << "        std::vector<" << mapScriptBaseTypeToCpp(subScript.name) << "> values;\n";
+        out << "        if (encoded.empty()) return values;\n";
+        out << "        char delimiter = '\\t';\n";
+        out << "        if (encoded.find('\\t') == std::string::npos && encoded.find('\\n') != std::string::npos) {\n";
+        out << "            delimiter = '\\n';\n";
+        out << "        }\n";
+        out << "        const std::vector<std::string> entries = " << supportNs << "::SplitEscaped(encoded, delimiter);\n";
+        out << "        values.reserve(entries.size());\n";
+        out << "        for (const std::string& entry : entries) {\n";
+        out << "            if (" << supportNs << "::Trim(entry).empty()) continue;\n";
+        out << "            values.push_back(Deserialize(entry));\n";
+        out << "        }\n";
+        out << "        return values;\n";
+        out << "    }\n";
+        out << "    static bool Edit(const char* label, " << mapScriptBaseTypeToCpp(subScript.name) << "& value) {\n";
+        out << "        bool changed = false;\n";
+        out << "        const bool hasLabel = label && *label;\n";
+        out << "        ScriptContext* scriptCtx = ::ModuCPP::ctxPtr();\n";
+        const bool subScriptNeedsContext = std::any_of(subScript.fields.begin(), subScript.fields.end(),
+                                                       [&](const FieldSpec& field) {
+                                                           return field.kind == FieldKind::ObjectList ||
+                                                                  field.kind == FieldKind::DialogueLines ||
+                                                                  fieldLooksLikeStringArray(field) ||
+                                                                  fieldLooksLikeDialogueLineArray(field) ||
+                                                                  fieldLooksLikeObjectRefString(field);
+                                                       });
+        if (subScriptNeedsContext) {
+            out << "        if (!scriptCtx) return false;\n";
+            out << "        ScriptContext& ctx = *scriptCtx;\n";
+        }
+        out << "        if (hasLabel && !ImGui::TreeNode(label)) {\n";
+        out << "            return false;\n";
+        out << "        }\n";
+        for (const FieldSpec& field : subScript.fields) {
+            if (!emitSubScriptFieldEdit(field,
+                                        "\"" + escapeCStringLiteral(inspectorLabelFromFieldName(field.name)) + "\"",
+                                        "value." + field.name)) {
+                return {};
+            }
+        }
+        out << "        if (hasLabel) ImGui::TreePop();\n";
+        out << "        return changed;\n";
+        out << "    }\n";
+        out << "    static bool EditArray(const char* label, std::vector<" << mapScriptBaseTypeToCpp(subScript.name)
+            << ">& values) {\n";
+        out << "        bool changed = false;\n";
+        out << "        if (!ImGui::TreeNode(label)) {\n";
+        out << "            return false;\n";
+        out << "        }\n";
+        out << "        for (size_t i = 0; i < values.size(); ++i) {\n";
+        out << "            ImGui::PushID(static_cast<int>(i));\n";
+        out << "            const std::string itemLabel = std::string(\"Item \") + std::to_string(i + 1);\n";
+        out << "            changed |= Edit(itemLabel.c_str(), values[i]);\n";
+        out << "            if (ImGui::SmallButton(\"Remove\")) {\n";
+        out << "                values.erase(values.begin() + static_cast<std::ptrdiff_t>(i));\n";
+        out << "                changed = true;\n";
+        out << "                ImGui::PopID();\n";
+        out << "                --i;\n";
+        out << "                continue;\n";
+        out << "            }\n";
+        out << "            ImGui::Separator();\n";
+        out << "            ImGui::PopID();\n";
+        out << "        }\n";
+        out << "        if (ImGui::Button(\"Add Item\")) {\n";
+        out << "            values.emplace_back();\n";
+        out << "            changed = true;\n";
+        out << "        }\n";
+        out << "        ImGui::TreePop();\n";
+        out << "        return changed;\n";
+        out << "    }\n";
+        out << "};\n";
+        out << "} // namespace ModuCPP::detail\n\n";
+    }
+
+    if (hasReachableSubScripts) {
+        // Reopen the transpiled namespace for BindConfig and the rest of the
+        // generated code that follows.
+        out << "namespace " << supportNs << " {\n\n";
+        out << "using namespace ::ModuCPP;\n";
+        if (needsDialoguePortSupport) {
+            out << "using namespace DialoguePort;\n";
+        }
+        out << "\n";
+    }
+
     out << "inline void BindConfig(ScriptContext& ctx, " << configType << "& config) {\n";
     bool hasPersistedFields = false;
     for (const FieldSpec& field : spec.fields) {
         if (!fieldPersists(field)) continue;
         hasPersistedFields = true;
         if (field.kind == FieldKind::Custom) {
-            if (field.arrayDimensions.size() == 1) {
+            if (fieldUsesSupportedSubScript(field)) {
+                if (field.arrayDimensions.empty()) {
+                    out << "    config." << field.name << " = ctx.GetSetting(\"" << field.name
+                        << "\", \"\").empty() ? config." << field.name
+                        << " : ::ModuCPP::DeserializeSubScript<" << mapScriptBaseTypeToCpp(field.baseType)
+                        << ">(ctx.GetSetting(\"" << field.name << "\", \"\"));\n";
+                } else if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                    out << "    config." << field.name << " = ctx.GetSetting(\"" << field.name
+                        << "\", \"\").empty() ? config." << field.name
+                        << " : ::ModuCPP::DeserializeSubScriptArray<" << mapScriptBaseTypeToCpp(field.baseType)
+                        << ">(ctx.GetSetting(\"" << field.name << "\", \"\"));\n";
+                }
+            } else if (field.arrayDimensions.empty()) {
+                out << "    if (!ctx.GetSetting(\"" << field.name << "\", \"\").empty()) {\n";
+                out << "        config." << field.name << " = static_cast<" << cachedMapScriptTypeToCpp(field.rawType)
+                    << ">(std::atoi(ctx.GetSetting(\"" << field.name << "\", \"\").c_str()));\n";
+                out << "    }\n";
+            } else if (field.arrayDimensions.size() == 1 && trimCopy(field.arrayDimensions[0]).empty()) {
+                out << "    (void)ctx;\n";
+            } else if (field.arrayDimensions.size() == 1) {
                 out << "    ::ModuCPP::BindArray(ctx, \"" << field.name << "\", config." << field.name << ");\n";
             } else if (field.arrayDimensions.size() == 2) {
                 out << "    ::ModuCPP::BindArray2D(ctx, \"" << field.name << "\", config." << field.name << ");\n";
@@ -1990,7 +3452,12 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             continue;
         }
         if (field.kind == FieldKind::ObjectList) {
-            out << "    ::ModuCPP::BindSetting(ctx, \"" << field.name << "\", config." << field.name << "Raw);\n";
+            out << "    config." << field.name << " = DeserializeObjectRefs(ctx.GetSetting(\""
+                << field.name << "\", SerializeObjectRefs(config." << field.name << ")));\n";
+        } else if (field.kind == FieldKind::DialogueLines) {
+            out << "    config." << field.name << " = DialoguePort::DeserializeDialogueLines(ctx.GetSetting(\""
+                << field.name << "\", DialoguePort::SerializeDialogueLines(config." << field.name
+                << ")));\n";
         } else {
             out << "    ::ModuCPP::BindSetting(ctx, \"" << field.name << "\", config." << field.name << ");\n";
         }
@@ -2011,21 +3478,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         return nullptr;
     };
 
-    auto emitObjectListEditorCode = [&](const std::string& fieldExpr, const std::string& uiLabel,
-                                        const std::string& tempRefsName, const std::string& indent) {
-        out << indent << "{\n";
-        out << indent << "    std::vector<std::string> " << tempRefsName << " = " << supportNs
-            << "::DeserializeObjectRefs(" << fieldExpr << ");\n";
-        out << indent << "    if (" << supportNs << "::DrawObjectRefListEditor(ctx, \""
-            << escapeCStringLiteral(uiLabel) << "\", " << tempRefsName << ")) {\n";
-        out << indent << "        " << fieldExpr << " = " << supportNs
-            << "::SerializeObjectRefs(" << tempRefsName << ");\n";
-        out << indent << "        changed = true;\n";
-        out << indent << "    }\n";
-        out << indent << "}\n";
-    };
-
     for (const MethodSpec& method : spec.methods) {
+        if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ");\n";
     }
     if (!spec.methods.empty()) {
@@ -2041,11 +3495,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
             for (const FieldSpec& field : spec.fields) {
                 if (!fieldPersists(field)) continue;
-                if (field.kind == FieldKind::ObjectList) {
-                    out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
-                } else {
-                    out << "    auto& " << field.name << " = config." << field.name << ";\n";
-                }
+                out << "    auto& " << field.name << " = config." << field.name << ";\n";
             }
             for (const FieldSpec& field : spec.fields) {
                 if (fieldPersists(field)) continue;
@@ -2056,6 +3506,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
         int inspectorTempCounter = 0;
         bool hasExplicitInspectorSave = false;
+        std::unordered_set<std::string> autoFieldsSkipped;
         auto nextInspectorTemp = [&](const std::string& prefix) {
             ++inspectorTempCounter;
             return "_modu" + prefix + std::to_string(inspectorTempCounter);
@@ -2234,7 +3685,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "ObjectRef(value) or ObjectRef(label, value) expected.",
                                      labelExpr, expr)) return false;
-                out << indent << "changed |= DrawObjectRefInput(ctx, " << labelExpr
+                out << indent << "changed |= DialoguePort::DrawObjectRefInput(ctx, " << labelExpr
                     << ", " << expr << ");\n";
                 return true;
             }
@@ -2252,19 +3703,20 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "ObjectList(value) or ObjectList(label, value) expected.",
                                      labelExpr, expr)) return false;
-                const FieldSpec* field = findPersistedFieldByName(expr);
+                const FieldSpec* field = findPersistedFieldByName(identifierTailFromExpression(expr));
                 if (field && field->kind == FieldKind::ObjectList) {
-                    std::string uiLabel = inspectorLabelFromExpression(expr);
-                    if (args.size() == 2) {
-                        uiLabel = trimCopy(args[0]);
-                        if (uiLabel.size() >= 2 && uiLabel.front() == '"' && uiLabel.back() == '"') {
-                            uiLabel = uiLabel.substr(1, uiLabel.size() - 2);
-                        }
-                    }
-                    emitObjectListEditorCode(expr, uiLabel,
-                                             nextInspectorTemp("Refs"), indent);
+                    const std::string changedVar = nextInspectorTemp("Changed");
+                    out << indent << "{\n";
+                    out << indent << "    const bool " << changedVar << " = DialoguePort::DrawObjectRefListEditor(ctx, "
+                        << labelExpr << ", " << expr << ");\n";
+                    out << indent << "    changed |= " << changedVar << ";\n";
+                    out << indent << "    if (" << changedVar << ") {\n";
+                    out << indent << "        ctx.SetSetting(\"" << field->name
+                        << "\", DialoguePort::SerializeObjectRefs(" << expr << "));\n";
+                    out << indent << "    }\n";
+                    out << indent << "}\n";
                 } else {
-                    out << indent << "changed |= DrawObjectRefListEditor(ctx, " << labelExpr << ", "
+                    out << indent << "changed |= DialoguePort::DrawObjectRefListEditor(ctx, " << labelExpr << ", "
                         << expr << ");\n";
                 }
                 return true;
@@ -2286,6 +3738,12 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     << ", &" << tempVar << ")) {\n";
                 out << indent << "        using _ModuEnumType = std::remove_reference_t<decltype(" << expr << ")>;\n";
                 out << indent << "        " << expr << " = static_cast<_ModuEnumType>(" << tempVar << ");\n";
+                if (const FieldSpec* field = findPersistedFieldByName(expr);
+                    field && field->kind == FieldKind::Custom && field->arrayDimensions.empty()) {
+                    out << indent << "        ctx.SetSetting(\"" << field->name
+                        << "\", std::to_string(static_cast<int>(" << expr << ")));\n";
+                    out << indent << "        ctx.MarkDirty();\n";
+                }
                 out << indent << "        changed = true;\n";
                 out << indent << "    }\n";
                 out << indent << "}\n";
@@ -2296,15 +3754,50 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "DialogueLines(lines) or DialogueLines(label, lines) expected.",
                                      labelExpr, expr)) return false;
-                const std::string idVar = nextInspectorTemp("ObjId");
-                const std::string selVar = nextInspectorTemp("SelectedLine");
+                const FieldSpec* field = findPersistedFieldByName(identifierTailFromExpression(expr));
+                const std::string changedVar = nextInspectorTemp("Changed");
                 out << indent << "{\n";
-                out << indent << "    ImGui::TextUnformatted(" << labelExpr << ");\n";
-                out << indent << "    const int " << idVar << " = ctx.object ? ctx.object->id : -1;\n";
-                out << indent << "    int& " << selVar << " = g_selectedLineByObject[" << idVar << "];\n";
-                out << indent << "    changed |= drawDialogueLineEditor(ctx, " << expr
-                    << ", " << selVar << ");\n";
+                out << indent << "    const bool " << changedVar << " = " << supportNs
+                    << "::DrawDialogueLinesEditor(ctx, "
+                    << expr << ");\n";
+                out << indent << "    changed |= " << changedVar << ";\n";
+                if (field && field->kind == FieldKind::DialogueLines) {
+                    out << indent << "    if (" << changedVar << ") {\n";
+                    out << indent << "        ctx.SetSetting(\"" << field->name
+                        << "\", DialoguePort::SerializeDialogueLines(" << expr << "));\n";
+                    out << indent << "    }\n";
+                }
                 out << indent << "}\n";
+                return true;
+            }
+            if (callName == "AutoFields") {
+                if (args.empty()) {
+                    error = "inspector AutoFields(fieldA, fieldB, ...) requires at least one argument.";
+                    return false;
+                }
+                for (const std::string& rawArg : args) {
+                    const std::string fieldName = identifierTailFromExpression(rawArg);
+                    if (fieldName.empty()) {
+                        error = "inspector AutoFields expects field names.";
+                        return false;
+                    }
+                    const FieldSpec* field = nullptr;
+                    size_t fieldIndex = 0;
+                    for (size_t i = 0; i < spec.fields.size(); ++i) {
+                        if (spec.fields[i].name == fieldName) {
+                            field = &spec.fields[i];
+                            fieldIndex = i;
+                            break;
+                        }
+                    }
+                    if (!field || !fieldPersists(*field)) {
+                        error = "inspector AutoFields references unknown field: " + fieldName;
+                        return false;
+                    }
+                    if (!emitAutoInspectorField(fieldIndex, *field, autoFieldsSkipped)) {
+                        return false;
+                    }
+                }
                 return true;
             }
             if (callName == "InteractionOptions") {
@@ -2362,7 +3855,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << indent << "{\n";
                 out << indent << "    const int " << idVar << " = ctx.object ? ctx.object->id : -1;\n";
                 out << indent << "    auto " << itVar << " = g_runtimeStates.find(" << idVar << ");\n";
-                out << indent << "    drawRuntimeStatus(" << itVar << " != g_runtimeStates.end() ? &"
+                out << indent << "    DialoguePort::DrawDialogueRuntimeStatus(" << itVar << " != g_runtimeStates.end() ? &"
                     << itVar << "->second : nullptr);\n";
                 out << indent << "}\n";
                 return true;
@@ -2587,48 +4080,10 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
         out << "    " << supportNs << "::BindConfig(ctx, config);\n";
         out << "    bool changed = false;\n";
-        for (const FieldSpec& field : spec.fields) {
-            if (field.visibility != FieldVisibility::Public) continue;
-            const std::string label = inspectorLabelFromFieldName(field.name);
-            if (field.kind == FieldKind::Float) {
-                const std::string stepExpr = field.stepExpr.value_or("0.01f");
-                const std::string minExpr = field.rangeMinExpr.value_or("0.0f");
-                const std::string maxExpr = field.rangeMaxExpr.value_or("0.0f");
-                out << "    changed |= ImGui::DragFloat(\"" << escapeCStringLiteral(label)
-                    << "\", &config." << field.name << ", " << stepExpr
-                    << ", " << minExpr << ", " << maxExpr << ");\n";
-            } else if (field.kind == FieldKind::Int) {
-                if (field.rangeMinExpr.has_value() && field.rangeMaxExpr.has_value()) {
-                    out << "    changed |= ImGui::SliderInt(\"" << escapeCStringLiteral(label)
-                        << "\", &config." << field.name << ", static_cast<int>("
-                        << field.rangeMinExpr.value() << "), static_cast<int>("
-                        << field.rangeMaxExpr.value() << "));\n";
-                } else {
-                    out << "    changed |= ImGui::InputInt(\"" << escapeCStringLiteral(label)
-                        << "\", &config." << field.name << ");\n";
-                }
-            } else if (field.kind == FieldKind::Bool) {
-                out << "    changed |= ImGui::Checkbox(\"" << escapeCStringLiteral(label)
-                    << "\", &config." << field.name << ");\n";
-            } else if (field.kind == FieldKind::Vec3) {
-                const std::string stepExpr = field.stepExpr.value_or("0.01f");
-                const std::string minExpr = field.rangeMinExpr.value_or("-1000.0f");
-                const std::string maxExpr = field.rangeMaxExpr.value_or("1000.0f");
-                out << "    changed |= ImGui::DragFloat3(\"" << escapeCStringLiteral(label)
-                    << "\", &config." << field.name << ".x, " << stepExpr
-                    << ", " << minExpr << ", " << maxExpr << ", \"%.3f\");\n";
-            } else if (field.kind == FieldKind::String) {
-                out << "    {\n";
-                out << "        std::vector<char> buffer(512, '\\0');\n";
-                out << "        std::snprintf(buffer.data(), buffer.size(), \"%s\", config." << field.name << ".c_str());\n";
-                out << "        if (ImGui::InputText(\"" << escapeCStringLiteral(label) << "\", buffer.data(), buffer.size())) {\n";
-                out << "            config." << field.name << " = buffer.data();\n";
-                out << "            changed = true;\n";
-                out << "        }\n";
-                out << "    }\n";
-            } else if (field.kind == FieldKind::ObjectList) {
-                emitObjectListEditorCode("config." + field.name + "Raw", label, "_moduRefs_" + field.name,
-                                         "    ");
+        std::unordered_set<std::string> skippedInspectorFields;
+        for (size_t fieldIndex = 0; fieldIndex < spec.fields.size(); ++fieldIndex) {
+            if (!emitAutoInspectorField(fieldIndex, spec.fields[fieldIndex], skippedInspectorFields)) {
+                return {};
             }
         }
         out << "    if (changed) {\n";
@@ -2639,23 +4094,30 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
     // Forward-declare all methods so they can call each other regardless of definition order.
     for (const MethodSpec& method : spec.methods) {
+        if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ");\n";
     }
     out << "\n";
 
     for (const MethodSpec& method : spec.methods) {
-        std::string rewrittenBody = rewriteSurfaceSyntax(method.body);
+        std::string rewrittenBody = cachedRewriteSurfaceSyntax(method.body);
         std::string transformedBody = transformEachSyntax(rewrittenBody, listFields, supportNs,
                                                           method.hasContext, error);
         if (!error.empty()) {
             return {};
         }
 
+        if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ") {\n";
+        if (method.isStatic) {
+            out << transformedBody << "\n";
+            out << "}\n\n";
+            continue;
+        }
         if (method.hasContext) {
             const bool manualPreludeMode = method.hasManualPrelude && spec.fields.empty();
             if (method.hasDeltaTimeParam) {
-                out << "    ::ModuCPP::time.deltaTime = " << method.deltaTimeParamName << ";\n";
+                out << "    ::ModuCPP::SetFrameDeltaTime(" << method.deltaTimeParamName << ");\n";
             }
             if (!manualPreludeMode) {
                 if (method.contextIsPointer) {
@@ -2675,11 +4137,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
                     for (const FieldSpec& field : spec.fields) {
                         if (fieldPersists(field)) {
-                            if (field.kind == FieldKind::ObjectList) {
-                                out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
-                            } else {
-                                out << "    auto& " << field.name << " = config." << field.name << ";\n";
-                            }
+                            out << "    auto& " << field.name << " = config." << field.name << ";\n";
                         } else {
                             out << "    auto& " << field.name << " = state." << field.name << ";\n";
                         }
@@ -2695,7 +4153,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             }
             out << "    ScriptContext& ctx = *_moduCtxPtr;\n";
             if (method.hasDeltaTimeParam) {
-                out << "    ::ModuCPP::time.deltaTime = " << method.deltaTimeParamName << ";\n";
+                out << "    ::ModuCPP::SetFrameDeltaTime(" << method.deltaTimeParamName << ");\n";
             }
             out << "    MODU_SCRIPT(ctx);\n";
             if (!spec.fields.empty()) {
@@ -2704,11 +4162,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
                 for (const FieldSpec& field : spec.fields) {
                     if (fieldPersists(field)) {
-                        if (field.kind == FieldKind::ObjectList) {
-                            out << "    auto& " << field.name << " = config." << field.name << "Raw;\n";
-                        } else {
-                            out << "    auto& " << field.name << " = config." << field.name << ";\n";
-                        }
+                        out << "    auto& " << field.name << " = config." << field.name << ";\n";
                     } else {
                         out << "    auto& " << field.name << " = state." << field.name << ";\n";
                     }
@@ -2739,7 +4193,7 @@ bool ModuCPPTranspiler::shouldTranspile(const fs::path& sourcePath, const std::s
     }
 
     // Allow high-level ModuCPP syntax in .cpp-like files without impacting normal C++ scripts.
-    std::regex classPattern(R"(\bpublic\s+class\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*ModuBehaviour\b)");
+    std::regex classPattern(R"(\bpublic\s+class\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*Modu(?:Behaviour|Node)\b)");
     const std::string stripped = stripCommentsPreserveLayout(sourceText);
     return std::regex_search(stripped, classPattern);
 }
@@ -2752,7 +4206,7 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     const std::string ext = toLowerCopy(sourcePath.extension().string());
     const std::string normalizedSource = normalizeModuSource(sourceText);
     const std::string stripped = stripCommentsPreserveLayout(normalizedSource);
-    const std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*ModuBehaviour\b)");
+    const std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*Modu(?:Behaviour|Node)\b)");
     const bool hasHighLevelClass = std::regex_search(stripped, classPattern);
 
     // Allow .moducpp as a thin frontend type for legacy/native C++ scripts during migration.

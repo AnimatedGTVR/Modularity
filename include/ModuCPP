@@ -9,9 +9,11 @@
 #include <array>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <type_traits>
 #include <typeinfo>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +49,40 @@ inline T Abs(const T& value) {
 }
 } // namespace Math
 
+struct ScriptInt {
+    int value = 0;
+
+    constexpr operator int() const { return value; }
+};
+
+inline std::string operator+(const std::string& lhs, ScriptInt rhs) {
+    return lhs + std::to_string(rhs.value);
+}
+
+inline std::string operator+(const char* lhs, ScriptInt rhs) {
+    return std::string(lhs ? lhs : "") + std::to_string(rhs.value);
+}
+
+inline std::string operator+(ScriptInt lhs, const std::string& rhs) {
+    return std::to_string(lhs.value) + rhs;
+}
+
+inline std::string operator+(ScriptInt lhs, const char* rhs) {
+    return std::to_string(lhs.value) + std::string(rhs ? rhs : "");
+}
+
+inline ScriptInt IntRD(float value) {
+    return ScriptInt{ static_cast<int>(std::floor(value)) };
+}
+
+inline ScriptInt IntR(float value) {
+    return ScriptInt{ static_cast<int>(std::lround(value)) };
+}
+
+inline ScriptInt IntRU(float value) {
+    return ScriptInt{ static_cast<int>(std::ceil(value)) };
+}
+
 namespace detail {
 inline thread_local ScriptContext* gCtx = nullptr;
 
@@ -55,6 +91,63 @@ inline std::string trim(std::string value) {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
     value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
     return value;
+}
+
+inline std::string escapeField(const std::string& value, char delimiter) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (char c : value) {
+        if (c == '\\' || c == delimiter || c == '\n' || c == '\r' || c == '\t') {
+            out.push_back('\\');
+            if (c == '\n') out.push_back('n');
+            else if (c == '\r') out.push_back('r');
+            else if (c == '\t') out.push_back('t');
+            else out.push_back(c);
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+inline std::vector<std::string> splitEscaped(const std::string& value, char delimiter) {
+    std::vector<std::string> fields;
+    std::string current;
+    bool escaped = false;
+    for (char c : value) {
+        if (escaped) {
+            if (c == 'n') current.push_back('\n');
+            else if (c == 'r') current.push_back('\r');
+            else if (c == 't') current.push_back('\t');
+            else current.push_back(c);
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == delimiter) {
+            fields.push_back(current);
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    if (escaped) current.push_back('\\');
+    fields.push_back(current);
+    return fields;
+}
+
+inline std::string joinEscaped(const std::vector<std::string>& values, char delimiter) {
+    std::string joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        joined += escapeField(values[i], delimiter);
+        if (i + 1 < values.size()) {
+            joined.push_back(delimiter);
+        }
+    }
+    return joined;
 }
 
 inline std::string settingKeyFromLabel(const char* label) {
@@ -122,6 +215,17 @@ std::unordered_map<std::string, T>& stateStore() {
     return store;
 }
 
+struct TimerState {
+    float interval = 0.0f;
+    float elapsed = 0.0f;
+    bool started = false;
+};
+
+inline std::unordered_map<const float*, TimerState>& timerStore() {
+    static std::unordered_map<const float*, TimerState> store;
+    return store;
+}
+
 inline ImGuiKey glfwToImGuiKey(int key) {
     switch (key) {
         case GLFW_KEY_W: return ImGuiKey_W;
@@ -156,6 +260,9 @@ inline bool isAudioPath(const std::string& path) {
 inline bool isValidClip(const ScriptContext& ctx, int clipIndex) {
     return clipIndex >= 0 && clipIndex < ctx.GetSpriteClipCount();
 }
+
+template <typename T>
+struct SubScriptSerializer;
 } // namespace detail
 
 struct Scope {
@@ -266,6 +373,36 @@ inline void BindSetting(ScriptContext& ctx, const std::string& key, std::string&
 
 inline void BindSetting(const char* key, std::string& value) {
     if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
+}
+
+template <typename T>
+inline std::string SerializeSubScript(const T& value) {
+    return detail::SubScriptSerializer<T>::Serialize(value);
+}
+
+template <typename T>
+inline T DeserializeSubScript(const std::string& encoded) {
+    return detail::SubScriptSerializer<T>::Deserialize(encoded);
+}
+
+template <typename T>
+inline std::string SerializeSubScriptArray(const std::vector<T>& values) {
+    return detail::SubScriptSerializer<T>::SerializeArray(values);
+}
+
+template <typename T>
+inline std::vector<T> DeserializeSubScriptArray(const std::string& encoded) {
+    return detail::SubScriptSerializer<T>::DeserializeArray(encoded);
+}
+
+template <typename T>
+inline bool EditSubScript(const char* label, T& value) {
+    return detail::SubScriptSerializer<T>::Edit(label, value);
+}
+
+template <typename T>
+inline bool EditSubScriptArray(const char* label, std::vector<T>& values) {
+    return detail::SubScriptSerializer<T>::EditArray(label, values);
 }
 
 template <typename T, size_t N>
@@ -651,6 +788,117 @@ struct TimeFacade {
 
 inline thread_local TimeFacade time{};
 
+struct EngineFacade {
+    float FPS = 0.0f;
+};
+
+inline thread_local EngineFacade ModuEngine{};
+
+inline void SetFrameDeltaTime(float deltaTime) {
+    time.deltaTime = deltaTime;
+    ModuEngine.FPS = deltaTime > 1e-6f ? (1.0f / deltaTime) : 0.0f;
+}
+
+inline void StartTimer(float& timerValue, float interval) {
+    timerValue = 0.0f;
+    detail::TimerState& state = detail::timerStore()[&timerValue];
+    state.interval = std::max(0.0f, interval);
+    state.elapsed = 0.0f;
+    state.started = true;
+}
+
+inline bool TimerReady(float& timerValue) {
+    detail::TimerState& state = detail::timerStore()[&timerValue];
+    if (!state.started) {
+        state.interval = std::max(0.0f, timerValue);
+        state.elapsed = 0.0f;
+        state.started = true;
+    }
+
+    if (state.interval <= 0.0f) {
+        timerValue = 0.0f;
+        return true;
+    }
+
+    state.elapsed = std::max(0.0f, state.elapsed + std::max(0.0f, time.deltaTime));
+    if (state.elapsed + 1e-6f < state.interval) {
+        timerValue = state.elapsed;
+        return false;
+    }
+
+    const float cycleCount = std::floor(state.elapsed / state.interval);
+    state.elapsed -= std::max(1.0f, cycleCount) * state.interval;
+    if (state.elapsed < 1e-6f) {
+        state.elapsed = 0.0f;
+    }
+    timerValue = state.elapsed;
+    return true;
+}
+
+inline bool TimerReady(float& timerValue, float interval) {
+    detail::TimerState& state = detail::timerStore()[&timerValue];
+    state.interval = std::max(0.0f, interval);
+    state.started = true;
+    return TimerReady(timerValue);
+}
+
+struct UILabelProxy {
+    ScriptContext* scriptCtx = nullptr;
+
+    UILabelProxy& operator=(const std::string& label) {
+        if (scriptCtx) {
+            scriptCtx->SetUILabel(label);
+        }
+        return *this;
+    }
+
+    UILabelProxy& operator=(const char* label) {
+        if (scriptCtx) {
+            scriptCtx->SetUILabel(label ? label : "");
+        }
+        return *this;
+    }
+
+    operator std::string() const {
+        if (!scriptCtx || !scriptCtx->object) {
+            return {};
+        }
+        return scriptCtx->object->ui.label;
+    }
+};
+
+struct ObjectFacade {
+    ScriptContext* scriptCtx = nullptr;
+    UILabelProxy UILabel{};
+
+    explicit ObjectFacade(ScriptContext& ctx)
+        : scriptCtx(&ctx), UILabel{ &ctx } {}
+
+    SceneObject* raw() const {
+        return scriptCtx ? scriptCtx->object : nullptr;
+    }
+
+    explicit operator bool() const {
+        return raw() != nullptr;
+    }
+
+    bool operator!() const {
+        return raw() == nullptr;
+    }
+
+    operator SceneObject*() const {
+        return raw();
+    }
+
+    SceneObject* operator->() const {
+        return raw();
+    }
+};
+
+inline ObjectFacade MakeObjectFacade(ScriptContext& ctx) {
+    return ObjectFacade(ctx);
+}
+
 struct SpriteFacade {
     bool HasClips() const {
         if (ScriptContext* scriptCtx = ctxPtr()) {
@@ -814,4 +1062,4 @@ inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds
 #define MODUCPP_JOIN(a, b) MODUCPP_JOIN_IMPL(a, b)
 #define MODU_SCRIPT(ctx) \
     ::ModuCPP::Scope MODUCPP_JOIN(_modu_scope_, __LINE__){(ctx)}; \
-    auto* obj = (ctx).object
+    auto obj = ::ModuCPP::MakeObjectFacade((ctx))

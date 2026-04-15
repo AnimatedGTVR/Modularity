@@ -20,7 +20,9 @@
 #include "ManagedScriptRuntime.h"
 #include "Profiler.h"
 #include "SpritesheetFormat.h"
+#if !MODULARITY_RUNTIME_ONLY
 #include "ThirdParty/ImGuiColorTextEdit/TextEditor.h"
+#endif
 #include "Vulkan/VulkanRenderer.h"
 #include "../include/Window/Window.h"
 #include <unordered_map>
@@ -730,8 +732,10 @@ private:
     ScriptEditorState scriptEditorState;
     std::vector<fs::path> scriptingFileList;
     std::vector<std::string> scriptingCompletions;
+#if !MODULARITY_RUNTIME_ONLY
     TextEditor scriptTextEditor;
     bool scriptTextEditorReady = false;
+#endif
     char scriptingFilter[128] = "";
     bool scriptingFilesDirty = true;
     struct RuntimeAnimKey {

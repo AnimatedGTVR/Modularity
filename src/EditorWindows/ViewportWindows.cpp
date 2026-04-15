@@ -671,6 +671,17 @@ void AddUITextWithFilter(ImDrawList *drawList,
   }
 }
 
+float ComputeViewportTextFontSize(float baseFontSize, float textScale,
+                                  bool useWorldUi, float worldUiZoom) {
+  const float safeBaseFontSize = std::max(1.0f, baseFontSize);
+  const float safeTextScale = std::max(0.1f, textScale);
+  if (useWorldUi) {
+    const float worldScale = std::max(0.01f, worldUiZoom / 100.0f);
+    return std::max(1.0f, safeBaseFontSize * safeTextScale * worldScale);
+  }
+  return std::max(1.0f, safeBaseFontSize * safeTextScale);
+}
+
 template <typename EnumType, size_t N>
 ObjectType MapEnumToObjectType(EnumType value,
                                const std::array<ObjectType, N> &mapping) {
@@ -3008,12 +3019,9 @@ void Engine::renderGameViewportWindow() {
       glm::vec2 offset(0.0f);
       const SceneObject *current = &obj;
       while (current && current->parentId >= 0) {
-        auto pit = std::find_if(
-            sceneObjects.begin(), sceneObjects.end(),
-            [&](const SceneObject &o) { return o.id == current->parentId; });
-        if (pit == sceneObjects.end())
+        current = uiSceneLookup.find(current->parentId);
+        if (!current)
           break;
-        current = &(*pit);
         if (current->type == ObjectType::Sprite25D) {
           offset += glm::vec2(current->position.x, current->position.y);
         } else if (current->hasUI && current->ui.type != UIElementType::None) {
@@ -3092,6 +3100,49 @@ void Engine::renderGameViewportWindow() {
       glm::vec2 s1 = worldToRenderLocal(worldMax);
       outMin = glm::vec2(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
       outMax = glm::vec2(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+      return true;
+    };
+    struct CachedUiWorldRect {
+      bool screenResolved = false;
+      bool screenValid = false;
+      ImVec2 screenMin = ImVec2(0.0f, 0.0f);
+      ImVec2 screenMax = ImVec2(0.0f, 0.0f);
+      bool renderResolved = false;
+      bool renderValid = false;
+      glm::vec2 renderMin = glm::vec2(0.0f);
+      glm::vec2 renderMax = glm::vec2(0.0f);
+    };
+    std::unordered_map<int, CachedUiWorldRect> cachedUiWorldRects;
+    cachedUiWorldRects.reserve(sceneObjects.size());
+    auto resolveCachedUiWorldRect = [&](const SceneObject &obj, ImVec2 &outMin,
+                                        ImVec2 &outMax) {
+      CachedUiWorldRect &cached = cachedUiWorldRects[obj.id];
+      if (!cached.screenResolved) {
+        cached.screenResolved = true;
+        cached.screenValid =
+            resolveUIRectWorld(obj, cached.screenMin, cached.screenMax);
+      }
+      if (!cached.screenValid) {
+        return false;
+      }
+      outMin = cached.screenMin;
+      outMax = cached.screenMax;
+      return true;
+    };
+    auto resolveCachedUiWorldRenderRect = [&](const SceneObject &obj,
+                                              glm::vec2 &outMin,
+                                              glm::vec2 &outMax) {
+      CachedUiWorldRect &cached = cachedUiWorldRects[obj.id];
+      if (!cached.renderResolved) {
+        cached.renderResolved = true;
+        cached.renderValid =
+            resolveUIRectWorldRender(obj, cached.renderMin, cached.renderMax);
+      }
+      if (!cached.renderValid) {
+        return false;
+      }
+      outMin = cached.renderMin;
+      outMax = cached.renderMax;
       return true;
     };
     auto rectOutsideOverlay = [&](const ImVec2 &min, const ImVec2 &max) {
@@ -3221,7 +3272,8 @@ void Engine::renderGameViewportWindow() {
         ImVec2 canvasMin, canvasMax;
         bool hasCanvasRect = true;
         if (useWorldUi || current->type == ObjectType::Sprite25D) {
-          hasCanvasRect = resolveUIRectWorld(*current, canvasMin, canvasMax);
+          hasCanvasRect =
+              resolveCachedUiWorldRect(*current, canvasMin, canvasMax);
         } else {
           resolveUIRect(*current, canvasMin, canvasMax);
         }
@@ -3325,8 +3377,9 @@ void Engine::renderGameViewportWindow() {
         ImVec2 rectMin, rectMax;
         glm::vec2 renderRectMin(0.0f);
         glm::vec2 renderRectMax(0.0f);
-        if (!resolveUIRectWorld(obj, rectMin, rectMax) ||
-            !resolveUIRectWorldRender(obj, renderRectMin, renderRectMax)) {
+        if (!resolveCachedUiWorldRect(obj, rectMin, rectMax) ||
+            !resolveCachedUiWorldRenderRect(obj, renderRectMin,
+                                            renderRectMax)) {
           setLight2DRoutingReason(
               obj.id, "Legacy path: failed to resolve a world-space sprite "
                       "rect for the active viewport.");
@@ -3671,7 +3724,7 @@ void Engine::renderGameViewportWindow() {
       SceneObject &obj = *objPtr;
       ImVec2 rectMin, rectMax;
       if (useWorldUi || obj.type == ObjectType::Sprite25D) {
-        if (!resolveUIRectWorld(obj, rectMin, rectMax))
+        if (!resolveCachedUiWorldRect(obj, rectMin, rectMax))
           continue;
       } else {
         resolveUIRect(obj, rectMin, rectMax);
@@ -4091,11 +4144,8 @@ void Engine::renderGameViewportWindow() {
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
         float scale = std::max(0.1f, obj.ui.textScale);
-        float scaleFactor = useWorldUi
-                                ? std::max(0.01f, uiWorldCamera.zoom / 100.0f)
-                                : std::min(uiScaleX, uiScaleY);
-        float fontSize =
-            std::max(1.0f, ImGui::GetFontSize() * scale * scaleFactor);
+        float fontSize = ComputeViewportTextFontSize(
+            ImGui::GetFontSize(), scale, useWorldUi, uiWorldCamera.zoom);
         ImGui::PushClipRect(drawMin, drawMax, true);
         AddUITextWithFilter(dl, obj.material.textureFilter, ImGui::GetFont(),
                             fontSize, drawMin, drawMax,
@@ -4180,6 +4230,9 @@ void Engine::renderGameViewportWindow() {
     };
     auto resolvePseudoCanvasRect = [&](const SceneObject &canvas,
                                        const glm::vec2 &layoutSizePx,
+                                       const ImVec2 &baseRegionMin,
+                                       const ImVec2 &baseRegionMax,
+                                       float scaleX, float scaleY,
                                        ImVec2 &outMin, ImVec2 &outMax) -> bool {
       std::vector<const SceneObject *> chain;
       chain.reserve(8);
@@ -4202,23 +4255,22 @@ void Engine::renderGameViewportWindow() {
       }
       std::reverse(chain.begin(), chain.end());
 
-      ImVec2 regionMin = overlayPos;
-      ImVec2 regionMax =
-          ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
+      ImVec2 regionMin = baseRegionMin;
+      ImVec2 regionMax = baseRegionMax;
       for (const SceneObject *node : chain) {
         ImVec2 size(1.0f, 1.0f);
         if (node->id == canvas.id) {
-          size = ImVec2(std::max(1.0f, layoutSizePx.x * uiScaleX),
-                        std::max(1.0f, layoutSizePx.y * uiScaleY));
+          size = ImVec2(std::max(1.0f, layoutSizePx.x * scaleX),
+                        std::max(1.0f, layoutSizePx.y * scaleY));
         } else {
           const glm::vec2 nodeSize = getSpriteDisplaySize(*node);
-          size = ImVec2(std::max(1.0f, nodeSize.x * uiScaleX),
-                        std::max(1.0f, nodeSize.y * uiScaleY));
+          size = ImVec2(std::max(1.0f, nodeSize.x * scaleX),
+                        std::max(1.0f, nodeSize.y * scaleY));
         }
         const ImVec2 anchorPoint =
             anchorToPoint(node->ui.anchor, regionMin, regionMax);
-        const ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX,
-                           anchorPoint.y + node->ui.position.y * uiScaleY);
+        const ImVec2 pivot(anchorPoint.x + node->ui.position.x * scaleX,
+                           anchorPoint.y + node->ui.position.y * scaleY);
         const ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
         regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
         regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
@@ -4239,9 +4291,6 @@ void Engine::renderGameViewportWindow() {
       const glm::vec2 layoutSizePx = ResolvePseudo3DLayoutSize(canvas);
       ImVec2 rectMin;
       ImVec2 rectMax;
-      if (!resolvePseudoCanvasRect(canvas, layoutSizePx, rectMin, rectMax)) {
-        continue;
-      }
       const int targetWidth = std::clamp((canvas.ui.renderTargetSize.x > 0)
                                              ? canvas.ui.renderTargetSize.x
                                              : static_cast<int>(layoutSizePx.x),
@@ -4260,6 +4309,7 @@ void Engine::renderGameViewportWindow() {
       ImVec2 anchorScreen(0.0f, 0.0f);
       const bool anchored =
           resolvePseudoAnchorScreen(canvas, anchorScreen, distance);
+      const bool stablePanelSpace = !useWorldUi && !anchored;
       if (!anchored) {
         if (useWorldUi) {
           distance = glm::length(
@@ -4268,6 +4318,20 @@ void Engine::renderGameViewportWindow() {
         } else if (hasProjectedUiCamera) {
           distance = glm::length(projectedUiCamera.position - canvas.position);
         }
+      }
+
+      const ImVec2 pseudoRegionMin = stablePanelSpace ? panelMin : overlayPos;
+      const ImVec2 pseudoRegionMax =
+          stablePanelSpace
+              ? ImVec2(panelMin.x + panelSize.x, panelMin.y + panelSize.y)
+              : ImVec2(overlayPos.x + overlaySize.x,
+                       overlayPos.y + overlaySize.y);
+      const float pseudoScaleX = stablePanelSpace ? 1.0f : uiScaleX;
+      const float pseudoScaleY = stablePanelSpace ? 1.0f : uiScaleY;
+      if (!resolvePseudoCanvasRect(canvas, layoutSizePx, pseudoRegionMin,
+                                   pseudoRegionMax, pseudoScaleX,
+                                   pseudoScaleY, rectMin, rectMax)) {
+        continue;
       }
 
       if (anchored) {
@@ -4358,7 +4422,7 @@ void Engine::renderGameViewportWindow() {
         ImVec2 parentMin, parentMax;
         bool haveRect = true;
         if (useWorldUi || selected->type == ObjectType::Sprite25D) {
-          haveRect = resolveUIRectWorld(*selected, rectMin, rectMax);
+          haveRect = resolveCachedUiWorldRect(*selected, rectMin, rectMax);
         } else {
           resolveUIRect(*selected, rectMin, rectMax, &parentMin, &parentMax);
         }
@@ -4402,7 +4466,8 @@ void Engine::renderGameViewportWindow() {
                   candidate->ui.type == UIElementType::Canvas)
                 continue;
               ImVec2 candidateMin, candidateMax;
-              if (!resolveUIRectWorld(*candidate, candidateMin, candidateMax))
+              if (!resolveCachedUiWorldRect(*candidate, candidateMin,
+                                            candidateMax))
                 continue;
               validIds.push_back(id);
             }
@@ -4442,7 +4507,7 @@ void Engine::renderGameViewportWindow() {
               if (!target)
                 continue;
               ImVec2 targetMin, targetMax;
-              if (!resolveUIRectWorld(*target, targetMin, targetMax))
+              if (!resolveCachedUiWorldRect(*target, targetMin, targetMax))
                 continue;
               boundsMin.x = std::min(boundsMin.x, targetMin.x);
               boundsMin.y = std::min(boundsMin.y, targetMin.y);
@@ -4544,7 +4609,7 @@ void Engine::renderGameViewportWindow() {
                 if (!target)
                   continue;
                 ImVec2 targetMin, targetMax;
-                if (!resolveUIRectWorld(*target, targetMin, targetMax))
+                if (!resolveCachedUiWorldRect(*target, targetMin, targetMax))
                   continue;
                 gameUiRectGizmoSnapshots.push_back(UiRectGizmoSnapshot{
                     id, target->ui.position, target->ui.size,
@@ -4622,7 +4687,7 @@ void Engine::renderGameViewportWindow() {
                   targetMax = snapshot->rectMax;
                   targetRotation = snapshot->rotation;
                 } else {
-                  if (!resolveUIRectWorld(*target, targetMin, targetMax))
+                  if (!resolveCachedUiWorldRect(*target, targetMin, targetMax))
                     continue;
                 }
                 ImVec2 targetSize(targetMax.x - targetMin.x,
@@ -8726,9 +8791,8 @@ void Engine::renderViewport() {
           ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                       obj.ui.color.a);
           float scale = std::max(0.1f, obj.ui.textScale);
-          float scaleFactor = std::max(0.01f, uiWorldCamera.zoom / 100.0f);
-          float fontSize =
-              std::max(1.0f, ImGui::GetFontSize() * scale * scaleFactor);
+          float fontSize = ComputeViewportTextFontSize(
+              ImGui::GetFontSize(), scale, true, uiWorldCamera.zoom);
           ImGui::PushClipRect(drawMin, drawMax, true);
           AddUITextWithFilter(
               dl, obj.material.textureFilter, ImGui::GetFont(), fontSize,
@@ -14814,12 +14878,15 @@ void Engine::renderUiCanvas3DTargets() {
 
   ImGuiStyle mainStyle = ImGui::GetStyle();
   ImGuiIO &mainIo = ImGui::GetIO();
+  refreshSceneObjectIndexCache();
 
-  std::unordered_map<int, SceneObject *> byId;
-  byId.reserve(sceneObjects.size());
-  for (auto &obj : sceneObjects) {
-    byId[obj.id] = &obj;
-  }
+  auto findSceneObject = [&](int id) -> SceneObject * {
+    auto it = sceneObjectIndexById.find(id);
+    if (it == sceneObjectIndexById.end() || it->second >= sceneObjects.size()) {
+      return nullptr;
+    }
+    return &sceneObjects[it->second];
+  };
 
   auto isUiType = [](const SceneObject &target) {
     return target.hasUI && target.ui.type != UIElementType::None;
@@ -14844,10 +14911,9 @@ void Engine::renderUiCanvas3DTargets() {
       }
       if (current->parentId < 0)
         break;
-      auto it = byId.find(current->parentId);
-      if (it == byId.end())
+      current = findSceneObject(current->parentId);
+      if (!current)
         break;
-      current = it->second;
     }
     return found;
   };
@@ -15002,10 +15068,9 @@ void Engine::renderUiCanvas3DTargets() {
         }
         if (current->parentId < 0)
           break;
-        auto it = byId.find(current->parentId);
-        if (it == byId.end())
+        current = findSceneObject(current->parentId);
+        if (!current)
           break;
-        current = it->second;
         if (current->id == canvas.id)
           break;
       }
@@ -15061,10 +15126,9 @@ void Engine::renderUiCanvas3DTargets() {
       ImVec2 maskMax(0.0f, 0.0f);
       const SceneObject *current = &obj;
       while (current && current->parentId >= 0) {
-        auto parentIt = byId.find(current->parentId);
-        if (parentIt == byId.end())
+        current = findSceneObject(current->parentId);
+        if (!current)
           break;
-        current = parentIt->second;
         if (!(current->hasUI && current->ui.type == UIElementType::Canvas &&
               current->ui.maskChildren)) {
           continue;
@@ -15452,6 +15516,7 @@ void Engine::renderPlayerViewport() {
   bool windowFocused =
       ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
   const ImVec2 availableSize = ImGui::GetContentRegionAvail();
+  const ImVec2 panelMin = ImGui::GetCursorScreenPos();
   const ImVec2 imageSize =
       ComputeAspectFitSize(availableSize, getRuntimeInternalAspect());
   const ImVec2 cursorStart = ImGui::GetCursorPos();
@@ -15779,6 +15844,28 @@ void Engine::renderPlayerViewport() {
       outMax = ImVec2(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
       return true;
     };
+    struct CachedPlayerUiWorldRect {
+      bool resolved = false;
+      bool valid = false;
+      ImVec2 min = ImVec2(0.0f, 0.0f);
+      ImVec2 max = ImVec2(0.0f, 0.0f);
+    };
+    std::unordered_map<int, CachedPlayerUiWorldRect> cachedUiWorldRects;
+    cachedUiWorldRects.reserve(sceneObjects.size());
+    auto resolveCachedUiWorldRect = [&](const SceneObject &obj, ImVec2 &outMin,
+                                        ImVec2 &outMax) {
+      CachedPlayerUiWorldRect &cached = cachedUiWorldRects[obj.id];
+      if (!cached.resolved) {
+        cached.resolved = true;
+        cached.valid = resolveUIRectWorld(obj, cached.min, cached.max);
+      }
+      if (!cached.valid) {
+        return false;
+      }
+      outMin = cached.min;
+      outMax = cached.max;
+      return true;
+    };
 
     bool uiWorldCameraActive = false;
 
@@ -15850,7 +15937,8 @@ void Engine::renderPlayerViewport() {
             ImVec2 canvasMin, canvasMax;
             bool hasCanvasRect = true;
             if (useWorldUi || parent->type == ObjectType::Sprite25D) {
-              hasCanvasRect = resolveUIRectWorld(*parent, canvasMin, canvasMax);
+              hasCanvasRect =
+                  resolveCachedUiWorldRect(*parent, canvasMin, canvasMax);
             } else {
               resolveUIRect(*parent, canvasMin, canvasMax);
             }
@@ -15918,16 +16006,27 @@ void Engine::renderPlayerViewport() {
       lightRequest.lightingBufferScale = light2DLightingBufferScale;
       lightRequest.postFx = resolveWorld2DPostFx(projectedUiCamera);
       lightRequest.blendStyles = light2DBlendStyles;
+      lightRequest.sprites.reserve(uiDrawList.size());
+      lightRequest.lights.reserve(sceneObjects.size());
+      const glm::vec2 lightOverlayMax(
+          std::max(1.0f, overlaySize.x), std::max(1.0f, overlaySize.y));
+      auto lightBoundsOutsideOverlay = [&](const glm::vec2 &boundsMin,
+                                           const glm::vec2 &boundsMax) {
+        return boundsMax.x < 0.0f || boundsMin.x > lightOverlayMax.x ||
+               boundsMax.y < 0.0f || boundsMin.y > lightOverlayMax.y;
+      };
+      const float flickerTime = static_cast<float>(glfwGetTime());
       auto computeFlickerMultiplier =
-          [](const Light2DFlickerSettings &flicker) {
+          [flickerTime](const Light2DFlickerSettings &flicker) {
             if (!flicker.enabled || flicker.amount <= 0.0001f) {
               return 1.0f;
             }
-            const float time = static_cast<float>(glfwGetTime());
             const float base =
-                std::sin(time * std::max(0.01f, flicker.speed) + flicker.seed);
+                std::sin(flickerTime * std::max(0.01f, flicker.speed) +
+                         flicker.seed);
             const float jitter =
-                std::sin(time * std::max(0.01f, flicker.speed * 2.173f) +
+                std::sin(flickerTime *
+                             std::max(0.01f, flicker.speed * 2.173f) +
                          flicker.seed * 1.913f);
             const float noise = 0.5f + 0.35f * base + 0.15f * jitter;
             return glm::mix(1.0f, std::max(0.0f, noise),
@@ -15961,7 +16060,7 @@ void Engine::renderPlayerViewport() {
                                     obj.parallaxLayer2D.disableCulling;
 
         ImVec2 rectMin, rectMax;
-        if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
+        if (!resolveCachedUiWorldRect(obj, rectMin, rectMax)) {
           setLight2DRoutingReason(
               obj.id, "Legacy path: failed to resolve a world-space sprite "
                       "rect for the active viewport.");
@@ -16166,13 +16265,6 @@ void Engine::renderPlayerViewport() {
         light.freeformFeatherPx =
             obj.light2D.freeformFeather * uiWorldCamera.zoom;
         light.freeformEdgeFalloff = obj.light2D.freeformEdgeFalloff;
-        if (!obj.light2D.cookieTexturePath.empty()) {
-          if (Texture *cookieTexture = renderer.getTexture(
-                  obj.light2D.cookieTexturePath,
-                  MaterialProperties::TextureFilter::Bilinear)) {
-            light.cookieTextureId = cookieTexture->GetID();
-          }
-        }
 
         ImVec2 lightPos =
             worldToScreen(glm::vec2(obj.position.x, obj.position.y));
@@ -16181,56 +16273,59 @@ void Engine::renderPlayerViewport() {
 
         if (obj.light2D.type == Light2DType::Freeform ||
             obj.light2D.type == Light2DType::Sprite) {
-          light.polygon.reserve(obj.light2D.shapePoints.size());
-          for (const glm::vec2 &point : obj.light2D.shapePoints) {
+          const Light2DPolygonCache &polygonCache =
+              lighting2DRenderer.updatePolygonCache(obj.id, obj.light2D);
+          if (!polygonCache.valid || polygonCache.vertices.empty()) {
+            continue;
+          }
+
+          ImVec2 screenBoundsMin = worldToScreen(
+              glm::vec2(obj.position.x + polygonCache.boundsMin.x,
+                        obj.position.y + polygonCache.boundsMin.y));
+          ImVec2 screenBoundsMax = worldToScreen(
+              glm::vec2(obj.position.x + polygonCache.boundsMax.x,
+                        obj.position.y + polygonCache.boundsMax.y));
+          light.boundsMin = glm::vec2(std::min(screenBoundsMin.x, screenBoundsMax.x) -
+                                          std::max(light.radius, light.outerRadius) -
+                                          overlayPos.x,
+                                      std::min(screenBoundsMin.y, screenBoundsMax.y) -
+                                          std::max(light.radius, light.outerRadius) -
+                                          overlayPos.y);
+          light.boundsMax = glm::vec2(std::max(screenBoundsMin.x, screenBoundsMax.x) +
+                                          std::max(light.radius, light.outerRadius) -
+                                          overlayPos.x,
+                                      std::max(screenBoundsMin.y, screenBoundsMax.y) +
+                                          std::max(light.radius, light.outerRadius) -
+                                          overlayPos.y);
+          if (lightBoundsOutsideOverlay(light.boundsMin, light.boundsMax)) {
+            continue;
+          }
+
+          light.polygon.reserve(polygonCache.vertices.size());
+          for (const glm::vec2 &point : polygonCache.vertices) {
             ImVec2 screenPoint = worldToScreen(
                 glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
             light.polygon.emplace_back(screenPoint.x - overlayPos.x,
                                        screenPoint.y - overlayPos.y);
           }
-          if (!light.polygon.empty()) {
-            glm::vec2 boundsMin(FLT_MAX);
-            glm::vec2 boundsMax(-FLT_MAX);
-            for (const glm::vec2 &point : light.polygon) {
-              boundsMin.x = std::min(boundsMin.x, point.x);
-              boundsMin.y = std::min(boundsMin.y, point.y);
-              boundsMax.x = std::max(boundsMax.x, point.x);
-              boundsMax.y = std::max(boundsMax.y, point.y);
-            }
-            light.boundsMin = boundsMin;
-            light.boundsMax = boundsMax;
-          }
         } else {
           const float extent = std::max(light.radius, light.outerRadius);
           light.boundsMin = light.position - glm::vec2(extent);
           light.boundsMax = light.position + glm::vec2(extent);
+          if (lightBoundsOutsideOverlay(light.boundsMin, light.boundsMax)) {
+            continue;
+          }
+        }
+
+        if (!obj.light2D.cookieTexturePath.empty()) {
+          if (Texture *cookieTexture = renderer.getTexture(
+                  obj.light2D.cookieTexturePath,
+                  MaterialProperties::TextureFilter::Bilinear)) {
+            light.cookieTextureId = cookieTexture->GetID();
+          }
         }
 
         lightRequest.lights.push_back(light);
-      }
-
-      for (const SceneObject &obj : sceneObjects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D ||
-            !obj.shadowCaster2D.enabled) {
-          continue;
-        }
-
-        Light2DScreenShadowCaster caster;
-        caster.objectId = obj.id;
-        caster.enabled = obj.shadowCaster2D.enabled;
-        caster.targetAllLayers = obj.shadowCaster2D.targetAllLayers;
-        caster.targetLayerMask = obj.shadowCaster2D.targetLayerMask;
-        caster.shadowStrength = obj.shadowCaster2D.shadowStrength;
-        caster.polygon.reserve(obj.shadowCaster2D.points.size());
-        for (const glm::vec2 &point : obj.shadowCaster2D.points) {
-          ImVec2 screenPoint = worldToScreen(
-              glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
-          caster.polygon.emplace_back(screenPoint.x - overlayPos.x,
-                                      screenPoint.y - overlayPos.y);
-        }
-        if (caster.polygon.size() >= 3) {
-          lightRequest.shadowCasters.push_back(std::move(caster));
-        }
       }
 
       const bool hasAmbientOnly =
@@ -16290,7 +16385,7 @@ void Engine::renderPlayerViewport() {
       SceneObject &obj = *objPtr;
       ImVec2 rectMin, rectMax;
       if (useWorldUi || obj.type == ObjectType::Sprite25D) {
-        if (!resolveUIRectWorld(obj, rectMin, rectMax))
+        if (!resolveCachedUiWorldRect(obj, rectMin, rectMax))
           continue;
       } else {
         resolveUIRect(obj, rectMin, rectMax);
@@ -16586,11 +16681,8 @@ void Engine::renderPlayerViewport() {
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
         float scale = std::max(0.1f, obj.ui.textScale);
-        float scaleFactor = useWorldUi
-                                ? std::max(0.01f, uiWorldCamera.zoom / 100.0f)
-                                : std::min(uiScaleX, uiScaleY);
-        float fontSize =
-            std::max(1.0f, ImGui::GetFontSize() * scale * scaleFactor);
+        float fontSize = ComputeViewportTextFontSize(
+            ImGui::GetFontSize(), scale, useWorldUi, uiWorldCamera.zoom);
         ImGui::PushClipRect(drawMin, drawMax, true);
         AddUITextWithFilter(dl, obj.material.textureFilter, ImGui::GetFont(),
                             fontSize, drawMin, drawMax,
@@ -16666,6 +16758,9 @@ void Engine::renderPlayerViewport() {
     };
     auto resolvePseudoCanvasRect = [&](const SceneObject &canvas,
                                        const glm::vec2 &layoutSizePx,
+                                       const ImVec2 &baseRegionMin,
+                                       const ImVec2 &baseRegionMax,
+                                       float scaleX, float scaleY,
                                        ImVec2 &outMin, ImVec2 &outMax) -> bool {
       std::vector<const SceneObject *> chain;
       chain.reserve(8);
@@ -16688,23 +16783,22 @@ void Engine::renderPlayerViewport() {
       }
       std::reverse(chain.begin(), chain.end());
 
-      ImVec2 regionMin = overlayPos;
-      ImVec2 regionMax =
-          ImVec2(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
+      ImVec2 regionMin = baseRegionMin;
+      ImVec2 regionMax = baseRegionMax;
       for (const SceneObject *node : chain) {
         ImVec2 size(1.0f, 1.0f);
         if (node->id == canvas.id) {
-          size = ImVec2(std::max(1.0f, layoutSizePx.x * uiScaleX),
-                        std::max(1.0f, layoutSizePx.y * uiScaleY));
+          size = ImVec2(std::max(1.0f, layoutSizePx.x * scaleX),
+                        std::max(1.0f, layoutSizePx.y * scaleY));
         } else {
           const glm::vec2 nodeSize = getSpriteDisplaySize(*node);
-          size = ImVec2(std::max(1.0f, nodeSize.x * uiScaleX),
-                        std::max(1.0f, nodeSize.y * uiScaleY));
+          size = ImVec2(std::max(1.0f, nodeSize.x * scaleX),
+                        std::max(1.0f, nodeSize.y * scaleY));
         }
         const ImVec2 anchorPoint =
             anchorToPoint(node->ui.anchor, regionMin, regionMax);
-        const ImVec2 pivot(anchorPoint.x + node->ui.position.x * uiScaleX,
-                           anchorPoint.y + node->ui.position.y * uiScaleY);
+        const ImVec2 pivot(anchorPoint.x + node->ui.position.x * scaleX,
+                           anchorPoint.y + node->ui.position.y * scaleY);
         const ImVec2 pivotOffset = anchorToPivot(node->ui.anchor, size);
         regionMin = ImVec2(pivot.x - pivotOffset.x, pivot.y - pivotOffset.y);
         regionMax = ImVec2(regionMin.x + size.x, regionMin.y + size.y);
@@ -16725,9 +16819,6 @@ void Engine::renderPlayerViewport() {
       const glm::vec2 layoutSizePx = ResolvePseudo3DLayoutSize(canvas);
       ImVec2 rectMin;
       ImVec2 rectMax;
-      if (!resolvePseudoCanvasRect(canvas, layoutSizePx, rectMin, rectMax)) {
-        continue;
-      }
       const int targetWidth = std::clamp((canvas.ui.renderTargetSize.x > 0)
                                              ? canvas.ui.renderTargetSize.x
                                              : static_cast<int>(layoutSizePx.x),
@@ -16746,6 +16837,7 @@ void Engine::renderPlayerViewport() {
       ImVec2 anchorScreen(0.0f, 0.0f);
       const bool anchored =
           resolvePseudoAnchorScreen(canvas, anchorScreen, distance);
+      const bool stablePanelSpace = !useWorldUi && !anchored;
       if (!anchored) {
         if (useWorldUi) {
           distance = glm::length(
@@ -16754,6 +16846,21 @@ void Engine::renderPlayerViewport() {
         } else {
           distance = glm::length(camera.position - canvas.position);
         }
+      }
+
+      const ImVec2 pseudoRegionMin =
+          stablePanelSpace ? panelMin : overlayPos;
+      const ImVec2 pseudoRegionMax =
+          stablePanelSpace
+              ? ImVec2(panelMin.x + availableSize.x, panelMin.y + availableSize.y)
+              : ImVec2(overlayPos.x + overlaySize.x,
+                       overlayPos.y + overlaySize.y);
+      const float pseudoScaleX = stablePanelSpace ? 1.0f : uiScaleX;
+      const float pseudoScaleY = stablePanelSpace ? 1.0f : uiScaleY;
+      if (!resolvePseudoCanvasRect(canvas, layoutSizePx, pseudoRegionMin,
+                                   pseudoRegionMax, pseudoScaleX,
+                                   pseudoScaleY, rectMin, rectMax)) {
+        continue;
       }
 
       if (anchored) {

@@ -5,7 +5,7 @@ description: High-level ModuCPP transpiled to native C++, plus raw C++/C and man
 
 # Scripting (ModuCPP, C++, C, and C#)
 Modularity supports:
-- High-level `ModuCPP` authoring syntax (`.moducpp`, or `.cpp` files that use `public class ... : ModuBehaviour`) transpiled to native C++ before compile.
+- High-level `ModuCPP` authoring syntax (`.moducpp`, or `.cpp` files that use `public class ... : ModuNode` or `ModuBehaviour`) transpiled to native C++ before compile.
 - Native `C++` scripts (`.cpp`, `.cc`, `.cxx`) compiled to shared libs.
 - Native `C` scripts (`.c`) through `ScriptRuntimeCAPI.h` and `Modu_*` hooks.
 - Managed `C#` scripts via Mono using `Scripts/Managed/ModuCPP.cs`.
@@ -14,7 +14,7 @@ Scripts run per `ScriptComponent` instance on a scene object.
 
 ## Quickstart
 1. Create a script file under `Assets/Scripts/` (or whatever `scriptsDir` is in `scripts.modu`).
-   - High-level syntax: use `.moducpp` (recommended), or `.cpp` with `public class ... : ModuBehaviour`.
+   - High-level syntax: use `.moducpp` (recommended), or `.cpp` with `public class ... : ModuNode` or `ModuBehaviour`.
    - Low-level native: use `.cpp` / `.cc` / `.cxx` / `.c`.
 2. Add a **Script** component in the Inspector.
 3. Set language and path:
@@ -33,7 +33,7 @@ Use this as the short version for documentation pages:
 | `ModuCPP` | Preferred gameplay/editor authoring | High-level class syntax, generated inspectors, object-list editors, dialogue/menu/interactable inspector widgets, helper facades for input/audio/sprite/2D movement | Still compiles down to native C++, so native build toolchain is required |
 | Native `C++` | Lowest-level engine-adjacent scripts | Full `ScriptContext`, direct ImGui/editor hooks, all current runtime helpers, easiest place to add new engine-side APIs | More boilerplate than ModuCPP |
 | Native `C` | Small/runtime-only bridge scripts | Stable `Modu_*` hook names, basic transform/physics/animation/settings/sprite inspector helpers | Smaller surface than C++/ModuCPP; does not expose the full helper layer or the new custom inspector DSL |
-| Managed `C#` | Tooling-heavy scripts or teams that want managed code | Mono-hosted `ModuCPP.Context`, auto-inspector support, object/UI/physics/audio/sprite APIs, `Vec2` and `RaycastHit`, bridge ABI `version = 6` | Requires Mono-enabled build and managed project output |
+| Managed `C#` | Tooling-heavy scripts or teams that want managed code | Mono-hosted `ModuCPP.Context`, auto-inspector support, object/UI/physics/audio/sprite APIs, `Vec2` and `RaycastHit`, bridge ABI `version = 7` | Requires Mono-enabled build and managed project output |
 
 ## Shipped mechanics and example systems
 The current repo is no longer just a raw scripting sandbox. The sample scripts already cover a set of reusable gameplay/editor mechanics:
@@ -44,7 +44,7 @@ The current repo is no longer just a raw scripting sandbox. The sample scripts a
 - `MainMenuController.moducpp`: keyboard-driven menu cursor/heart movement, configurable orientation, move/select sounds, startup/input delay control, and per-item enable/disable actions.
 - `TopDownMovement2D.moducpp`: 2D WASD movement, optional Rigidbody2D driving, directional idle/walk clip grids, sprint speed, acceleration/drag, and randomized footstep audio.
 - `StandaloneMovementController.moducpp`: reusable grounded 3D locomotion using `ScriptContext::TickStandaloneMovement(...)`, with inspector-driven tuning for movement, look, gravity, collider, and rigidbody behavior.
-- `FPSDisplay.moducpp`: UI text update + optional FPS cap control.
+- `FPSDisplay.moducpp`: preferred `obj.UILabel` + `ModuEngine.FPS` FPS display shorthand, plus optional FPS cap control.
 - `RigidbodyTest.moducpp`: launch, teleport, and live rigidbody readback examples.
 - `EditorWindowSample.moducpp` and `AnimationWindow.moducpp`: scripted editor tabs, custom editor UI, and animation-authoring workflow examples.
 - `SampleInspector.moducpp` and `SampleInspector Simplified.moducpp`: manual inspector patterns, `Config<T>()`/`State<T>()`, and direct migration from raw native C++ into ModuCPP.
@@ -53,7 +53,7 @@ The current repo is no longer just a raw scripting sandbox. The sample scripts a
 The ModuCPP layer is a compile-time frontend. Runtime is unchanged.
 
 Pipeline for ModuCPP sources:
-1. Parse high-level class syntax (`public class X : ModuBehaviour`).
+1. Parse high-level class syntax (`public class X : ModuNode` or `ModuBehaviour`).
 2. Generate equivalent native C++ (`<script>.moducpp.gen.cpp`) in script build output.
 3. Run the existing native hook wrapper detection/export flow (`Script_Begin`, `Script_TickUpdate`, `Script_OnInspector`, etc.).
 4. Compile/link with the same shared-library build/load path used by raw native scripts.
@@ -67,7 +67,10 @@ Unchanged backend/runtime pieces:
 
 ## ModuCPP syntax rules
 Supported high-level rules in current transpiler:
+- `public class MyScript : ModuNode`
 - `public class MyScript : ModuBehaviour`
+- `ModuNode` is the preferred documented base for new ModuCPP gameplay scripts.
+- `ModuBehaviour` remains accepted for backward compatibility with older scripts and ports.
 - Public persisted fields:
   - `public float/int/bool/vec3/string fieldName = ...;`
   - `public List<SceneObj*> fieldName;`
@@ -101,7 +104,7 @@ Supported high-level rules in current transpiler:
   - If you use custom public field types, provide `inspector { ... }` (or `Script_OnInspector`) so UI can be authored explicitly.
 
 Migration fallback:
-- `.moducpp` files without `public class ... : ModuBehaviour` are treated as legacy native C++ passthrough by the transpiler.
+- `.moducpp` files without `public class ... : ModuNode` or `ModuBehaviour` are treated as legacy native C++ passthrough by the transpiler.
 - This keeps old script bodies compiling while you migrate incrementally to high-level ModuCPP syntax.
 
 Inspector and persistence behavior:
@@ -115,7 +118,7 @@ Inspector and persistence behavior:
 The `ModuCPP` header is not just for the transpiler. It also exposes a thin native helper layer that raw C++ scripts can use directly.
 
 Core patterns:
-- `MODU_SCRIPT(ctx)` installs a scoped thread-local context and gives you `obj` as a shorthand for `ctx.object`.
+- `MODU_SCRIPT(ctx)` installs a scoped thread-local context and gives you `obj` as a shorthand facade over `ctx.object`.
 - `Config<T>()` stores persisted per-script-instance config data.
 - `State<T>()` stores runtime-only per-script-instance state.
 - `BindSetting(...)`, `BindArray(...)`, and `BindArray2D(...)` bind primitive, string, and fixed-size array data to inspector/settings persistence.
@@ -131,7 +134,42 @@ Gameplay helpers:
 - `TryMoveRigidbody2D(...)`, `moveRigidbody2D(...)`, and `movePosition2D(...)` cover common 2D movement flows.
 - `audio.HasSource()`, `audio.Play()`, `audio.Stop()`, and `audio.PlayOneShot(...)` wrap audio source operations.
 - `sprite.HasClips()`, `sprite.ClipCount()`, `sprite.ClipIndex()`, `sprite.SetClip(...)`, and `sprite.ClipNameAt(...)` wrap sprite clip control.
+- `obj.UILabel = "..."` is the preferred UI text shorthand. Older `obj->ui.label` still compiles.
+- `ModuEngine.FPS` exposes the current frame FPS derived from the injected script delta time.
+- `IntRD(...)`, `IntR(...)`, and `IntRU(...)` provide floor/nearest/ceil whole-number helpers.
+- `timer.Start(interval)` and `timer.Ready()` are the preferred repeating timer shorthand for `float` timer fields in ModuCPP.
 - `warnOnce(...)` and `warnMissingComponentOnce(...)` are convenience logging guards for missing component warnings.
+
+Modern shorthand notes:
+- `obj->...` remains supported for older scripts. New docs and examples prefer dot-style helpers such as `obj.UILabel`.
+- `obj.UILabel` safely writes the current object's UI label field. On non-UI objects this does not crash; it simply will not render visible text unless that object uses a UI text path.
+- `timer.Start(interval)` stores the interval and resets elapsed time to zero.
+- `timer.Ready()` advances using `time.deltaTime` and returns `true` once per elapsed interval, carrying overshoot forward for stable repeating timers.
+- Zero or negative timer intervals are treated as immediately ready.
+
+Preferred shorthand examples:
+```cpp
+void TickUpdate() {
+    obj.UILabel = "FPS: " + IntR(ModuEngine.FPS);
+}
+```
+
+```cpp
+private float timer = 0.0f;
+
+void Begin() to timer.Start(interval);
+
+void TickUpdate() {
+    if (!timer.Ready()) return;
+    each enable.state(true);
+    each disable.state(false);
+}
+```
+
+Rounding helper behavior:
+- `IntRD(92.95f)` -> `92`
+- `IntR(92.95f)` -> `93`
+- `IntRU(92.01f)` -> `93`
 
 Practical rule: if you need a custom native script but still want the newer ergonomic helpers, include `ModuCPP` instead of only `ScriptRuntime.h`.
 
@@ -140,20 +178,18 @@ Authoring source:
 ```cpp
 #include "ModuCPP"
 
-public class AutoEnableAndDisableListsOfObjectsAfterAmountOfTime : ModuBehaviour {
+public class AutoEnableAndDisableListsOfObjectsAfterAmountOfTime : ModuNode {
     public List<SceneObj*> enable;
     public List<SceneObj*> disable;
     public float interval = 1.0f;
     private float timer = 0.0f;
 
-    void TickUpdate(MODU_obj, float dt) {
-        timer += dt;
-        if (timer < interval) return;
+    void Begin() to timer.Start(interval);
 
+    void TickUpdate() {
+        if (!timer.Ready()) return;
         each enable.state(true);
         each disable.state(false);
-
-        timer = 0.0f;
     }
 }
 ```
@@ -162,8 +198,8 @@ Generated native C++ shape (simplified):
 ```cpp
 namespace ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime {
 struct AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeConfig {
-    std::string enableRaw;
-    std::string disableRaw;
+    std::vector<std::string> enable;
+    std::vector<std::string> disable;
     float interval = 1.0f;
 };
 struct AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeState {
@@ -179,7 +215,8 @@ extern "C" void Script_OnInspector(ScriptContext& ctx) {
     // Generated list editors + float editor, then ctx.SaveAutoSettings() on change.
 }
 
-void TickUpdate(ScriptContext& ctx, float dt) {
+void Begin(ScriptContext& ctx, float dt) {
+    ::ModuCPP::SetFrameDeltaTime(dt);
     MODU_SCRIPT(ctx);
     auto& config = ModuCPP::Config<ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime::
         AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeConfig>();
@@ -187,11 +224,23 @@ void TickUpdate(ScriptContext& ctx, float dt) {
         AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeState>();
     auto& interval = config.interval;
     auto& timer = state.timer;
-    const std::string& enable = config.enableRaw;
-    const std::string& disable = config.disableRaw;
 
-    timer += dt;
-    if (timer < interval) return;
+    ::ModuCPP::StartTimer(timer, interval);
+}
+
+void TickUpdate(ScriptContext& ctx, float dt) {
+    ::ModuCPP::SetFrameDeltaTime(dt);
+    MODU_SCRIPT(ctx);
+    auto& config = ModuCPP::Config<ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime::
+        AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeConfig>();
+    auto& state = ModuCPP::State<ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime::
+        AutoEnableAndDisableListsOfObjectsAfterAmountOfTimeState>();
+    auto& interval = config.interval;
+    auto& timer = state.timer;
+    auto& enable = config.enable;
+    auto& disable = config.disable;
+
+    if (!::ModuCPP::TimerReady(timer)) return;
 
     for (SceneObject* _moduObj :
          ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime::ResolveObjectList(ctx, enable)) {
@@ -203,8 +252,6 @@ void TickUpdate(ScriptContext& ctx, float dt) {
         if (!_moduObj) continue;
         ModuCPPTranspiled_AutoEnableAndDisableListsOfObjectsAfterAmountOfTime::SetResolvedObjectEnabled(ctx, _moduObj, false);
     }
-
-    timer = 0.0f;
 }
 ```
 
@@ -399,7 +446,7 @@ Notes:
 - Engine expects `ModuCPP.Host.SetNativeApi` in the assembly (provided by `ModuCPP.cs`).
 - If `Script_OnInspector` is missing, engine tries auto inspector via `ModuCPP.Inspector.RenderAuto`.
 - Requires Mono-enabled build (`MODULARITY_USE_MONO=ON`) and a valid Mono runtime.
-- Current managed bridge ABI is `version = 6`.
+- Current managed bridge ABI is `version = 7`.
 - `ModuCPP.cs` now includes `Vec2` and `RaycastHit`, so 2D motion and detailed raycast results are first-class in managed scripts.
 - The managed wrapper keeps compatibility guards for older native layouts by checking `Api.Version` before binding newer delegates.
 
@@ -614,7 +661,7 @@ Reference scripts in this repo:
 - `Scripts/MainMenuController.moducpp` (menu navigation + menu action editing)
 - `Scripts/TopDownMovement2D.moducpp` (2D locomotion, sprite clips, footsteps)
 - `Scripts/StandaloneMovementController.moducpp` (3D standalone movement helper integration)
-- `Scripts/FPSDisplay.moducpp` (UI text + FPS cap setting)
+- `Scripts/FPSDisplay.moducpp` (preferred `obj.UILabel` + `ModuEngine.FPS` sample)
 - `Scripts/RigidbodyTest.moducpp` (physics helper usage)
 - `Scripts/AnimationWindow.moducpp` (scripted editor animation tool)
 - `Scripts/EditorWindowSample.moducpp` (minimal scripted editor window)

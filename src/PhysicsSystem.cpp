@@ -110,6 +110,16 @@ bool BuildTriangleMeshFromVertexStream(const std::vector<float>& source,
     return !vertices.empty() && (indices.size() % 3 == 0);
 }
 
+bool PoseChangedSignificantly(const glm::vec3& prevPosition,
+                              const glm::vec3& prevRotation,
+                              const glm::vec3& nextPosition,
+                              const glm::vec3& nextRotation) {
+    const glm::vec3 positionDelta = nextPosition - prevPosition;
+    const glm::vec3 rotationDelta = nextRotation - prevRotation;
+    return glm::dot(positionDelta, positionDelta) > 1e-8f ||
+           glm::dot(rotationDelta, rotationDelta) > 1e-8f;
+}
+
 void BakeScaleIntoVertices(std::vector<PxVec3>& vertices, const glm::vec3& scale) {
     const PxVec3 bakedScale(std::abs(scale.x), std::abs(scale.y), std::abs(scale.z));
     for (PxVec3& v : vertices) {
@@ -602,6 +612,9 @@ PhysicsSystem::ActorRecord PhysicsSystem::createActorFor(const SceneObject& obj)
     record.isDynamic = wantsDynamic;
     record.isKinematic = wantsDynamic && obj.rigidbody.isKinematic;
     record.hasWorldBakedStaticMesh = bakeWorldSpaceStaticMesh;
+    record.hasAuthoringPose = true;
+    record.lastAuthoringPosition = obj.position;
+    record.lastAuthoringRotation = obj.rotation;
 
     bool attached = false;
     if (wantsCollider) {
@@ -654,57 +667,15 @@ void PhysicsSystem::clearActors() {
         }
     }
     mActors.clear();
+    mActorIdsByPtr.clear();
 }
 
 void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     if (!isReady()) return;
 
     clearActors();
-
-    struct MeshCookInfo {
-        std::string name;
-        size_t vertices = 0;
-        size_t triangles = 0;
-        size_t duplicateVertices = 0;
-    };
-    std::vector<MeshCookInfo> cookInfos;
-    cookInfos.reserve(objects.size());
-
-    for (const auto& obj : objects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasCollider || !obj.collider.enabled) continue;
-        if (obj.collider.type == ColliderType::Box || obj.collider.type == ColliderType::Capsule) continue;
-        const OBJLoader::LoadedMesh* meshInfo = nullptr;
-        if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
-            meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-        } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
-            meshInfo = getModelLoader().getMeshInfo(obj.meshId);
-        }
-        if (!meshInfo) continue;
-        const bool hasIndexed = !meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3;
-        const bool hasTriVerts = !meshInfo->triangleVertices.empty();
-        if (!hasIndexed && !hasTriVerts) continue;
-        MeshCookInfo info;
-        info.name = obj.name;
-        info.vertices = hasIndexed ? meshInfo->positions.size() : meshInfo->triangleVertices.size();
-        info.triangles = hasIndexed ? (meshInfo->triangleIndices.size() / 3) : (meshInfo->triangleVertices.size() / 3);
-        info.duplicateVertices = meshInfo->triangleVertices.size();
-        cookInfos.push_back(info);
-    }
-
-    if (!cookInfos.empty()) {
-        std::sort(cookInfos.begin(), cookInfos.end(),
-                  [](const MeshCookInfo& a, const MeshCookInfo& b) { return a.vertices > b.vertices; });
-        size_t reportCount = std::min<size_t>(cookInfos.size(), 5);
-        std::cerr << "[Physics] Mesh collider stats (top " << reportCount << " by vertex count):\n";
-        for (size_t i = 0; i < reportCount; ++i) {
-            const auto& info = cookInfos[i];
-            std::cerr << "  " << info.name
-                      << " verts=" << info.vertices
-                      << " tris=" << info.triangles
-                      << " dupVerts=" << info.duplicateVertices
-                      << "\n";
-        }
-    }
+    mActors.reserve(objects.size());
+    mActorIdsByPtr.reserve(objects.size());
 
     for (const auto& obj : objects) {
         if (!IsObjectEnabledInHierarchy(obj)) continue;
@@ -712,6 +683,7 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
         if (!rec.actor) continue;
         mScene->addActor(*rec.actor);
         mActors[obj.id] = rec;
+        mActorIdsByPtr[rec.actor] = obj.id;
     }
 }
 
@@ -757,6 +729,9 @@ bool PhysicsSystem::setActorYaw(int id, float yawDegrees) {
     PxQuat yawQuat(static_cast<float>(glm::radians(yawDegrees)), PxVec3(0, 1, 0));
     pose.q = yawQuat;
     rec.actor->setGlobalPose(pose);
+    rec.hasAuthoringPose = true;
+    rec.lastAuthoringPosition = ToGlmVec3(pose.p);
+    rec.lastAuthoringRotation = ToGlmEulerDeg(pose.q);
     return true;
 #endif
     return false;
@@ -800,6 +775,9 @@ bool PhysicsSystem::setActorPose(int id, const glm::vec3& position, const glm::v
     if (!rec.actor) return false;
     PxTransform pose(ToPxVec3(position), ToPxQuat(rotationDeg));
     rec.actor->setGlobalPose(pose);
+    rec.hasAuthoringPose = true;
+    rec.lastAuthoringPosition = position;
+    rec.lastAuthoringRotation = rotationDeg;
     return true;
 #else
     (void)id; (void)position; (void)rotationDeg;
@@ -907,15 +885,17 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
     if (hitActorId || hitActorVelocity) {
         PxRigidActor* hitActor = hit.block.actor;
         if (hitActor) {
-            for (const auto& [id, rec] : mActors) {
-                if (rec.actor != hitActor) continue;
-                if (hitActorId) *hitActorId = id;
-                if (hitActorVelocity && rec.isDynamic) {
-                    if (const PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+            auto idIt = mActorIdsByPtr.find(hitActor);
+            if (idIt != mActorIdsByPtr.end()) {
+                if (hitActorId) *hitActorId = idIt->second;
+                auto actorIt = mActors.find(idIt->second);
+                if (hitActorVelocity && actorIt != mActors.end() &&
+                    actorIt->second.isDynamic) {
+                    if (const PxRigidDynamic* dyn =
+                            actorIt->second.actor->is<PxRigidDynamic>()) {
                         *hitActorVelocity = ToGlmVec3(dyn->getLinearVelocity());
                     }
                 }
-                break;
             }
         }
     }
@@ -930,69 +910,103 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
 void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects) {
     if (!isReady() || deltaTime <= 0.0f) return;
 
+    std::unordered_map<int, SceneObject*> objectsById;
+    objectsById.reserve(objects.size());
+    for (SceneObject& obj : objects) {
+        objectsById[obj.id] = &obj;
+    }
+
     // Sync actors to authoring transforms before stepping
     for (auto& [id, rec] : mActors) {
         if (!rec.actor) continue;
-        auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
-        if (it == objects.end()) continue;
-        if (!IsObjectEnabledInHierarchy(*it)) {
-            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, true);
+        auto objIt = objectsById.find(id);
+        if (objIt == objectsById.end()) continue;
+        SceneObject& obj = *objIt->second;
+        const bool enabledInHierarchy = IsObjectEnabledInHierarchy(obj);
+        if (enabledInHierarchy == rec.simulationDisabled) {
+            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION,
+                                    !enabledInHierarchy);
+            rec.simulationDisabled = !enabledInHierarchy;
+        }
+        if (!enabledInHierarchy) {
             continue;
-        } else {
-            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, false);
         }
         if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
-            const bool isKinematic = it->rigidbody.isKinematic;
+            const bool isKinematic = obj.rigidbody.isKinematic;
             if (rec.isKinematic != isKinematic) {
                 dyn->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, isKinematic);
                 rec.isKinematic = isKinematic;
             }
 
-            const bool gravityDisabled = !it->rigidbody.useGravity;
+            const bool gravityDisabled = !obj.rigidbody.useGravity;
             if (rec.gravityDisabled != gravityDisabled) {
                 dyn->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, gravityDisabled);
                 rec.gravityDisabled = gravityDisabled;
             }
 
-            if (std::abs(rec.linearDamping - it->rigidbody.linearDamping) > 0.0001f) {
-                dyn->setLinearDamping(it->rigidbody.linearDamping);
-                rec.linearDamping = it->rigidbody.linearDamping;
+            if (std::abs(rec.linearDamping - obj.rigidbody.linearDamping) > 0.0001f) {
+                dyn->setLinearDamping(obj.rigidbody.linearDamping);
+                rec.linearDamping = obj.rigidbody.linearDamping;
             }
-            if (std::abs(rec.angularDamping - it->rigidbody.angularDamping) > 0.0001f) {
-                dyn->setAngularDamping(it->rigidbody.angularDamping);
-                rec.angularDamping = it->rigidbody.angularDamping;
+            if (std::abs(rec.angularDamping - obj.rigidbody.angularDamping) > 0.0001f) {
+                dyn->setAngularDamping(obj.rigidbody.angularDamping);
+                rec.angularDamping = obj.rigidbody.angularDamping;
             }
 
-            const uint32_t angularLockMask = BuildAngularLockMask(*it);
+            const uint32_t angularLockMask = BuildAngularLockMask(obj);
             if (rec.angularLockMask != angularLockMask) {
-                dyn->setRigidDynamicLockFlags(BuildAngularLockFlags(*it));
+                dyn->setRigidDynamicLockFlags(BuildAngularLockFlags(obj));
                 rec.angularLockMask = angularLockMask;
             }
 
-            const float massKg = EffectiveMassKilograms(*it, mProjectSettings);
-            const bool useCustomCenterOfMass = it->rigidbody.useCustomCenterOfMass;
-            const glm::vec3 centerOfMassDelta = rec.centerOfMass - it->rigidbody.centerOfMass;
+            const float massKg = EffectiveMassKilograms(obj, mProjectSettings);
+            const bool useCustomCenterOfMass = obj.rigidbody.useCustomCenterOfMass;
+            const glm::vec3 centerOfMassDelta =
+                rec.centerOfMass - obj.rigidbody.centerOfMass;
             const bool centerOfMassChanged = glm::dot(centerOfMassDelta, centerOfMassDelta) > 0.000001f;
             const bool massChanged = std::abs(rec.massKg - massKg) > 0.0001f;
             const bool customCenterStateChanged = rec.useCustomCenterOfMass != useCustomCenterOfMass;
             if (!isKinematic && (massChanged || centerOfMassChanged || customCenterStateChanged)) {
-                const PxVec3 com = ToPxVec3(it->rigidbody.centerOfMass);
+                const PxVec3 com = ToPxVec3(obj.rigidbody.centerOfMass);
                 const PxVec3* comPtr = useCustomCenterOfMass ? &com : nullptr;
                 PxRigidBodyExt::setMassAndUpdateInertia(*dyn, massKg, comPtr);
                 rec.massKg = massKg;
                 rec.useCustomCenterOfMass = useCustomCenterOfMass;
-                rec.centerOfMass = it->rigidbody.centerOfMass;
+                rec.centerOfMass = obj.rigidbody.centerOfMass;
             }
 
-            if (dyn->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
-                dyn->setKinematicTarget(PxTransform(ToPxVec3(it->position), ToPxQuat(it->rotation)));
+            if (rec.isKinematic) {
+                const bool poseChanged =
+                    !rec.hasAuthoringPose ||
+                    PoseChangedSignificantly(rec.lastAuthoringPosition,
+                                             rec.lastAuthoringRotation,
+                                             obj.position, obj.rotation);
+                if (poseChanged) {
+                    dyn->setKinematicTarget(
+                        PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
+                    rec.hasAuthoringPose = true;
+                    rec.lastAuthoringPosition = obj.position;
+                    rec.lastAuthoringRotation = obj.rotation;
+                }
             }
         } else {
             if (rec.hasWorldBakedStaticMesh) {
                 continue;
             }
-            // Static actors follow their authoring transform so scripted moves/rotations take effect
-            rec.actor->setGlobalPose(PxTransform(ToPxVec3(it->position), ToPxQuat(it->rotation)));
+            const bool poseChanged =
+                !rec.hasAuthoringPose ||
+                PoseChangedSignificantly(rec.lastAuthoringPosition,
+                                         rec.lastAuthoringRotation,
+                                         obj.position, obj.rotation);
+            if (poseChanged) {
+                // Static actors follow their authoring transform so scripted
+                // moves/rotations take effect without a full actor rebuild.
+                rec.actor->setGlobalPose(
+                    PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
+                rec.hasAuthoringPose = true;
+                rec.lastAuthoringPosition = obj.position;
+                rec.lastAuthoringRotation = obj.rotation;
+            }
         }
     }
 
@@ -1002,11 +1016,14 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
     for (auto& [id, rec] : mActors) {
         if (!rec.actor || !rec.isDynamic || rec.isKinematic) continue;
         PxTransform pose = rec.actor->getGlobalPose();
-        auto it = std::find_if(objects.begin(), objects.end(), [id](const SceneObject& o) { return o.id == id; });
-        if (it == objects.end() || !IsObjectEnabledInHierarchy(*it)) continue;
+        auto objIt = objectsById.find(id);
+        if (objIt == objectsById.end() || !IsObjectEnabledInHierarchy(*objIt->second)) {
+            continue;
+        }
+        SceneObject& obj = *objIt->second;
 
-        it->position = ToGlmVec3(pose.p);
-        if (it->hasPlayerController && it->playerController.enabled) {
+        obj.position = ToGlmVec3(pose.p);
+        if (obj.hasPlayerController && obj.playerController.enabled) {
             continue;
         }
         glm::vec3 euler = ToGlmEulerDeg(pose.q);
@@ -1016,12 +1033,12 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
             bool lockY = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y);
             bool lockZ = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z);
             if (lockX && lockZ && !lockY) {
-                it->rotation.y = euler.y;
+                obj.rotation.y = euler.y;
             } else {
-                it->rotation = euler;
+                obj.rotation = euler;
             }
         } else {
-            it->rotation.y = euler.y;
+            obj.rotation.y = euler.y;
         }
     }
 }

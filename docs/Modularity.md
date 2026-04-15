@@ -170,7 +170,7 @@ Raw meshes:
 Native scripts are compiled to shared libraries and hot-loaded at runtime. A project-specific `scripts.modu` controls build settings and include paths.
 
 Key concepts:
-- `ModuCPP` is now the preferred native authoring layer for gameplay scripts. `.moducpp` files and `.cpp` files that declare `public class ... : ModuBehaviour` are transpiled into native C++ before compile.
+- `ModuCPP` is now the preferred native authoring layer for gameplay scripts. `.moducpp` files and `.cpp` files that declare `public class ... : ModuNode` or `ModuBehaviour` are transpiled into native C++ before compile.
 - C++ hooks like `Begin`, `TickUpdate`, and `Update`.
 - C hooks via the C API bridge (`Modu_*` hook names in `.c` scripts).
 - Auto-generated wrappers export `Script_Begin`, `Script_TickUpdate`, etc., when hook names are detected.
@@ -182,7 +182,7 @@ For full details, see:
 ### Managed C# scripting (experimental)
 Modularity can host managed scripts using Mono via the `ModuCPP` managed bridge.
 Managed project files are under `Scripts/Managed` (separate from `Assets/Scripts` used for native scripts), and scripts can use object/transform, physics, animation, UI, sprite, audio, settings, and inspector helpers from `ModuCPP.Context`.
-The current managed bridge ABI is `version = 6`, which includes the expanded object state, 2D motion, sprite fade, audio, and detailed raycast helpers.
+The current managed bridge ABI is `version = 7`, which includes the expanded object state, 2D motion, sprite fade, audio, detailed raycast helpers, and project gravity scale access.
 
 For setup and caveats, see:
 - `docs/Scripting.md`

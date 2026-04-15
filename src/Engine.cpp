@@ -27,6 +27,9 @@
 namespace {
 constexpr int kRuntimeInternalWidth = 1280;
 constexpr int kRuntimeInternalHeight = 720;
+constexpr char kRuntimeCacheReadyMarker[] = ".runtime_bundle_ready";
+constexpr size_t kRuntimeCacheMaxEntries = 3;
+constexpr auto kRuntimeCacheMaxAge = std::chrono::hours(24 * 7);
 
 bool IsNativeBinaryPath(const fs::path& path) {
     const std::string ext = path.extension().string();
@@ -1822,6 +1825,12 @@ void cleanEditorExecutable(const fs::path& buildRoot) {
     if (fs::exists(editorExe)) {
         fs::remove(editorExe, ec);
     }
+
+    ec.clear();
+    const fs::path autoStartPath = buildRoot / "autostart.modu";
+    if (fs::exists(autoStartPath, ec)) {
+        fs::remove(autoStartPath, ec);
+    }
 }
 
 std::string RuntimeHashHex(uint64_t value) {
@@ -2205,6 +2214,80 @@ fs::path BuildRuntimeCacheRoot(const fs::path& appDataPath,
                              std::to_string(timeTicks);
     const std::string cacheId = RuntimeHashHex(RuntimePathHash(seed));
     return appDataPath / "RuntimeCache" / cacheId;
+}
+
+bool RuntimeCacheEntryReady(const fs::path& cacheRoot) {
+    std::error_code ec;
+    if (!fs::exists(cacheRoot / kRuntimeCacheReadyMarker, ec) || ec) {
+        return false;
+    }
+    ec.clear();
+    return fs::exists(cacheRoot / "project.modu", ec) && !ec;
+}
+
+void PruneRuntimeCache(const fs::path& appDataPath,
+                       const fs::path& activeCacheRoot) {
+    const fs::path runtimeCacheRoot = appDataPath / "RuntimeCache";
+    std::error_code ec;
+    if (!fs::exists(runtimeCacheRoot, ec) || ec) {
+        return;
+    }
+
+    struct CacheEntry {
+        fs::path path;
+        fs::file_time_type time;
+        bool keep = false;
+    };
+
+    std::vector<CacheEntry> validEntries;
+    const auto now = fs::file_time_type::clock::now();
+
+    for (auto it = fs::directory_iterator(runtimeCacheRoot, ec);
+         !ec && it != fs::directory_iterator(); ++it) {
+        if (!it->is_directory()) {
+            continue;
+        }
+
+        const fs::path entryPath = it->path();
+        if (entryPath == activeCacheRoot) {
+            std::error_code activeEc;
+            validEntries.push_back({entryPath, fs::last_write_time(entryPath, activeEc), true});
+            continue;
+        }
+
+        if (!RuntimeCacheEntryReady(entryPath)) {
+            std::error_code removeEc;
+            fs::remove_all(entryPath, removeEc);
+            continue;
+        }
+
+        std::error_code timeEc;
+        const fs::file_time_type writeTime = fs::last_write_time(entryPath, timeEc);
+        if (timeEc) {
+            std::error_code removeEc;
+            fs::remove_all(entryPath, removeEc);
+            continue;
+        }
+
+        validEntries.push_back({entryPath, writeTime, false});
+    }
+
+    std::sort(validEntries.begin(), validEntries.end(),
+              [](const CacheEntry& a, const CacheEntry& b) {
+                  return a.time > b.time;
+              });
+
+    size_t keptEntries = 0;
+    for (const CacheEntry& entry : validEntries) {
+        const bool expired = !entry.keep && (now - entry.time) > kRuntimeCacheMaxAge;
+        const bool overLimit = !entry.keep && keptEntries >= kRuntimeCacheMaxEntries;
+        if (expired || overLimit) {
+            std::error_code removeEc;
+            fs::remove_all(entry.path, removeEc);
+            continue;
+        }
+        ++keptEntries;
+    }
 }
 } // namespace
 #pragma endregion
@@ -2839,7 +2922,6 @@ void Engine::onWindowResized(int width, int height) {
 }
 
 bool Engine::init() {
-    std::cerr << "[DEBUG] Creating window..." << std::endl;
     graphicsBackend = resolveRequestedBackend();
     editorWindow = window.makeWindow(graphicsBackend);
     if (!editorWindow && graphicsBackend == Modularity::GraphicsBackend::Vulkan) {
@@ -2848,11 +2930,8 @@ bool Engine::init() {
         editorWindow = window.makeWindow(graphicsBackend);
     }
     if (!editorWindow) {
-        std::cerr << "[DEBUG] Window creation failed!" << std::endl;
         return false;
     }
-    std::cerr << "[DEBUG] Graphics backend: " << Modularity::ToString(graphicsBackend) << std::endl;
-    std::cerr << "[DEBUG] Window created successfully" << std::endl;
 
     glfwSetWindowUserPointer(editorWindow, this);
     glfwSetWindowSizeCallback(editorWindow, window_size_callback);
@@ -2891,6 +2970,10 @@ bool Engine::init() {
     playerMode = true;
     autoStartPlayerMode = true;
 #endif
+    Profiler::instance().setRecording(!playerMode);
+    if (playerMode) {
+        showGameProfiler = false;
+    }
     if (autoStartRequested && !autoStartBundlePath.empty()) {
         const fs::path bundlePath = fs::path(autoStartBundlePath);
         const fs::path runtimeCacheRoot = BuildRuntimeCacheRoot(projectManager.appDataPath, bundlePath);
@@ -2909,6 +2992,7 @@ bool Engine::init() {
                 autoStartRequested = false;
                 showLauncher = true;
             } else {
+                PruneRuntimeCache(projectManager.appDataPath, runtimeCacheRoot);
                 fs::path projectPath = autoStartProjectPath.empty()
                     ? (runtimeCacheRoot / "project.modu")
                     : (runtimeCacheRoot / fs::path(autoStartProjectPath));
@@ -2917,19 +3001,15 @@ bool Engine::init() {
         }
     }
 
-    std::cerr << "[DEBUG] Setting up ImGui..." << std::endl;
     setupImGui();
-    std::cerr << "[DEBUG] ImGui setup complete" << std::endl;
 
     if (usingVulkan()) {
         if (!initVulkanRenderer()) {
-            std::cerr << "[DEBUG] Vulkan renderer init failed!" << std::endl;
             return false;
         }
     }
 
     if (!audio.init()) {
-        std::cerr << "[DEBUG] Audio init failed\n";
         addConsoleMessage("Audio initialization failed. Audio playback will be disabled.", ConsoleMessageType::Warning);
     }
     
@@ -2996,7 +3076,6 @@ bool Engine::initVulkanRenderer() {
 }
 
 void Engine::run() {
-    std::cerr << "[DEBUG] Entering main loop, showLauncher=" << showLauncher << std::endl;
     constexpr float kRigidbody2DFixedStep = 1.0f / 120.0f;
     constexpr int kMaxRigidbody2DStepsPerFrame = 4;
     float rigidbody2DAccumulator = 0.0f;
@@ -3049,7 +3128,11 @@ void Engine::run() {
         pollProjectLoad();
         pollSceneLoad();
 
+#if MODULARITY_RUNTIME_ONLY
+        const bool termsPending = false;
+#else
         const bool termsPending = requiresTermsOfServiceAcceptance();
+#endif
 
         if (!showLauncher && !termsPending) {
             handleKeyboardShortcuts();
@@ -3268,8 +3351,8 @@ void Engine::run() {
             updateCompileJob();
             updateAutoCompileScripts();
             processAutoCompileQueue();
+            pollExportBuild();
         }
-        pollExportBuild();
 
         if (playerMode && !showLauncher) {
             int displayW = 0;
@@ -3283,8 +3366,6 @@ void Engine::run() {
                 viewportHeight = runtimeRenderHeight;
                 if (rendererInitialized) {
                     renderer.resize(viewportWidth, viewportHeight);
-                } else if (vulkanRendererInitialized && vulkanRenderer) {
-                    vulkanRenderer->notifyResize();
                 }
             }
         }
@@ -3341,10 +3422,6 @@ void Engine::run() {
             }
         }
 
-        if (firstFrame) {
-            std::cerr << "[DEBUG] First frame: starting ImGui NewFrame" << std::endl;
-        }
-        
         {
             MODU_PROFILE_SCOPE("Editor UI", ProfilerSampleCategory::UI);
             if (usingVulkan()) {
@@ -3371,21 +3448,15 @@ void Engine::run() {
             ImGui::NewFrame();
             uiCanvas3DInputs.clear();
 
-            if (firstFrame) {
-                std::cerr << "[DEBUG] First frame: ImGui NewFrame complete, rendering UI..." << std::endl;
-            }
-
             if (showLauncher) {
                 mainDockspaceId = 0;
-                if (firstFrame) {
-                    std::cerr << "[DEBUG] First frame: calling renderLauncher()" << std::endl;
-                }
                 #ifdef MODULARITY_PLAYER
                 renderPlayerViewport();
                 #else
                 renderLauncher();
                 #endif
             } else if (!playerMode) {
+#if !MODULARITY_RUNTIME_ONLY
                 mainDockspaceId = setupDockspace(uiChromeScale);
                 renderMainMenuBar();
                 const bool skipDockedWindowsThisFrame = workspaceLayoutSettlingFrame;
@@ -3416,23 +3487,27 @@ void Engine::run() {
                 renderLatestErrorBar();
                 renderEditorToast();
                 updateDockDrawerInteractions();
+#else
+                mainDockspaceId = 0;
+                renderPlayerViewport();
+#endif
             } else {
                 mainDockspaceId = 0;
                 renderPlayerViewport();
             }
 
             if (!playerMode) {
+#if !MODULARITY_RUNTIME_ONLY
                 renderTermsOfServiceModal();
                 renderDialogs();
+#endif
             }
         }
 
-        if (firstFrame) {
-            std::cerr << "[DEBUG] First frame: UI rendering complete, finalizing frame..." << std::endl;
+        if (!playerMode) {
+            updateTouchSwipeScrolling();
+            autosaveWorkspaceLayout();
         }
-
-        updateTouchSwipeScrolling();
-        autosaveWorkspaceLayout();
         renderUiCanvas3DTargets();
         ImGui::Render();
         if (runtime2DProfileThisFrame) {
@@ -3563,14 +3638,8 @@ void Engine::run() {
             profiler.setCurrentFrameGpuCapability(false, false);
         }
         profiler.endFrame();
-        
-        if (firstFrame) {
-            std::cerr << "[DEBUG] First frame complete!" << std::endl;
-        }
         firstFrame = false;
     }
-    
-    std::cerr << "[DEBUG] Exiting main loop" << std::endl;
 }
 
 void Engine::shutdown() {
@@ -4274,6 +4343,13 @@ void Engine::handleKeyboardShortcuts() {
         f11Pressed = false;
     }
 
+    if (playerMode) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape) && gameViewCursorLocked) {
+            gameViewCursorLocked = false;
+        }
+        return;
+    }
+
     static bool ctrlSPressed = false;
     bool ctrlDown = glfwGetKey(editorWindow, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                    glfwGetKey(editorWindow, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
@@ -4418,6 +4494,7 @@ void Engine::handleKeyboardShortcuts() {
 #pragma region Runtime Updates
 void Engine::updateScripts(float delta) {
     MODU_PROFILE_SCOPE("Script Update", ProfilerSampleCategory::Script);
+#if !MODULARITY_RUNTIME_ONLY
     static bool runtimeTraceWasActive = false;
     static int runtimeTraceFramesRemaining = 0;
     const bool runtimeActive = isPlaying || specMode || testMode;
@@ -4430,6 +4507,7 @@ void Engine::updateScripts(float delta) {
         std::cerr << "[RuntimeTrace] Exit runtime mode" << std::endl;
     }
     runtimeTraceWasActive = runtimeActive;
+#endif
 
     if (sceneObjects.empty()) return;
     if (runtimeScriptBindingsCachedVersion != runtimeScriptBindingsVersion) {
@@ -4438,7 +4516,11 @@ void Engine::updateScripts(float delta) {
     if (runtimeScriptBindings.empty()) return;
     refreshSceneObjectIndexCache();
 
+#if MODULARITY_RUNTIME_ONLY
+    constexpr bool traceScripts = false;
+#else
     const bool traceScripts = runtimeTraceFramesRemaining > 0;
+#endif
     auto scriptLanguageLabel = [](ScriptLanguage language) {
         switch (language) {
             case ScriptLanguage::Cpp: return "Cpp";
@@ -4607,7 +4689,9 @@ void Engine::updateScripts(float delta) {
 
     if (traceScripts) {
         std::cerr << "[RuntimeTrace] updateScripts end frame=" << ImGui::GetFrameCount() << std::endl;
+#if !MODULARITY_RUNTIME_ONLY
         --runtimeTraceFramesRemaining;
+#endif
     }
 
     if (gcStartStats.available || gcEndStats.available) {
@@ -6801,6 +6885,7 @@ void Engine::applyAutoStartMode() {
     isPlaying = true;
     specMode = false;
     testMode = false;
+    clearSelection();
     gameViewCursorLocked = true;
     gameViewportFocused = true;
     showHierarchy = false;
@@ -7815,18 +7900,6 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         autoStart << "mode=player\n";
         autoStart.close();
 
-        fs::path buildAutoStartPath = buildRoot / "autostart.modu";
-        std::ofstream buildAutoStart(buildAutoStartPath);
-        if (buildAutoStart.is_open()) {
-            buildAutoStart << "bundle=" << (exportRoot / "content.modbundle").string() << "\n";
-            buildAutoStart << "project=project.modu\n";
-            if (!startScene.empty()) {
-                buildAutoStart << "scene=" << startScene << "\n";
-            }
-            buildAutoStart << "mode=player\n";
-            buildAutoStart.close();
-        }
-
         if (packageStandaloneArchive) {
 #ifdef _WIN32
             appendLog("Standalone archive packaging is skipped on Windows exports.");
@@ -7843,6 +7916,14 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                 return result;
             }
 #endif
+        }
+
+        if (!useSharedBuild) {
+            std::error_code cleanupEc;
+            fs::remove_all(buildRoot, cleanupEc);
+            if (cleanupEc) {
+                appendLog("Warning: Failed to remove temporary build directory: " + buildRoot.string());
+            }
         }
 
         setStatus(1.0f, "Export complete.");
@@ -9745,28 +9826,24 @@ void Engine::renderScriptEditorWindows() {
 
 #pragma region ImGui Setup
 void Engine::setupImGui() {
-    std::cerr << "[DEBUG] setupImGui: getting primary monitor..." << std::endl;
     float mainScale = 1.0f;
     GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
     if (primaryMonitor) {
-        std::cerr << "[DEBUG] setupImGui: got primary monitor, getting content scale..." << std::endl;
         mainScale = ImGui_ImplGlfw_GetContentScaleForMonitor(primaryMonitor);
-        std::cerr << "[DEBUG] setupImGui: content scale = " << mainScale << std::endl;
-    } else {
-        std::cerr << "[DEBUG] setupImGui: WARNING - no primary monitor found!" << std::endl;
     }
-    
-    std::cerr << "[DEBUG] setupImGui: creating ImGui context..." << std::endl;
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+#if !MODULARITY_RUNTIME_ONLY
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+#endif
 #if defined(__ANDROID__)
     io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
 #endif
-    if (usingVulkan()) {
+    if (usingVulkan() || playerMode) {
         io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
     } else {
     #ifndef __linux__
@@ -9775,7 +9852,6 @@ void Engine::setupImGui() {
     }
     io.IniFilename = nullptr;
 
-    std::cerr << "[DEBUG] setupImGui: applying theme..." << std::endl;
     applyModernTheme();
 
     ImGuiStyle& style = ImGui::GetStyle();
@@ -9788,24 +9864,19 @@ void Engine::setupImGui() {
     }
     initUIStylePresets();
 
-    std::cerr << "[DEBUG] setupImGui: initializing ImGui GLFW backend..." << std::endl;
     if (usingVulkan()) {
         if (!ImGui_ImplGlfw_InitForVulkan(editorWindow, true)) {
             throw std::runtime_error("ImGui GLFW Vulkan init failed");
         }
-        std::cerr << "[DEBUG] setupImGui: Vulkan backend selected; renderer backend will be initialized after Vulkan setup." << std::endl;
     } else {
         if (!ImGui_ImplGlfw_InitForOpenGL(editorWindow, true)) {
             throw std::runtime_error("ImGui GLFW OpenGL init failed");
         }
 
-        std::cerr << "[DEBUG] setupImGui: initializing ImGui OpenGL3 backend..." << std::endl;
         if (!ImGui_ImplOpenGL3_Init("#version 330")) {
-            std::cerr << "[DEBUG] ImGui OpenGL3 init failed!" << std::endl;
             throw std::runtime_error("ImGui error");
         }
     }
-    std::cerr << "[DEBUG] setupImGui: complete!" << std::endl;
 }
 #pragma endregion
 

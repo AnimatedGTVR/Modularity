@@ -2346,8 +2346,6 @@ void Engine::renderProjectBrowserPanel() {
     };
 
     ImGui::BeginChild("SettingsNav", ImVec2(214.0f, 0), true);
-    ImGui::TextDisabled("Categories");
-    ImGui::Separator();
     for (int i = 0; i < tabCount; ++i) {
         if (drawProjectSettingsTab(i)) {
             if (selectedTab != i) {

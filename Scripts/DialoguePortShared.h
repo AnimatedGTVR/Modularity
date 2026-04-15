@@ -4,12 +4,15 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cctype>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <regex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <GLFW/glfw3.h>
@@ -30,6 +33,13 @@ enum class TextEffectType : int {
     Rotate = 1 << 3,
     Fade = 1 << 4
 };
+
+inline constexpr const char* kInteractionRequestPending = "interaction.requestPending";
+inline constexpr const char* kInteractionOverrideLines = "interaction.overrideDialogueLines";
+inline constexpr const char* kInteractionEndEnable = "interaction.itemsToEnableOnEnd";
+inline constexpr const char* kInteractionEndDisable = "interaction.itemsToDisableOnEnd";
+inline constexpr const char* kInteractionPlayerRef = "interaction.playerRef";
+inline constexpr const char* kInteractionRequestSerial = "interaction.requestSerial";
 
 struct DialogueLine {
     std::string characterName;
@@ -274,6 +284,72 @@ inline std::vector<DialogueLine> DeserializeDialogueLines(const std::string& enc
     return lines;
 }
 
+inline std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+inline std::string GetSentenceForLanguage(const DialogueLine& line, Language language) {
+    switch (language) {
+        case Language::English:
+            return line.sentence;
+        case Language::German:
+            return line.sentenceGerman.empty() ? line.sentence : line.sentenceGerman;
+        case Language::JapaneseKana:
+            return line.sentenceJapaneseKana.empty() ? line.sentence : line.sentenceJapaneseKana;
+        default:
+            return line.sentence;
+    }
+}
+
+inline std::string ParseSentenceForDisplay(const std::string& sentence) {
+    static const std::regex taggedWordPattern(R"(\(\[(\w+),\s*([\d.]+),\s*([\d.]+),\](.*?)\))");
+
+    std::string clean;
+    clean.reserve(sentence.size());
+
+    size_t lastIndex = 0;
+    for (std::sregex_iterator it(sentence.begin(), sentence.end(), taggedWordPattern), end; it != end; ++it) {
+        const std::smatch& match = *it;
+        const size_t matchPos = static_cast<size_t>(match.position());
+        const size_t matchLen = static_cast<size_t>(match.length());
+
+        if (matchPos > lastIndex) {
+            clean += sentence.substr(lastIndex, matchPos - lastIndex);
+        }
+
+        if (match.size() >= 5) {
+            clean += match[4].str();
+        }
+
+        lastIndex = matchPos + matchLen;
+    }
+
+    if (lastIndex < sentence.size()) {
+        clean += sentence.substr(lastIndex);
+    }
+
+    return clean;
+}
+
+inline int FindAnimationClipIndexByName(SceneObject& object, const std::string& desiredName) {
+    if (!object.hasAnimation || !object.animation.enabled) return -1;
+    NormalizeAnimationClipSlots(object.animation);
+    if (object.animation.clips.empty()) return -1;
+
+    const std::string needle = ToLowerAscii(Trim(desiredName));
+    for (int i = 0; i < static_cast<int>(object.animation.clips.size()); ++i) {
+        const AnimationClipSlot& clip = object.animation.clips[static_cast<size_t>(i)];
+        std::string clipName = clip.name.empty() ? AnimationClipNameFromPath(clip.assetPath) : clip.name;
+        if (ToLowerAscii(Trim(clipName)) == needle) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 inline std::string MakeObjectRef(int objectId) {
     return std::string("Object.ID-") + std::to_string(objectId);
 }
@@ -303,6 +379,66 @@ inline SceneObject* ResolveSceneObjectRef(ScriptContext& ctx, const std::string&
     return ctx.FindObjectByName(trimmed);
 }
 
+inline bool IsDialogueSystemScript(const ScriptComponent& script) {
+    const std::string pathLower = ToLowerAscii(script.path);
+    const std::string managedTypeLower = ToLowerAscii(script.managedType);
+    return pathLower.find("dialoguesystem") != std::string::npos ||
+           managedTypeLower.find("dialoguesystem") != std::string::npos;
+}
+
+struct DialogueScriptTarget {
+    SceneObject* object = nullptr;
+    ScriptComponent* script = nullptr;
+};
+
+inline ScriptComponent* FindDialogueSystemScriptOnObject(SceneObject* object) {
+    if (!object) return nullptr;
+
+    for (ScriptComponent& script : object->scripts) {
+        if (IsDialogueSystemScript(script)) {
+            return &script;
+        }
+    }
+
+    return nullptr;
+}
+
+inline DialogueScriptTarget FindDialogueScriptTarget(ScriptContext& ctx, SceneObject* object) {
+    if (!object) return {};
+
+    if (ScriptComponent* direct = FindDialogueSystemScriptOnObject(object)) {
+        return DialogueScriptTarget{object, direct};
+    }
+
+    std::vector<int> pendingChildIds = object->childIds;
+    int childGuard = 0;
+    while (!pendingChildIds.empty() && childGuard < 512) {
+        const int childId = pendingChildIds.back();
+        pendingChildIds.pop_back();
+        ++childGuard;
+        SceneObject* child = ctx.FindObjectById(childId);
+        if (!child) continue;
+        if (ScriptComponent* childScript = FindDialogueSystemScriptOnObject(child)) {
+            return DialogueScriptTarget{child, childScript};
+        }
+        pendingChildIds.insert(pendingChildIds.end(), child->childIds.begin(), child->childIds.end());
+    }
+
+    int parentId = object->parentId;
+    int parentGuard = 0;
+    while (parentId >= 0 && parentGuard < 256) {
+        ++parentGuard;
+        SceneObject* parent = ctx.FindObjectById(parentId);
+        if (!parent) break;
+        if (ScriptComponent* parentScript = FindDialogueSystemScriptOnObject(parent)) {
+            return DialogueScriptTarget{parent, parentScript};
+        }
+        parentId = parent->parentId;
+    }
+
+    return {};
+}
+
 inline bool SetObjectEnabledState(ScriptContext& ctx, SceneObject* object, bool enabled) {
     if (!object) return false;
     if (object->enabled == enabled) return false;
@@ -320,6 +456,54 @@ inline bool SetObjectsEnabledState(ScriptContext& ctx, const std::vector<std::st
         }
     }
     return changed;
+}
+
+inline glm::vec3 GetObjectReferencePosition(ScriptContext& ctx, const SceneObject& object) {
+    if (HasUIComponent(object) && object.ui.type != UIElementType::None) {
+        glm::vec2 worldUiPos(object.ui.position.x, object.ui.position.y);
+        int parentId = object.parentId;
+        int guard = 0;
+        while (parentId >= 0 && guard < 256) {
+            ++guard;
+            SceneObject* parent = ctx.FindObjectById(parentId);
+            if (!parent) break;
+            if (HasUIComponent(*parent) && parent->ui.type != UIElementType::None) {
+                worldUiPos += parent->ui.position;
+                parentId = parent->parentId;
+                continue;
+            }
+            worldUiPos += glm::vec2(parent->position.x, parent->position.y);
+            break;
+        }
+        return glm::vec3(worldUiPos.x, worldUiPos.y, object.position.z);
+    }
+    return object.position;
+}
+
+inline std::string GetCurrentObjectName(ScriptContext& ctx, const std::string& fallback = "Object") {
+    if (ctx.object && !ctx.object->name.empty()) {
+        return ctx.object->name;
+    }
+    return fallback;
+}
+
+inline bool TryPlayAnimationClipNamed(ScriptContext& ctx, const std::string& clipName) {
+    if (!ctx.object || !ctx.object->hasAnimation || !ctx.object->animation.enabled) return false;
+    SceneObject& object = *ctx.object;
+    NormalizeAnimationClipSlots(object.animation);
+    const int clipIndex = FindAnimationClipIndexByName(object, clipName);
+    if (clipIndex < 0) return false;
+
+    object.animation.activeClipIndex = clipIndex;
+    object.animation.clipAssetPath = object.animation.clips[static_cast<size_t>(clipIndex)].assetPath;
+    if (object.animation.clipAssetPath.empty()) return false;
+    object.animation.runtimeClipPath = object.animation.clipAssetPath;
+    object.animation.runtimeTime = 0.0f;
+    object.animation.runtimePlaying = true;
+    object.animation.runtimePaused = false;
+    object.animation.runtimeDirection = 1.0f;
+    object.animation.runtimeInitialized = true;
+    return true;
 }
 
 inline SceneObject* ResolveUITextTarget(ScriptContext& ctx, const std::string& objectRef) {
@@ -552,6 +736,21 @@ inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label, std::
     return changed;
 }
 
+inline bool IsRuntimeKeyDown(int glfwKey, ImGuiKey imguiKey) {
+    if (ModuCPP::ctxPtr()) {
+        return ModuCPP::KeyDown(glfwKey);
+    }
+    if (ImGui::IsKeyDown(imguiKey)) return true;
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (!window) return false;
+    return glfwGetKey(window, glfwKey) == GLFW_PRESS;
+}
+
+inline bool IsSubmitDown() {
+    return IsRuntimeKeyDown(GLFW_KEY_ENTER, ImGuiKey_Enter) ||
+           IsRuntimeKeyDown(GLFW_KEY_KP_ENTER, ImGuiKey_KeypadEnter);
+}
+
 inline const char* LanguageLabel(Language language) {
     switch (language) {
         case Language::English: return "English";
@@ -697,16 +896,6 @@ inline void DrawDialogueRuntimeStatus(const RuntimeStateT* state) {
     ImGui::TextDisabled("Chars: %zu / %zu",
                         state->revealedCharacters,
                         state->currentCleanSentence.size());
-}
-
-inline bool IsRuntimeKeyDown(int glfwKey, ImGuiKey imguiKey) {
-    if (ModuCPP::ctxPtr()) {
-        return ModuCPP::KeyDown(glfwKey);
-    }
-    if (ImGui::IsKeyDown(imguiKey)) return true;
-    GLFWwindow* window = glfwGetCurrentContext();
-    if (!window) return false;
-    return glfwGetKey(window, glfwKey) == GLFW_PRESS;
 }
 
 } // namespace DialoguePort

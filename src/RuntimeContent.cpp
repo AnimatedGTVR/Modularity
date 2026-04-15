@@ -7,6 +7,7 @@
 namespace {
 constexpr char kBundleMagic[] = "MODRUNTIME1";
 constexpr uint32_t kBundleVersion = 1u;
+constexpr char kBundleReadyMarker[] = ".runtime_bundle_ready";
 
 template <typename T>
 bool WritePod(std::ofstream& out, const T& value) {
@@ -29,6 +30,37 @@ bool EnsureParentDirectory(const fs::path& path, std::string& error) {
             error = "Failed to create directory: " + parent.string();
             return false;
         }
+    }
+    return true;
+}
+
+bool IsReusableBundleExtraction(const fs::path& outputRoot) {
+    std::error_code ec;
+    if (!fs::exists(outputRoot / kBundleReadyMarker, ec) || ec) {
+        return false;
+    }
+    ec.clear();
+    return fs::exists(outputRoot / "project.modu", ec) && !ec;
+}
+
+bool WriteBundleReadyMarker(const fs::path& outputRoot,
+                            const fs::path& bundlePath,
+                            std::string& error) {
+    const fs::path markerPath = outputRoot / kBundleReadyMarker;
+    if (!EnsureParentDirectory(markerPath, error)) {
+        return false;
+    }
+
+    std::ofstream marker(markerPath, std::ios::trunc);
+    if (!marker.is_open()) {
+        error = "Failed to write runtime extraction marker: " + markerPath.string();
+        return false;
+    }
+
+    marker << bundlePath.filename().string() << "\n";
+    if (!marker) {
+        error = "Failed to finalize runtime extraction marker: " + markerPath.string();
+        return false;
     }
     return true;
 }
@@ -153,6 +185,10 @@ bool ExtractRuntimeContentBundle(const fs::path& bundlePath,
         return false;
     }
 
+    if (IsReusableBundleExtraction(outputRoot)) {
+        return WriteBundleReadyMarker(outputRoot, bundlePath, error);
+    }
+
     std::error_code ec;
     fs::remove_all(outputRoot, ec);
     ec.clear();
@@ -219,5 +255,5 @@ bool ExtractRuntimeContentBundle(const fs::path& bundlePath,
         }
     }
 
-    return true;
+    return WriteBundleReadyMarker(outputRoot, bundlePath, error);
 }

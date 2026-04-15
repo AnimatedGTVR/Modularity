@@ -50,6 +50,9 @@ namespace FileIcons {
                 case FileCategory::Text:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
                     break;
+                case FileCategory::Model:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Model.png";
+                    break;
                 case FileCategory::Unknown:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png";
                     break;
@@ -1246,22 +1249,15 @@ void Engine::renderFileBrowserPanel() {
                     contents =
                         "#include \"ModuCPP\"\n"
                         "\n"
-                        "public class " + scriptClassName + " : ModuBehaviour {\n"
-                        "    public float interval = 1.0f @range(0.0f, 60.0f) @step(0.05f);\n"
+                        "public class " + scriptClassName + " : ModuNode {\n"
+                        "    public float interval = 1.0f;\n"
                         "    private float timer = 0.0f;\n"
                         "\n"
-                        "    void Begin(MODU_obj, float dt) {\n"
-                        "        (void)dt;\n"
-                        "        timer = 0.0f;\n"
-                        "    }\n"
+                        "    void Begin() to timer.Start(interval);\n"
                         "\n"
-                        "    void TickUpdate(MODU_obj, float dt) {\n"
-                        "        if (!obj || dt <= 0.0f) return;\n"
-                        "\n"
-                        "        timer += dt;\n"
-                        "        if (timer < interval) return;\n"
-                        "\n"
-                        "        timer = 0.0f;\n"
+                        "    void TickUpdate() {\n"
+                        "        if (!timer.Ready()) return;\n"
+                        "        // Interval work goes here.\n"
                         "    }\n"
                         "}\n";
                     break;

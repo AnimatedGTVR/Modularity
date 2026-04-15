@@ -37,19 +37,6 @@ float segmentDistance(vec2 p, vec2 a, vec2 b) {
     return length(p - mix(a, b, t));
 }
 
-bool pointInPolygon(vec2 p) {
-    bool inside = false;
-    for (int i = 0, j = u_polygonPointCount - 1; i < u_polygonPointCount; j = i++) {
-        vec2 a = u_polygonPoints[i];
-        vec2 b = u_polygonPoints[j];
-        float edgeDeltaY = b.y - a.y;
-        bool intersect = ((a.y > p.y) != (b.y > p.y)) &&
-            (p.x < (b.x - a.x) * (p.y - a.y) / safeSignedDivisor(edgeDeltaY) + a.x);
-        if (intersect) inside = !inside;
-    }
-    return inside;
-}
-
 vec2 rotate2D(vec2 value, float angle) {
     float c = cos(angle);
     float s = sin(angle);
@@ -77,11 +64,17 @@ void main() {
         discard;
     }
 
-    bool inside = pointInPolygon(vScreenPos);
+    bool inside = false;
     float minDistance = 1e20;
-    for (int i = 0; i < u_polygonPointCount; ++i) {
+    for (int i = 0, j = u_polygonPointCount - 1; i < u_polygonPointCount; j = i++) {
         vec2 a = u_polygonPoints[i];
-        vec2 b = u_polygonPoints[(i + 1) % u_polygonPointCount];
+        vec2 b = u_polygonPoints[j];
+        float edgeDeltaY = b.y - a.y;
+        bool intersect = ((a.y > vScreenPos.y) != (b.y > vScreenPos.y)) &&
+            (vScreenPos.x < (b.x - a.x) * (vScreenPos.y - a.y) / safeSignedDivisor(edgeDeltaY) + a.x);
+        if (intersect) {
+            inside = !inside;
+        }
         minDistance = min(minDistance, segmentDistance(vScreenPos, a, b));
     }
 

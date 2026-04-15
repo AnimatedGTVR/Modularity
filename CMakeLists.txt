@@ -239,6 +239,20 @@ set(MODULARITY_EDITOR_TEXTEDITOR_SOURCE
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/ImGuiColorTextEdit/TextEditor.cpp
 )
 
+set(MODULARITY_PLAYER_EDITOR_ONLY_SOURCES
+    ${MODULARITY_EDITOR_TEXTEDITOR_SOURCE}
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/AnimationWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/BuildSettingsWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/EnvironmentWindows.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/FileBrowserWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/GameProfilerWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/PixelSpriteEditorWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/ProjectManagerWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/RegistryPackagesWindow.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/SceneWindows.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/ScriptingWindow.cpp
+)
+
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/.*")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
@@ -248,7 +262,9 @@ list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 
+set(ENGINE_PLAYER_SOURCES ${ENGINE_SOURCES})
 list(APPEND ENGINE_SOURCES ${MODULARITY_EDITOR_TEXTEDITOR_SOURCE})
+list(REMOVE_ITEM ENGINE_PLAYER_SOURCES ${MODULARITY_PLAYER_EDITOR_ONLY_SOURCES})
 
 add_library(core STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
 modularity_apply_cxx_api_standard(core)
@@ -291,9 +307,10 @@ if(SNDFILE_FOUND)
 endif()
 target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
 
-add_library(core_player STATIC ${ENGINE_SOURCES} ${ENGINE_HEADERS})
+add_library(core_player STATIC ${ENGINE_PLAYER_SOURCES} ${ENGINE_HEADERS})
 modularity_apply_cxx_api_standard(core_player)
 target_compile_definitions(core_player PUBLIC MODULARITY_PLAYER)
+target_compile_definitions(core_player PUBLIC MODULARITY_RUNTIME_ONLY=1)
 target_link_libraries(core_player PUBLIC assimp)
 target_include_directories(core_player PUBLIC
     ${PROJECT_SOURCE_DIR}/src

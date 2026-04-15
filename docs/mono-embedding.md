@@ -23,5 +23,5 @@ Runtime notes:
 - If `Assembly Path` is a `.cs` or `.csproj`, the engine resolves to the managed output DLL.
 - If `<ProjectRoot>/Scripts/Managed/ModuCPP.csproj` is missing, the editor attempts to bootstrap it on first managed compile.
 - Managed scripts require the `ModuCPP.Host` type with `SetNativeApi(IntPtr)` (provided by `Scripts/Managed/ModuCPP.cs`).
-- The current native/managed bridge ABI is `version = 6`.
+- The current native/managed bridge ABI is `version = 7`.
 - `Scripts/Managed/ModuCPP.cs` binds newer API blocks conditionally via `Api.Version`, so older native layouts fail soft instead of crashing when newer delegates are absent.

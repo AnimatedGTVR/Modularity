@@ -63,6 +63,14 @@ glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
     return glm::vec4(u0, v0, uSize, vSize);
 }
 
+bool HasDefaultSpriteUvRect(const SceneObject& obj) {
+    const glm::vec4 uvRect = BuildSpriteUvRect(obj);
+    return std::abs(uvRect.x) <= 1e-5f &&
+           std::abs(uvRect.y) <= 1e-5f &&
+           std::abs(uvRect.z - 1.0f) <= 1e-5f &&
+           std::abs(uvRect.w - 1.0f) <= 1e-5f;
+}
+
 glm::mat4 BuildSceneObjectModelMatrix(const SceneObject& obj, const glm::vec3* cameraPosition = nullptr, const glm::vec3* cameraUp = nullptr) {
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, obj.position);
@@ -457,11 +465,11 @@ bool IsStaticMergeCandidate(const SceneObject& obj) {
         case RenderType::OBJMesh:
         case RenderType::Model:
         case RenderType::Plane:
+        case RenderType::Sprite:
         case RenderType::Torus:
             return true;
         case RenderType::None:
         case RenderType::Mirror:
-        case RenderType::Sprite:
             return false;
     }
 
@@ -1326,10 +1334,26 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
         return;
     }
 
+    auto isStaticMergeBatchable = [&](const SceneObject& obj) {
+        if (!IsStaticMergeCandidate(obj)) return false;
+        if (obj.material.alpha < 0.999f) return false;
+        if (obj.renderType == RenderType::Sprite && !HasDefaultSpriteUvRect(obj)) {
+            return false;
+        }
+        if (!obj.albedoTexturePath.empty()) {
+            if (Texture* tex = getTexture(obj.albedoTexturePath, obj.material.textureFilter)) {
+                if (tex->UsesAlphaBlending()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
     uint64_t signature = 1469598103934665603ull;
     size_t candidateCount = 0;
     for (const auto& obj : sceneObjects) {
-        if (!IsStaticMergeCandidate(obj)) continue;
+        if (!isStaticMergeBatchable(obj)) continue;
         ++candidateCount;
         signature = HashCombine64(signature, static_cast<uint64_t>(obj.id));
         signature = HashCombine64(signature, static_cast<uint64_t>(obj.renderType));
@@ -1388,7 +1412,7 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
     accumulators.reserve(candidateCount);
 
     for (const auto& obj : sceneObjects) {
-        if (!IsStaticMergeCandidate(obj)) continue;
+        if (!isStaticMergeBatchable(obj)) continue;
 
         const std::vector<float>* sourceVertices = nullptr;
         if (!TryGetObjectTriangleVertexStream(obj, sourceVertices) || !sourceVertices || sourceVertices->empty()) {
@@ -1396,6 +1420,7 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
         }
 
         std::string batchKey =
+            std::to_string(static_cast<int>(obj.renderType)) + "|" +
             obj.vertexShaderPath + "|" + obj.fragmentShaderPath + "|" + obj.materialPath + "|" +
             obj.albedoTexturePath + "|" + obj.overlayTexturePath + "|" + obj.normalMapPath + "|" +
             std::to_string(static_cast<int>(obj.material.textureFilter)) + "|" +
@@ -1421,6 +1446,8 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
             acc.batch.overlayTexturePath = obj.overlayTexturePath;
             acc.batch.normalMapPath = obj.normalMapPath;
             acc.batch.useOverlay = obj.useOverlay;
+            acc.batch.unlit = (obj.renderType == RenderType::Sprite);
+            acc.batch.doubleSided = (obj.renderType == RenderType::Sprite);
         }
 
         AppendTransformedTriangleVertices(*sourceVertices, BuildSceneObjectModelMatrix(obj),
@@ -1440,6 +1467,9 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
 }
 
 void Renderer::initialize() {
+#if MODULARITY_RUNTIME_ONLY
+    autoReloadShaders = false;
+#endif
     shader = new Shader(defaultVertPath.c_str(), defaultFragPath.c_str());
     defaultShader = shader;
     if (shader->ID == 0) {
@@ -2027,6 +2057,11 @@ unsigned int Renderer::findFramebufferForTexture(unsigned int texture) const {
 }
 
 void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) const {
+#if MODULARITY_RUNTIME_ONLY
+    (void)stats;
+    (void)allowHistory;
+    return;
+#endif
     if (stats.resolvedVolumeId < 0 && stats.sourceTextureId == 0 && stats.skipReason.empty()) {
         return;
     }
@@ -2086,7 +2121,14 @@ void Renderer::resize(int w, int h) {
     if (glfwGetCurrentContext() == nullptr) {
         return;
     }
-    
+
+    GLint previousFramebuffer = 0;
+    GLint previousTexture = 0;
+    GLint previousRenderbuffer = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glGetIntegerv(GL_RENDERBUFFER_BINDING, &previousRenderbuffer);
+
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     
     glBindTexture(GL_TEXTURE_2D, viewportTexture);
@@ -2105,6 +2147,10 @@ void Renderer::resize(int w, int h) {
     ensureRenderTarget(selectionMaskTarget, currentWidth, currentHeight);
     clearHistory();
     displayTexture = viewportTexture;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+    glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(previousRenderbuffer));
 }
 
 void Renderer::beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos) {
@@ -2628,6 +2674,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         bool requiresBlending = false;
         bool sortOpaque = false;
         bool unlit = false;
+        bool doubleSided = false;
         float cameraDepth = 0.0f;
         float cameraDistanceSq = 0.0f;
         uint64_t opaqueSortKey = 0;
@@ -2684,6 +2731,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             item.isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
             item.requiresBlending = item.material.alpha < 0.999f || item.isUiCanvas3D;
             item.unlit = obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || item.isUiCanvas3D;
+            item.doubleSided =
+                obj.renderType == RenderType::Sprite ||
+                obj.renderType == RenderType::Mirror;
             glm::vec3 viewSpaceCenter = glm::vec3(view * glm::vec4(item.sortCenter, 1.0f));
             item.cameraDepth = -viewSpaceCenter.z;
             glm::vec3 toCamera = item.sortCenter - camera.position;
@@ -2749,6 +2799,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         item.normalMapPath = &batch.normalMapPath;
         item.useOverlay = batch.useOverlay;
         item.requiresBlending = item.material.alpha < 0.999f;
+        item.unlit = batch.unlit;
+        item.doubleSided = batch.doubleSided;
         glm::vec3 viewSpaceCenter = glm::vec3(view * glm::vec4(item.sortCenter, 1.0f));
         item.cameraDepth = -viewSpaceCenter.z;
         glm::vec3 toCamera = item.sortCenter - camera.position;
@@ -3013,8 +3065,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             }
         }
 
-        bool doubleSided = objPtr && (objPtr->renderType == RenderType::Sprite || objPtr->renderType == RenderType::Mirror);
-        if (doubleSided) {
+        if (item.doubleSided) {
             glDisable(GL_CULL_FACE);
             Runtime2DCountStateBind();
         } else {
@@ -3358,7 +3409,6 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
             bool horizontal = true;
             RenderTarget* writeTarget = &bloomTargetB;
             for (int i = 0; i < 4; ++i) {
-                const unsigned int readTex = pingTex;
                 blurShader->setBool("horizontal", horizontal);
                 blurShader->setVec2("texelSize", glm::vec2(1.0f / width, 1.0f / height));
                 glActiveTexture(GL_TEXTURE0);
@@ -3367,13 +3417,6 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
                 glViewport(0, 0, width, height);
                 glClear(GL_COLOR_BUFFER_BIT);
                 drawFullscreenQuad();
-                std::cerr << "[PostFX][" << (allowHistory ? "viewport" : "preview") << "] bloom-blur-pass"
-                          << " index=" << i
-                          << " srcTex=" << readTex
-                          << " srcFbo=" << findFramebufferForTexture(readTex)
-                          << " dstTex=" << writeTarget->texture
-                          << " dstFbo=" << writeTarget->fbo
-                          << "\n";
 
                 pingTex = writeTarget->texture;
                 writeTarget = (writeTarget == &bloomTargetA) ? &bloomTargetB : &bloomTargetA;

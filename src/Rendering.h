@@ -104,6 +104,8 @@ public:
         std::string overlayTexturePath;
         std::string normalMapPath;
         bool useOverlay = false;
+        bool unlit = false;
+        bool doubleSided = false;
         glm::vec3 boundsCenter = glm::vec3(0.0f);
         float boundsRadius = 0.0f;
     };

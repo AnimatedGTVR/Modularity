@@ -1,234 +1,91 @@
 add ModuCPP;
 
-public enum FacingDirection
+public enum FacingDirection {Down, Up, Right, Left}
+public class TopDownMovement2D : ModuNode
 {
-    Down = 0,
-    Up = 1,
-    Right = 2,
-    Left = 3
-}
-
-public class TopDownMovement2D : ModuBehaviour
-{
-    public float walkSpeed = 4.0f;
-    public float runSpeed = 7.0f;
-    public float acceleration = 18.0f;
-    public float drag = 8.0f;
-    public float animationFps = 10.0f;
-    public float runAnimationFps = 14.0f;
-    public float movementThreshold = 0.15f;
-    public bool useRigidbody2D = true;
-    public bool useSpriteAnimation = true;
-
+    [Header("Top Down Movement 2D")]
+    [Slider(0.0f, 50.0f)]  public float walkSpeed = 4.0f;
+    [Slider(0.0f, 80.0f)]  public float runSpeed = 7.0f;
+    [Slider(0.0f, 200.0f)] public float acceleration = 18.0f;
+    [Slider(0.0f, 200.0f)] public float drag = 8.0f;
+    [Slider(1.0f, 30.0f)]  public float animationFps = 10.0f;
+    [Slider(1.0f, 60.0f)]  public float runAnimationFps = 14.0f;
+    [Slider(0.01f, 10.0f)] public float movementThreshold = 0.15f;
+    [ClipGridPair]
     private int[4] idleClips;
     private int[4][4] walkClips;
+    [Separator]
+    [SoundSet("Footsteps")]
     private string[6] stepSounds;
-
     private FacingDirection facing = FacingDirection.Down;
     private float animationTime = 0.0f;
     private int lastWalkFrame = -1;
     private int nextFootstepIndex = 0;
-    private bool warnedMissingRb = false;
-    private bool warnedMissingSprite = false;
-
-    inspector
-    {
-        Header("Top Down Movement 2D");
-        Slider(walkSpeed, 0.0f, 50.0f);
-        Slider(runSpeed, 0.0f, 80.0f);
-        Slider(acceleration, 0.0f, 200.0f);
-        Slider(drag, 0.0f, 200.0f);
-        Slider(animationFps, 1.0f, 30.0f);
-        Slider(runAnimationFps, 1.0f, 60.0f);
-        Slider(movementThreshold, 0.01f, 10.0f);
-        Toggle(useRigidbody2D);
-        Toggle(useSpriteAnimation);
-        Separator();
-        ClipGrid(idleClips, walkClips);
-        Separator();
-        SoundSet("Footsteps", stepSounds);
-    }
-
     void Begin() to ResetAnimationState();
-
     void TickUpdate()
     {
-        float dt = time.deltaTime;
         if (dt <= 0.0f) return;
-
-        Vector2 move = input.WASDNormalized();
-        bool running = input.sprint();
+        Vector2 move = input.WASDNormalized(); bool running = input.sprint();
         float speed = running ? runSpeed : walkSpeed;
-
-        Vector2 targetVelocity = move * speed;
-        Vector2 actualVelocity = targetVelocity;
-
-        bool moved = TryMove(targetVelocity, dt, ref actualVelocity);
-
-        Vector2 motion = move.Length() > 0.001f ? targetVelocity : actualVelocity;
-        if (!moved) motion = targetVelocity;
-
+        Vector2 targetVelocity = move * speed; Vector2 actualVelocity = targetVelocity;
+        TryMove(targetVelocity, dt, ref actualVelocity);
+        Vector2 motion = move.Dot(move) > 0.000001f ? targetVelocity : actualVelocity;
         TickAnimation(motion, dt, running);
     }
-
-    bool TryMove(Vector2 targetVelocity, float dt, ref Vector2 actualVelocity)
+    void TryMove(Vector2 targetVelocity, float dt, ref Vector2 actualVelocity)
     {
         actualVelocity = targetVelocity;
-
-        if (!useRigidbody2D)
-        {
-            movePosition2D(ctx, targetVelocity * dt);
-            return true;
-        }
-
-        if (!EnsureRigidbody2D()) return false;
-
         TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt, ref actualVelocity);
-        return true;
     }
-
     void TickAnimation(Vector2 motion, float dt, bool running)
     {
-        if (!useSpriteAnimation) return;
-        if (!EnsureSpriteAnimationReady()) return;
-
-        if (motion.Length() > movementThreshold)
-        {
-            ApplyWalkingAnimation(motion, dt, running);
-            return;
-        }
-
+        if (motion.Dot(motion) > movementThreshold * movementThreshold) {ApplyWalkingAnimation(motion, dt, running); return;}
         ApplyIdleAnimation();
     }
-
     void ApplyWalkingAnimation(Vector2 motion, float dt, bool running)
     {
-        facing = ResolveFacing(motion, facing);
-        animationTime += dt;
-
+        facing = ResolveFacing(motion, facing); animationTime += dt;
         float fps = Math.Max(1.0f, running ? runAnimationFps : animationFps);
         int frame = (int)(animationTime * fps) % 4;
-        int clip = SelectWalkClip(frame);
-
-        if (clip >= 0) sprite.SetClip(clip);
-
-        PlayFootstepsBetweenFrames(lastWalkFrame, frame);
-        lastWalkFrame = frame;
+        int clip = SelectWalkClip(frame); if (clip >= 0) sprite.SetClip(clip);
+        PlayFootstepsBetweenFrames(lastWalkFrame, frame); lastWalkFrame = frame;
     }
-
     void ApplyIdleAnimation()
     {
-        animationTime = 0.0f;
-        lastWalkFrame = -1;
-
-        int clip = idleClips[FacingIndex(facing)];
-        if (IsValidClip(clip)) sprite.SetClip(clip);
+        animationTime = 0.0f; lastWalkFrame = -1;
+        int clip = idleClips[FacingIndex(facing)]; if (IsValidClip(clip)) sprite.SetClip(clip);
     }
-
     void PlayFootstepsBetweenFrames(int previousFrame, int currentFrame)
     {
         int probe = previousFrame >= 0 ? previousFrame : 3;
-        int count = 0;
-
-        while (probe != currentFrame)
-        {
-            probe = (probe + 1) % 4;
-            if (probe == 0 || probe == 2) count++;
-        }
-
-        for (int i = 0; i < count; i++)
-            PlayRandomFootstep();
+        while (probe != currentFrame) {probe = (probe + 1) % 4; if (probe == 0 || probe == 2) PlayRandomFootstep();}
     }
-
     void PlayRandomFootstep()
     {
-        if (!audio.HasSource()) return;
-
-        int[6] validIndices;
-        int count = 0;
-
-        for (int i = 0; i < 6; i++)
-        {
-            if (!stepSounds[i].IsEmpty())
-            {
-                validIndices[count] = i;
-                count++;
-            }
-        }
-
+        int[6] validIndices; int count = 0;
+        for (int i = 0; i < 6; i++) if (!stepSounds[i].IsEmpty()) validIndices[count++] = i;
         if (count == 0) return;
-
-        int selected = nextFootstepIndex % count;
+        int selected = validIndices[nextFootstepIndex % count];
         nextFootstepIndex = (nextFootstepIndex + 1) % count;
-
-        string clipPath = stepSounds[validIndices[selected]];
-        audio.PlayOneShot(clipPath);
+        audio.PlayOneShot(stepSounds[selected]);
     }
-
     int SelectWalkClip(int frame)
     {
-        int[4] clips = walkClips[FacingIndex(facing)];
+        int dir = FacingIndex(facing);
+        int[4] clips = walkClips[dir];
         int candidate = clips[Math.Clamp(frame, 0, 3)];
-
         if (IsValidClip(candidate)) return candidate;
-
-        for (int i = 0; i < 4; i++)
-        {
-            if (IsValidClip(clips[i])) return clips[i];
-        }
-
-        candidate = idleClips[FacingIndex(facing)];
-        if (IsValidClip(candidate)) return candidate;
-
-        return -1;
+        for (int i = 0; i < 4; i++) if (IsValidClip(clips[i])) return clips[i];
+        candidate = idleClips[dir];
+        return IsValidClip(candidate) ? candidate : -1;
     }
-
-    void ResetAnimationState()
-    {
-        facing = FacingDirection.Down;
-        animationTime = 0.0f;
-        lastWalkFrame = -1;
-        nextFootstepIndex = 0;
-        warnedMissingRb = false;
-        warnedMissingSprite = false;
-    }
-
-    bool EnsureRigidbody2D()
-    {
-        if (hasRigidbody2D())
-        {
-            warnedMissingRb = false;
-            return true;
-        }
-
-        warnOnce(ctx, warnedMissingRb, "TopDownMovement2D: No Rigidbody2D found on this object.");
-        return false;
-    }
-
-    bool EnsureSpriteAnimationReady()
-    {
-        if (sprite.HasClips())
-        {
-            warnedMissingSprite = false;
-            return true;
-        }
-
-        warnOnce(ctx, warnedMissingSprite, "TopDownMovement2D: Sprite animation needs clips assigned.");
-        return false;
-    }
-
+    void ResetAnimationState() {facing = FacingDirection.Down; animationTime = 0.0f; lastWalkFrame = -1; nextFootstepIndex = 0;}
     int FacingIndex(FacingDirection direction) to (int)direction;
-
-    bool IsValidClip(int clip)
-        to clip >= 0 && clip < ctx.GetSpriteClipCount();
-
+    bool IsValidClip(int clip) to clip >= 0 && clip < ctx.GetSpriteClipCount();
     FacingDirection ResolveFacing(Vector2 motion, FacingDirection fallback)
     {
         if (motion.Dot(motion) <= 0.000001f) return fallback;
-
-        if (Math.Abs(motion.x) > Math.Abs(motion.y))
-            return motion.x >= 0.0f ? FacingDirection.Right : FacingDirection.Left;
-
+        if (Math.Abs(motion.x) > Math.Abs(motion.y)) return motion.x >= 0.0f ? FacingDirection.Right : FacingDirection.Left;
         return motion.y >= 0.0f ? FacingDirection.Up : FacingDirection.Down;
     }
 }

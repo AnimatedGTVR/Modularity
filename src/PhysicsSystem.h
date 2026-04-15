@@ -45,12 +45,16 @@ private:
         bool isDynamic = false;
         bool isKinematic = false;
         bool hasWorldBakedStaticMesh = false;
+        bool simulationDisabled = false;
+        bool hasAuthoringPose = false;
         bool gravityDisabled = false;
         float linearDamping = 0.0f;
         float angularDamping = 0.0f;
         float massKg = 0.0f;
         bool useCustomCenterOfMass = false;
         glm::vec3 centerOfMass = glm::vec3(0.0f);
+        glm::vec3 lastAuthoringPosition = glm::vec3(0.0f);
+        glm::vec3 lastAuthoringRotation = glm::vec3(0.0f);
         uint32_t angularLockMask = 0;
     };
 
@@ -65,6 +69,7 @@ private:
     ProjectPhysicsSettings mProjectSettings;
 
     std::unordered_map<int, ActorRecord> mActors;
+    std::unordered_map<const physx::PxRigidActor*, int> mActorIdsByPtr;
 
     void clearActors();
     void applySceneGravity();

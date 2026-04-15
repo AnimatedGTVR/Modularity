@@ -241,6 +241,7 @@ private:
         int layer = 0;
         size_t spriteBegin = 0;
         size_t spriteEnd = 0;
+        uint8_t blendModesMask = 0;
         std::vector<const Light2DScreenLight*> lights;
     };
 
@@ -289,7 +290,8 @@ private:
     void renderLayer(const Light2DRenderRequest& request,
                      Renderer& renderer,
                      const LayerBatch& batch,
-                     float lightingScale);
+                     float lightingScale,
+                     bool clearLightBuffers);
     void clearLightTargets();
     void renderLightPass(const Light2DRenderRequest& request,
                          Renderer& renderer,
@@ -299,7 +301,8 @@ private:
     void renderSpritePass(const Light2DRenderRequest& request,
                           int layer,
                           size_t spriteBegin,
-                          size_t spriteEnd);
+                          size_t spriteEnd,
+                          uint8_t blendModesMask);
     unsigned int applyPostProcessing(const Light2DRenderRequest& request,
                                      unsigned int sourceTexture,
                                      int width,

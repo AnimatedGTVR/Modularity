@@ -8973,10 +8973,15 @@ void Engine::renderDialogs() {
         const float popupLerp = std::clamp(io.DeltaTime * 12.0f, 0.0f, 1.0f);
         compilePopupSize.x = ImLerp(compilePopupSize.x, targetWidth, popupLerp);
         compilePopupSize.y = ImLerp(compilePopupSize.y, targetHeight, popupLerp);
-        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Always);
-        ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
-                                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::SetNextWindowPos(center, compileInProgress ? ImGuiCond_Always : ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (compileInProgress) {
+            ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Always);
+        } else {
+            ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Appearing);
+            ImGui::SetNextWindowSizeConstraints(ImVec2(400.0f, 150.0f), ImVec2(FLT_MAX, FLT_MAX));
+        }
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
+        if (compileInProgress) flags |= ImGuiWindowFlags_NoResize;
         bool allowClose = !compileInProgress;
         if (ImGui::BeginPopupModal("Script Compile", allowClose ? &showCompilePopup : nullptr, flags)) {
             float progress = 1.0f;

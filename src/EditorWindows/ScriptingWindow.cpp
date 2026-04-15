@@ -263,6 +263,17 @@ namespace {
             addIdentifier("Spec", "Script callback");
             addIdentifier("TestEditor", "Script callback");
             addIdentifier("Update", "Script callback");
+            addIdentifier("ModuNode", "Preferred ModuCPP script base");
+            addIdentifier("ModuBehaviour", "Legacy ModuCPP script base");
+            addIdentifier("ModuEngine", "ModuCPP engine facade");
+            addIdentifier("FPS", "Current frame FPS");
+            addIdentifier("obj", "Current object facade");
+            addIdentifier("UILabel", "Object UI label shorthand");
+            addIdentifier("Start", "Float timer helper");
+            addIdentifier("Ready", "Float timer helper");
+            addIdentifier("IntRD", "Round down to whole number");
+            addIdentifier("IntR", "Round to nearest whole number");
+            addIdentifier("IntRU", "Round up to whole number");
         }
 
         for (const auto& name : functions) {

@@ -16,8 +16,7 @@ uniform float u_radius;
 uniform float u_innerRadius;
 uniform float u_outerRadius;
 uniform float u_falloffStrength;
-uniform float u_innerSpotAngle;
-uniform float u_outerSpotAngle;
+uniform vec2 u_spotAngleCos;
 uniform float u_rotation;
 uniform vec2 u_lightPos;
 uniform vec2 u_boundsMin;
@@ -55,16 +54,18 @@ void main() {
     } else {
         float outerRadius = max(u_outerRadius, max(u_radius, 0.001));
         float innerRadius = clamp(u_innerRadius, 0.0, outerRadius);
-        float dist = length(local);
+        float distSq = dot(local, local);
+        if (distSq >= outerRadius * outerRadius) {
+            discard;
+        }
+        float dist = sqrt(max(distSq, 0.0));
         float edge = 1.0 - smoothstep(innerRadius, outerRadius, dist);
         attenuation = pow(clamp(edge, 0.0, 1.0), max(0.01, 1.0 + u_falloffStrength * 2.5));
 
         if (u_lightType == 1) {
-            float dirAngle = atan(local.y, local.x);
-            float halfInner = max(0.0, u_innerSpotAngle) * 0.5;
-            float halfOuter = max(halfInner + 0.001, u_outerSpotAngle) * 0.5;
-            float ang = abs(dirAngle);
-            float spot = 1.0 - smoothstep(halfInner, halfOuter, ang);
+            float invDist = inversesqrt(max(distSq, 0.0001));
+            float coneDot = local.x * invDist;
+            float spot = smoothstep(u_spotAngleCos.y, u_spotAngleCos.x, coneDot);
             attenuation *= clamp(spot, 0.0, 1.0);
         }
     }

@@ -357,22 +357,32 @@ std::optional<fs::path> findVersionedPackageAtAnyVersion(const fs::path& root, c
 
 #pragma region Lifecycle
 PackageManager::PackageManager() {
+#if !MODULARITY_RUNTIME_ONLY
     buildRegistry();
+#endif
 }
 
 void PackageManager::setProjectRoot(const fs::path& root) {
+#if !MODULARITY_RUNTIME_ONLY
     buildRegistry();
+#endif
     projectRoot = root;
     manifestPath = projectRoot / "packages.modu";
+#if !MODULARITY_RUNTIME_ONLY
     loadManifest();
+#endif
 }
 
 void PackageManager::refreshRegistry() {
+#if MODULARITY_RUNTIME_ONLY
+    return;
+#else
     buildRegistry();
     if (!projectRoot.empty()) {
         manifestPath = projectRoot / "packages.modu";
         loadManifest();
     }
+#endif
 }
 #pragma endregion
 

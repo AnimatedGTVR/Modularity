@@ -12,6 +12,8 @@
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
 
 namespace {
+constexpr int kSceneFormatVersion = 25;
+
 std::string TrimCopy(const std::string& value) {
     const size_t first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -57,6 +59,55 @@ const char* SerializeProjectMassUnit(ProjectMassUnit unit) {
         case ProjectMassUnit::Kilograms:
         default:
             return "Kilograms";
+    }
+}
+
+bool ScriptPathContains(const ScriptComponent& script, const char* token) {
+    if (!token || !*token) return false;
+    std::string pathLower = script.path;
+    std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    std::string tokenLower = token;
+    std::transform(tokenLower.begin(), tokenLower.end(), tokenLower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return pathLower.find(tokenLower) != std::string::npos;
+}
+
+ScriptSetting* FindScriptSetting(ScriptComponent& script, const std::string& key) {
+    for (ScriptSetting& setting : script.settings) {
+        if (setting.key == key) {
+            return &setting;
+        }
+    }
+    return nullptr;
+}
+
+void UpgradeLegacyScriptSettings(int sceneVersion, std::vector<SceneObject>& objects) {
+    if (sceneVersion >= kSceneFormatVersion) {
+        return;
+    }
+
+    for (SceneObject& obj : objects) {
+        for (ScriptComponent& script : obj.scripts) {
+            if (!ScriptPathContains(script, "interactableobject")) {
+                continue;
+            }
+
+            ScriptSetting* optionsBlob = FindScriptSetting(script, "optionsBlob");
+            ScriptSetting* options = FindScriptSetting(script, "options");
+            if (!optionsBlob || optionsBlob->value.empty() || (options && !options->value.empty())) {
+                continue;
+            }
+
+            if (options) {
+                options->value = optionsBlob->value;
+            } else {
+                script.settings.push_back(ScriptSetting{"options", optionsBlob->value});
+            }
+            optionsBlob->value.clear();
+        }
     }
 }
 
@@ -244,8 +295,13 @@ ProjectManager::ProjectManager() {
     #endif
 
     fs::create_directories(appDataPath);
+#if !MODULARITY_RUNTIME_ONLY
     loadRecentProjects();
     loadLauncherSettings();
+#else
+    const std::string fallback = GetPlatformDefaultProjectsPath();
+    std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", fallback.c_str());
+#endif
 
     std::snprintf(newProjectLocation, sizeof(newProjectLocation), "%s", defaultProjectLocation);
 }
@@ -254,18 +310,13 @@ void ProjectManager::loadRecentProjects() {
     recentProjects.clear();
     fs::path recentFile = appDataPath / "recent_projects.txt";
 
-    std::cerr << "[DEBUG] Loading recent projects from: " << recentFile << std::endl;
-
     if (!fs::exists(recentFile)) {
-        std::cerr << "[DEBUG] Recent projects file does not exist" << std::endl;
         return;
     }
 
     std::ifstream file(recentFile);
     std::string line;
-    int lineNum = 0;
     while (std::getline(file, line)) {
-        lineNum++;
         if (line.empty()) continue;
 
         line.erase(0, line.find_first_not_of(" \t\r\n"));
@@ -284,27 +335,16 @@ void ProjectManager::loadRecentProjects() {
             rp.path.erase(0, rp.path.find_first_not_of(" \t\r\n"));
             rp.path.erase(rp.path.find_last_not_of(" \t\r\n") + 1);
 
-            std::cerr << "[DEBUG] Line " << lineNum << ": name='" << rp.name 
-                      << "' path='" << rp.path << "' exists=" << fs::exists(rp.path) << std::endl;
-
             if (fs::exists(rp.path)) {
                 recentProjects.push_back(rp);
-            } else {
-                std::cerr << "[DEBUG] Project path does not exist, skipping: " << rp.path << std::endl;
             }
-        } else {
-            std::cerr << "[DEBUG] Line " << lineNum << " malformed: " << line << std::endl;
         }
     }
     file.close();
-    
-    std::cerr << "[DEBUG] Loaded " << recentProjects.size() << " recent projects" << std::endl;
 }
 
 void ProjectManager::saveRecentProjects() {
     fs::path recentFile = appDataPath / "recent_projects.txt";
-    std::cerr << "[DEBUG] Saving recent projects to: " << recentFile << std::endl;
-    
     std::ofstream file(recentFile);
 
     for (const auto& rp : recentProjects) {
@@ -317,7 +357,6 @@ void ProjectManager::saveRecentProjects() {
             // Keep original path if canonical fails
         }
         file << rp.name << "|" << absolutePath << "|" << rp.lastOpened << "\n";
-        std::cerr << "[DEBUG] Saved: " << rp.name << " -> " << absolutePath << std::endl;
     }
     file.close();
 }
@@ -368,6 +407,11 @@ void ProjectManager::saveLauncherSettings() const {
 }
 
 void ProjectManager::addToRecentProjects(const std::string& name, const std::string& path) {
+#if MODULARITY_RUNTIME_ONLY
+    (void)name;
+    (void)path;
+    return;
+#else
     std::string absolutePath = path;
     try {
         if (fs::exists(path)) {
@@ -380,8 +424,6 @@ void ProjectManager::addToRecentProjects(const std::string& name, const std::str
         // Keep original path if conversion fails
     }
     
-    std::cerr << "[DEBUG] Adding to recent: " << name << " -> " << absolutePath << std::endl;
-
     recentProjects.erase(
         std::remove_if(recentProjects.begin(), recentProjects.end(),
             [&absolutePath](const RecentProject& rp) { return rp.path == absolutePath; }),
@@ -399,6 +441,7 @@ void ProjectManager::addToRecentProjects(const std::string& name, const std::str
     recentProjects.insert(recentProjects.begin(), rp);
 
     saveRecentProjects();
+#endif
 }
 
 bool ProjectManager::loadProject(const std::string& path) {
@@ -421,7 +464,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
         if (!file.is_open()) return false;
 
         file << "# Scene File\n";
-        file << "version=24\n";
+        file << "version=" << kSceneFormatVersion << "\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "skyboxMode=" << static_cast<int>(skyboxSettings.mode) << "\n";
@@ -2083,6 +2126,7 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
             }
             obj.type = GetLegacyTypeFromComponents(obj);
         }
+        UpgradeLegacyScriptSettings(sceneVersion, objects);
         outVersion = sceneVersion;
         if (outTimeOfDay) {
             *outTimeOfDay = sceneTimeOfDay;
