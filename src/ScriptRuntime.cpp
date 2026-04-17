@@ -179,6 +179,78 @@ struct KeyPressedState {
 };
 
 std::unordered_map<std::string, KeyPressedState> gKeyPressedStates;
+
+#if defined(_WIN32)
+fs::path makeShadowScriptBinaryPath(const fs::path& binaryPath) {
+    std::error_code ec;
+    fs::path sourceAbsolute = fs::absolute(binaryPath, ec);
+    if (ec) {
+        sourceAbsolute = binaryPath;
+        ec.clear();
+    }
+
+    fs::path sourceCanonical = fs::weakly_canonical(sourceAbsolute, ec);
+    if (!ec) {
+        sourceAbsolute = sourceCanonical;
+    } else {
+        ec.clear();
+    }
+
+    const auto writeTime = fs::last_write_time(sourceAbsolute, ec);
+    const long long writeStamp = ec ? 0LL : static_cast<long long>(writeTime.time_since_epoch().count());
+    ec.clear();
+
+    const auto fileSize = fs::file_size(sourceAbsolute, ec);
+    const unsigned long long sizeStamp = ec ? 0ULL : static_cast<unsigned long long>(fileSize);
+    ec.clear();
+
+    const std::string canonicalKey = sourceAbsolute.lexically_normal().string();
+    const size_t pathHash = std::hash<std::string>{}(canonicalKey);
+    const unsigned long processId = static_cast<unsigned long>(GetCurrentProcessId());
+
+    fs::path shadowDir = sourceAbsolute.parent_path() / ".loaded";
+    fs::create_directories(shadowDir, ec);
+
+    std::ostringstream filename;
+    filename << sourceAbsolute.stem().string()
+             << ".pid" << processId
+             << ".t" << writeStamp
+             << ".s" << sizeStamp
+             << ".h" << pathHash
+             << sourceAbsolute.extension().string();
+    return shadowDir / filename.str();
+}
+
+bool prepareShadowScriptBinary(const fs::path& binaryPath, fs::path& outShadowPath, std::string& error) {
+    std::error_code ec;
+    if (!fs::exists(binaryPath, ec) || ec) {
+        error = "Script binary not found: " + binaryPath.string();
+        return false;
+    }
+
+    outShadowPath = makeShadowScriptBinaryPath(binaryPath);
+    if (outShadowPath.empty()) {
+        error = "Unable to prepare shadow copy path for script binary: " + binaryPath.string();
+        return false;
+    }
+
+    fs::create_directories(outShadowPath.parent_path(), ec);
+    ec.clear();
+
+    if (fs::exists(outShadowPath, ec) && !ec) {
+        fs::remove(outShadowPath, ec);
+        ec.clear();
+    }
+
+    fs::copy_file(binaryPath, outShadowPath, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        error = "Failed to create shadow script binary: " + outShadowPath.string();
+        return false;
+    }
+
+    return true;
+}
+#endif
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -1554,9 +1626,22 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
 #endif
     };
 #if defined(_WIN32)
-    mod.handle = LoadLibraryA(binaryPath.string().c_str());
+    fs::path loadPath = binaryPath;
+    std::string shadowError;
+    if (!prepareShadowScriptBinary(binaryPath, loadPath, shadowError)) {
+        lastError = shadowError;
+        return nullptr;
+    }
+
+    mod.loadedPath = loadPath;
+    mod.loadedFromShadowCopy = true;
+    mod.handle = LoadLibraryA(loadPath.string().c_str());
     if (!mod.handle) {
         lastError = "LoadLibrary failed";
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
         return nullptr;
     }
     AbiVersionFn abiVersionFn = reinterpret_cast<AbiVersionFn>(
@@ -1570,6 +1655,7 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     mod.editorRender = reinterpret_cast<EditorRenderFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "RenderEditorWindow"));
     mod.editorExit = reinterpret_cast<EditorExitFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "ExitRenderEditorWindow"));
 #else
+    mod.loadedPath = binaryPath;
     mod.handle = dlopen(binaryPath.string().c_str(), RTLD_NOW);
     if (!mod.handle) {
         const char* err = dlerror();
@@ -1599,6 +1685,10 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
 
     if (!abiVersionFn) {
         unloadModuleHandle(mod.handle);
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
         lastError = "Native script binary is incompatible with this engine build (missing ABI export). Recompile scripts.";
         return nullptr;
     }
@@ -1606,6 +1696,10 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     const int abiVersion = abiVersionFn();
     if (abiVersion != MODULARITY_NATIVE_SCRIPT_ABI_VERSION) {
         unloadModuleHandle(mod.handle);
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
         lastError = "Native script binary ABI mismatch (expected " +
                     std::to_string(MODULARITY_NATIVE_SCRIPT_ABI_VERSION) +
                     ", got " + std::to_string(abiVersion) + "). Recompile scripts.";
@@ -1615,6 +1709,10 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     if (!mod.inspector && !mod.begin && !mod.spec && !mod.testEditor
         && !mod.update && !mod.tickUpdate && !mod.editorRender && !mod.editorExit) {
         unloadModuleHandle(mod.handle);
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
         if (lastError.empty()) lastError = "No script exports found";
         return nullptr;
     }
@@ -1665,6 +1763,10 @@ void ScriptRuntime::unloadAll() {
 #else
         dlclose(kv.second.handle);
 #endif
+        if (kv.second.loadedFromShadowCopy && !kv.second.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(kv.second.loadedPath, removeEc);
+        }
     }
     loaded.clear();
     gSpriteAlphaFadeStates.clear();

@@ -241,6 +241,8 @@ public:
 private:
     struct Module {
         void* handle = nullptr;
+        fs::path loadedPath;
+        bool loadedFromShadowCopy = false;
         InspectorFn inspector = nullptr;
         BeginFn begin = nullptr;
         SpecFn spec = nullptr;
