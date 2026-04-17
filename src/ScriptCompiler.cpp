@@ -837,6 +837,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #ifdef _WIN32
     objectPath = config.outDir / relativeParent / (baseName + ".obj");
     binaryPath /= baseName + ".dll";
+    outCommands.linkBinaryPath = config.outDir / ".staging" / relativeParent / (baseName + ".dll");
 #else
     binaryPath /= baseName + ".so";
     dependencyPath = config.outDir / relativeParent / (baseName + ".d");
@@ -1478,6 +1479,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         fs::path scriptRspPath = config.outDir / relativeParent / (baseName + ".compile.rsp");
         fs::path wrapperRspPath = config.outDir / relativeParent / (baseName + ".wrap.compile.rsp");
         fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
+        const fs::path producedBinaryPath = outCommands.linkBinaryPath.empty() ? binaryPath : outCommands.linkBinaryPath;
+        const fs::path importLibPath = config.outDir / ".staging" / relativeParent / (baseName + ".lib");
+        const fs::path pdbPath = config.outDir / ".staging" / relativeParent / (baseName + ".pdb");
 
         std::ostringstream scriptRsp;
         scriptRsp << "/nologo /TP /std:" << cppStandardFlag << " /MD /Zi /Od";
@@ -1491,7 +1495,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
         std::ostringstream linkRsp;
         linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
-                << "\" /OUT:\"" << binaryPath.string() << "\""
+                << "\" /OUT:\"" << producedBinaryPath.string() << "\""
+                << " /IMPLIB:\"" << importLibPath.string() << "\""
+                << " /PDB:\"" << pdbPath.string() << "\""
                 << " \"" << hostImportLib->string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
             linkRsp << " " << lib;
@@ -1637,6 +1643,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 #ifdef _WIN32
         fs::path compileRspPath = config.outDir / relativeParent / (baseName + ".compile.rsp");
         fs::path linkRspPath = config.outDir / relativeParent / (baseName + ".link.rsp");
+        const fs::path producedBinaryPath = outCommands.linkBinaryPath.empty() ? binaryPath : outCommands.linkBinaryPath;
+        const fs::path importLibPath = config.outDir / ".staging" / relativeParent / (baseName + ".lib");
+        const fs::path pdbPath = config.outDir / ".staging" / relativeParent / (baseName + ".pdb");
 
         std::ostringstream compileRsp;
         compileRsp << "/nologo /std:" << cppStandardFlag << " /EHsc /MD /Zi /Od";
@@ -1645,7 +1654,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
         std::ostringstream linkRsp;
         linkRsp << "/nologo /DLL \"" << objectPath.string() << "\" /OUT:\""
-                << binaryPath.string() << "\""
+                << producedBinaryPath.string() << "\""
+                << " /IMPLIB:\"" << importLibPath.string() << "\""
+                << " /PDB:\"" << pdbPath.string() << "\""
                 << " \"" << hostImportLib->string() << "\"";
         for (const auto& lib : config.windowsLinkLibs) {
             linkRsp << " " << lib;
@@ -1698,6 +1709,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.dependencyPath = dependencyPath;
     outCommands.secondaryDependencyPath = secondaryDependencyPath;
     outCommands.binaryPath = binaryPath;
+    if (outCommands.linkBinaryPath.empty()) {
+        outCommands.linkBinaryPath = binaryPath;
+    }
     outCommands.wrapperPath = wrapperPath.empty() ? transpiledPath : wrapperPath;
     outCommands.sourcePath = compileSourcePath;
     outCommands.signaturePath = config.outDir / relativeParent / (baseName + ".buildsig");
@@ -1748,6 +1762,10 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     if (!commands.binaryPath.empty()) {
         std::error_code ec;
         fs::create_directories(commands.binaryPath.parent_path(), ec);
+    }
+    if (!commands.linkBinaryPath.empty()) {
+        std::error_code ec;
+        fs::create_directories(commands.linkBinaryPath.parent_path(), ec);
     }
     if (!commands.signaturePath.empty()) {
         std::error_code ec;
@@ -1844,6 +1862,8 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     } else {
         output.linkLog += "Skipped link (up-to-date)\n";
     }
+
+    output.producedBinaryPath = needsLink ? commands.linkBinaryPath : commands.binaryPath;
 
     if (!commands.signaturePath.empty()) {
         std::string writeError;

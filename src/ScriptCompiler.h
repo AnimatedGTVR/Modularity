@@ -20,6 +20,7 @@ struct ScriptBuildCommands {
     fs::path dependencyPath;
     fs::path secondaryDependencyPath;
     fs::path binaryPath;
+    fs::path linkBinaryPath;
     fs::path wrapperPath;
     fs::path sourcePath;
     fs::path signaturePath;
@@ -30,6 +31,7 @@ struct ScriptBuildCommands {
 struct ScriptCompileOutput {
     std::string compileLog;
     std::string linkLog;
+    fs::path producedBinaryPath;
 };
 
 class ScriptCompiler {

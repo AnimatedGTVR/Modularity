@@ -671,6 +671,7 @@ private:
         bool isManaged = false;
         fs::path scriptPath;
         fs::path binaryPath;
+        fs::path stagedBinaryPath;
         std::string compiledSource;
         std::string compileLog;
         std::string linkLog;

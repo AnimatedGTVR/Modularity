@@ -9363,7 +9363,13 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
             std::error_code dirEc;
             for (auto it = fs::recursive_directory_iterator(absDir, dirEc);
                  it != fs::recursive_directory_iterator(); ++it) {
-                if (it->is_directory()) continue;
+                if (it->is_directory()) {
+                    const std::string dirName = it->path().filename().string();
+                    if (dirName == ".loaded" || dirName == ".staging") {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
                 fs::path p = it->path();
 #ifdef _WIN32
                 if (p.stem() == stem && p.extension() == ".dll") return p;
@@ -9917,6 +9923,7 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
                     result.compileLog = output.compileLog;
                     result.linkLog = output.linkLog;
                     result.binaryPath = commands.binaryPath;
+                    result.stagedBinaryPath = output.producedBinaryPath;
 
                     fs::path compiledSourcePath = scriptPath;
                     if (compiledSourcePath.is_relative()) {
@@ -10157,6 +10164,61 @@ void Engine::updateCompileJob() {
             }
             playEditorFeedbackOneShot("Resources/Sounds/Script Error.mp3", 0.95f, EditorFeedbackSoundCategory::Error);
         } else {
+#if defined(_WIN32)
+            if (!result.isManaged && !result.stagedBinaryPath.empty() &&
+                result.stagedBinaryPath != result.binaryPath) {
+                resetScriptRuntimeStateForReload(false);
+
+                std::error_code stageEc;
+                fs::create_directories(result.binaryPath.parent_path(), stageEc);
+                stageEc.clear();
+                if (fs::exists(result.binaryPath, stageEc) && !stageEc) {
+                    fs::remove(result.binaryPath, stageEc);
+                    stageEc.clear();
+                }
+
+                fs::rename(result.stagedBinaryPath, result.binaryPath, stageEc);
+                if (stageEc) {
+                    stageEc.clear();
+                    fs::copy_file(result.stagedBinaryPath, result.binaryPath,
+                                  fs::copy_options::overwrite_existing, stageEc);
+                    if (!stageEc) {
+                        std::error_code removeEc;
+                        fs::remove(result.stagedBinaryPath, removeEc);
+                    }
+                }
+
+                if (stageEc) {
+                    result.success = false;
+                    result.error = "Failed to finalize linked script binary: " + result.binaryPath.string();
+                    result.diagnostics = Modularity::collectScriptDiagnostics(
+                        result.scriptPath,
+                        result.error,
+                        result.compileLog,
+                        result.linkLog,
+                        result.isManaged);
+                    lastCompileDiagnostics = result.diagnostics;
+                }
+            }
+#endif
+
+            if (!result.success) {
+                lastCompileSuccess = false;
+                lastCompileStatus = "Compile failed (" + displayLabel + ")";
+                lastCompileLog = result.compileLog + result.linkLog + result.error;
+                if (lastCompileDiagnostics.empty()) {
+                    if (!result.error.empty()) {
+                        addConsoleMessage("Compile failed (" + displayLabel + "): " + result.error, ConsoleMessageType::Error);
+                    } else {
+                        addConsoleMessage("Compile failed (" + displayLabel + ")", ConsoleMessageType::Error);
+                    }
+                } else {
+                    for (const auto& diagnostic : lastCompileDiagnostics) {
+                        logDiagnostic(diagnostic);
+                    }
+                }
+                playEditorFeedbackOneShot("Resources/Sounds/Script Error.mp3", 0.95f, EditorFeedbackSoundCategory::Error);
+            } else {
             lastCompileSuccess = true;
             lastCompileLog = result.compileLog + result.linkLog;
             lastCompileStatus = finishedWithWarnings
@@ -10227,6 +10289,7 @@ void Engine::updateCompileJob() {
                         }
                     }
                 }
+            }
             }
         }
 
@@ -10357,7 +10420,13 @@ void Engine::refreshScriptEditorWindows() {
         if (fs::exists(outDir, ec)) {
             for (auto it = fs::recursive_directory_iterator(outDir, ec);
                  it != fs::recursive_directory_iterator(); ++it) {
-                if (it->is_directory()) continue;
+                if (it->is_directory()) {
+                    const std::string dirName = it->path().filename().string();
+                    if (dirName == ".loaded" || dirName == ".staging") {
+                        it.disable_recursion_pending();
+                    }
+                    continue;
+                }
                 auto ext = it->path().extension().string();
                 if (ext == ".so" || ext == ".dll" || ext == ".dylib") {
                     tryAddEntry(it->path());

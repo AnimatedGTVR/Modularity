@@ -7848,7 +7848,13 @@ void Engine::renderInspectorPanel() {
             if (!outDir.empty() && fs::exists(outDir, ec)) {
                 for (auto it = fs::recursive_directory_iterator(outDir, ec);
                      it != fs::recursive_directory_iterator(); ++it) {
-                    if (it->is_directory()) continue;
+                    if (it->is_directory()) {
+                        const std::string dirName = it->path().filename().string();
+                        if (dirName == ".loaded" || dirName == ".staging") {
+                            it.disable_recursion_pending();
+                        }
+                        continue;
+                    }
                     std::string ext = it->path().extension().string();
                     std::transform(ext.begin(), ext.end(), ext.begin(),
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
