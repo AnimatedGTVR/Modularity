@@ -13,6 +13,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#if defined(_MSC_VER)
+extern int __argc;
+extern char** __argv;
+#endif
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #else
@@ -56,7 +60,7 @@ static void logStartupDebug(const char* message) {
 #endif
 }
 
-int main(int argc, char** argv) {
+static int ModularityMain(int argc, char** argv) {
   if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
     return 0;
   }
@@ -90,3 +94,17 @@ int main(int argc, char** argv) {
     return 0;
   });
 }
+
+int main(int argc, char** argv) {
+  return ModularityMain(argc, argv);
+}
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+#if defined(_MSC_VER)
+  return ModularityMain(__argc, __argv);
+#else
+  return ModularityMain(0, nullptr);
+#endif
+}
+#endif

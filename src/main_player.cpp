@@ -13,6 +13,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#if defined(_MSC_VER)
+extern int __argc;
+extern char** __argv;
+#endif
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #else
@@ -40,7 +44,7 @@ static std::filesystem::path getExecutableDir() {
 #endif
 }
 
-int main(int argc, char** argv) {
+static int ModularityPlayerMain(int argc, char** argv) {
   if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
     return 0;
   }
@@ -65,3 +69,17 @@ int main(int argc, char** argv) {
     return 0;
   });
 }
+
+int main(int argc, char** argv) {
+  return ModularityPlayerMain(argc, argv);
+}
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+#if defined(_MSC_VER)
+  return ModularityPlayerMain(__argc, __argv);
+#else
+  return ModularityPlayerMain(0, nullptr);
+#endif
+}
+#endif
