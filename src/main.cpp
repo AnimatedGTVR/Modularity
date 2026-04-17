@@ -48,6 +48,14 @@ static std::filesystem::path getExecutableDir() {
 #endif
 }
 
+static void logStartupDebug(const char* message) {
+#if defined(NDEBUG)
+  (void)message;
+#else
+  std::cerr << message << std::endl;
+#endif
+}
+
 int main(int argc, char** argv) {
   if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
     return 0;
@@ -65,20 +73,19 @@ int main(int argc, char** argv) {
   Modularity::CrashReporter::Initialize("Modularity", executablePath);
 
   return Modularity::CrashReporter::RunProtected([]() -> int {
-    std::cerr << "[DEBUG] Starting engine initialization..." << std::endl;
+    logStartupDebug("[DEBUG] Starting engine initialization...");
     Engine engine;
 
-    std::cerr << "[DEBUG] Calling engine.init()..." << std::endl;
+    logStartupDebug("[DEBUG] Calling engine.init()...");
     if (!engine.init()) {
-      std::cerr << "[DEBUG] Engine init failed!" << std::endl;
+      logStartupDebug("[DEBUG] Engine init failed!");
       return -1;
     }
 
-    std::cerr << "[DEBUG] Engine init succeeded, starting run loop..."
-              << std::endl;
+    logStartupDebug("[DEBUG] Engine init succeeded, starting run loop...");
     engine.run();
 
-    std::cerr << "[DEBUG] Run loop ended, shutting down..." << std::endl;
+    logStartupDebug("[DEBUG] Run loop ended, shutting down...");
     engine.shutdown();
     return 0;
   });

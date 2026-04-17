@@ -2070,7 +2070,6 @@ void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) 
     if (!stats.executionBegan) {
         std::cerr << "[PostFX][" << route << "] skipped"
                   << " reason=" << (stats.skipReason.empty() ? "unknown" : stats.skipReason)
-                  << " volume=" << (stats.resolvedVolumeName.empty() ? "<none>" : stats.resolvedVolumeName)
                   << " srcTex=" << stats.sourceTextureId
                   << " srcFbo=" << stats.sourceFramebufferId
                   << " finalTex=" << stats.finalPresentedTextureId

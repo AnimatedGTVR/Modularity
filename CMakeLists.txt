@@ -389,6 +389,7 @@ if(MODULARITY_BUILD_EDITOR)
         set_target_properties(Modularity PROPERTIES
             ENABLE_EXPORTS ON
             WINDOWS_EXPORT_ALL_SYMBOLS ON
+            WIN32_EXECUTABLE "$<NOT:$<CONFIG:Debug>>"
         )
     endif()
 endif()
@@ -400,6 +401,7 @@ if(WIN32)
     set_target_properties(ModularityPlayer PROPERTIES
         ENABLE_EXPORTS ON
         WINDOWS_EXPORT_ALL_SYMBOLS ON
+        WIN32_EXECUTABLE "$<NOT:$<CONFIG:Debug>>"
     )
 endif()
 
