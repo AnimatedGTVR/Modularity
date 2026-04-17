@@ -487,6 +487,7 @@ private:
         float hover = 0.0f;
         float active = 0.0f;
         float sliderValue = 0.0f;
+        float contentExtent = 0.0f;
         bool initialized = false;
     };
     std::unordered_map<int, UIAnimationState> uiAnimationStates;

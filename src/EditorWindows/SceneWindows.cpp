@@ -675,24 +675,45 @@ namespace {
         }
         ImGuiStyle& style = ImGui::GetStyle();
         ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-        ImU32 lineColor = ImGui::ColorConvertFloat4ToU32(ImVec4(base.x, base.y, base.z, 0.6f));
+        ImVec4 trunkCol(base.x, base.y, base.z, 0.34f);
+        ImVec4 branchCol(
+            std::min(1.0f, base.x + 0.10f),
+            std::min(1.0f, base.y + 0.10f),
+            std::min(1.0f, base.z + 0.10f),
+            0.62f);
+        ImU32 trunkColor = ImGui::GetColorU32(trunkCol);
+        ImU32 lineColor = ImGui::GetColorU32(branchCol);
         float indent = style.IndentSpacing;
         float rowTop = itemMin.y;
         float rowBottom = itemMax.y;
         float rowMid = (rowTop + rowBottom) * 0.5f;
         float baseX = itemMin.x - indent * depth;
+        float lineThickness = 1.35f;
+        float cornerRadius = std::min(indent * 0.28f, std::max(3.5f, (rowBottom - rowTop) * 0.22f));
+        float branchEndX = itemMin.x + 4.0f;
 
         for (int i = 0; i < depth && i < static_cast<int>(ancestorHasNext.size()); ++i) {
             if (ancestorHasNext[i]) {
                 float x = baseX + indent * (i + 0.5f);
-                drawList->AddLine(ImVec2(x, rowTop), ImVec2(x, rowBottom), lineColor, 1.0f);
+                drawList->AddLine(ImVec2(x, rowTop - 1.0f), ImVec2(x, rowBottom + 1.0f), trunkColor, 1.0f);
             }
         }
 
         float connectorX = baseX + indent * (depth - 0.5f);
-        float vertEnd = isLast ? rowMid : rowBottom;
-        drawList->AddLine(ImVec2(connectorX, rowTop), ImVec2(connectorX, vertEnd), lineColor, 1.0f);
-        drawList->AddLine(ImVec2(connectorX, rowMid), ImVec2(itemMin.x + 6.0f, rowMid), lineColor, 1.0f);
+        float branchStartY = rowMid - cornerRadius;
+        float vertEnd = isLast ? branchStartY : rowBottom + 1.0f;
+        drawList->AddLine(ImVec2(connectorX, rowTop - 1.0f), ImVec2(connectorX, vertEnd), lineColor, lineThickness);
+
+        ImVec2 curveStart(connectorX, branchStartY);
+        ImVec2 curveEnd(connectorX + cornerRadius, rowMid);
+        ImVec2 curveCp1(connectorX, branchStartY + cornerRadius * 0.55f);
+        ImVec2 curveCp2(connectorX + cornerRadius * 0.55f, rowMid);
+        drawList->AddBezierCubic(curveStart, curveCp1, curveCp2, curveEnd, lineColor, lineThickness);
+        drawList->AddLine(curveEnd, ImVec2(branchEndX, rowMid), lineColor, lineThickness);
+
+        float capRadius = 1.5f;
+        drawList->AddCircleFilled(ImVec2(branchEndX, rowMid), capRadius, lineColor, 10);
+        drawList->AddCircleFilled(ImVec2(connectorX, rowTop + 1.0f), 1.1f, trunkColor, 8);
     }
 
     void ApplyReverbPreset(ReverbZoneComponent& zone, ReverbPreset preset) {
@@ -1178,7 +1199,16 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         }
     }
 
-    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+    const ImVec2 leftDragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+    const float leftDragDistanceSq = leftDragDelta.x * leftDragDelta.x + leftDragDelta.y * leftDragDelta.y;
+    const float leftDragThreshold = ImGui::GetIO().MouseDragThreshold;
+    const bool hierarchyRowReleasedAsClick =
+        ImGui::IsItemHovered()
+        && ImGui::IsMouseReleased(ImGuiMouseButton_Left)
+        && leftDragDistanceSq <= leftDragThreshold * leftDragThreshold
+        && !ImGui::IsItemToggledOpen();
+
+    if (hierarchyRowReleasedAsClick) {
         const bool shift = ImGui::GetIO().KeyShift;
         const bool ctrl = ImGui::GetIO().KeyCtrl;
 
@@ -1403,9 +1433,8 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         }
     }
 
-    if (nodeOpen) {
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, openT);
-        std::vector<SceneObject*> visibleChildren;
+    std::vector<SceneObject*> visibleChildren;
+    if (hasChildren) {
         visibleChildren.reserve(obj.childIds.size());
         for (int childId : obj.childIds) {
             auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
@@ -1418,14 +1447,69 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                 }
             }
         }
+    }
 
-        ancestorHasNext.push_back(!isLast);
-        for (size_t i = 0; i < visibleChildren.size(); ++i) {
-            bool childLast = (i + 1 == visibleChildren.size());
-            renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1, animStep);
+    const bool shouldAnimateChildren = !visibleChildren.empty() && (nodeOpen || openT > 0.001f);
+    if (shouldAnimateChildren) {
+        const float revealT = std::clamp(openT, 0.0f, 1.0f);
+        const float revealHeightT = std::clamp((revealT - 0.045f) / 0.955f, 0.0f, 1.0f);
+        const float revealAlphaT = std::clamp((revealT - 0.11f) / 0.89f, 0.0f, 1.0f);
+        const float easedReveal = revealHeightT * revealHeightT * (3.0f - 2.0f * revealHeightT);
+        const float easedAlpha = revealAlphaT * revealAlphaT * (3.0f - 2.0f * revealAlphaT);
+        const bool treePushed = nodeOpen;
+        if (!treePushed) {
+            ImGui::Indent();
         }
-        ancestorHasNext.pop_back();
-        ImGui::PopStyleVar();
+
+        const ImVec2 layoutCursor = ImGui::GetCursorPos();
+        const ImVec2 renderCursor = ImGui::GetCursorScreenPos();
+        const float estimatedHeight = std::max(lineHeight * 0.9f,
+                                               lineHeight * static_cast<float>(visibleChildren.size()) * 1.1f);
+        const float cachedHeight = std::max(animState.contentExtent, estimatedHeight);
+        const float reservedHeight = cachedHeight * easedReveal;
+        const float slideOffset = (1.0f - easedReveal) * std::min(std::max(lineHeight * 0.9f, cachedHeight * 0.18f),
+                                                                  lineHeight * 3.0f);
+        const ImVec2 clipMin(renderCursor.x - 24.0f, itemMax.y - 1.0f);
+        const ImVec2 clipMax(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x + 24.0f,
+                             renderCursor.y + reservedHeight + lineHeight);
+
+        if (reservedHeight > 0.75f && easedAlpha > 0.001f) {
+            ImGui::PushClipRect(clipMin, clipMax, true);
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, easedAlpha);
+            ImGui::SetCursorScreenPos(ImVec2(renderCursor.x, renderCursor.y - slideOffset));
+            ImGui::BeginGroup();
+
+            ancestorHasNext.push_back(!isLast);
+            for (size_t i = 0; i < visibleChildren.size(); ++i) {
+                bool childLast = (i + 1 == visibleChildren.size());
+                renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1, animStep);
+            }
+            ancestorHasNext.pop_back();
+
+            ImGui::EndGroup();
+            const ImVec2 renderedMin = ImGui::GetItemRectMin();
+            const ImVec2 renderedMax = ImGui::GetItemRectMax();
+            const float renderedHeight = std::max(0.0f, renderedMax.y - renderedMin.y);
+            if (renderedHeight > 0.0f) {
+                if (uiAnimationMode == UIAnimationMode::Off || animState.contentExtent <= 0.0f) {
+                    animState.contentExtent = renderedHeight;
+                } else {
+                    animState.contentExtent += (renderedHeight - animState.contentExtent) * std::min(1.0f, animStep * 0.85f);
+                }
+            }
+            ImGui::PopStyleVar();
+            ImGui::PopClipRect();
+        }
+
+        ImGui::SetCursorPos(layoutCursor);
+        ImGui::Dummy(ImVec2(0.0f, reservedHeight));
+
+        if (treePushed) {
+            ImGui::TreePop();
+        } else {
+            ImGui::Unindent();
+        }
+    } else if (nodeOpen) {
         ImGui::TreePop();
     }
 }
