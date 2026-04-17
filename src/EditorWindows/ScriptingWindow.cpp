@@ -265,7 +265,11 @@ namespace {
             addIdentifier("Update", "Script callback");
             addIdentifier("ModuNode", "Preferred ModuCPP script base");
             addIdentifier("ModuBehaviour", "Legacy ModuCPP script base");
+            addIdentifier("ModuCPP", "Core ModuCPP script API");
             addIdentifier("ModuEngine", "ModuCPP engine facade");
+            addIdentifier("ModuInput", "ModuCPP input helpers");
+            addIdentifier("RMeshBuilder", "ModuCPP mesh-builder helpers");
+            addIdentifier("ModuCPP.Experimental", "Advanced ModuCPP script helpers");
             addIdentifier("FPS", "Current frame FPS");
             addIdentifier("obj", "Current object facade");
             addIdentifier("UILabel", "Object UI label shorthand");

@@ -63,6 +63,13 @@ enum class SpriteSheetImportTarget {
     Sprite2D = 2
 };
 
+enum class ScriptScaffoldKind {
+    ModuCpp = 0,
+    Cpp = 1,
+    C = 2,
+    CSharp = 3
+};
+
 class Engine {
     friend void window_size_callback(GLFWwindow* window, int width, int height);
 private:
@@ -924,6 +931,13 @@ private:
     void renderFileContextMenu(const fs::directory_entry& entry);
     void handleFileDoubleClick(const fs::directory_entry& entry);
     void openScriptInEditor(const fs::path& path);
+    bool createScriptAsset(ScriptScaffoldKind kind,
+                           const std::string& requestedName,
+                           const fs::path& preferredDirectory,
+                           fs::path& outPath,
+                           ScriptLanguage& outLanguage,
+                           std::string& outManagedType,
+                           std::string& error);
     ImVec4 getFileCategoryColor(FileCategory category) const;
     const char* getFileCategoryIconText(FileCategory category) const;
     

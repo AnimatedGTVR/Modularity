@@ -670,12 +670,12 @@ std::vector<float> generateSphere(int segments, int rings) {
             int next = current + stride;
 
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[current * 8 + i]);
-            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(current + 1) * 8 + i]);
+            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
 
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(current + 1) * 8 + i]);
-            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(next + 1) * 8 + i]);
+            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
         }
     }
 
@@ -777,12 +777,12 @@ std::vector<float> generateCapsule(int segments, int rings) {
             int next = current + stride;
 
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[current * 8 + i]);
-            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(current + 1) * 8 + i]);
+            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
 
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(current + 1) * 8 + i]);
-            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; i++) triangulated.push_back(vertices[(next + 1) * 8 + i]);
+            for (int i = 0; i < 8; i++) triangulated.push_back(vertices[next * 8 + i]);
         }
     }
 
@@ -829,12 +829,12 @@ std::vector<float> generateTorus(int segments, int sides) {
             int next = current + stride;
 
             for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[current * 8 + i]);
-            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(current + 1) * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
 
             for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(current + 1) * 8 + i]);
-            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
             for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[(next + 1) * 8 + i]);
+            for (int i = 0; i < 8; ++i) triangulated.push_back(vertices[next * 8 + i]);
         }
     }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Common.h"
+#include "ScriptSdkCommon.h"
 #include "SceneObject.h"
 #include <unordered_set>
 

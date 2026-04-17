@@ -19,6 +19,7 @@ public:
     bool save(const std::string& path, std::string& error);
     void clear();
     void recomputeNormals();
+    void flipFaces();
 
     // Add a new face defined by vertex indices (3 = triangle, 4 = quad fan).
     bool addFace(const std::vector<uint32_t>& indices, std::string& error);

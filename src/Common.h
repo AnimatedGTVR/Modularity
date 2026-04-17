@@ -50,6 +50,9 @@
 
 namespace fs = std::filesystem;
 
+#ifndef MODULARITY_COMMON_SHARED_DECLS
+#define MODULARITY_COMMON_SHARED_DECLS
+
 // Constants
 constexpr float SENSITIVITY = 0.1f;
 constexpr float CAMERA_SPEED = 2.5f;
@@ -80,3 +83,5 @@ class Engine;
 
 // Global OBJ loader instance (extern declaration)
 extern OBJLoader g_objLoader;
+
+#endif // MODULARITY_COMMON_SHARED_DECLS

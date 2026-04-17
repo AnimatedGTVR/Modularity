@@ -1198,6 +1198,8 @@ void Engine::renderFileBrowserPanel() {
     auto createEntry = [&](const fs::path& dir, CreateKind kind, const std::string& name) {
         fs::path baseDir = dir.empty() ? fileBrowser.currentPath : dir;
         fs::path target = baseDir / name;
+        const bool createScript =
+            kind == CreateKind::ModuCppScript || kind == CreateKind::CppScript || kind == CreateKind::CScript;
         if (kind != CreateKind::Folder && target.extension().empty()) {
             switch (kind) {
                 case CreateKind::ModuCppScript: target += ".moducpp"; break;
@@ -1210,13 +1212,15 @@ void Engine::renderFileBrowserPanel() {
                 default: break;
             }
         }
-        target = makeUniquePath(target);
+        if (!createScript) {
+            target = makeUniquePath(target);
+        }
 
         std::error_code ec;
-        if (!baseDir.empty() && !fs::exists(baseDir)) {
+        if (!createScript && !baseDir.empty() && !fs::exists(baseDir)) {
             fs::create_directories(baseDir, ec);
         }
-        if (!baseDir.empty() && !fs::exists(baseDir)) {
+        if (!createScript && !baseDir.empty() && !fs::exists(baseDir)) {
             addConsoleMessage("Create failed: target folder missing " + baseDir.string(),
                               ConsoleMessageType::Error);
             return false;
@@ -1226,90 +1230,50 @@ void Engine::renderFileBrowserPanel() {
         if (kind == CreateKind::Folder) {
             created = fs::create_directories(target, ec);
         } else {
-            std::string contents;
-            auto sanitizeIdentifier = [](std::string value) {
-                if (value.empty()) {
-                    return std::string("NewScript");
+            if (createScript) {
+                ScriptScaffoldKind scaffoldKind = ScriptScaffoldKind::ModuCpp;
+                switch (kind) {
+                    case CreateKind::ModuCppScript: scaffoldKind = ScriptScaffoldKind::ModuCpp; break;
+                    case CreateKind::CppScript: scaffoldKind = ScriptScaffoldKind::Cpp; break;
+                    case CreateKind::CScript: scaffoldKind = ScriptScaffoldKind::C; break;
+                    default: break;
                 }
-                for (size_t i = 0; i < value.size(); ++i) {
-                    unsigned char c = static_cast<unsigned char>(value[i]);
-                    if (i == 0) {
-                        if (!std::isalpha(c) && c != '_') {
-                            value[i] = '_';
-                        }
-                    } else if (!std::isalnum(c) && c != '_') {
-                        value[i] = '_';
-                    }
+                ScriptLanguage ignoredLanguage = ScriptLanguage::Cpp;
+                std::string ignoredManagedType;
+                std::string createError;
+                created = createScriptAsset(scaffoldKind,
+                                            target.stem().string(),
+                                            baseDir,
+                                            target,
+                                            ignoredLanguage,
+                                            ignoredManagedType,
+                                            createError);
+                if (!created) {
+                    addConsoleMessage("Create failed: " + createError, ConsoleMessageType::Error);
+                    return false;
                 }
-                return value;
-            };
-            const std::string scriptClassName = sanitizeIdentifier(target.stem().string());
-            switch (kind) {
-                case CreateKind::ModuCppScript:
-                    contents =
-                        "#include \"ModuCPP\"\n"
-                        "\n"
-                        "public class " + scriptClassName + " : ModuNode {\n"
-                        "    public float interval = 1.0f;\n"
-                        "    private float timer = 0.0f;\n"
-                        "\n"
-                        "    void Begin() to timer.Start(interval);\n"
-                        "\n"
-                        "    void TickUpdate() {\n"
-                        "        if (!timer.Ready()) return;\n"
-                        "        // Interval work goes here.\n"
-                        "    }\n"
-                        "}\n";
-                    break;
-                case CreateKind::CppScript:
-                    contents =
-                        "#include \"ScriptRuntime.h\"\n"
-                        "#include \"SceneObject.h\"\n"
-                        "#include \"ThirdParty/imgui/imgui.h\"\n"
-                        "\n"
-                        "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n"
-                        "    ImGui::TextUnformatted(\"New Script\");\n"
-                        "}\n"
-                        "\n"
-                        "void Begin(ScriptContext& ctx, float /*deltaTime*/) {\n"
-                        "}\n"
-                        "\n"
-                        "void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {\n"
-                        "}\n";
-                    break;
-                case CreateKind::CScript:
-                    contents =
-                        "#include \"ScriptRuntimeCAPI.h\"\n"
-                        "\n"
-                        "void Modu_OnInspector(ModuScriptContext* ctx) {\n"
-                        "    (void)ctx;\n"
-                        "}\n"
-                        "\n"
-                        "void Modu_TickUpdate(ModuScriptContext* ctx, float deltaTime) {\n"
-                        "    (void)deltaTime;\n"
-                        "    ModuVec3 pos = Modu_GetPosition(ctx);\n"
-                        "    pos.y += 0.0f;\n"
-                        "    Modu_SetPosition(ctx, pos);\n"
-                        "}\n";
-                    break;
-                case CreateKind::Header:
-                    contents = "#pragma once\n";
-                    break;
-                case CreateKind::Json:
-                    contents = "{\n}\n";
-                    break;
-                case CreateKind::Shader:
-                    contents =
-                        "// Shader entry point\n"
-                        "void main() {\n"
-                        "}\n";
-                    break;
-                case CreateKind::Text:
-                default:
-                    contents.clear();
-                    break;
+            } else {
+                std::string contents;
+                switch (kind) {
+                    case CreateKind::Header:
+                        contents = "#pragma once\n";
+                        break;
+                    case CreateKind::Json:
+                        contents = "{\n}\n";
+                        break;
+                    case CreateKind::Shader:
+                        contents =
+                            "// Shader entry point\n"
+                            "void main() {\n"
+                            "}\n";
+                        break;
+                    case CreateKind::Text:
+                    default:
+                        contents.clear();
+                        break;
+                }
+                created = writeFileContents(target, contents);
             }
-            created = writeFileContents(target, contents);
         }
 
         if (created) {

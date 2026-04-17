@@ -6993,6 +6993,7 @@ void Engine::renderInspectorPanel() {
         }
 
         if (header.open) {
+            /*
             ImGui::SeparatorText("Binding");
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
             if (ImGui::BeginTable("ScriptMeta", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
@@ -7119,6 +7120,7 @@ void Engine::renderInspectorPanel() {
             } else {
                 ImGui::TextDisabled("Assign a script asset to expose runtime inspector fields.");
             }
+            */
 
             if (!sc.path.empty()) {
                 ScriptContext ctx;
@@ -7352,6 +7354,21 @@ void Engine::renderInspectorPanel() {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##ComponentFilter", "Search components...", componentFilter, sizeof(componentFilter));
 
+        auto trimComponentFilter = [](const std::string& value) {
+            size_t start = 0;
+            while (start < value.size() &&
+                   std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+                ++start;
+            }
+            size_t end = value.size();
+            while (end > start &&
+                   std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+                --end;
+            }
+            return value.substr(start, end - start);
+        };
+
+        const std::string requestedScriptName = trimComponentFilter(componentFilter);
         std::string filterLower = componentFilter;
         std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -7664,11 +7681,13 @@ void Engine::renderInspectorPanel() {
             obj.collider.convex = true;
             componentChanged = true;
         });
+        /*
         addEntry("Scripting/Empty Script Component", true, [&]() {
             obj.scripts.push_back(ScriptComponent{});
             scriptsChanged = true;
             componentChanged = true;
         });
+        */
 
         static std::vector<fs::path> cachedScriptSources;
         static std::vector<fs::path> cachedScriptBinaries;
@@ -7777,7 +7796,7 @@ void Engine::renderInspectorPanel() {
                 sc.lastBinaryPath.clear();
                 sc.lastBinaryVerified = false;
                 if (sc.language == ScriptLanguage::CSharp) {
-                    sc.managedType = path.stem().string();
+                    sc.managedType = InferManagedTypeFromFile(path).value_or(path.stem().string());
                 }
                 obj.scripts.push_back(std::move(sc));
                 scriptsChanged = true;
@@ -7841,12 +7860,67 @@ void Engine::renderInspectorPanel() {
             categorizedEntries[split.first].push_back(entry);
         }
 
+        auto createAndAttachScript = [&](ScriptScaffoldKind kind) {
+            fs::path createdPath;
+            ScriptLanguage language = ScriptLanguage::Cpp;
+            std::string managedType;
+            std::string createError;
+            if (!createScriptAsset(kind, requestedScriptName, {}, createdPath, language, managedType, createError)) {
+                addConsoleMessage("Create script failed: " + createError, ConsoleMessageType::Error);
+                return;
+            }
+
+            ScriptComponent sc;
+            sc.language = language;
+            sc.path = createdPath.string();
+            sc.lastBinaryPath.clear();
+            sc.lastBinaryVerified = false;
+            if (language == ScriptLanguage::CSharp) {
+                sc.managedType = !managedType.empty()
+                    ? managedType
+                    : InferManagedTypeFromFile(createdPath).value_or(createdPath.stem().string());
+            }
+
+            obj.scripts.push_back(std::move(sc));
+            scriptsChanged = true;
+            componentChanged = true;
+            cachedScriptSources.clear();
+            cachedScriptBinaries.clear();
+            cachedScriptRoot.clear();
+            cachedScriptRefresh = 0.0;
+            addConsoleMessage("Created and attached script: " + createdPath.string(), ConsoleMessageType::Success);
+            ImGui::CloseCurrentPopup();
+            openScriptInEditor(createdPath);
+        };
+
         ImGui::Spacing();
         ImGui::TextDisabled("%s", filterLower.empty() ? "Browse categories" : "Search results");
         ImVec2 listSize(ImGui::GetContentRegionAvail().x, 260.0f);
         if (ImGui::BeginChild("ComponentList", listSize, true)) {
             if (filteredEntries.empty()) {
-                ImGui::TextDisabled("No components match the filter.");
+                if (!requestedScriptName.empty()) {
+                    ImGui::TextWrapped("No components matched \"%s\".", requestedScriptName.c_str());
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Create and attach a script instead:");
+                    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+                    const float buttonWidth = std::max(110.0f, (ImGui::GetContentRegionAvail().x - spacing) * 0.5f);
+                    if (ImGui::Button("ModuCPP", ImVec2(buttonWidth, 0.0f))) {
+                        createAndAttachScript(ScriptScaffoldKind::ModuCpp);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("C++", ImVec2(buttonWidth, 0.0f))) {
+                        createAndAttachScript(ScriptScaffoldKind::Cpp);
+                    }
+                    if (ImGui::Button("C", ImVec2(buttonWidth, 0.0f))) {
+                        createAndAttachScript(ScriptScaffoldKind::C);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("C#", ImVec2(buttonWidth, 0.0f))) {
+                        createAndAttachScript(ScriptScaffoldKind::CSharp);
+                    }
+                } else {
+                    ImGui::TextDisabled("No components match the filter.");
+                }
             } else if (!filterLower.empty()) {
                 for (const ComponentEntry* entry : filteredEntries) {
                     if (!entry->enabled) {
@@ -8796,6 +8870,11 @@ void Engine::renderMeshBuilderPanel() {
     if (ImGui::Button("Recompute Normals")) {
         meshBuilder.recomputeNormals();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Flip Faces")) {
+        meshBuilder.flipFaces();
+        addConsoleMessage("Flipped raw mesh face winding", ConsoleMessageType::Success);
+    }
 
     ImGui::Separator();
 
@@ -8967,8 +9046,12 @@ void Engine::renderDialogs() {
             : 0.0f;
         const float jobsBlend = compileInProgress ? 1.0f : std::max(0.0f, 1.0f - completionBlend);
         const float logBlend = compileFinished ? completionBlend : 0.0f;
-        const float targetWidth = 600.0f;
-        const float targetHeight = 88.0f + historyHeight * jobsBlend + (logBlend > 0.0f ? 88.0f * logBlend + 12.0f : 0.0f);
+        const float targetWidth = std::clamp(io.DisplaySize.x * 0.78f, 640.0f, 1600.0f);
+        const float targetMinHeight = compileFinished && !lastCompileLog.empty() ? 320.0f : 180.0f;
+        const float targetLogHeight =
+            logBlend > 0.0f ? std::clamp(io.DisplaySize.y * 0.28f, 160.0f, 420.0f) * logBlend + 12.0f : 0.0f;
+        const float targetHeight =
+            std::clamp(96.0f + historyHeight * jobsBlend + targetLogHeight, targetMinHeight, io.DisplaySize.y * 0.72f);
         static ImVec2 compilePopupSize = ImVec2(targetWidth, targetHeight);
         const float popupLerp = std::clamp(io.DeltaTime * 12.0f, 0.0f, 1.0f);
         compilePopupSize.x = ImLerp(compilePopupSize.x, targetWidth, popupLerp);
@@ -8978,7 +9061,8 @@ void Engine::renderDialogs() {
             ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Always);
         } else {
             ImGui::SetNextWindowSize(compilePopupSize, ImGuiCond_Appearing);
-            ImGui::SetNextWindowSizeConstraints(ImVec2(400.0f, 150.0f), ImVec2(FLT_MAX, FLT_MAX));
+            ImGui::SetNextWindowSizeConstraints(ImVec2(480.0f, 180.0f),
+                                                ImVec2(io.DisplaySize.x * 0.96f, io.DisplaySize.y * 0.90f));
         }
         ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings;
         if (compileInProgress) flags |= ImGuiWindowFlags_NoResize;
@@ -9105,9 +9189,15 @@ void Engine::renderDialogs() {
 
             if (compileFinished && !lastCompileLog.empty()) {
                 ImGui::Spacing();
+                ImGui::Separator();
                 ImGui::TextDisabled("Log");
-                ImGui::BeginChild("CompileLog", ImVec2(0.0f, 88.0f), true);
+                const float closeRowReserve =
+                    allowClose ? (ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f) : 8.0f;
+                const float logHeight = std::max(140.0f, ImGui::GetContentRegionAvail().y - closeRowReserve);
+                ImGui::BeginChild("CompileLog", ImVec2(0.0f, logHeight), true);
+                ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextUnformatted(lastCompileLog.c_str());
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
             }
 

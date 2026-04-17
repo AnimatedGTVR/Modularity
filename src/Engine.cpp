@@ -1235,8 +1235,8 @@ RawMeshAsset buildSphereRMesh(int slices = 24, int stacks = 16) {
             uint32_t i1 = i0 + 1;
             uint32_t i2 = i0 + (slices + 1);
             uint32_t i3 = i2 + 1;
-            mesh.faces.push_back(glm::u32vec3(i0, i2, i1));
-            mesh.faces.push_back(glm::u32vec3(i1, i2, i3));
+            mesh.faces.push_back(glm::u32vec3(i0, i1, i2));
+            mesh.faces.push_back(glm::u32vec3(i1, i3, i2));
         }
     }
 
@@ -2552,6 +2552,154 @@ bool ensureProjectManagedCsproj(const fs::path& projectRoot, const fs::path& eng
     file << "  </ItemGroup>\n";
     file << "</Project>\n";
     return true;
+}
+
+std::string TrimScriptName(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+    size_t end = value.size();
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
+std::string BuildScriptIdentifier(const std::string& requestedName) {
+    const std::string trimmed = TrimScriptName(requestedName);
+    if (trimmed.empty()) {
+        return "NewScript";
+    }
+
+    std::string identifier;
+    identifier.reserve(trimmed.size());
+    bool capitalizeNext = true;
+    for (char c : trimmed) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) == 0 && c != '_') {
+            capitalizeNext = true;
+            continue;
+        }
+
+        if (identifier.empty() && std::isdigit(uc) != 0) {
+            identifier.push_back('_');
+        }
+
+        if (std::isalpha(uc) != 0) {
+            identifier.push_back(static_cast<char>(capitalizeNext ? std::toupper(uc) : c));
+        } else {
+            identifier.push_back(c);
+        }
+        capitalizeNext = (c == '_');
+    }
+
+    if (identifier.empty()) {
+        return "NewScript";
+    }
+    return identifier;
+}
+
+fs::path MakeUniqueSiblingPath(const fs::path& basePath) {
+    std::error_code ec;
+    if (!fs::exists(basePath, ec)) {
+        return basePath;
+    }
+
+    const fs::path parent = basePath.parent_path();
+    const std::string stem = basePath.stem().string();
+    const std::string ext = basePath.extension().string();
+    for (int index = 1; index < 10000; ++index) {
+        fs::path candidate = parent / (stem + "_" + std::to_string(index) + ext);
+        if (!fs::exists(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return parent / (stem + "_" + std::to_string(std::time(nullptr)) + ext);
+}
+
+bool WriteTextFile(const fs::path& path, const std::string& contents, std::string& error) {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        error = "unable to open " + path.string() + " for writing";
+        return false;
+    }
+    file << contents;
+    if (!file.good()) {
+        error = "failed while writing " + path.string();
+        return false;
+    }
+    return true;
+}
+
+std::string BuildScriptTemplateContents(ScriptScaffoldKind kind, const std::string& className) {
+    switch (kind) {
+        case ScriptScaffoldKind::ModuCpp:
+            return
+                "#include \"ModuCPP\"\n"
+                "\n"
+                "public class " + className + " : ModuNode {\n"
+                "    public float interval = 1.0f;\n"
+                "    private float timer = 0.0f;\n"
+                "\n"
+                "    void Begin() to timer.Start(interval);\n"
+                "\n"
+                "    void TickUpdate() {\n"
+                "        if (!timer.Ready()) return;\n"
+                "        // Interval work goes here.\n"
+                "    }\n"
+                "}\n";
+        case ScriptScaffoldKind::Cpp:
+            return
+                "#include \"ScriptRuntime.h\"\n"
+                "#include \"SceneObject.h\"\n"
+                "#include \"ThirdParty/imgui/imgui.h\"\n"
+                "\n"
+                "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n"
+                "    ImGui::TextUnformatted(\"" + className + "\");\n"
+                "}\n"
+                "\n"
+                "void Begin(ScriptContext& ctx, float /*deltaTime*/) {\n"
+                "}\n"
+                "\n"
+                "void TickUpdate(ScriptContext& ctx, float /*deltaTime*/) {\n"
+                "}\n";
+        case ScriptScaffoldKind::C:
+            return
+                "#include \"ScriptRuntimeCAPI.h\"\n"
+                "\n"
+                "void Modu_OnInspector(ModuScriptContext* ctx) {\n"
+                "    (void)ctx;\n"
+                "}\n"
+                "\n"
+                "void Modu_TickUpdate(ModuScriptContext* ctx, float deltaTime) {\n"
+                "    (void)deltaTime;\n"
+                "    ModuVec3 pos = Modu_GetPosition(ctx);\n"
+                "    pos.y += 0.0f;\n"
+                "    Modu_SetPosition(ctx, pos);\n"
+                "}\n";
+        case ScriptScaffoldKind::CSharp:
+            return
+                "using System;\n"
+                "\n"
+                "namespace ModuCPP;\n"
+                "\n"
+                "public class " + className + "\n"
+                "{\n"
+                "    public void Begin(IntPtr ctx, float deltaTime)\n"
+                "    {\n"
+                "    }\n"
+                "\n"
+                "    public void TickUpdate(IntPtr ctx, float deltaTime)\n"
+                "    {\n"
+                "        _ = deltaTime;\n"
+                "        _ = new Context(ctx);\n"
+                "    }\n"
+                "}\n";
+    }
+    return {};
 }
 }
 
@@ -8946,6 +9094,121 @@ fs::path Engine::getManagedProjectPath() const {
 
 fs::path Engine::getManagedOutputDll() const {
     return managedOutputPathFromProject(getManagedProjectPath());
+}
+
+bool Engine::createScriptAsset(ScriptScaffoldKind kind,
+                               const std::string& requestedName,
+                               const fs::path& preferredDirectory,
+                               fs::path& outPath,
+                               ScriptLanguage& outLanguage,
+                               std::string& outManagedType,
+                               std::string& error) {
+    outPath.clear();
+    outLanguage = ScriptLanguage::Cpp;
+    outManagedType.clear();
+    error.clear();
+
+    if (!projectManager.currentProject.isLoaded) {
+        error = "no project is loaded";
+        return false;
+    }
+
+    const fs::path projectRoot = projectManager.currentProject.projectPath;
+    const std::string baseName = BuildScriptIdentifier(requestedName);
+
+    fs::path targetDir;
+    std::string extension;
+    switch (kind) {
+        case ScriptScaffoldKind::ModuCpp:
+            outLanguage = ScriptLanguage::Cpp;
+            extension = ".moducpp";
+            break;
+        case ScriptScaffoldKind::Cpp:
+            outLanguage = ScriptLanguage::Cpp;
+            extension = ".cpp";
+            break;
+        case ScriptScaffoldKind::C:
+            outLanguage = ScriptLanguage::C;
+            extension = ".c";
+            break;
+        case ScriptScaffoldKind::CSharp:
+            outLanguage = ScriptLanguage::CSharp;
+            extension = ".cs";
+            targetDir = projectRoot / "Scripts" / "Managed";
+            break;
+    }
+
+    if (outLanguage != ScriptLanguage::CSharp) {
+        if (!preferredDirectory.empty()) {
+            targetDir = preferredDirectory;
+            if (!targetDir.is_absolute()) {
+                targetDir = projectRoot / targetDir;
+            }
+        }
+    }
+
+    if (outLanguage != ScriptLanguage::CSharp) {
+        if (targetDir.empty()) {
+            ScriptBuildConfig config;
+            std::string configError;
+            const fs::path cfgPath = resolveScriptsConfigPath(projectManager.currentProject);
+            if (scriptCompiler.loadConfig(cfgPath, config, configError) && !config.scriptsDir.empty()) {
+                targetDir = config.scriptsDir;
+                if (!targetDir.is_absolute()) {
+                    targetDir = projectRoot / targetDir;
+                }
+            } else {
+                targetDir = projectRoot / "Assets" / "Scripts";
+            }
+        }
+    } else {
+        fs::path engineRoot = findManagedProjectRoot(projectRoot);
+        if (engineRoot.empty()) {
+            engineRoot = findManagedProjectRoot(fs::current_path());
+        }
+#if defined(__linux__)
+        if (engineRoot.empty()) {
+            std::error_code exeEc;
+            fs::path exe = fs::read_symlink("/proc/self/exe", exeEc);
+            if (!exeEc) {
+                engineRoot = findManagedProjectRoot(exe.parent_path());
+            }
+        }
+#elif defined(_WIN32)
+        if (engineRoot.empty()) {
+            wchar_t buffer[MAX_PATH];
+            DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+            if (len > 0) {
+                engineRoot = findManagedProjectRoot(fs::path(buffer).parent_path());
+            }
+        }
+#endif
+        if (!ensureProjectManagedCsproj(projectRoot, engineRoot, error)) {
+            return false;
+        }
+    }
+
+    std::error_code dirEc;
+    fs::create_directories(targetDir, dirEc);
+    if (dirEc) {
+        error = "unable to create script folder " + targetDir.string();
+        return false;
+    }
+
+    const fs::path requestedPath = targetDir / (baseName + extension);
+    const fs::path createdPath = MakeUniqueSiblingPath(requestedPath);
+    const std::string className = BuildScriptIdentifier(createdPath.stem().string());
+    const std::string contents = BuildScriptTemplateContents(kind, className);
+    if (!WriteTextFile(createdPath, contents, error)) {
+        return false;
+    }
+
+    outPath = createdPath.lexically_normal();
+    if (outLanguage == ScriptLanguage::CSharp) {
+        outManagedType = "ModuCPP." + className;
+    }
+    scriptingFilesDirty = true;
+    return true;
 }
 
 void Engine::markProjectDirty() {

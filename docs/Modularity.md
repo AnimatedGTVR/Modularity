@@ -171,6 +171,8 @@ Native scripts are compiled to shared libraries and hot-loaded at runtime. A pro
 
 Key concepts:
 - `ModuCPP` is now the preferred native authoring layer for gameplay scripts. `.moducpp` files and `.cpp` files that declare `public class ... : ModuNode` or `ModuBehaviour` are transpiled into native C++ before compile.
+- The high-level scripting docs are now split into manual pages and API reference pages under `docs/moducpp/`.
+- The modular import system is explicit. `add ModuCPP;` covers the core layer only; `ModuEngine`, `ModuInput`, `RMeshBuilder`, and `ModuCPP.Experimental` are separate opt-in modules.
 - C++ hooks like `Begin`, `TickUpdate`, and `Update`.
 - C hooks via the C API bridge (`Modu_*` hook names in `.c` scripts).
 - Auto-generated wrappers export `Script_Begin`, `Script_TickUpdate`, etc., when hook names are detected.
@@ -178,6 +180,7 @@ Key concepts:
 
 For full details, see:
 - `docs/Scripting.md`
+- `docs/moducpp/README.md`
 
 ### Managed C# scripting (experimental)
 Modularity can host managed scripts using Mono via the `ModuCPP` managed bridge.

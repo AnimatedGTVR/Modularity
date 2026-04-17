@@ -1,4 +1,6 @@
 add ModuCPP;
+add ModuInput;
+add ModuEngine;
 
 public enum FacingDirection {Down, Up, Right, Left}
 public class TopDownMovement2D : ModuNode

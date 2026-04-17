@@ -819,7 +819,7 @@ if [[ "${clean_build}" -eq 1 ]]; then
     run_long_step "Cleaning player cache directory" clean_player_cache
 fi
 
-run_long_step "Syncing git submodules" sync_submodules
+run_long_step "Syncing Modularity's git submodules" sync_submodules
 run_long_step "Configuring editor build (CMake)" configure_editor_build
 run_long_step "Building editor + engine targets" build_editor_targets
 run_long_step "Installing editor artifacts" install_editor_targets
@@ -829,4 +829,4 @@ run_long_step "Configuring player-only cache build" configure_player_build
 run_long_step "Building ModularityPlayer target" build_player_target
 run_long_step "Collecting player third-party libraries" copy_third_party_libraries "${player_cache_dir}"
 run_long_step "Collecting player engine libraries" copy_engine_libraries "${player_cache_dir}"
-run_long_step "Packaging artifacts and resources" finalize_packaging
+run_long_step "Packaging & Finalizing artifacts and resources" finalize_packaging

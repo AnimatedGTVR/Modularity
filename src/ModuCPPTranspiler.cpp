@@ -1558,8 +1558,15 @@ std::string rewriteIncludeDirective(const std::string& directive, const fs::path
     if (includeTarget.empty()) {
         return trimCopy(directive);
     }
-    if (includeTarget == "ModuCPP") {
-        return "#include \"ModuCPP\"";
+    static const std::unordered_map<std::string, std::string> packageIncludes = {
+        {"ModuCPP", "ModuCPPScriptApi.h"},
+        {"ModuEngine", "ModuEngineScriptApi.h"},
+        {"ModuInput", "ModuInputScriptApi.h"},
+        {"RMeshBuilder", "RMeshBuilderScriptApi.h"},
+        {"ModuCPP.Experimental", "ModuCPPExperimentalScriptApi.h"},
+    };
+    if (const auto it = packageIncludes.find(includeTarget); it != packageIncludes.end()) {
+        return "#include \"" + it->second + "\"";
     }
 
     if (bracket == "\"") {
@@ -1815,12 +1822,67 @@ std::string stripStructDefinitionsByName(const std::string& sourceText,
     return result;
 }
 
+struct ExtractedCodeBlocks {
+    std::string extracted;
+    std::string remaining;
+};
+
+ExtractedCodeBlocks extractEnumClassDefinitions(const std::string& sourceText) {
+    const std::string stripped = stripCommentsPreserveLayout(sourceText);
+    static const std::regex enumPattern(R"(\benum\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+
+    ExtractedCodeBlocks out;
+    size_t cursor = 0;
+    auto begin = std::sregex_iterator(stripped.begin(), stripped.end(), enumPattern);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        const std::smatch& match = *it;
+        const size_t matchPos = static_cast<size_t>(match.position());
+        if (matchPos < cursor) {
+            continue;
+        }
+
+        const size_t matchLen = static_cast<size_t>(match.length());
+        const size_t openBrace = stripped.find('{', matchPos + matchLen);
+        if (openBrace == std::string::npos) {
+            continue;
+        }
+        const size_t closeBrace = findMatchingBrace(stripped, openBrace);
+        if (closeBrace == std::string::npos) {
+            continue;
+        }
+
+        size_t endPos = closeBrace + 1;
+        while (endPos < stripped.size() &&
+               std::isspace(static_cast<unsigned char>(stripped[endPos])) != 0) {
+            ++endPos;
+        }
+        if (endPos < stripped.size() && stripped[endPos] == ';') {
+            ++endPos;
+        }
+        while (endPos < stripped.size() &&
+               std::isspace(static_cast<unsigned char>(stripped[endPos])) != 0) {
+            ++endPos;
+        }
+
+        out.remaining += sourceText.substr(cursor, matchPos - cursor);
+        out.extracted += sourceText.substr(matchPos, endPos - matchPos);
+        if (!out.extracted.empty() && out.extracted.back() != '\n') {
+            out.extracted.push_back('\n');
+        }
+        cursor = endPos;
+    }
+
+    out.remaining += sourceText.substr(cursor);
+    return out;
+}
+
 std::string normalizeModuPackageLines(const std::string& sourceText) {
     std::istringstream input(sourceText);
     std::ostringstream out;
     std::string line;
-    static const std::regex addPattern(R"(^(\s*)add\s+([A-Za-z_][A-Za-z0-9_:]*)\s*;\s*$)");
-    static const std::regex usingPattern(R"(^(\s*)using\s+([A-Za-z_][A-Za-z0-9_:]*)\s*;\s*$)");
+    static const std::regex addPattern(R"(^(\s*)add\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*;\s*$)");
+    static const std::regex usingPattern(R"(^(\s*)using\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*;\s*$)");
 
     while (std::getline(input, line)) {
         std::smatch match;
@@ -2450,6 +2512,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     bool hasAutoInspectorFields = false;
     bool needsDialoguePortSupport = false;
     bool needsDialogueLinesSupport = strippedInspector.find("DialogueLines") != std::string::npos;
+    bool needsObjectRefSupport = false;
+    bool hasTransientFields = false;
     auto fieldNeedsDialogueLinesSupport = [&](const FieldSpec& field) {
         if (field.kind == FieldKind::DialogueLines || field.hasDialogueLinesAttribute) {
             return true;
@@ -2460,8 +2524,16 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         return toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(field.baseType))) == "dialogueport::dialogueline";
     };
     for (const FieldSpec& field : spec.fields) {
+        if (!fieldPersists(field)) {
+            hasTransientFields = true;
+        }
         if (fieldPersists(field) && field.kind == FieldKind::ObjectList) {
             listFields.insert(field.name);
+        }
+        if (field.kind == FieldKind::ObjectList ||
+            field.hasObjectRefAttribute ||
+            field.hasObjectListAttribute) {
+            needsObjectRefSupport = true;
         }
         if (field.kind == FieldKind::ObjectList ||
             field.kind == FieldKind::DialogueLines ||
@@ -2488,6 +2560,11 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     for (const SubScriptSpec& subScript : spec.subScripts) {
         for (const FieldSpec& field : subScript.fields) {
             if (field.kind == FieldKind::ObjectList ||
+                field.hasObjectRefAttribute ||
+                field.hasObjectListAttribute) {
+                needsObjectRefSupport = true;
+            }
+            if (field.kind == FieldKind::ObjectList ||
                 field.kind == FieldKind::DialogueLines ||
                 field.hasObjectRefAttribute ||
                 field.hasObjectListAttribute ||
@@ -2499,6 +2576,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             }
         }
     }
+
+    const bool hasReachableSubScripts = std::any_of(
+        spec.subScripts.begin(), spec.subScripts.end(),
+        [&](const SubScriptSpec& ss) {
+            return reachableSubScriptTypes.count(
+                       toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(ss.name)))) > 0;
+        });
+    const bool needsEscapedStringHelpers = needsObjectRefSupport || hasReachableSubScripts;
 
     std::ostringstream out;
     std::unordered_map<std::string, std::string> rewrittenSyntaxCache;
@@ -2937,9 +3022,25 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << normalized << "\n";
     };
 
-    emitInclude("#include \"ModuCPP\"");
+    std::vector<std::string> rewrittenIncludes;
+    rewrittenIncludes.reserve(spec.includeDirectives.size());
+    bool hasExplicitScriptApiImport = false;
     for (const std::string& includeDirective : spec.includeDirectives) {
-        emitInclude(rewriteIncludeDirective(includeDirective, sourcePath));
+        const std::string rewritten = rewriteIncludeDirective(includeDirective, sourcePath);
+        if (rewritten == "#include \"ModuCPPScriptApi.h\"" ||
+            rewritten == "#include \"ModuEngineScriptApi.h\"" ||
+            rewritten == "#include \"ModuInputScriptApi.h\"" ||
+            rewritten == "#include \"RMeshBuilderScriptApi.h\"" ||
+            rewritten == "#include \"ModuCPPExperimentalScriptApi.h\"") {
+            hasExplicitScriptApiImport = true;
+        }
+        rewrittenIncludes.push_back(rewritten);
+    }
+    if (!hasExplicitScriptApiImport) {
+        emitInclude("#include \"ModuCPPScriptApi.h\"");
+    }
+    for (const std::string& includeDirective : rewrittenIncludes) {
+        emitInclude(includeDirective);
     }
     emitInclude("#include <algorithm>");
     emitInclude("#include <array>");
@@ -2964,8 +3065,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
     const std::string normalizedPassthrough =
         cachedRewriteSurfaceSyntax(stripIncludeDirectives(spec.passthroughCode));
-    const std::string passthrough =
+    const std::string passthroughSansStructs =
         stripStructDefinitionsByName(normalizedPassthrough, emittedReachableSubScriptNames);
+    const ExtractedCodeBlocks enumBlocks = extractEnumClassDefinitions(passthroughSansStructs);
+    const std::string passthroughEnums = trimCopy(enumBlocks.extracted);
+    const std::string passthrough = enumBlocks.remaining;
+    if (!passthroughEnums.empty()) {
+        out << passthroughEnums << "\n\n";
+    }
     for (const SubScriptSpec& subScript : spec.subScripts) {
         const std::string normalizedSubScript =
             toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(subScript.name)));
@@ -3038,145 +3145,151 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     }
     out << "};\n\n";
 
-    out << "struct " << stateType << " {\n";
-    for (const FieldSpec& field : spec.fields) {
-        if (fieldPersists(field)) continue;
-        out << "    " << cachedMapScriptTypeToCpp(field.rawType) << " " << field.name;
-        if (!field.initializer.empty()) {
-            out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
+    if (hasTransientFields) {
+        out << "struct " << stateType << " {\n";
+        for (const FieldSpec& field : spec.fields) {
+            if (fieldPersists(field)) continue;
+            out << "    " << cachedMapScriptTypeToCpp(field.rawType) << " " << field.name;
+            if (!field.initializer.empty()) {
+                out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
+            }
+            out << ";\n";
         }
-        out << ";\n";
+        out << "};\n\n";
     }
-    out << "};\n\n";
 
-    out << "inline std::string Trim(const std::string& value) {\n";
-    out << "    size_t start = 0;\n";
-    out << "    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {\n";
-    out << "        ++start;\n";
-    out << "    }\n";
-    out << "    size_t end = value.size();\n";
-    out << "    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {\n";
-    out << "        --end;\n";
-    out << "    }\n";
-    out << "    return value.substr(start, end - start);\n";
-    out << "}\n\n";
+    if (needsEscapedStringHelpers) {
+        out << "inline std::string Trim(const std::string& value) {\n";
+        out << "    size_t start = 0;\n";
+        out << "    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {\n";
+        out << "        ++start;\n";
+        out << "    }\n";
+        out << "    size_t end = value.size();\n";
+        out << "    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {\n";
+        out << "        --end;\n";
+        out << "    }\n";
+        out << "    return value.substr(start, end - start);\n";
+        out << "}\n\n";
 
-    out << "inline bool IsAllDigits(const std::string& value) {\n";
-    out << "    if (value.empty()) return false;\n";
-    out << "    size_t start = (value[0] == '-' || value[0] == '+') ? 1u : 0u;\n";
-    out << "    if (start >= value.size()) return false;\n";
-    out << "    for (size_t i = start; i < value.size(); ++i) {\n";
-    out << "        if (!std::isdigit(static_cast<unsigned char>(value[i]))) return false;\n";
-    out << "    }\n";
-    out << "    return true;\n";
-    out << "}\n\n";
+        out << "inline std::vector<std::string> SplitEscaped(const std::string& value, char delimiter) {\n";
+        out << "    std::vector<std::string> fields;\n";
+        out << "    std::string current;\n";
+        out << "    bool escaped = false;\n";
+        out << "    for (char c : value) {\n";
+        out << "        if (escaped) {\n";
+        out << "            if (c == 'n') current.push_back('\\n');\n";
+        out << "            else if (c == 'r') current.push_back('\\r');\n";
+        out << "            else current.push_back(c);\n";
+        out << "            escaped = false;\n";
+        out << "            continue;\n";
+        out << "        }\n";
+        out << "        if (c == '\\\\') {\n";
+        out << "            escaped = true;\n";
+        out << "            continue;\n";
+        out << "        }\n";
+        out << "        if (c == delimiter) {\n";
+        out << "            fields.push_back(current);\n";
+        out << "            current.clear();\n";
+        out << "            continue;\n";
+        out << "        }\n";
+        out << "        current.push_back(c);\n";
+        out << "    }\n";
+        out << "    if (escaped) current.push_back('\\\\');\n";
+        out << "    fields.push_back(current);\n";
+        out << "    return fields;\n";
+        out << "}\n\n";
 
-    out << "inline std::vector<std::string> SplitEscaped(const std::string& value, char delimiter) {\n";
-    out << "    std::vector<std::string> fields;\n";
-    out << "    std::string current;\n";
-    out << "    bool escaped = false;\n";
-    out << "    for (char c : value) {\n";
-    out << "        if (escaped) {\n";
-    out << "            if (c == 'n') current.push_back('\\n');\n";
-    out << "            else if (c == 'r') current.push_back('\\r');\n";
-    out << "            else current.push_back(c);\n";
-    out << "            escaped = false;\n";
-    out << "            continue;\n";
-    out << "        }\n";
-    out << "        if (c == '\\\\') {\n";
-    out << "            escaped = true;\n";
-    out << "            continue;\n";
-    out << "        }\n";
-    out << "        if (c == delimiter) {\n";
-    out << "            fields.push_back(current);\n";
-    out << "            current.clear();\n";
-    out << "            continue;\n";
-    out << "        }\n";
-    out << "        current.push_back(c);\n";
-    out << "    }\n";
-    out << "    if (escaped) current.push_back('\\\\');\n";
-    out << "    fields.push_back(current);\n";
-    out << "    return fields;\n";
-    out << "}\n\n";
+        out << "inline std::string EscapeField(const std::string& value, char delimiter) {\n";
+        out << "    std::string outValue;\n";
+        out << "    outValue.reserve(value.size() + 8);\n";
+        out << "    for (char c : value) {\n";
+        out << "        if (c == '\\\\' || c == delimiter || c == '\\n' || c == '\\r') {\n";
+        out << "            outValue.push_back('\\\\');\n";
+        out << "            if (c == '\\n') outValue.push_back('n');\n";
+        out << "            else if (c == '\\r') outValue.push_back('r');\n";
+        out << "            else outValue.push_back(c);\n";
+        out << "        } else {\n";
+        out << "            outValue.push_back(c);\n";
+        out << "        }\n";
+        out << "    }\n";
+        out << "    return outValue;\n";
+        out << "}\n\n";
 
-    out << "inline std::string EscapeField(const std::string& value, char delimiter) {\n";
-    out << "    std::string outValue;\n";
-    out << "    outValue.reserve(value.size() + 8);\n";
-    out << "    for (char c : value) {\n";
-    out << "        if (c == '\\\\' || c == delimiter || c == '\\n' || c == '\\r') {\n";
-    out << "            outValue.push_back('\\\\');\n";
-    out << "            if (c == '\\n') outValue.push_back('n');\n";
-    out << "            else if (c == '\\r') outValue.push_back('r');\n";
-    out << "            else outValue.push_back(c);\n";
-    out << "        } else {\n";
-    out << "            outValue.push_back(c);\n";
-    out << "        }\n";
-    out << "    }\n";
-    out << "    return outValue;\n";
-    out << "}\n\n";
+        out << "inline std::string JoinEscaped(const std::vector<std::string>& values, char delimiter) {\n";
+        out << "    std::string joined;\n";
+        out << "    for (size_t i = 0; i < values.size(); ++i) {\n";
+        out << "        joined += EscapeField(values[i], delimiter);\n";
+        out << "        if (i + 1 < values.size()) joined.push_back(delimiter);\n";
+        out << "    }\n";
+        out << "    return joined;\n";
+        out << "}\n\n";
+    }
 
-    out << "inline std::string JoinEscaped(const std::vector<std::string>& values, char delimiter) {\n";
-    out << "    std::string joined;\n";
-    out << "    for (size_t i = 0; i < values.size(); ++i) {\n";
-    out << "        joined += EscapeField(values[i], delimiter);\n";
-    out << "        if (i + 1 < values.size()) joined.push_back(delimiter);\n";
-    out << "    }\n";
-    out << "    return joined;\n";
-    out << "}\n\n";
+    if (needsObjectRefSupport) {
+        out << "inline bool IsAllDigits(const std::string& value) {\n";
+        out << "    if (value.empty()) return false;\n";
+        out << "    size_t start = (value[0] == '-' || value[0] == '+') ? 1u : 0u;\n";
+        out << "    if (start >= value.size()) return false;\n";
+        out << "    for (size_t i = start; i < value.size(); ++i) {\n";
+        out << "        if (!std::isdigit(static_cast<unsigned char>(value[i]))) return false;\n";
+        out << "    }\n";
+        out << "    return true;\n";
+        out << "}\n\n";
 
-    out << "inline std::vector<std::string> DeserializeObjectRefs(const std::string& encoded) {\n";
-    out << "    std::vector<std::string> refs;\n";
-    out << "    if (encoded.empty()) return refs;\n";
-    out << "    const std::vector<std::string> parsed = SplitEscaped(encoded, ';');\n";
-    out << "    refs.reserve(parsed.size());\n";
-    out << "    for (const std::string& item : parsed) {\n";
-    out << "        std::string trimmed = Trim(item);\n";
-    out << "        if (!trimmed.empty()) refs.push_back(trimmed);\n";
-    out << "    }\n";
-    out << "    return refs;\n";
-    out << "}\n\n";
+        out << "inline std::vector<std::string> DeserializeObjectRefs(const std::string& encoded) {\n";
+        out << "    std::vector<std::string> refs;\n";
+        out << "    if (encoded.empty()) return refs;\n";
+        out << "    const std::vector<std::string> parsed = SplitEscaped(encoded, ';');\n";
+        out << "    refs.reserve(parsed.size());\n";
+        out << "    for (const std::string& item : parsed) {\n";
+        out << "        std::string trimmed = Trim(item);\n";
+        out << "        if (!trimmed.empty()) refs.push_back(trimmed);\n";
+        out << "    }\n";
+        out << "    return refs;\n";
+        out << "}\n\n";
 
-    out << "inline std::string SerializeObjectRefs(const std::vector<std::string>& refs) {\n";
-    out << "    std::vector<std::string> cleaned;\n";
-    out << "    cleaned.reserve(refs.size());\n";
-    out << "    for (const std::string& ref : refs) {\n";
-    out << "        std::string trimmed = Trim(ref);\n";
-    out << "        if (!trimmed.empty()) cleaned.push_back(trimmed);\n";
-    out << "    }\n";
-    out << "    return JoinEscaped(cleaned, ';');\n";
-    out << "}\n\n";
+        out << "inline std::string SerializeObjectRefs(const std::vector<std::string>& refs) {\n";
+        out << "    std::vector<std::string> cleaned;\n";
+        out << "    cleaned.reserve(refs.size());\n";
+        out << "    for (const std::string& ref : refs) {\n";
+        out << "        std::string trimmed = Trim(ref);\n";
+        out << "        if (!trimmed.empty()) cleaned.push_back(trimmed);\n";
+        out << "    }\n";
+        out << "    return JoinEscaped(cleaned, ';');\n";
+        out << "}\n\n";
 
-    out << "inline SceneObject* ResolveSceneObjectRef(ScriptContext& ctx, const std::string& objectRef) {\n";
-    out << "    std::string trimmed = Trim(objectRef);\n";
-    out << "    if (trimmed.empty()) return nullptr;\n";
-    out << "    if (SceneObject* resolved = ctx.ResolveObjectRef(trimmed)) {\n";
-    out << "        return resolved;\n";
-    out << "    }\n";
-    out << "    if (IsAllDigits(trimmed)) {\n";
-    out << "        return ctx.FindObjectById(std::atoi(trimmed.c_str()));\n";
-    out << "    }\n";
-    out << "    return ctx.FindObjectByName(trimmed);\n";
-    out << "}\n\n";
+        out << "inline SceneObject* ResolveSceneObjectRef(ScriptContext& ctx, const std::string& objectRef) {\n";
+        out << "    std::string trimmed = Trim(objectRef);\n";
+        out << "    if (trimmed.empty()) return nullptr;\n";
+        out << "    if (SceneObject* resolved = ctx.ResolveObjectRef(trimmed)) {\n";
+        out << "        return resolved;\n";
+        out << "    }\n";
+        out << "    if (IsAllDigits(trimmed)) {\n";
+        out << "        return ctx.FindObjectById(std::atoi(trimmed.c_str()));\n";
+        out << "    }\n";
+        out << "    return ctx.FindObjectByName(trimmed);\n";
+        out << "}\n\n";
 
-    out << "inline std::vector<SceneObject*> ResolveObjectList(ScriptContext& ctx, const std::string& encodedRefs) {\n";
-    out << "    std::vector<SceneObject*> resolved;\n";
-    out << "    const std::vector<std::string> refs = DeserializeObjectRefs(encodedRefs);\n";
-    out << "    resolved.reserve(refs.size());\n";
-    out << "    for (const std::string& ref : refs) {\n";
-    out << "        resolved.push_back(ResolveSceneObjectRef(ctx, ref));\n";
-    out << "    }\n";
-    out << "    return resolved;\n";
-    out << "}\n\n";
+        out << "inline std::vector<SceneObject*> ResolveObjectList(ScriptContext& ctx, const std::string& encodedRefs) {\n";
+        out << "    std::vector<SceneObject*> resolved;\n";
+        out << "    const std::vector<std::string> refs = DeserializeObjectRefs(encodedRefs);\n";
+        out << "    resolved.reserve(refs.size());\n";
+        out << "    for (const std::string& ref : refs) {\n";
+        out << "        resolved.push_back(ResolveSceneObjectRef(ctx, ref));\n";
+        out << "    }\n";
+        out << "    return resolved;\n";
+        out << "}\n\n";
 
-    out << "inline std::vector<SceneObject*> ResolveObjectList(ScriptContext& ctx,\n";
-    out << "                                              const std::vector<std::string>& refs) {\n";
-    out << "    std::vector<SceneObject*> resolved;\n";
-    out << "    resolved.reserve(refs.size());\n";
-    out << "    for (const std::string& ref : refs) {\n";
-    out << "        resolved.push_back(ResolveSceneObjectRef(ctx, ref));\n";
-    out << "    }\n";
-    out << "    return resolved;\n";
-    out << "}\n\n";
+        out << "inline std::vector<SceneObject*> ResolveObjectList(ScriptContext& ctx,\n";
+        out << "                                              const std::vector<std::string>& refs) {\n";
+        out << "    std::vector<SceneObject*> resolved;\n";
+        out << "    resolved.reserve(refs.size());\n";
+        out << "    for (const std::string& ref : refs) {\n";
+        out << "        resolved.push_back(ResolveSceneObjectRef(ctx, ref));\n";
+        out << "    }\n";
+        out << "    return resolved;\n";
+        out << "}\n\n";
+    }
 
     if (needsDialogueLinesSupport) {
         out << "inline bool DrawDialogueLinesEditor(ScriptContext& ctx,\n";
@@ -3187,100 +3300,96 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "}\n\n";
     }
 
-    out << "inline void SetResolvedObjectEnabled(ScriptContext& ctx, SceneObject* obj, bool enabled) {\n";
-    out << "    if (!obj) return;\n";
-    out << "    bool changed = false;\n";
-    out << "    if (obj->enabled != enabled) {\n";
-    out << "        obj->enabled = enabled;\n";
-    out << "        changed = true;\n";
-    out << "    }\n";
-    out << "    if (obj->hasCollider && obj->collider.enabled != enabled) {\n";
-    out << "        obj->collider.enabled = enabled;\n";
-    out << "        changed = true;\n";
-    out << "    }\n";
-    out << "    if (obj->hasCollider2D && obj->collider2D.enabled != enabled) {\n";
-    out << "        obj->collider2D.enabled = enabled;\n";
-    out << "        changed = true;\n";
-    out << "    }\n";
-    out << "    if (changed) {\n";
-    out << "        ctx.MarkDirty();\n";
-    out << "    }\n";
-    out << "}\n\n";
+    if (needsObjectRefSupport) {
+        out << "inline void SetResolvedObjectEnabled(ScriptContext& ctx, SceneObject* obj, bool enabled) {\n";
+        out << "    if (!obj) return;\n";
+        out << "    bool changed = false;\n";
+        out << "    if (obj->enabled != enabled) {\n";
+        out << "        obj->enabled = enabled;\n";
+        out << "        changed = true;\n";
+        out << "    }\n";
+        out << "    if (obj->hasCollider && obj->collider.enabled != enabled) {\n";
+        out << "        obj->collider.enabled = enabled;\n";
+        out << "        changed = true;\n";
+        out << "    }\n";
+        out << "    if (obj->hasCollider2D && obj->collider2D.enabled != enabled) {\n";
+        out << "        obj->collider2D.enabled = enabled;\n";
+        out << "        changed = true;\n";
+        out << "    }\n";
+        out << "    if (changed) {\n";
+        out << "        ctx.MarkDirty();\n";
+        out << "    }\n";
+        out << "}\n\n";
 
-    out << "inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label,\n";
-    out << "                                   std::vector<std::string>& refs) {\n";
-    out << "    bool changed = false;\n";
-    out << "    if (!ImGui::TreeNode(label)) {\n";
-    out << "        return false;\n";
-    out << "    }\n";
-    out << "    for (size_t i = 0; i < refs.size(); ++i) {\n";
-    out << "        ImGui::PushID(static_cast<int>(i));\n";
-    out << "        std::vector<char> buffer(256, '\\0');\n";
-    out << "        std::snprintf(buffer.data(), buffer.size(), \"%s\", refs[i].c_str());\n";
-    out << "        ImGui::SetNextItemWidth(-80.0f);\n";
-    out << "        if (ImGui::InputText(\"##ref\", buffer.data(), buffer.size())) {\n";
-    out << "            refs[i] = buffer.data();\n";
-    out << "            changed = true;\n";
-    out << "        }\n";
-    out << "        ImGui::SameLine();\n";
-    out << "        if (ImGui::SmallButton(\"X\")) {\n";
-    out << "            refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(i));\n";
-    out << "            changed = true;\n";
-    out << "            ImGui::PopID();\n";
-    out << "            --i;\n";
-    out << "            continue;\n";
-    out << "        }\n";
-    out << "        if (SceneObject* resolved = ResolveSceneObjectRef(ctx, refs[i])) {\n";
-    out << "            ImGui::TextDisabled(\"%s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
-    out << "        }\n";
-    out << "        if (ImGui::BeginDragDropTarget()) {\n";
-    out << "            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
-    out << "                if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
-    out << "                    int droppedId = *static_cast<const int*>(payload->Data);\n";
-    out << "                    refs[i] = std::string(\"Object.ID-\") + std::to_string(droppedId);\n";
-    out << "                    changed = true;\n";
-    out << "                }\n";
-    out << "            }\n";
-    out << "            ImGui::EndDragDropTarget();\n";
-    out << "        }\n";
-    out << "        ImGui::PopID();\n";
-    out << "    }\n";
-    out << "    if (ImGui::Button(\"Add Reference\")) {\n";
-    out << "        refs.emplace_back();\n";
-    out << "        changed = true;\n";
-    out << "    }\n";
-    out << "    ImGui::SameLine();\n";
-    out << "    if (ImGui::Button(\"Add Selected\")) {\n";
-    out << "        int selectedId = ctx.GetSelectedObjectId();\n";
-    out << "        if (selectedId >= 0) {\n";
-    out << "            refs.push_back(std::string(\"Object.ID-\") + std::to_string(selectedId));\n";
-    out << "            changed = true;\n";
-    out << "        }\n";
-    out << "    }\n";
-    out << "    if (ImGui::BeginDragDropTarget()) {\n";
-    out << "        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
-    out << "            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
-    out << "                int droppedId = *static_cast<const int*>(payload->Data);\n";
-    out << "                refs.push_back(std::string(\"Object.ID-\") + std::to_string(droppedId));\n";
-    out << "                changed = true;\n";
-    out << "            }\n";
-    out << "        }\n";
-    out << "        ImGui::EndDragDropTarget();\n";
-    out << "    }\n";
-    out << "    ImGui::TreePop();\n";
-    out << "    return changed;\n";
-    out << "}\n\n";
+        out << "inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label,\n";
+        out << "                                   std::vector<std::string>& refs) {\n";
+        out << "    bool changed = false;\n";
+        out << "    if (!ImGui::TreeNode(label)) {\n";
+        out << "        return false;\n";
+        out << "    }\n";
+        out << "    for (size_t i = 0; i < refs.size(); ++i) {\n";
+        out << "        ImGui::PushID(static_cast<int>(i));\n";
+        out << "        std::vector<char> buffer(256, '\\0');\n";
+        out << "        std::snprintf(buffer.data(), buffer.size(), \"%s\", refs[i].c_str());\n";
+        out << "        ImGui::SetNextItemWidth(-80.0f);\n";
+        out << "        if (ImGui::InputText(\"##ref\", buffer.data(), buffer.size())) {\n";
+        out << "            refs[i] = buffer.data();\n";
+        out << "            changed = true;\n";
+        out << "        }\n";
+        out << "        ImGui::SameLine();\n";
+        out << "        if (ImGui::SmallButton(\"X\")) {\n";
+        out << "            refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(i));\n";
+        out << "            changed = true;\n";
+        out << "            ImGui::PopID();\n";
+        out << "            --i;\n";
+        out << "            continue;\n";
+        out << "        }\n";
+        out << "        if (SceneObject* resolved = ResolveSceneObjectRef(ctx, refs[i])) {\n";
+        out << "            ImGui::TextDisabled(\"%s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
+        out << "        }\n";
+        out << "        if (ImGui::BeginDragDropTarget()) {\n";
+        out << "            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        out << "                if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
+        out << "                    int droppedId = *static_cast<const int*>(payload->Data);\n";
+        out << "                    refs[i] = std::string(\"Object.ID-\") + std::to_string(droppedId);\n";
+        out << "                    changed = true;\n";
+        out << "                }\n";
+        out << "            }\n";
+        out << "            ImGui::EndDragDropTarget();\n";
+        out << "        }\n";
+        out << "        ImGui::PopID();\n";
+        out << "    }\n";
+        out << "    if (ImGui::Button(\"Add Reference\")) {\n";
+        out << "        refs.emplace_back();\n";
+        out << "        changed = true;\n";
+        out << "    }\n";
+        out << "    ImGui::SameLine();\n";
+        out << "    if (ImGui::Button(\"Add Selected\")) {\n";
+        out << "        int selectedId = ctx.GetSelectedObjectId();\n";
+        out << "        if (selectedId >= 0) {\n";
+        out << "            refs.push_back(std::string(\"Object.ID-\") + std::to_string(selectedId));\n";
+        out << "            changed = true;\n";
+        out << "        }\n";
+        out << "    }\n";
+        out << "    if (ImGui::BeginDragDropTarget()) {\n";
+        out << "        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        out << "            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
+        out << "                int droppedId = *static_cast<const int*>(payload->Data);\n";
+        out << "                refs.push_back(std::string(\"Object.ID-\") + std::to_string(droppedId));\n";
+        out << "                changed = true;\n";
+        out << "            }\n";
+        out << "        }\n";
+        out << "        ImGui::EndDragDropTarget();\n";
+        out << "    }\n";
+        out << "    ImGui::TreePop();\n";
+        out << "    return changed;\n";
+        out << "}\n\n";
+    }
 
     // SubScriptSerializer specializations must be defined in ::ModuCPP::detail at
     // global (non-nested) scope.  If we are currently inside the transpiled
     // namespace we have to close it first, then reopen it afterwards for the
     // remaining BindConfig / helper code.
-    const bool hasReachableSubScripts = std::any_of(
-        spec.subScripts.begin(), spec.subScripts.end(),
-        [&](const SubScriptSpec& ss) {
-            return reachableSubScriptTypes.count(
-                       toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(ss.name)))) > 0;
-        });
     if (hasReachableSubScripts) {
         out << "} // namespace " << supportNs << "\n\n";
     }
@@ -3486,20 +3595,22 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "\n";
     }
 
-    if (hasInspectorBlock) {
+        if (hasInspectorBlock) {
         out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnInspector(ScriptContext& ctx) {\n";
         out << "    MODU_SCRIPT(ctx);\n";
         if (!spec.fields.empty()) {
             out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
             out << "    " << supportNs << "::BindConfig(ctx, config);\n";
-            out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
             for (const FieldSpec& field : spec.fields) {
                 if (!fieldPersists(field)) continue;
                 out << "    auto& " << field.name << " = config." << field.name << ";\n";
             }
-            for (const FieldSpec& field : spec.fields) {
-                if (fieldPersists(field)) continue;
-                out << "    auto& " << field.name << " = state." << field.name << ";\n";
+            if (hasTransientFields) {
+                out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
+                for (const FieldSpec& field : spec.fields) {
+                    if (fieldPersists(field)) continue;
+                    out << "    auto& " << field.name << " = state." << field.name << ";\n";
+                }
             }
         }
         out << "    bool changed = false;\n";
@@ -4134,11 +4245,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 if (!spec.fields.empty()) {
                     out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
                     out << "    " << supportNs << "::BindConfig(ctx, config);\n";
-                    out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
                     for (const FieldSpec& field : spec.fields) {
-                        if (fieldPersists(field)) {
-                            out << "    auto& " << field.name << " = config." << field.name << ";\n";
-                        } else {
+                        if (!fieldPersists(field)) continue;
+                        out << "    auto& " << field.name << " = config." << field.name << ";\n";
+                    }
+                    if (hasTransientFields) {
+                        out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
+                        for (const FieldSpec& field : spec.fields) {
+                            if (fieldPersists(field)) continue;
                             out << "    auto& " << field.name << " = state." << field.name << ";\n";
                         }
                     }
@@ -4159,11 +4273,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             if (!spec.fields.empty()) {
                 out << "    auto& config = ::ModuCPP::Config<" << supportNs << "::" << configType << ">();\n";
                 out << "    " << supportNs << "::BindConfig(ctx, config);\n";
-                out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
                 for (const FieldSpec& field : spec.fields) {
-                    if (fieldPersists(field)) {
-                        out << "    auto& " << field.name << " = config." << field.name << ";\n";
-                    } else {
+                    if (!fieldPersists(field)) continue;
+                    out << "    auto& " << field.name << " = config." << field.name << ";\n";
+                }
+                if (hasTransientFields) {
+                    out << "    auto& state = ::ModuCPP::State<" << supportNs << "::" << stateType << ">();\n";
+                    for (const FieldSpec& field : spec.fields) {
+                        if (fieldPersists(field)) continue;
                         out << "    auto& " << field.name << " = state." << field.name << ";\n";
                     }
                 }

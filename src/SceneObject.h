@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Common.h"
-#include "Lighting2D.h"
+#include "ScriptSdkCommon.h"
+#include "Lighting2DTypes.h"
 #include <unordered_set>
 
 enum class ObjectType {

@@ -67,6 +67,17 @@ void MeshBuilder::recomputeNormals() {
     dirty = true;
 }
 
+void MeshBuilder::flipFaces() {
+    if (!hasMesh || mesh.faces.empty()) return;
+
+    for (glm::u32vec3& face : mesh.faces) {
+        std::swap(face.y, face.z);
+    }
+
+    recomputeNormals();
+    dirty = true;
+}
+
 bool MeshBuilder::addFace(const std::vector<uint32_t>& indices, std::string& error) {
     if (indices.size() < 3) {
         error = "Need at least 3 vertices to form a face";

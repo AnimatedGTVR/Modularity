@@ -1,4 +1,7 @@
 add ModuCPP;
+add ModuEngine;
+add ModuInput;
+add ModuCPP.Experimental;
 #include "DialoguePortShared.h"
 using namespace DialoguePort;
 
@@ -7,7 +10,7 @@ public enum InteractableType {Dialogue, ToggleObjects}
 SubScript InteractionOption
 {
     public string optionName = "New Option";
-    public InteractableType interactionType = InteractableType.Dialogue;
+    public int interactionType = 0;
     public string dialogueSystemRef;
     public DialoguePort.DialogueLine[] dialogueLines;
     public string[] dialogueItemsToEnableOnEnd;
@@ -176,7 +179,7 @@ public class InteractableObject : ModuNode
 
     bool executeOption(InteractionOption option)
     {
-        if (option.interactionType == InteractableType.Dialogue) {
+        if (option.interactionType == 0) {
             return executeDialogueOption(option);
         }
 

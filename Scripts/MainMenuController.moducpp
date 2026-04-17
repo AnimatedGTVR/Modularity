@@ -1,4 +1,6 @@
 add ModuCPP;
+add ModuInput;
+add ModuCPP.Experimental;
 #include "DialoguePortShared.h"
 
 using namespace DialoguePort;
