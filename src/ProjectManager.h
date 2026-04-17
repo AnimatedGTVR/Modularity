@@ -171,23 +171,56 @@ public:
 
 class SceneSerializer {
 public:
+    enum class FileFormat {
+        LegacyFlat = 0,
+        ModularNodes = 1
+    };
+
+    enum class SavePreference {
+        PreferModular = 0,
+        ForceLegacyFlat = 1
+    };
+
+    struct Metadata {
+        int version = 0;
+        FileFormat fileFormat = FileFormat::ModularNodes;
+        bool loadedFromLegacyLayout = false;
+        bool upgradedToModularLayout = false;
+        fs::path sourcePath;
+    };
+
+    struct SaveOptions {
+        SavePreference preference = SavePreference::PreferModular;
+        bool moveLegacySourceToCompatibility = false;
+        Metadata* metadata = nullptr;
+    };
+
     static bool saveScene(const fs::path& filePath,
                          const std::vector<SceneObject>& objects,
                          int nextId,
                          float timeOfDay,
                          const SkyboxSettings& skyboxSettings = SkyboxSettings{});
 
+    static bool saveScene(const fs::path& filePath,
+                         const std::vector<SceneObject>& objects,
+                         int nextId,
+                         float timeOfDay,
+                         const SkyboxSettings& skyboxSettings,
+                         const SaveOptions& options);
+
     static bool loadScene(const fs::path& filePath,
                          std::vector<SceneObject>& objects,
                          int& nextId,
                          int& outVersion,
                          float* outTimeOfDay = nullptr,
-                         SkyboxSettings* outSkyboxSettings = nullptr);
+                         SkyboxSettings* outSkyboxSettings = nullptr,
+                         Metadata* outMetadata = nullptr);
 
     static bool loadSceneDeferred(const fs::path& filePath,
                          std::vector<SceneObject>& objects,
                          int& nextId,
                          int& outVersion,
                          float* outTimeOfDay = nullptr,
-                         SkyboxSettings* outSkyboxSettings = nullptr);
+                         SkyboxSettings* outSkyboxSettings = nullptr,
+                         Metadata* outMetadata = nullptr);
 };

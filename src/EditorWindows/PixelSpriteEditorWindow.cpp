@@ -1232,7 +1232,7 @@ void Engine::renderPixelSpriteEditorWindow() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.10f, 0.16f, 0.96f));
     if (ImGui::BeginChild("PixelSpriteTopBar", ImVec2(0.0f, 84.0f), true)) {
         auto playToolbarTick = [&]() {
-            audio.playPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false);
+            playEditorFeedbackPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
         };
         const float sectionSpacing = 12.0f;
         const float totalWidth = ImGui::GetContentRegionAvail().x;

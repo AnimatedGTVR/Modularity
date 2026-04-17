@@ -541,6 +541,7 @@ struct UIElementComponent {
     UIButtonStyle buttonStyle = UIButtonStyle::ImGui;
     std::string stylePreset = "Default";
     float textScale = 1.0f;
+    std::string textFont;
     bool textAutoWrap = true;
     UITextHAlign textHAlign = UITextHAlign::Left;
     UITextVAlign textVAlign = UITextVAlign::Top;

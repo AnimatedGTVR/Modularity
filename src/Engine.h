@@ -200,6 +200,28 @@ private:
     ImVec2 launcherTransitionFocus = ImVec2(0.0f, 0.0f);
     std::string launcherLoadingPreviewPath;
     bool termsPopupOpened = false;
+    enum class LegacySceneSaveChoice {
+        Ask = 0,
+        KeepLegacy = 1,
+        SaveModular = 2
+    };
+    enum class PendingScenePostAction {
+        None = 0,
+        LoadScene = 1,
+        CreateNewScene = 2,
+        CloseProject = 3
+    };
+    struct PendingSceneSaveRequest {
+        bool active = false;
+        std::string destinationSceneName;
+        PendingScenePostAction postAction = PendingScenePostAction::None;
+        std::string postActionPayload;
+    };
+    SceneSerializer::Metadata currentSceneSerialization;
+    LegacySceneSaveChoice legacySceneSaveChoice = LegacySceneSaveChoice::SaveModular;
+    PendingSceneSaveRequest pendingSceneSaveRequest;
+    bool showLegacySceneLayoutDialog = false;
+    bool legacySceneLayoutDialogOpened = false;
     bool showNewSceneDialog = false;
     bool showSaveSceneAsDialog = false;
     char newSceneName[128] = "";
@@ -331,6 +353,16 @@ private:
     bool audioPreviewAutoPlay = false;
     float audioPreviewVolume = 1.0f;
     float audioPreviewBaseVolume = 1.0f;
+    enum class EditorFeedbackSoundCategory {
+        Click = 0,
+        Error = 1,
+        Other = 2,
+        Boot = 3
+    };
+    bool feedbackSoundsEnabled = true;
+    bool feedbackClickSoundsEnabled = true;
+    bool feedbackErrorSoundsEnabled = true;
+    bool feedbackOtherSoundsEnabled = true;
     enum class AudioPreviewContext {
         None = 0,
         AssetBrowser,
@@ -712,6 +744,7 @@ private:
     size_t sceneLoadAssetsDone = 0;
     int sceneLoadNextId = 0;
     int sceneLoadVersion = 9;
+    SceneSerializer::Metadata sceneLoadMetadata;
     float sceneLoadTimeOfDay = -1.0f;
     float sceneTimeOfDay = 0.5f;
     SkyboxSettings sceneLoadSkyboxSettings;
@@ -725,10 +758,24 @@ private:
     struct UIStylePreset {
         std::string name;
         ImGuiStyle style;
+        std::string fontAsset = "builtin:imgui-default";
         bool builtin = false;
     };
+    struct UIFontCatalogEntry {
+        std::string id;
+        std::string label;
+        fs::path path;
+        bool builtin = false;
+        bool isDefault = false;
+    };
+    struct UIFontContextState {
+        std::unordered_map<std::string, ImFont*> loadedFonts;
+    };
     std::vector<UIStylePreset> uiStylePresets;
+    std::vector<UIFontCatalogEntry> uiFontCatalog;
+    std::unordered_map<ImGuiContext*, UIFontContextState> uiFontContexts;
     int uiStylePresetIndex = 0;
+    std::string uiEditorFontAsset = "builtin:imgui-default";
     struct ScriptEditorState {
         fs::path filePath;
         std::string buffer;
@@ -792,6 +839,14 @@ private:
     void queueScriptCompile(const fs::path& scriptPath);
     void queueScriptCompileBatch(const std::vector<fs::path>& scriptPaths);
     void playCompileStartSound();
+    bool isEditorFeedbackSoundEnabled(EditorFeedbackSoundCategory category) const;
+    bool playEditorFeedbackPreview(const std::string& path,
+                                   float volume,
+                                   bool loop,
+                                   EditorFeedbackSoundCategory category);
+    bool playEditorFeedbackOneShot(const std::string& path,
+                                   float volume,
+                                   EditorFeedbackSoundCategory category);
     
     void importOBJToScene(const std::string& filepath, const std::string& objectName);
     void importModelToScene(const std::string& filepath, const std::string& objectName);  // Assimp import
@@ -809,6 +864,7 @@ private:
     void renderLauncher();
     bool requiresTermsOfServiceAcceptance() const;
     void renderTermsOfServiceModal();
+    void renderLegacySceneLayoutModal();
     void renderNewProjectDialog();
     void renderOpenProjectDialog();
     void renderMainMenuBar();
@@ -880,7 +936,16 @@ private:
     int findUIStylePreset(const std::string& name) const;
     const UIStylePreset* getUIStylePreset(const std::string& name) const;
     void registerUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace);
+    void upsertUIStylePreset(const std::string& name, const ImGuiStyle& style, const std::string& fontAsset, bool replace);
     bool applyUIStylePresetByName(const std::string& name);
+    bool saveCurrentUIStyleToPreset(const std::string& name, bool replaceExisting);
+    void refreshUIFontCatalog();
+    int findUIFontCatalogIndex(const std::string& id) const;
+    fs::path resolveUIFontPath(const std::string& id) const;
+    void preloadUIFontCatalogForContext(ImGuiContext* context);
+    ImFont* getUIFontForContext(const std::string& fontAsset, ImGuiContext* context);
+    bool applyEditorUIFontById(const std::string& fontAsset);
+    std::string getDefaultEditorUIFontAsset() const;
     void applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout);
     void buildWorkspaceLayout(WorkspaceMode mode);
     void updateDockDrawerInteractions();
@@ -945,7 +1010,7 @@ private:
     // Project/scene management
     void createNewProject(const char* name, const char* location);
     void loadRecentScenes();
-    void saveCurrentScene();
+    bool saveCurrentScene(bool allowLegacyUpgradePrompt = true);
     void saveProjectPreview();
     fs::path getProjectPreviewPath(const fs::path& projectPathOrFile) const;
     void loadScene(const std::string& sceneName);
@@ -954,6 +1019,19 @@ private:
     float getSceneTimeOfDay();
     void applySceneSkyboxSettings(const SkyboxSettings& settings);
     SkyboxSettings getSceneSkyboxSettings() const;
+    bool requestSceneSave(const std::string& destinationSceneName,
+                          PendingScenePostAction postAction,
+                          const std::string& postActionPayload,
+                          bool allowLegacyUpgradePrompt = true);
+    bool executeSceneSave(const std::string& destinationSceneName,
+                          SceneSerializer::SavePreference preference,
+                          bool moveLegacySourceToCompatibility);
+    void continuePendingScenePostAction();
+    void resetPendingSceneSaveRequest();
+    void initializeNewSceneSerializationState(const fs::path& sourcePath = {});
+    void performLoadScene(const std::string& sceneName);
+    void performCreateNewScene(const std::string& sceneName);
+    void performCloseProject();
     
     // Scene object management
     void addObject(ObjectType type, const std::string& baseName);
@@ -1072,6 +1150,8 @@ public:
     void syncLocalTransform(SceneObject& obj);
     const std::vector<SceneObject>& getSceneObjects() const { return sceneObjects; }
     const std::vector<UIStylePreset>& getUIStylePresets() const { return uiStylePresets; }
+    const std::vector<UIFontCatalogEntry>& getUIFontCatalog() const { return uiFontCatalog; }
+    const std::string& getEditorUIFontAsset() const { return uiEditorFontAsset; }
     void registerUIStylePresetFromScript(const std::string& name, const ImGuiStyle& style, bool replace = false);
     void setFrameRateCapFromScript(bool enabled, float cap);
 };

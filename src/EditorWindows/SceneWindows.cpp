@@ -1360,9 +1360,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                         obj.scripts.push_back(sc);
                         markRuntimeScriptBindingsDirty();
                         projectManager.currentProject.hasUnsavedChanges = true;
-                        if (audio.isReady()) {
-                            audio.playPreview("Resources/Sounds/Drag Script Assign Check Successful.mp3", 0.95f, false);
-                        }
+                        playEditorFeedbackPreview("Resources/Sounds/Drag Script Assign Check Successful.mp3", 0.95f, false, EditorFeedbackSoundCategory::Other);
                         const std::string targetName = obj.name.empty() ? "Object" : obj.name;
                         showEditorToast("Script assigned to " + targetName + " Successful.",
                                         ConsoleMessageType::Success,
@@ -2842,6 +2840,7 @@ void Engine::renderInspectorPanel() {
             ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.15f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
             bool menuClicked = false;
             if (iconActionsMenu != static_cast<ImTextureID>(0)) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
@@ -2850,6 +2849,7 @@ void Engine::renderInspectorPanel() {
             } else {
                 menuClicked = ImGui::Button("...", ImVec2(controlSize, controlSize));
             }
+            ImGui::PopStyleVar();
             ImGui::PopStyleColor(3);
             if (menuClicked) ImGui::OpenPopup("ComponentMenu");
             if (ImGui::BeginPopup("ComponentMenu")) {
@@ -2883,20 +2883,6 @@ void Engine::renderInspectorPanel() {
                 ImVec2(iconX + iconSize, iconY + iconSize),
                 ImVec2(0, 0), ImVec2(1, 1),
                 IM_COL32(255, 255, 255, 210));
-        }
-
-        // Draw a colored left-border accent stripe on the header
-        {
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            ImVec4 ac = ImGui::GetStyleColorVec4(ImGuiCol_Header);
-            ac.x = std::min(1.0f, ac.x + 0.35f);
-            ac.y = std::min(1.0f, ac.y + 0.35f);
-            ac.z = std::min(1.0f, ac.z + 0.35f);
-            ac.w = 1.0f;
-            dl->AddRectFilled(
-                ImVec2(headerMin.x, headerMin.y),
-                ImVec2(headerMin.x + 3.0f, headerMax.y),
-                ImGui::ColorConvertFloat4ToU32(ac));
         }
 
         ImGui::SetCursorScreenPos(cursorAfter);
@@ -3687,6 +3673,33 @@ void Engine::renderInspectorPanel() {
                 if (ImGui::DragFloat("Text Size", &obj.ui.textScale, 0.05f, 0.1f, 10.0f, "%.2f")) {
                     obj.ui.textScale = std::max(0.1f, obj.ui.textScale);
                     changed = true;
+                }
+                const auto& fontCatalog = getUIFontCatalog();
+                std::string currentFontLabel = "Use Editor Style Font";
+                const int currentFontIndex = findUIFontCatalogIndex(obj.ui.textFont);
+                if (!obj.ui.textFont.empty()) {
+                    if (currentFontIndex >= 0) {
+                        currentFontLabel = fontCatalog[static_cast<size_t>(currentFontIndex)].label;
+                    } else {
+                        currentFontLabel = obj.ui.textFont;
+                    }
+                }
+                if (ImGui::BeginCombo("Text Font", currentFontLabel.c_str())) {
+                    const bool useEditorFont = obj.ui.textFont.empty();
+                    if (ImGui::Selectable("Use Editor Style Font", useEditorFont)) {
+                        obj.ui.textFont.clear();
+                        changed = true;
+                    }
+                    if (useEditorFont) ImGui::SetItemDefaultFocus();
+                    for (size_t i = 0; i < fontCatalog.size(); ++i) {
+                        const bool selected = obj.ui.textFont == fontCatalog[i].id;
+                        if (ImGui::Selectable(fontCatalog[i].label.c_str(), selected)) {
+                            obj.ui.textFont = fontCatalog[i].id;
+                            changed = true;
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
                 }
                 if (ImGui::Checkbox("Auto Wrap", &obj.ui.textAutoWrap)) {
                     changed = true;
@@ -8628,7 +8641,7 @@ void Engine::renderConsolePanel() {
     }
 
     if (shouldScroll) {
-        ImGui::SetScrollHereY(1.0f);
+        ImGui::SetScrollY(ImGui::GetScrollMaxY());
     }
 
     ImGui::EndChild();
@@ -9045,7 +9058,73 @@ void Engine::renderMeshBuilderPanel() {
 #pragma endregion
 
 #pragma region Dialogs
+void Engine::renderLegacySceneLayoutModal() {
+    if (!showLegacySceneLayoutDialog) {
+        legacySceneLayoutDialogOpened = false;
+        return;
+    }
+
+    if (!legacySceneLayoutDialogOpened) {
+        ImGui::OpenPopup("Old Scene Layout Detected");
+        legacySceneLayoutDialogOpened = true;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 220.0f), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Old Scene Layout Detected", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+        ImGui::TextUnformatted("Hey! This is an old scene with an old layout.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Would you like to move this current old scene into a compatibility folder and convert this scene to the new layout?");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float buttonWidth = 150.0f;
+        if (ImGui::Button("Convert Scene", ImVec2(buttonWidth, 0.0f))) {
+            legacySceneSaveChoice = LegacySceneSaveChoice::SaveModular;
+            if (executeSceneSave(pendingSceneSaveRequest.destinationSceneName,
+                                 SceneSerializer::SavePreference::PreferModular,
+                                 true)) {
+                showLegacySceneLayoutDialog = false;
+                legacySceneLayoutDialogOpened = false;
+                ImGui::CloseCurrentPopup();
+                continuePendingScenePostAction();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Keep Old Layout For Now", ImVec2(210.0f, 0.0f))) {
+            legacySceneSaveChoice = LegacySceneSaveChoice::KeepLegacy;
+            if (executeSceneSave(pendingSceneSaveRequest.destinationSceneName,
+                                 SceneSerializer::SavePreference::ForceLegacyFlat,
+                                 false)) {
+                showLegacySceneLayoutDialog = false;
+                legacySceneLayoutDialogOpened = false;
+                ImGui::CloseCurrentPopup();
+                continuePendingScenePostAction();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) {
+            showLegacySceneLayoutDialog = false;
+            legacySceneLayoutDialogOpened = false;
+            resetPendingSceneSaveRequest();
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 void Engine::renderDialogs() {
+    renderLegacySceneLayoutModal();
+
     if (showNewSceneDialog) {
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -9322,8 +9401,10 @@ void Engine::renderDialogs() {
             ImGui::SameLine();
             if (ImGui::Button("Save", ImVec2(buttonWidth, 0))) {
                 if (strlen(saveSceneAsName) > 0) {
-                    projectManager.currentProject.currentSceneName = saveSceneAsName;
-                    saveCurrentScene();
+                    requestSceneSave(saveSceneAsName,
+                                     PendingScenePostAction::None,
+                                     "",
+                                     true);
                     showSaveSceneAsDialog = false;
                     memset(saveSceneAsName, 0, sizeof(saveSceneAsName));
                 }

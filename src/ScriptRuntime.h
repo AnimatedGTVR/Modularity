@@ -20,7 +20,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 3
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 4 // Forbid me that i have to REMIND myself to change this one value so i don't keep asking AI about Compilation issues. :sob:
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;

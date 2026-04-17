@@ -3741,10 +3741,16 @@ void Engine::renderGameViewportWindow() {
 
       ImGuiStyle savedStyle = ImGui::GetStyle();
       bool styleApplied = false;
+      bool fontApplied = false;
       if (!obj.ui.stylePreset.empty()) {
         if (const auto *preset = getUIStylePreset(obj.ui.stylePreset)) {
           ImGui::GetStyle() = preset->style;
           styleApplied = true;
+          if (ImFont *presetFont =
+                  getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
+            ImGui::PushFont(presetFont, preset->style.FontSizeBase);
+            fontApplied = true;
+          }
         }
       }
 
@@ -3765,6 +3771,8 @@ void Engine::renderGameViewportWindow() {
                         IM_COL32(32, 190, 230, 175), 5.0f, 0, 1.0f);
           }
         }
+        if (fontApplied)
+          ImGui::PopFont();
         if (styleApplied)
           ImGui::GetStyle() = savedStyle;
         continue;
@@ -3783,12 +3791,16 @@ void Engine::renderGameViewportWindow() {
           maskMax.x = std::min(maskMax.x, overlayPos.x + overlaySize.x);
           maskMax.y = std::min(maskMax.y, overlayPos.y + overlaySize.y);
           if (maskMax.x <= maskMin.x || maskMax.y <= maskMin.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
           }
           if (drawMax.x <= maskMin.x || drawMin.x >= maskMax.x ||
               drawMax.y <= maskMin.y || drawMin.y >= maskMax.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -3812,6 +3824,8 @@ void Engine::renderGameViewportWindow() {
             ImGui::PopClipRect();
           }
           ImGui::PopID();
+          if (fontApplied)
+            ImGui::PopFont();
           if (styleApplied)
             ImGui::GetStyle() = savedStyle;
           continue;
@@ -4143,11 +4157,18 @@ void Engine::renderGameViewportWindow() {
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
+        ImFont *textFont =
+            obj.ui.textFont.empty()
+                ? ImGui::GetFont()
+                : getUIFontForContext(obj.ui.textFont, ImGui::GetCurrentContext());
+        if (!textFont) {
+          textFont = ImGui::GetFont();
+        }
         float scale = std::max(0.1f, obj.ui.textScale);
         float fontSize = ComputeViewportTextFontSize(
             ImGui::GetFontSize(), scale, useWorldUi, uiWorldCamera.zoom);
         ImGui::PushClipRect(drawMin, drawMax, true);
-        AddUITextWithFilter(dl, obj.material.textureFilter, ImGui::GetFont(),
+        AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
                             obj.ui.textAutoWrap, obj.ui.textHAlign,
@@ -4160,6 +4181,8 @@ void Engine::renderGameViewportWindow() {
         ImGui::PopClipRect();
       }
       ImGui::PopID();
+      if (fontApplied)
+        ImGui::PopFont();
       if (styleApplied)
         ImGui::GetStyle() = savedStyle;
     }
@@ -6065,18 +6088,13 @@ void Engine::renderMainMenuBar() {
       ImGui::Separator();
       if (ImGui::MenuItem("Close Project")) {
         if (projectManager.currentProject.hasUnsavedChanges) {
-          saveCurrentScene();
+          requestSceneSave(projectManager.currentProject.currentSceneName,
+                           PendingScenePostAction::CloseProject,
+                           "",
+                           true);
+        } else {
+          performCloseProject();
         }
-        projectManager.currentProject = Project();
-        sceneObjects.clear();
-        clearSelection();
-        scriptEditorWindows.clear();
-        scriptEditorWindowsDirty = true;
-        resetBuildSettings();
-        showBuildSettings = false;
-        playerMode = false;
-        autoStartRequested = false;
-        showLauncher = true;
       }
       ImGui::Separator();
       if (ImGui::MenuItem("Exit")) {
@@ -6249,6 +6267,21 @@ void Engine::renderMainMenuBar() {
                           uiAnimationMode == UIAnimationMode::Off)) {
         uiAnimationMode = UIAnimationMode::Off;
         saveEditorUserSettings();
+      }
+      ImGui::Separator();
+      if (ImGui::BeginMenu("Feedback Sounds")) {
+        bool feedbackSettingsChanged = false;
+        feedbackSettingsChanged |= ImGui::MenuItem("Enable All Feedback Sounds", nullptr, &feedbackSoundsEnabled);
+        ImGui::Separator();
+        feedbackSettingsChanged |= ImGui::MenuItem("Click Sounds", nullptr, &feedbackClickSoundsEnabled);
+        feedbackSettingsChanged |= ImGui::MenuItem("Error Sounds", nullptr, &feedbackErrorSoundsEnabled);
+        feedbackSettingsChanged |= ImGui::MenuItem("Other Feedback Sounds", nullptr, &feedbackOtherSoundsEnabled);
+        ImGui::Separator();
+        ImGui::TextDisabled("Boot intro sound is always enabled.");
+        if (feedbackSettingsChanged) {
+          saveEditorUserSettings();
+        }
+        ImGui::EndMenu();
       }
       ImGui::Separator();
       ImGui::MenuItem("Style Editor", nullptr, &showStyleEditor);
@@ -6461,15 +6494,59 @@ void Engine::renderMainMenuBar() {
 
   if (showStyleEditor) {
     if (ImGui::Begin("Style Editor", &showStyleEditor)) {
-      if (ImGui::Button("Save Colors")) {
+      static char newPresetName[128] = "";
+      const auto &fontCatalog = getUIFontCatalog();
+      std::string currentFontLabel = "ImGui Default";
+      const int currentFontIndex = findUIFontCatalogIndex(uiEditorFontAsset);
+      if (currentFontIndex >= 0) {
+        currentFontLabel = fontCatalog[static_cast<size_t>(currentFontIndex)].label;
+      }
+
+      if (ImGui::BeginCombo("Preset", uiStylePresetName.c_str())) {
+        for (size_t i = 0; i < uiStylePresets.size(); ++i) {
+          const bool selected = (uiStylePresets[i].name == uiStylePresetName);
+          if (ImGui::Selectable(uiStylePresets[i].name.c_str(), selected)) {
+            applyUIStylePresetByName(uiStylePresets[i].name);
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      if (ImGui::BeginCombo("Editor Font", currentFontLabel.c_str())) {
+        for (size_t i = 0; i < fontCatalog.size(); ++i) {
+          const bool selected = (fontCatalog[i].id == uiEditorFontAsset);
+          if (ImGui::Selectable(fontCatalog[i].label.c_str(), selected)) {
+            applyEditorUIFontById(fontCatalog[i].id);
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+
+      if (ImGui::Button("Save Current Preset")) {
+        saveCurrentUIStyleToPreset(uiStylePresetName, true);
+      }
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(180.0f);
+      ImGui::InputTextWithHint("##NewStylePresetName", "New preset name", newPresetName, sizeof(newPresetName));
+      ImGui::SameLine();
+      if (ImGui::Button("Save As New") && newPresetName[0] != '\0') {
+        if (saveCurrentUIStyleToPreset(newPresetName, false)) {
+          std::snprintf(newPresetName, sizeof(newPresetName), "%s", "");
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Save UI Settings")) {
         saveEditorUserSettings();
       }
       ImGui::SameLine();
       if (ImGui::Button("Export Theme + Layout")) {
         exportEditorThemeLayout();
       }
-      ImGui::SameLine();
-      ImGui::TextDisabled("Applies to all presets");
       ImGui::Separator();
       ImGuiStyle &style = ImGui::GetStyle();
       ImGui::ShowStyleEditor(&style);
@@ -8369,10 +8446,16 @@ void Engine::renderViewport() {
 
         ImGuiStyle savedStyle = ImGui::GetStyle();
         bool styleApplied = false;
+        bool fontApplied = false;
         if (!obj.ui.stylePreset.empty()) {
           if (const auto *preset = getUIStylePreset(obj.ui.stylePreset)) {
             ImGui::GetStyle() = preset->style;
             styleApplied = true;
+            if (ImFont *presetFont =
+                    getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
+              ImGui::PushFont(presetFont, preset->style.FontSizeBase);
+              fontApplied = true;
+            }
           }
         }
 
@@ -8395,6 +8478,8 @@ void Engine::renderViewport() {
           }
           if (styleApplied)
             ImGui::GetStyle() = savedStyle;
+          if (fontApplied)
+            ImGui::PopFont();
           continue;
         }
 
@@ -8807,6 +8892,8 @@ void Engine::renderViewport() {
           ImGui::PopClipRect();
         }
         ImGui::PopID();
+        if (fontApplied)
+          ImGui::PopFont();
         if (styleApplied)
           ImGui::GetStyle() = savedStyle;
       }
@@ -14969,19 +15056,15 @@ void Engine::renderUiCanvas3DTargets() {
       ctxEntry.context = ImGui::CreateContext();
       ImGui::SetCurrentContext(ctxEntry.context);
       ImGuiIO &io = ImGui::GetIO();
-      std::string fontReport;
-      ImFont *canvasFont = loadModularityUiFont(io, 15.5f, &fontReport);
+      preloadUIFontCatalogForContext(ctxEntry.context);
+      ImFont *canvasFont = getUIFontForContext(uiEditorFontAsset, ctxEntry.context);
+      if (!canvasFont) {
+        canvasFont = getUIFontForContext("builtin:imgui-default", ctxEntry.context);
+      }
       if (canvasFont) {
         io.FontDefault = canvasFont;
-      } else {
-        io.Fonts->AddFontDefault();
-        if (!fontReport.empty()) {
-          std::cerr << "[WARN] UI canvas font load failed: " << fontReport
-                    << std::endl;
-        }
       }
       ImGui_ImplOpenGL3_Init("#version 330");
-      ImGui_ImplOpenGL3_CreateDeviceObjects();
       ctxEntry.backendReady = true;
     }
 
@@ -15171,11 +15254,17 @@ void Engine::renderUiCanvas3DTargets() {
 
       ImGuiStyle savedStyle;
       bool styleApplied = false;
+      bool fontApplied = false;
       if (!obj.ui.stylePreset.empty()) {
         if (const auto *preset = getUIStylePreset(obj.ui.stylePreset)) {
           savedStyle = ImGui::GetStyle();
           ImGui::GetStyle() = preset->style;
           styleApplied = true;
+          if (ImFont *presetFont =
+                  getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
+            ImGui::PushFont(presetFont, preset->style.FontSizeBase);
+            fontApplied = true;
+          }
         }
       }
 
@@ -15195,6 +15284,8 @@ void Engine::renderUiCanvas3DTargets() {
           maskMax.y =
               std::min(maskMax.y, ImGui::GetWindowPos().y + layoutHeight);
           if (maskMax.x <= maskMin.x || maskMax.y <= maskMin.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -15426,10 +15517,17 @@ void Engine::renderUiCanvas3DTargets() {
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
+        ImFont *textFont =
+            obj.ui.textFont.empty()
+                ? ImGui::GetFont()
+                : getUIFontForContext(obj.ui.textFont, ImGui::GetCurrentContext());
+        if (!textFont) {
+          textFont = ImGui::GetFont();
+        }
         float scale = std::max(0.1f, obj.ui.textScale);
         float fontSize = std::max(1.0f, ImGui::GetFontSize() * scale);
         ImGui::PushClipRect(drawMin, drawMax, true);
-        AddUITextWithFilter(dl, obj.material.textureFilter, ImGui::GetFont(),
+        AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
                             obj.ui.textAutoWrap, obj.ui.textHAlign,
@@ -15442,6 +15540,8 @@ void Engine::renderUiCanvas3DTargets() {
         ImGui::PopClipRect();
       }
       ImGui::PopID();
+      if (fontApplied)
+        ImGui::PopFont();
       if (styleApplied)
         ImGui::GetStyle() = savedStyle;
     }
@@ -16397,11 +16497,17 @@ void Engine::renderPlayerViewport() {
 
       ImGuiStyle savedStyle;
       bool styleApplied = false;
+      bool fontApplied = false;
       if (!obj.ui.stylePreset.empty()) {
         if (const auto *preset = getUIStylePreset(obj.ui.stylePreset)) {
           savedStyle = ImGui::GetStyle();
           ImGui::GetStyle() = preset->style;
           styleApplied = true;
+          if (ImFont *presetFont =
+                  getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
+            ImGui::PushFont(presetFont, preset->style.FontSizeBase);
+            fontApplied = true;
+          }
         }
       }
 
@@ -16422,6 +16528,8 @@ void Engine::renderPlayerViewport() {
                         IM_COL32(32, 190, 230, 175), 5.0f, 0, 1.0f);
           }
         }
+        if (fontApplied)
+          ImGui::PopFont();
         if (styleApplied)
           ImGui::GetStyle() = savedStyle;
         continue;
@@ -16446,6 +16554,8 @@ void Engine::renderPlayerViewport() {
           }
           if (drawMax.x <= maskMin.x || drawMin.x >= maskMax.x ||
               drawMax.y <= maskMin.y || drawMin.y >= maskMax.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -16680,11 +16790,18 @@ void Engine::renderPlayerViewport() {
         ImDrawList *dl = ImGui::GetWindowDrawList();
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
+        ImFont *textFont =
+            obj.ui.textFont.empty()
+                ? ImGui::GetFont()
+                : getUIFontForContext(obj.ui.textFont, ImGui::GetCurrentContext());
+        if (!textFont) {
+          textFont = ImGui::GetFont();
+        }
         float scale = std::max(0.1f, obj.ui.textScale);
         float fontSize = ComputeViewportTextFontSize(
             ImGui::GetFontSize(), scale, useWorldUi, uiWorldCamera.zoom);
         ImGui::PushClipRect(drawMin, drawMax, true);
-        AddUITextWithFilter(dl, obj.material.textureFilter, ImGui::GetFont(),
+        AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
                             obj.ui.textAutoWrap, obj.ui.textHAlign,
@@ -16697,6 +16814,8 @@ void Engine::renderPlayerViewport() {
         ImGui::PopClipRect();
       }
       ImGui::PopID();
+      if (fontApplied)
+        ImGui::PopFont();
       if (styleApplied)
         ImGui::GetStyle() = savedStyle;
     }

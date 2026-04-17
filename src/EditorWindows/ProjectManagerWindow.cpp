@@ -831,9 +831,7 @@ void Engine::renderLauncher() {
         launcherIntroStartTime = now;
     }
     if (!launcherIntroSoundPlayed) {
-        if (audio.isReady()) {
-            audio.playPreview("Resources/Sounds/ModuIntro.mp3", 0.85f, false);
-        }
+        playEditorFeedbackPreview("Resources/Sounds/ModuIntro.mp3", 0.85f, false, EditorFeedbackSoundCategory::Boot);
         launcherIntroSoundPlayed = true;
     }
 
@@ -947,9 +945,7 @@ void Engine::renderLauncher() {
 
         auto launchRecentProject = [&](const RecentProject& rp, const ImVec2& focus) {
             if (launcherBusy) return;
-            if (audio.isReady()) {
-                audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
-            }
+            playEditorFeedbackPreview("Resources/Sounds/Selection.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
             launcherTransitionActive = true;
             launcherTransitionPendingHide = false;
             launcherTransitionStartTime = glfwGetTime();
@@ -2135,9 +2131,7 @@ void Engine::renderOpenProjectDialog() {
             if (strlen(projectManager.openProjectPath) == 0) {
                 projectManager.errorMessage = "Please enter a project path";
             } else {
-                if (audio.isReady()) {
-                    audio.playPreview("Resources/Sounds/Selection.mp3", 0.95f, false);
-                }
+                playEditorFeedbackPreview("Resources/Sounds/Selection.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
                 OpenProjectPath(projectManager.openProjectPath);
                 if (!projectManager.errorMessage.empty()) {
                     // Error handled in OpenProjectPath
@@ -2350,7 +2344,7 @@ void Engine::renderProjectBrowserPanel() {
         if (drawProjectSettingsTab(i)) {
             if (selectedTab != i) {
                 selectedTab = i;
-                audio.playPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false);
+                playEditorFeedbackPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
             }
         }
         if (i + 1 < tabCount) {

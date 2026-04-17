@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "SceneSerializationInternal.h"
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
 #include "ModelLoader.h"
@@ -30,6 +31,8 @@ constexpr int kRuntimeInternalHeight = 720;
 constexpr char kRuntimeCacheReadyMarker[] = ".runtime_bundle_ready";
 constexpr size_t kRuntimeCacheMaxEntries = 3;
 constexpr auto kRuntimeCacheMaxAge = std::chrono::hours(24 * 7);
+constexpr char kDefaultUIFontAssetId[] = "builtin:imgui-default";
+constexpr float kUIFontAtlasBaseSize = 18.0f;
 
 bool IsNativeBinaryPath(const fs::path& path) {
     const std::string ext = path.extension().string();
@@ -81,6 +84,49 @@ std::string RenameTrim(const std::string& value) {
         --end;
     }
     return value.substr(start, end - start);
+}
+
+bool IsFontFileExtension(const fs::path& path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return ext == ".ttf" || ext == ".otf";
+}
+
+std::string EncodeStyleBlob(const ImGuiStyle& style) {
+    static const char kHex[] = "0123456789ABCDEF";
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&style);
+    std::string encoded;
+    encoded.resize(sizeof(ImGuiStyle) * 2);
+    for (size_t i = 0; i < sizeof(ImGuiStyle); ++i) {
+        encoded[i * 2] = kHex[(bytes[i] >> 4) & 0x0F];
+        encoded[i * 2 + 1] = kHex[bytes[i] & 0x0F];
+    }
+    return encoded;
+}
+
+bool DecodeStyleBlob(const std::string& encoded, ImGuiStyle& outStyle) {
+    if (encoded.size() != sizeof(ImGuiStyle) * 2) {
+        return false;
+    }
+    auto decodeNibble = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+        if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+        return -1;
+    };
+
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(&outStyle);
+    for (size_t i = 0; i < sizeof(ImGuiStyle); ++i) {
+        const int hi = decodeNibble(encoded[i * 2]);
+        const int lo = decodeNibble(encoded[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        bytes[i] = static_cast<unsigned char>((hi << 4) | lo);
+    }
+    return true;
 }
 
 bool RenameIsInteger(const std::string& value) {
@@ -3804,7 +3850,7 @@ void Engine::shutdown() {
         false
 #endif
     ) {
-        saveCurrentScene();
+        saveCurrentScene(false);
     }
 
     if (compileWorker.joinable()) {
@@ -4950,9 +4996,47 @@ void Engine::queueScriptCompileBatch(const std::vector<fs::path>& scriptPaths) {
 }
 
 void Engine::playCompileStartSound() {
-    if (audio.isReady()) {
-        audio.playOneShot("Resources/Sounds/Notification.mp3", 0.95f);
+    playEditorFeedbackOneShot("Resources/Sounds/Notification.mp3", 0.95f, EditorFeedbackSoundCategory::Other);
+}
+
+bool Engine::isEditorFeedbackSoundEnabled(EditorFeedbackSoundCategory category) const {
+    if (category == EditorFeedbackSoundCategory::Boot) {
+        return true;
     }
+    if (!feedbackSoundsEnabled) {
+        return false;
+    }
+    switch (category) {
+        case EditorFeedbackSoundCategory::Click:
+            return feedbackClickSoundsEnabled;
+        case EditorFeedbackSoundCategory::Error:
+            return feedbackErrorSoundsEnabled;
+        case EditorFeedbackSoundCategory::Other:
+            return feedbackOtherSoundsEnabled;
+        case EditorFeedbackSoundCategory::Boot:
+        default:
+            return true;
+    }
+}
+
+bool Engine::playEditorFeedbackPreview(const std::string& path,
+                                       float volume,
+                                       bool loop,
+                                       EditorFeedbackSoundCategory category) {
+    if (!audio.isReady() || !isEditorFeedbackSoundEnabled(category)) {
+        return false;
+    }
+    return audio.playPreview(path, volume, loop);
+}
+
+bool Engine::playEditorFeedbackOneShot(const std::string& path,
+                                       float volume,
+                                       EditorFeedbackSoundCategory category) {
+    if (!audio.isReady() || !isEditorFeedbackSoundEnabled(category)) {
+        return false;
+    }
+    audio.playOneShot(path, volume);
+    return true;
 }
 
 void Engine::updateAutoCompileScripts() {
@@ -6661,6 +6745,7 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
     sceneLoadAssetsDone = 0;
     sceneLoadNextId = 0;
     sceneLoadVersion = 9;
+    sceneLoadMetadata = SceneSerializer::Metadata{};
     sceneLoadTimeOfDay = -1.0f;
     sceneLoadSkyboxSettings = SkyboxSettings{};
     showLauncher = true;
@@ -6678,6 +6763,7 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
         applySceneSkyboxSettings(SkyboxSettings{});
         applySceneTimeOfDay(0.5f);
         createPipelineDefaultSceneObjects();
+        initializeNewSceneSerializationState(scenePath);
         showLauncher = false;
         return;
     }
@@ -6687,12 +6773,14 @@ void Engine::beginDeferredSceneLoad(const std::string& sceneName) {
                                             sceneLoadNextId,
                                             sceneLoadVersion,
                                             &sceneLoadTimeOfDay,
-                                            &sceneLoadSkyboxSettings)) {
+                                            &sceneLoadSkyboxSettings,
+                                            &sceneLoadMetadata)) {
         sceneLoadInProgress = false;
         addConsoleMessage("Error: Failed to load scene: " + sceneName, ConsoleMessageType::Error);
         applySceneSkyboxSettings(SkyboxSettings{});
         applySceneTimeOfDay(0.5f);
         createPipelineDefaultSceneObjects();
+        initializeNewSceneSerializationState(scenePath);
         showLauncher = false;
         return;
     }
@@ -6777,6 +6865,10 @@ void Engine::finalizeDeferredSceneLoad() {
 
     initializeLocalTransformsFromWorld(sceneLoadVersion);
     rebuildSkeletalBindings();
+    currentSceneSerialization = sceneLoadMetadata;
+    legacySceneSaveChoice = sceneLoadMetadata.fileFormat == SceneSerializer::FileFormat::LegacyFlat
+        ? LegacySceneSaveChoice::Ask
+        : LegacySceneSaveChoice::SaveModular;
 
     projectManager.currentProject.currentSceneName = sceneLoadSceneName;
     projectManager.currentProject.hasUnsavedChanges = false;
@@ -6873,6 +6965,8 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
         : projectManager.currentProject.projectPath;
+    refreshUIFontCatalog();
+    preloadUIFontCatalogForContext(ImGui::GetCurrentContext());
     if (!playerMode) {
         fileBrowser.setProjectRoot(contentRoot);
         fileBrowser.currentPath = contentRoot;
@@ -7345,7 +7439,9 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     if (exportJob.active) return;
 
     if (projectManager.currentProject.hasUnsavedChanges) {
-        saveCurrentScene();
+        if (!saveCurrentScene()) {
+            return;
+        }
     } else {
         projectManager.currentProject.saveProjectFile();
     }
@@ -8274,6 +8370,7 @@ void Engine::loadRecentScenes() {
     } else {
         addConsoleMessage("Default scene not found, starting with a new scene.", ConsoleMessageType::Info);
         createPipelineDefaultSceneObjects();
+        initializeNewSceneSerializationState(projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName));
         recordState("sceneLoaded");
     }
 
@@ -8317,38 +8414,217 @@ void Engine::saveProjectPreview() {
                    static_cast<int>(rowBytes));
 }
 
-void Engine::saveCurrentScene() {
-    if (!projectManager.currentProject.isLoaded) return;
+namespace {
 
-    fs::path scenePath = projectManager.currentProject.getSceneFilePath(projectManager.currentProject.currentSceneName);
-    float timeOfDay = getSceneTimeOfDay();
-    if (SceneSerializer::saveScene(scenePath, sceneObjects, nextObjectId, timeOfDay, getSceneSkyboxSettings())) {
-        projectManager.currentProject.hasUnsavedChanges = false;
-        projectManager.currentProject.saveProjectFile();
-        saveProjectPreview();
-        addConsoleMessage("Saved scene: " + projectManager.currentProject.currentSceneName, ConsoleMessageType::Success);
-    } else {
+fs::path MakeCompatibilityScenePath(const fs::path& scenesPath, const fs::path& sourcePath) {
+    fs::path compatibilityDir = scenesPath / "Compatibility";
+    fs::create_directories(compatibilityDir);
+
+    fs::path filename = sourcePath.filename();
+    fs::path candidate = compatibilityDir / filename;
+    if (!fs::exists(candidate)) {
+        return candidate;
+    }
+
+    const std::string stem = sourcePath.stem().string();
+    const std::string ext = sourcePath.extension().string();
+    int suffix = 1;
+    do {
+        candidate = compatibilityDir / fs::path(stem + "_" + std::to_string(suffix) + ext);
+        ++suffix;
+    } while (fs::exists(candidate));
+    return candidate;
+}
+
+bool MoveSceneFileToCompatibility(const fs::path& scenesPath, const fs::path& sourcePath, fs::path& outMovedPath) {
+    if (sourcePath.empty() || !fs::exists(sourcePath)) {
+        outMovedPath.clear();
+        return true;
+    }
+
+    outMovedPath = MakeCompatibilityScenePath(scenesPath, sourcePath);
+    std::error_code renameError;
+    fs::rename(sourcePath, outMovedPath, renameError);
+    if (!renameError) {
+        return true;
+    }
+
+    std::error_code copyError;
+    fs::copy_file(sourcePath, outMovedPath, fs::copy_options::overwrite_existing, copyError);
+    if (copyError) {
+        return false;
+    }
+
+    std::error_code removeError;
+    fs::remove(sourcePath, removeError);
+    return !removeError;
+}
+
+} // namespace
+
+void Engine::resetPendingSceneSaveRequest() {
+    pendingSceneSaveRequest = PendingSceneSaveRequest{};
+}
+
+void Engine::initializeNewSceneSerializationState(const fs::path& sourcePath) {
+    currentSceneSerialization.version = SceneSerializationInternal::kModularSceneFormatVersion;
+    currentSceneSerialization.fileFormat = SceneSerializer::FileFormat::ModularNodes;
+    currentSceneSerialization.loadedFromLegacyLayout = false;
+    currentSceneSerialization.upgradedToModularLayout = false;
+    currentSceneSerialization.sourcePath = sourcePath;
+    legacySceneSaveChoice = LegacySceneSaveChoice::SaveModular;
+}
+
+bool Engine::executeSceneSave(const std::string& destinationSceneName,
+                              SceneSerializer::SavePreference preference,
+                              bool moveLegacySourceToCompatibility) {
+    if (!projectManager.currentProject.isLoaded) return false;
+
+    const std::string resolvedSceneName = destinationSceneName.empty()
+        ? projectManager.currentProject.currentSceneName
+        : destinationSceneName;
+    const fs::path scenePath = projectManager.currentProject.getSceneFilePath(resolvedSceneName);
+
+    fs::path movedLegacyPath;
+    if (moveLegacySourceToCompatibility &&
+        currentSceneSerialization.fileFormat == SceneSerializer::FileFormat::LegacyFlat) {
+        if (!MoveSceneFileToCompatibility(projectManager.currentProject.scenesPath,
+                                          currentSceneSerialization.sourcePath,
+                                          movedLegacyPath)) {
+            addConsoleMessage("Error: Failed to move legacy scene into compatibility folder.", ConsoleMessageType::Error);
+            return false;
+        }
+    }
+
+    SceneSerializer::SaveOptions options;
+    options.preference = preference;
+    options.metadata = &currentSceneSerialization;
+
+    const float timeOfDay = getSceneTimeOfDay();
+    if (!SceneSerializer::saveScene(scenePath,
+                                    sceneObjects,
+                                    nextObjectId,
+                                    timeOfDay,
+                                    getSceneSkyboxSettings(),
+                                    options)) {
         addConsoleMessage("Error: Failed to save scene!", ConsoleMessageType::Error);
+        if (!movedLegacyPath.empty()) {
+            addConsoleMessage("Compatibility backup preserved at: " + movedLegacyPath.string(),
+                              ConsoleMessageType::Warning);
+        }
+        return false;
+    }
+
+    projectManager.currentProject.currentSceneName = resolvedSceneName;
+    projectManager.currentProject.hasUnsavedChanges = false;
+    projectManager.currentProject.saveProjectFile();
+    saveProjectPreview();
+
+    if (preference == SceneSerializer::SavePreference::ForceLegacyFlat) {
+        legacySceneSaveChoice = LegacySceneSaveChoice::KeepLegacy;
+    } else {
+        legacySceneSaveChoice = LegacySceneSaveChoice::SaveModular;
+    }
+
+    addConsoleMessage("Saved scene: " + resolvedSceneName, ConsoleMessageType::Success);
+    if (!movedLegacyPath.empty()) {
+        addConsoleMessage("Moved legacy scene to compatibility folder: " + movedLegacyPath.string(),
+                          ConsoleMessageType::Info);
+    }
+    return true;
+}
+
+void Engine::continuePendingScenePostAction() {
+    const PendingSceneSaveRequest pending = pendingSceneSaveRequest;
+    resetPendingSceneSaveRequest();
+
+    switch (pending.postAction) {
+        case PendingScenePostAction::LoadScene:
+            performLoadScene(pending.postActionPayload);
+            break;
+        case PendingScenePostAction::CreateNewScene:
+            performCreateNewScene(pending.postActionPayload);
+            break;
+        case PendingScenePostAction::CloseProject:
+            performCloseProject();
+            break;
+        case PendingScenePostAction::None:
+        default:
+            break;
     }
 }
 
-void Engine::loadScene(const std::string& sceneName) {
-    if (!projectManager.currentProject.isLoaded) return;
+bool Engine::requestSceneSave(const std::string& destinationSceneName,
+                              PendingScenePostAction postAction,
+                              const std::string& postActionPayload,
+                              bool allowLegacyUpgradePrompt) {
+    if (!projectManager.currentProject.isLoaded) return false;
 
-    if (projectManager.currentProject.hasUnsavedChanges) {
-        saveCurrentScene();
+    const bool loadedLegacyScene = currentSceneSerialization.fileFormat == SceneSerializer::FileFormat::LegacyFlat;
+    if (allowLegacyUpgradePrompt &&
+        loadedLegacyScene &&
+        legacySceneSaveChoice == LegacySceneSaveChoice::Ask) {
+        pendingSceneSaveRequest.active = true;
+        pendingSceneSaveRequest.destinationSceneName = destinationSceneName.empty()
+            ? projectManager.currentProject.currentSceneName
+            : destinationSceneName;
+        pendingSceneSaveRequest.postAction = postAction;
+        pendingSceneSaveRequest.postActionPayload = postActionPayload;
+        showLegacySceneLayoutDialog = true;
+        legacySceneLayoutDialogOpened = false;
+        return false;
     }
 
-    fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
+    const SceneSerializer::SavePreference preference =
+        (loadedLegacyScene &&
+         (legacySceneSaveChoice == LegacySceneSaveChoice::KeepLegacy ||
+          (!allowLegacyUpgradePrompt && legacySceneSaveChoice == LegacySceneSaveChoice::Ask)))
+            ? SceneSerializer::SavePreference::ForceLegacyFlat
+            : SceneSerializer::SavePreference::PreferModular;
+    const bool moveLegacySourceToCompatibility =
+        loadedLegacyScene && preference == SceneSerializer::SavePreference::PreferModular;
+
+    if (!executeSceneSave(destinationSceneName, preference, moveLegacySourceToCompatibility)) {
+        return false;
+    }
+
+    pendingSceneSaveRequest.postAction = postAction;
+    pendingSceneSaveRequest.postActionPayload = postActionPayload;
+    continuePendingScenePostAction();
+    return true;
+}
+
+bool Engine::saveCurrentScene(bool allowLegacyUpgradePrompt) {
+    return requestSceneSave(projectManager.currentProject.currentSceneName,
+                            PendingScenePostAction::None,
+                            "",
+                            allowLegacyUpgradePrompt);
+}
+
+void Engine::performLoadScene(const std::string& sceneName) {
+    if (!projectManager.currentProject.isLoaded) return;
+
+    const fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     int sceneVersion = 9;
     float loadedTimeOfDay = -1.0f;
     SkyboxSettings loadedSkyboxSettings;
-    if (SceneSerializer::loadScene(scenePath, sceneObjects, nextObjectId, sceneVersion, &loadedTimeOfDay, &loadedSkyboxSettings)) {
+    SceneSerializer::Metadata loadedMetadata;
+    if (SceneSerializer::loadScene(scenePath,
+                                   sceneObjects,
+                                   nextObjectId,
+                                   sceneVersion,
+                                   &loadedTimeOfDay,
+                                   &loadedSkyboxSettings,
+                                   &loadedMetadata)) {
         markRuntimeScriptBindingsDirty();
         initializeLocalTransformsFromWorld(sceneVersion);
         rebuildSkeletalBindings();
         undoStack.clear();
         redoStack.clear();
+        currentSceneSerialization = loadedMetadata;
+        legacySceneSaveChoice = loadedMetadata.fileFormat == SceneSerializer::FileFormat::LegacyFlat
+            ? LegacySceneSaveChoice::Ask
+            : LegacySceneSaveChoice::SaveModular;
         projectManager.currentProject.currentSceneName = sceneName;
         projectManager.currentProject.hasUnsavedChanges = false;
         projectManager.currentProject.saveProjectFile();
@@ -8362,12 +8638,22 @@ void Engine::loadScene(const std::string& sceneName) {
     }
 }
 
-void Engine::createNewScene(const std::string& sceneName) {
-    if (!projectManager.currentProject.isLoaded || sceneName.empty()) return;
+void Engine::loadScene(const std::string& sceneName) {
+    if (!projectManager.currentProject.isLoaded) return;
 
     if (projectManager.currentProject.hasUnsavedChanges) {
-        saveCurrentScene();
+        requestSceneSave(projectManager.currentProject.currentSceneName,
+                         PendingScenePostAction::LoadScene,
+                         sceneName,
+                         true);
+        return;
     }
+
+    performLoadScene(sceneName);
+}
+
+void Engine::performCreateNewScene(const std::string& sceneName) {
+    if (!projectManager.currentProject.isLoaded || sceneName.empty()) return;
 
     sceneObjects.clear();
     markRuntimeScriptBindingsDirty();
@@ -8382,10 +8668,43 @@ void Engine::createNewScene(const std::string& sceneName) {
     applySceneTimeOfDay(0.5f);
 
     createPipelineDefaultSceneObjects();
-    saveCurrentScene();
+    initializeNewSceneSerializationState(projectManager.currentProject.getSceneFilePath(sceneName));
+    saveCurrentScene(false);
     recordState("newScene");
 
     addConsoleMessage("Created new scene: " + sceneName, ConsoleMessageType::Success);
+}
+
+void Engine::createNewScene(const std::string& sceneName) {
+    if (!projectManager.currentProject.isLoaded || sceneName.empty()) return;
+
+    if (projectManager.currentProject.hasUnsavedChanges) {
+        requestSceneSave(projectManager.currentProject.currentSceneName,
+                         PendingScenePostAction::CreateNewScene,
+                         sceneName,
+                         true);
+        return;
+    }
+
+    performCreateNewScene(sceneName);
+}
+
+void Engine::performCloseProject() {
+    projectManager.currentProject = Project();
+    sceneObjects.clear();
+    clearSelection();
+    scriptEditorWindows.clear();
+    scriptEditorWindowsDirty = true;
+    resetBuildSettings();
+    showBuildSettings = false;
+    playerMode = false;
+    autoStartRequested = false;
+    autoStartPlayerMode = false;
+    showLauncher = true;
+    showLegacySceneLayoutDialog = false;
+    legacySceneLayoutDialogOpened = false;
+    resetPendingSceneSaveRequest();
+    initializeNewSceneSerializationState();
 }
 #pragma endregion
 
@@ -8794,8 +9113,8 @@ void Engine::setParent(int childId, int parentId, int beforeSiblingId) {
 
 #pragma region Console Logging
 void Engine::addConsoleMessage(const std::string& message, ConsoleMessageType type) {
-    if (type == ConsoleMessageType::Error && audio.isReady()) {
-        audio.playPreview("Resources/Sounds/Script Error.mp3", 0.95f, false);
+    if (type == ConsoleMessageType::Error) {
+        playEditorFeedbackPreview("Resources/Sounds/Script Error.mp3", 0.95f, false, EditorFeedbackSoundCategory::Error);
     }
 
     auto now = std::chrono::system_clock::now();
@@ -9832,18 +10151,14 @@ void Engine::updateCompileJob() {
                     logDiagnostic(diagnostic);
                 }
             }
-            if (audio.isReady()) {
-                audio.playOneShot("Resources/Sounds/Script Error.mp3", 0.95f);
-            }
+            playEditorFeedbackOneShot("Resources/Sounds/Script Error.mp3", 0.95f, EditorFeedbackSoundCategory::Error);
         } else {
             lastCompileSuccess = true;
             lastCompileLog = result.compileLog + result.linkLog;
             lastCompileStatus = finishedWithWarnings
                 ? "Finished compiling (" + displayLabel + ") with warnings"
                 : "Finished compiling (" + displayLabel + ")";
-            if (audio.isReady()) {
-                audio.playOneShot("Resources/Sounds/Success Script.mp3", 0.95f);
-            }
+            playEditorFeedbackOneShot("Resources/Sounds/Success Script.mp3", 0.95f, EditorFeedbackSoundCategory::Other);
             addConsoleMessage(
                 finishedWithWarnings
                     ? "Finished compiling (" + displayLabel + ") with warnings"
@@ -10146,10 +10461,14 @@ void Engine::setupImGui() {
 void Engine::initUIStylePresets() {
     uiStylePresets.clear();
     uiStylePresets.shrink_to_fit();
+    refreshUIFontCatalog();
+    uiEditorFontAsset = getDefaultEditorUIFontAsset();
+    applyEditorUIFontById(uiEditorFontAsset);
 
     UIStylePreset current;
     current.name = "Default";
     current.style = ImGui::GetStyle();
+    current.fontAsset = uiEditorFontAsset;
     current.builtin = true;
     uiStylePresets.push_back(current);
 
@@ -10158,6 +10477,7 @@ void Engine::initUIStylePresets() {
     imguiDefault.style = ImGui::GetStyle();
     ImGui::StyleColorsDark(&imguiDefault.style);
     applyEditorLayoutPreset(imguiDefault.style);
+    imguiDefault.fontAsset = uiEditorFontAsset;
     imguiDefault.builtin = true;
     uiStylePresets.push_back(imguiDefault);
 
@@ -10165,6 +10485,7 @@ void Engine::initUIStylePresets() {
     pixel.name = "Pixel";
     pixel.style = ImGui::GetStyle();
     applyPixelStyle(pixel.style);
+    pixel.fontAsset = uiEditorFontAsset;
     pixel.builtin = true;
     uiStylePresets.push_back(pixel);
 
@@ -10172,6 +10493,7 @@ void Engine::initUIStylePresets() {
     superRound.name = "Super Round";
     superRound.style = ImGui::GetStyle();
     applySuperRoundStyle(superRound.style);
+    superRound.fontAsset = uiEditorFontAsset;
     superRound.builtin = true;
     uiStylePresets.push_back(superRound);
 
@@ -10189,24 +10511,251 @@ int Engine::findUIStylePreset(const std::string& name) const {
     return -1;
 }
 
+int Engine::findUIFontCatalogIndex(const std::string& id) const {
+    for (size_t i = 0; i < uiFontCatalog.size(); ++i) {
+        if (uiFontCatalog[i].id == id) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 const Engine::UIStylePreset* Engine::getUIStylePreset(const std::string& name) const {
     int idx = findUIStylePreset(name);
     if (idx < 0) return nullptr;
     return &uiStylePresets[idx];
 }
 
+std::string Engine::getDefaultEditorUIFontAsset() const {
+    const std::array<std::string, 3> preferred = {
+        (fs::path("Resources") / "Fonts" / "TheSunset.ttf").generic_string(),
+        (fs::path("Resources") / "Fonts" / "Thesunsethd-Regular (1).ttf").generic_string(),
+        std::string(kDefaultUIFontAssetId)
+    };
+    for (const std::string& id : preferred) {
+        if (id == kDefaultUIFontAssetId || findUIFontCatalogIndex(id) >= 0) {
+            return id;
+        }
+    }
+    return kDefaultUIFontAssetId;
+}
+
+fs::path Engine::resolveUIFontPath(const std::string& id) const {
+    if (id.empty() || id == kDefaultUIFontAssetId) {
+        return fs::path();
+    }
+
+    fs::path stored(id);
+    if (stored.is_absolute()) {
+        return stored;
+    }
+
+    std::error_code ec;
+    if (fs::exists(stored, ec) && !ec) {
+        return stored;
+    }
+
+    if (projectManager.currentProject.isLoaded) {
+        fs::path candidate = projectManager.currentProject.projectPath / stored;
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate;
+        }
+        candidate = projectManager.currentProject.assetsPath / stored;
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate;
+        }
+    }
+
+    return stored;
+}
+
+void Engine::refreshUIFontCatalog() {
+    uiFontCatalog.clear();
+
+    auto addEntry = [&](const std::string& id,
+                        const std::string& label,
+                        const fs::path& path,
+                        bool builtin,
+                        bool isDefault) {
+        if (id.empty() || findUIFontCatalogIndex(id) >= 0) {
+            return;
+        }
+        UIFontCatalogEntry entry;
+        entry.id = id;
+        entry.label = label;
+        entry.path = path;
+        entry.builtin = builtin;
+        entry.isDefault = isDefault;
+        uiFontCatalog.push_back(entry);
+    };
+
+    addEntry(kDefaultUIFontAssetId, "ImGui Default", fs::path(), true, true);
+
+    const std::array<fs::path, 2> builtinCandidates = {
+        fs::path("Resources") / "Fonts" / "TheSunset.ttf",
+        fs::path("Resources") / "Fonts" / "Thesunsethd-Regular (1).ttf"
+    };
+    for (const fs::path& fontPath : builtinCandidates) {
+        std::error_code ec;
+        if (!fs::exists(fontPath, ec) || ec || !fs::is_regular_file(fontPath, ec) || ec) {
+            continue;
+        }
+        addEntry(fontPath.generic_string(),
+                 fontPath.filename().string() + " [Built-in]",
+                 fontPath,
+                 true,
+                 false);
+    }
+
+    if (projectManager.currentProject.isLoaded) {
+        std::vector<UIFontCatalogEntry> projectEntries;
+        const fs::path scanRoot = fs::exists(projectManager.currentProject.assetsPath)
+            ? projectManager.currentProject.assetsPath
+            : projectManager.currentProject.projectPath;
+        std::error_code ec;
+        if (fs::exists(scanRoot, ec) && !ec) {
+            for (fs::recursive_directory_iterator it(scanRoot, fs::directory_options::skip_permission_denied, ec), end;
+                 !ec && it != end;
+                 it.increment(ec)) {
+                if (ec || !it->is_regular_file()) {
+                    continue;
+                }
+                const fs::path path = it->path();
+                if (!IsFontFileExtension(path)) {
+                    continue;
+                }
+
+                fs::path storedId = fs::relative(path, projectManager.currentProject.projectPath, ec);
+                if (ec || storedId.empty()) {
+                    storedId = path;
+                    ec.clear();
+                }
+
+                UIFontCatalogEntry entry;
+                entry.id = storedId.generic_string();
+                entry.label = path.filename().string() + " [Project]";
+                entry.path = path;
+                projectEntries.push_back(entry);
+            }
+        }
+
+        std::sort(projectEntries.begin(), projectEntries.end(), [](const UIFontCatalogEntry& a, const UIFontCatalogEntry& b) {
+            if (a.label != b.label) {
+                return a.label < b.label;
+            }
+            return a.id < b.id;
+        });
+        for (const UIFontCatalogEntry& entry : projectEntries) {
+            addEntry(entry.id, entry.label, entry.path, false, false);
+        }
+    }
+
+    preloadUIFontCatalogForContext(ImGui::GetCurrentContext());
+    if (findUIFontCatalogIndex(uiEditorFontAsset) < 0) {
+        uiEditorFontAsset = getDefaultEditorUIFontAsset();
+    }
+}
+
+void Engine::preloadUIFontCatalogForContext(ImGuiContext* context) {
+    if (!context) {
+        return;
+    }
+
+    ImGuiContext* previousContext = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(context);
+    ImGuiIO& io = ImGui::GetIO();
+    UIFontContextState& state = uiFontContexts[context];
+
+    if (state.loadedFonts.find(kDefaultUIFontAssetId) == state.loadedFonts.end()) {
+        ImFont* defaultFont = io.Fonts->AddFontDefault();
+        if (!defaultFont && !io.Fonts->Fonts.empty()) {
+            defaultFont = io.Fonts->Fonts.back();
+        }
+        if (defaultFont) {
+            state.loadedFonts[kDefaultUIFontAssetId] = defaultFont;
+        }
+    }
+
+    for (const UIFontCatalogEntry& entry : uiFontCatalog) {
+        if (entry.isDefault || state.loadedFonts.find(entry.id) != state.loadedFonts.end()) {
+            continue;
+        }
+        fs::path fontPath = entry.path.empty() ? resolveUIFontPath(entry.id) : entry.path;
+        std::error_code ec;
+        if (fontPath.empty() || !fs::exists(fontPath, ec) || ec || !fs::is_regular_file(fontPath, ec) || ec) {
+            continue;
+        }
+        ImFont* font = io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), kUIFontAtlasBaseSize);
+        if (font) {
+            state.loadedFonts[entry.id] = font;
+        }
+    }
+
+    ImGui::SetCurrentContext(previousContext);
+}
+
+ImFont* Engine::getUIFontForContext(const std::string& fontAsset, ImGuiContext* context) {
+    if (!context) {
+        return nullptr;
+    }
+
+    const std::string resolvedId = fontAsset.empty() ? std::string(kDefaultUIFontAssetId) : fontAsset;
+    auto contextIt = uiFontContexts.find(context);
+    if (contextIt != uiFontContexts.end()) {
+        auto fontIt = contextIt->second.loadedFonts.find(resolvedId);
+        if (fontIt != contextIt->second.loadedFonts.end() && fontIt->second) {
+            return fontIt->second;
+        }
+        auto defaultIt = contextIt->second.loadedFonts.find(kDefaultUIFontAssetId);
+        if (defaultIt != contextIt->second.loadedFonts.end()) {
+            return defaultIt->second;
+        }
+    }
+    ImGuiContext* previousContext = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(context);
+    ImGuiIO& io = ImGui::GetIO();
+    ImFont* fallback = io.FontDefault ? io.FontDefault : (io.Fonts->Fonts.empty() ? nullptr : io.Fonts->Fonts[0]);
+    ImGui::SetCurrentContext(previousContext);
+    return fallback;
+}
+
+bool Engine::applyEditorUIFontById(const std::string& fontAsset) {
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    if (!context) {
+        return false;
+    }
+    ImFont* font = getUIFontForContext(fontAsset, context);
+    if (!font) {
+        return false;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.FontDefault = font;
+    uiEditorFontAsset = fontAsset.empty() ? std::string(kDefaultUIFontAssetId) : fontAsset;
+    return true;
+}
+
 void Engine::registerUIStylePreset(const std::string& name, const ImGuiStyle& style, bool replace) {
+    upsertUIStylePreset(name, style, uiEditorFontAsset, replace);
+}
+
+void Engine::upsertUIStylePreset(const std::string& name,
+                                 const ImGuiStyle& style,
+                                 const std::string& fontAsset,
+                                 bool replace) {
     if (name.empty()) return;
     int idx = findUIStylePreset(name);
     if (idx >= 0) {
         if (replace) {
             uiStylePresets[idx].style = style;
+            uiStylePresets[idx].fontAsset = fontAsset.empty() ? std::string(kDefaultUIFontAssetId) : fontAsset;
         }
         return;
     }
     UIStylePreset preset;
     preset.name = name;
     preset.style = style;
+    preset.fontAsset = fontAsset.empty() ? std::string(kDefaultUIFontAssetId) : fontAsset;
     preset.builtin = false;
     uiStylePresets.push_back(preset);
 }
@@ -10215,22 +10764,29 @@ void Engine::registerUIStylePresetFromScript(const std::string& name, const ImGu
     registerUIStylePreset(name, style, replace);
 }
 
+bool Engine::saveCurrentUIStyleToPreset(const std::string& name, bool replaceExisting) {
+    if (name.empty()) {
+        return false;
+    }
+    if (!replaceExisting && findUIStylePreset(name) >= 0) {
+        return false;
+    }
+    upsertUIStylePreset(name, ImGui::GetStyle(), uiEditorFontAsset, replaceExisting);
+    uiStylePresetName = name;
+    uiStylePresetIndex = findUIStylePreset(name);
+    saveEditorUserSettings();
+    return uiStylePresetIndex >= 0;
+}
+
 bool Engine::applyUIStylePresetByName(const std::string& name) {
     int idx = findUIStylePreset(name);
     if (idx < 0) {
         return false;
     }
-    ImVec4 preservedColors[ImGuiCol_COUNT];
-    ImGuiStyle& currentStyle = ImGui::GetStyle();
-    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
-        preservedColors[i] = currentStyle.Colors[i];
-    }
     uiStylePresetIndex = idx;
     uiStylePresetName = uiStylePresets[idx].name;
-    currentStyle = uiStylePresets[idx].style;
-    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
-        currentStyle.Colors[i] = preservedColors[i];
-    }
+    ImGui::GetStyle() = uiStylePresets[idx].style;
+    applyEditorUIFontById(uiStylePresets[idx].fontAsset);
     return true;
 }
 
@@ -10408,6 +10964,7 @@ void Engine::loadEditorUserSettings() {
     if (!projectManager.currentProject.isLoaded) {
         return;
     }
+    refreshUIFontCatalog();
     fs::path settingsPath = getEditorUserSettingsPath();
     if (settingsPath.empty() || !fs::exists(settingsPath)) {
         return;
@@ -10428,6 +10985,14 @@ void Engine::loadEditorUserSettings() {
     workspaceTabVisible = { true, true, true };
     std::vector<ImVec4> loadedColors(ImGuiCol_COUNT);
     std::vector<bool> hasColor(ImGuiCol_COUNT, false);
+    struct LoadedStylePresetEntry {
+        std::string name;
+        std::string fontAsset = kDefaultUIFontAssetId;
+        ImGuiStyle style = ImGui::GetStyle();
+        bool builtin = false;
+        bool hasStyle = false;
+    };
+    std::unordered_map<int, LoadedStylePresetEntry> loadedPresets;
     static std::unordered_map<std::string, int> colorIndex;
     if (colorIndex.empty()) {
         for (int i = 0; i < ImGuiCol_COUNT; ++i) {
@@ -10452,6 +11017,8 @@ void Engine::loadEditorUserSettings() {
         trim(value);
         if (key == "uiStyle") {
             uiStylePresetName = value;
+        } else if (key == "uiEditorFont") {
+            uiEditorFontAsset = value.empty() ? std::string(kDefaultUIFontAssetId) : value;
         } else if (key == "uiAnimationMode") {
             if (value == "Fluid") {
                 uiAnimationMode = UIAnimationMode::Fluid;
@@ -10691,6 +11258,42 @@ void Engine::loadEditorUserSettings() {
             scriptEditorState.autoCompileOnSave = (value == "1" || value == "true" || value == "yes");
         } else if (key == "audioPreviewVolume") {
             try { audioPreviewVolume = std::stof(value); } catch (...) {}
+        } else if (key == "feedbackSoundsEnabled") {
+            feedbackSoundsEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "feedbackClickSoundsEnabled") {
+            feedbackClickSoundsEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "feedbackErrorSoundsEnabled") {
+            feedbackErrorSoundsEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "feedbackOtherSoundsEnabled") {
+            feedbackOtherSoundsEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key.rfind("stylePreset", 0) == 0) {
+            size_t indexStart = std::strlen("stylePreset");
+            size_t fieldSep = key.find('_', indexStart);
+            if (fieldSep != std::string::npos) {
+                int presetIndex = -1;
+                try {
+                    presetIndex = std::stoi(key.substr(indexStart, fieldSep - indexStart));
+                } catch (...) {
+                    presetIndex = -1;
+                }
+                if (presetIndex >= 0) {
+                    LoadedStylePresetEntry& preset = loadedPresets[presetIndex];
+                    const std::string field = key.substr(fieldSep + 1);
+                    if (field == "name") {
+                        preset.name = value;
+                    } else if (field == "font") {
+                        preset.fontAsset = value.empty() ? std::string(kDefaultUIFontAssetId) : value;
+                    } else if (field == "builtin") {
+                        preset.builtin = (value == "1" || value == "true" || value == "yes");
+                    } else if (field == "styleBlob") {
+                        ImGuiStyle decodedStyle = ImGui::GetStyle();
+                        if (DecodeStyleBlob(value, decodedStyle)) {
+                            preset.style = decodedStyle;
+                            preset.hasStyle = true;
+                        }
+                    }
+                }
+            }
         } else if (key.rfind("color.", 0) == 0) {
             std::string name = key.substr(6);
             auto it = colorIndex.find(name);
@@ -10779,6 +11382,28 @@ void Engine::loadEditorUserSettings() {
 
     clampOptionalPackageState(false);
 
+    std::vector<int> loadedPresetIndices;
+    loadedPresetIndices.reserve(loadedPresets.size());
+    for (const auto& entry : loadedPresets) {
+        loadedPresetIndices.push_back(entry.first);
+    }
+    std::sort(loadedPresetIndices.begin(), loadedPresetIndices.end());
+    for (int presetId : loadedPresetIndices) {
+        const LoadedStylePresetEntry& preset = loadedPresets[presetId];
+        if (preset.name.empty()) {
+            continue;
+        }
+        upsertUIStylePreset(
+            preset.name,
+            preset.hasStyle ? preset.style : ImGui::GetStyle(),
+            preset.fontAsset,
+            true);
+        const int idx = findUIStylePreset(preset.name);
+        if (idx >= 0) {
+            uiStylePresets[idx].builtin = preset.builtin;
+        }
+    }
+
     applyUIStylePresetByName(uiStylePresetName);
     ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; ++i) {
@@ -10786,12 +11411,7 @@ void Engine::loadEditorUserSettings() {
             style.Colors[i] = loadedColors[i];
         }
     }
-    style.Colors[ImGuiCol_Button] = ImVec4(0.22f, 0.23f, 0.32f, 1.00f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.28f, 0.30f, 0.42f, 1.00f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.33f, 0.36f, 0.48f, 1.00f);
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.21f, 0.30f, 1.00f);
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.26f, 0.28f, 0.40f, 1.00f);
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.30f, 0.34f, 0.46f, 1.00f);
+    applyEditorUIFontById(uiEditorFontAsset);
 
     applyWorkspacePreset(currentWorkspace, false);
     scriptingFilesDirty = true;
@@ -10815,6 +11435,7 @@ void Engine::saveEditorUserSettings() const {
     file << "# Editor UI settings\n";
     file << std::fixed << std::setprecision(4);
     file << "uiStyle=" << uiStylePresetName << "\n";
+    file << "uiEditorFont=" << uiEditorFontAsset << "\n";
     const char* animMode = "Off";
     if (uiAnimationMode == UIAnimationMode::Fluid) {
         animMode = "Fluid";
@@ -10941,6 +11562,18 @@ void Engine::saveEditorUserSettings() const {
     file << "scriptAutoCompileInterval=" << scriptAutoCompileInterval << "\n";
     file << "scriptAutoCompileOnSave=" << (scriptEditorState.autoCompileOnSave ? "1" : "0") << "\n";
     file << "audioPreviewVolume=" << std::clamp(audioPreviewVolume, 0.0f, 2.0f) << "\n";
+    file << "feedbackSoundsEnabled=" << (feedbackSoundsEnabled ? "1" : "0") << "\n";
+    file << "feedbackClickSoundsEnabled=" << (feedbackClickSoundsEnabled ? "1" : "0") << "\n";
+    file << "feedbackErrorSoundsEnabled=" << (feedbackErrorSoundsEnabled ? "1" : "0") << "\n";
+    file << "feedbackOtherSoundsEnabled=" << (feedbackOtherSoundsEnabled ? "1" : "0") << "\n";
+    file << "stylePresetCount=" << uiStylePresets.size() << "\n";
+    for (size_t i = 0; i < uiStylePresets.size(); ++i) {
+        const UIStylePreset& preset = uiStylePresets[i];
+        file << "stylePreset" << i << "_name=" << preset.name << "\n";
+        file << "stylePreset" << i << "_builtin=" << (preset.builtin ? "1" : "0") << "\n";
+        file << "stylePreset" << i << "_font=" << preset.fontAsset << "\n";
+        file << "stylePreset" << i << "_styleBlob=" << EncodeStyleBlob(preset.style) << "\n";
+    }
     const ImGuiStyle& style = ImGui::GetStyle();
     for (int i = 0; i < ImGuiCol_COUNT; ++i) {
         const ImVec4& c = style.Colors[i];

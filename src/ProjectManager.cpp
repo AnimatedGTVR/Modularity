@@ -1,4 +1,5 @@
 #include "ProjectManager.h"
+#include "SceneSerializationInternal.h"
 #include "Rendering.h"
 #include "ModelLoader.h"
 #include <algorithm>
@@ -12,8 +13,6 @@
 ObjectType GetLegacyTypeFromComponents(const SceneObject& obj);
 
 namespace {
-constexpr int kSceneFormatVersion = 25;
-
 std::string TrimCopy(const std::string& value) {
     const size_t first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -85,7 +84,7 @@ ScriptSetting* FindScriptSetting(ScriptComponent& script, const std::string& key
 }
 
 void UpgradeLegacyScriptSettings(int sceneVersion, std::vector<SceneObject>& objects) {
-    if (sceneVersion >= kSceneFormatVersion) {
+    if (sceneVersion >= SceneSerializationInternal::kModularSceneFormatVersion) {
         return;
     }
 
@@ -453,18 +452,14 @@ bool ProjectManager::loadProject(const std::string& path) {
     return false;
 }
 
-// SceneSerializer implementation
-bool SceneSerializer::saveScene(const fs::path& filePath,
-                                const std::vector<SceneObject>& objects,
-                                int nextId,
-                                float timeOfDay,
-                                const SkyboxSettings& skyboxSettings) {
+bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
+                                                        const std::vector<SceneObject>& objects,
+                                                        int nextId,
+                                                        float timeOfDay,
+                                                        const SkyboxSettings& skyboxSettings) {
     try {
-        std::ofstream file(filePath);
-        if (!file.is_open()) return false;
-
         file << "# Scene File\n";
-        file << "version=" << kSceneFormatVersion << "\n";
+        file << "version=" << SceneSerializationInternal::kLegacySceneFormatVersion << "\n";
         file << "nextId=" << nextId << "\n";
         file << "timeOfDay=" << timeOfDay << "\n";
         file << "skyboxMode=" << static_cast<int>(skyboxSettings.mode) << "\n";
@@ -486,6 +481,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             ObjectType legacyType = GetLegacyTypeFromComponents(obj);
             file << "type=" << static_cast<int>(legacyType) << "\n";
             file << "enabled=" << (obj.enabled ? 1 : 0) << "\n";
+            file << "invariable=" << (obj.IsInvariable ? 1 : 0) << "\n";
             file << "layer=" << obj.layer << "\n";
             file << "tag=" << obj.tag << "\n";
             file << "hasRenderer=" << (obj.hasRenderer ? 1 : 0) << "\n";
@@ -863,6 +859,7 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             file << "uiButtonStyle=" << static_cast<int>(obj.ui.buttonStyle) << "\n";
             file << "uiStylePreset=" << obj.ui.stylePreset << "\n";
             file << "uiTextScale=" << obj.ui.textScale << "\n";
+            file << "uiTextFont=" << obj.ui.textFont << "\n";
             file << "uiTextWrap=" << (obj.ui.textAutoWrap ? 1 : 0) << "\n";
             file << "uiTextHAlign=" << static_cast<int>(obj.ui.textHAlign) << "\n";
             file << "uiTextVAlign=" << static_cast<int>(obj.ui.textVAlign) << "\n";
@@ -1037,11 +1034,36 @@ bool SceneSerializer::saveScene(const fs::path& filePath,
             }
             file << "\n\n";
         }
-
-        file.close();
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to save scene: " << e.what() << std::endl;
+        std::cerr << "Failed to write legacy scene stream: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool SceneSerializationInternal::SaveLegacyScene(const fs::path& filePath,
+                                                 const std::vector<SceneObject>& objects,
+                                                 int nextId,
+                                                 float timeOfDay,
+                                                 const SkyboxSettings& skyboxSettings,
+                                                 SceneSerializer::Metadata* metadata) {
+    try {
+        std::ofstream file(filePath);
+        if (!file.is_open()) return false;
+        if (!WriteLegacySceneStream(file, objects, nextId, timeOfDay, skyboxSettings)) {
+            return false;
+        }
+        file.close();
+        if (metadata) {
+            metadata->version = SceneSerializationInternal::kLegacySceneFormatVersion;
+            metadata->fileFormat = SceneSerializer::FileFormat::LegacyFlat;
+            metadata->loadedFromLegacyLayout = true;
+            metadata->upgradedToModularLayout = false;
+            metadata->sourcePath = filePath;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to save legacy scene: " << e.what() << std::endl;
         return false;
     }
 }
@@ -1112,109 +1134,6 @@ void ApplyModelRootTransform(SceneObject& obj, const ModelSceneData& sceneData) 
     obj.scale = obj.localScale;
 }
 
-void ApplyLegacyTypePreset(SceneObject& obj, ObjectType legacyType) {
-    obj.type = legacyType;
-    switch (legacyType) {
-        case ObjectType::Cube:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Cube;
-            break;
-        case ObjectType::Sphere:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Sphere;
-            break;
-        case ObjectType::Capsule:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Capsule;
-            break;
-        case ObjectType::OBJMesh:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::OBJMesh;
-            break;
-        case ObjectType::Model:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Model;
-            break;
-        case ObjectType::Mirror:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Mirror;
-            break;
-        case ObjectType::Plane:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Plane;
-            break;
-        case ObjectType::Torus:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Torus;
-            break;
-        case ObjectType::Sprite:
-            obj.hasRenderer = true;
-            obj.renderType = RenderType::Sprite;
-            break;
-        case ObjectType::Sprite25D:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Sprite2D;
-            break;
-        case ObjectType::Light2D:
-            obj.hasLight2D = true;
-            obj.light2D.type = Light2DType::Point;
-            break;
-        case ObjectType::ShadowCaster2D:
-            obj.hasShadowCaster2D = true;
-            break;
-        case ObjectType::DirectionalLight:
-            obj.hasLight = true;
-            obj.light.type = LightType::Directional;
-            break;
-        case ObjectType::PointLight:
-            obj.hasLight = true;
-            obj.light.type = LightType::Point;
-            break;
-        case ObjectType::SpotLight:
-            obj.hasLight = true;
-            obj.light.type = LightType::Spot;
-            break;
-        case ObjectType::AreaLight:
-            obj.hasLight = true;
-            obj.light.type = LightType::Area;
-            break;
-        case ObjectType::Camera:
-            obj.hasCamera = true;
-            obj.camera.type = SceneCameraType::Player;
-            break;
-        case ObjectType::PostFXNode:
-            obj.hasPostFX = true;
-            break;
-        case ObjectType::Canvas:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Canvas;
-            break;
-        case ObjectType::UIImage:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Image;
-            break;
-        case ObjectType::UISlider:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Slider;
-            break;
-        case ObjectType::UIButton:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Button;
-            break;
-        case ObjectType::UIText:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Text;
-            break;
-        case ObjectType::Sprite2D:
-            obj.hasUI = true;
-            obj.ui.type = UIElementType::Sprite2D;
-            break;
-        case ObjectType::Empty:
-        default:
-            break;
-    }
-}
-
 using KeyHandler = void (*)(SceneObject&, const std::string&);
 
 const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
@@ -1222,9 +1141,10 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"id", +[](SceneObject& obj, const std::string& value) { obj.id = std::stoi(value); }},
         {"name", +[](SceneObject& obj, const std::string& value) { obj.name = value; }},
         {"type", +[](SceneObject& obj, const std::string& value) {
-             ApplyLegacyTypePreset(obj, static_cast<ObjectType>(std::stoi(value)));
+             obj.type = static_cast<ObjectType>(std::stoi(value));
          }},
         {"enabled", +[](SceneObject& obj, const std::string& value) { obj.enabled = (std::stoi(value) != 0); }},
+        {"invariable", +[](SceneObject& obj, const std::string& value) { obj.IsInvariable = (std::stoi(value) != 0); }},
         {"layer", +[](SceneObject& obj, const std::string& value) { obj.layer = std::stoi(value); }},
         {"tag", +[](SceneObject& obj, const std::string& value) { obj.tag = value; }},
         {"hasRenderer", +[](SceneObject& obj, const std::string& value) { obj.hasRenderer = std::stoi(value) != 0; }},
@@ -1556,6 +1476,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiButtonStyle", +[](SceneObject& obj, const std::string& value) { obj.ui.buttonStyle = static_cast<UIButtonStyle>(std::stoi(value)); }},
         {"uiStylePreset", +[](SceneObject& obj, const std::string& value) { obj.ui.stylePreset = value; }},
         {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
+        {"uiTextFont", +[](SceneObject& obj, const std::string& value) { obj.ui.textFont = value; }},
         {"uiTextWrap", +[](SceneObject& obj, const std::string& value) { obj.ui.textAutoWrap = (std::stoi(value) != 0); }},
         {"uiTextHAlign", +[](SceneObject& obj, const std::string& value) {
              obj.ui.textHAlign = static_cast<UITextHAlign>(std::clamp(std::stoi(value), 0, 2));
@@ -1860,22 +1781,32 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
     return ObjectType::Empty;
 }
 
-bool SceneSerializer::loadScene(const fs::path& filePath,
-                               std::vector<SceneObject>& objects,
-                               int& nextId,
-                               int& outVersion,
-                               float* outTimeOfDay,
-                               SkyboxSettings* outSkyboxSettings) {
+bool SceneSerializationInternal::LoadLegacySceneStream(std::istream& file,
+                                                       std::vector<SceneObject>& objects,
+                                                       int& nextId,
+                                                       int& outVersion,
+                                                       float* outTimeOfDay,
+                                                       SkyboxSettings* outSkyboxSettings,
+                                                       bool deferAssetLoading,
+                                                       SceneSerializer::Metadata* outMetadata) {
     try {
-        std::ifstream file(filePath);
-        if (!file.is_open()) return false;
-
         objects.clear();
         std::string line;
         SceneObject* currentObj = nullptr;
         int sceneVersion = 20;
         float sceneTimeOfDay = -1.0f;
         SkyboxSettings sceneSkyboxSettings;
+
+        struct DeferGuard {
+            bool previous = false;
+            explicit DeferGuard(bool enable) {
+                previous = g_deferSceneAssetLoading;
+                g_deferSceneAssetLoading = enable;
+            }
+            ~DeferGuard() {
+                g_deferSceneAssetLoading = previous;
+            }
+        } guard(deferAssetLoading);
 
         while (std::getline(file, line)) {
             size_t first = line.find_first_not_of(" \t\r\n");
@@ -2109,7 +2040,6 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
             }
         }
 
-        file.close();
         for (auto& obj : objects) {
             EnsureInspectorComponentMetadata(obj);
             if (!obj.hasAnimation) {
@@ -2134,30 +2064,44 @@ bool SceneSerializer::loadScene(const fs::path& filePath,
         if (outSkyboxSettings) {
             *outSkyboxSettings = sceneSkyboxSettings;
         }
+        if (outMetadata) {
+            outMetadata->version = sceneVersion;
+            outMetadata->fileFormat = SceneSerializer::FileFormat::LegacyFlat;
+            outMetadata->loadedFromLegacyLayout = true;
+            outMetadata->upgradedToModularLayout = false;
+        }
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to load scene: " << e.what() << std::endl;
+        std::cerr << "Failed to load legacy scene stream: " << e.what() << std::endl;
         return false;
     }
 }
 
-bool SceneSerializer::loadSceneDeferred(const fs::path& filePath,
-                                       std::vector<SceneObject>& objects,
-                                       int& nextId,
-                                       int& outVersion,
-                                       float* outTimeOfDay,
-                                       SkyboxSettings* outSkyboxSettings) {
-    struct DeferGuard {
-        bool previous = false;
-        explicit DeferGuard(bool enable) {
-            previous = g_deferSceneAssetLoading;
-            g_deferSceneAssetLoading = enable;
+bool SceneSerializationInternal::LoadLegacyScene(const fs::path& filePath,
+                                                 std::vector<SceneObject>& objects,
+                                                 int& nextId,
+                                                 int& outVersion,
+                                                 float* outTimeOfDay,
+                                                 SkyboxSettings* outSkyboxSettings,
+                                                 bool deferAssetLoading,
+                                                 SceneSerializer::Metadata* outMetadata) {
+    try {
+        std::ifstream file(filePath);
+        if (!file.is_open()) return false;
+        const bool loaded = LoadLegacySceneStream(file,
+                                                  objects,
+                                                  nextId,
+                                                  outVersion,
+                                                  outTimeOfDay,
+                                                  outSkyboxSettings,
+                                                  deferAssetLoading,
+                                                  outMetadata);
+        if (loaded && outMetadata) {
+            outMetadata->sourcePath = filePath;
         }
-        ~DeferGuard() {
-            g_deferSceneAssetLoading = previous;
-        }
-    };
-
-    DeferGuard guard(true);
-    return loadScene(filePath, objects, nextId, outVersion, outTimeOfDay, outSkyboxSettings);
+        return loaded;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load legacy scene: " << e.what() << std::endl;
+        return false;
+    }
 }

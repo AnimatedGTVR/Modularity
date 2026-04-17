@@ -756,6 +756,13 @@ void updateTouchSwipeScrolling() {
     static TouchSwipeRuntimeState runtime;
 
     const bool touchScreenMode = (io.ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+    if (!touchScreenMode) {
+        runtime.windowStates.clear();
+        runtime.activeWindowId = 0;
+        runtime.dragging = false;
+        return;
+    }
+
     const bool hasWheelInput = std::abs(io.MouseWheelH) > 0.0001f || std::abs(io.MouseWheel) > 0.0001f;
     ImVec2 wheel(io.MouseWheelH, io.MouseWheel);
     if (io.MouseWheelRequestAxisSwap) {

@@ -621,9 +621,7 @@ void Engine::renderRegistryPackagesWindow() {
             clampOptionalPackageState(false);
             registryPackageFeedback = "Installed " + selectedPackage->id + " into the current project.";
             registryPackageLastActionSucceeded = true;
-            if (audio.isReady()) {
-                audio.playPreview("Resources/Sounds/Modupak Success installed.mp3", 0.95f, false);
-            }
+            playEditorFeedbackPreview("Resources/Sounds/Modupak Success installed.mp3", 0.95f, false, EditorFeedbackSoundCategory::Other);
             addConsoleMessage(registryPackageFeedback, ConsoleMessageType::Success);
         } else {
             registryPackageFeedback = packageManager.getLastError();
@@ -639,9 +637,7 @@ void Engine::renderRegistryPackagesWindow() {
         if (packageManager.installRegistryPackageGlobally(selectedPackage->id)) {
             registryPackageFeedback = "Installed " + selectedPackage->id + " into the global package store.";
             registryPackageLastActionSucceeded = true;
-            if (audio.isReady()) {
-                audio.playPreview("Resources/Sounds/Modupak Success installed.mp3", 0.95f, false);
-            }
+            playEditorFeedbackPreview("Resources/Sounds/Modupak Success installed.mp3", 0.95f, false, EditorFeedbackSoundCategory::Other);
             addConsoleMessage(registryPackageFeedback, ConsoleMessageType::Success);
         } else {
             registryPackageFeedback = packageManager.getLastError();
