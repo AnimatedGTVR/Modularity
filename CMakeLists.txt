@@ -453,6 +453,8 @@ else()
         target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
         if(MSVC)
             target_link_options(Modularity PRIVATE
+                "$<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>"
+                "$<$<NOT:$<CONFIG:Debug>>:/SUBSYSTEM:WINDOWS>"
                 "/WHOLEARCHIVE:$<TARGET_FILE:core>"
                 "/WHOLEARCHIVE:$<TARGET_FILE:imgui>"
             )
@@ -461,6 +463,8 @@ else()
     target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
     if(MSVC)
         target_link_options(ModularityPlayer PRIVATE
+            "$<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>"
+            "$<$<NOT:$<CONFIG:Debug>>:/SUBSYSTEM:WINDOWS>"
             "/WHOLEARCHIVE:$<TARGET_FILE:core_player>"
             "/WHOLEARCHIVE:$<TARGET_FILE:imgui>"
         )

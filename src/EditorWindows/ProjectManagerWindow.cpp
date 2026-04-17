@@ -824,7 +824,9 @@ void Engine::renderTermsOfServiceModal() {
 #pragma region Launcher
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 displaySize = io.DisplaySize;
+    ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    ImVec2 displaySize = mainViewport ? mainViewport->Size : io.DisplaySize;
+    ImVec2 displayPos = mainViewport ? mainViewport->Pos : ImVec2(0.0f, 0.0f);
     const double now = glfwGetTime();
     if (!launcherIntroStarted) {
         launcherIntroStarted = true;
@@ -842,7 +844,7 @@ void Engine::renderLauncher() {
         introState = EvaluateLauncherIntro(now, launcherIntroStartTime, true, introTimings);
     }
 
-    const float transitionDuration = 0.45f;
+    const float transitionDuration = 0.20f;
     float transitionT = 0.0f;
     if (launcherTransitionActive) {
         transitionT = ImClamp(static_cast<float>((now - launcherTransitionStartTime) / transitionDuration), 0.0f, 1.0f);
@@ -869,7 +871,10 @@ void Engine::renderLauncher() {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    if (mainViewport) {
+        ImGui::SetNextWindowViewport(mainViewport->ID);
+    }
+    ImGui::SetNextWindowPos(displayPos);
     ImGui::SetNextWindowSize(displaySize);
 
     ImGuiWindowFlags flags =
@@ -878,6 +883,7 @@ void Engine::renderLauncher() {
         ImGuiWindowFlags_NoMove     |
         ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoDocking  |
+        ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     if (ImGui::Begin("Launcher", nullptr, flags)) {
@@ -1908,20 +1914,31 @@ void Engine::renderLauncher() {
         float elapsed = static_cast<float>(glfwGetTime() - projectLoadStartTime);
         if (elapsed > 0.15f) {
             ImGuiIO& io = ImGui::GetIO();
-            ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGuiViewport* overlayViewport = ImGui::GetMainViewport();
+            const ImVec2 overlayPos = overlayViewport ? overlayViewport->Pos : ImVec2(0.0f, 0.0f);
+            const ImVec2 overlaySize = overlayViewport ? overlayViewport->Size : io.DisplaySize;
+            if (overlayViewport) {
+                ImGui::SetNextWindowViewport(overlayViewport->ID);
+            }
+            ImGui::SetNextWindowPos(overlayPos);
+            ImGui::SetNextWindowSize(overlaySize);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.65f));
             ImGui::Begin("ProjectLoadOverlay", nullptr,
                          ImGuiWindowFlags_NoTitleBar |
                          ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoInputs);
             ImGui::End();
             ImGui::PopStyleColor();
 
-            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            ImVec2 center = overlayViewport ? overlayViewport->GetCenter()
+                                            : ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            if (overlayViewport) {
+                ImGui::SetNextWindowViewport(overlayViewport->ID);
+            }
             ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(ImVec2(420, 160));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f);
@@ -1973,13 +1990,18 @@ void Engine::renderLauncher() {
 #pragma region New Project Dialog
 void Engine::renderNewProjectDialog() {
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    ImVec2 center = mainViewport ? mainViewport->GetCenter()
+                                 : ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
+    if (mainViewport) {
+        ImGui::SetNextWindowViewport(mainViewport->ID);
+    }
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(560, 390), ImGuiCond_Appearing);
 
     if (ImGui::Begin("New Project", &projectManager.showNewProjectDialog,
-                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
+                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings)) {
 
         ImGui::Text("Project Name:");
         ImGui::SetNextItemWidth(-1);
@@ -2089,13 +2111,18 @@ void Engine::renderNewProjectDialog() {
 #pragma region Open Project Dialog
 void Engine::renderOpenProjectDialog() {
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+    ImVec2 center = mainViewport ? mainViewport->GetCenter()
+                                 : ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
+    if (mainViewport) {
+        ImGui::SetNextWindowViewport(mainViewport->ID);
+    }
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(500, 180), ImGuiCond_Appearing);
 
     if (ImGui::Begin("Open Project", &projectManager.showOpenProjectDialog,
-                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking)) {
+                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings)) {
 
         ImGui::Text("Project File Path (.modu):");
         ImGui::SetNextItemWidth(-70);

@@ -6811,7 +6811,11 @@ void Engine::pollSceneLoad() {
         return;
     }
 
+#if defined(_WIN32)
+    constexpr size_t kAssetsPerFrame = 3;
+#else
     constexpr size_t kAssetsPerFrame = 1;
+#endif
     size_t processed = 0;
     while (sceneLoadAssetsDone < sceneLoadAssetIndices.size() && processed < kAssetsPerFrame) {
         size_t objIndex = sceneLoadAssetIndices[sceneLoadAssetsDone];
