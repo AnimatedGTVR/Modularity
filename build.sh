@@ -426,6 +426,10 @@ detect_package_manager() {
         pkg_prefix=()
     elif command -v sudo >/dev/null 2>&1; then
         pkg_prefix=(sudo)
+    
+    elif command -v doas >/dev/null 2>&1; then
+        pkg_prefix=(doas)
+
     else
         pkg_prefix=()
     fi
