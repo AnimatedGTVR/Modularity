@@ -6395,7 +6395,7 @@ void Engine::renderMainMenuBar() {
 
     if (ImGui::BeginMenu("Help")) {
       if (ImGui::MenuItem("About")) {
-        logToConsole("Modularity Engine - V6.7\nThis build may still have "
+        logToConsole("Modularity Engine - V6.8\nThis build may still have "
                      "issues,\n\nif you'd like to report any bugs or missing "
                      "features, feel free to contact us!");
       }
@@ -8496,12 +8496,16 @@ void Engine::renderViewport() {
             maskMax.x = std::min(maskMax.x, overlayPos.x + overlaySize.x);
             maskMax.y = std::min(maskMax.y, overlayPos.y + overlaySize.y);
             if (maskMax.x <= maskMin.x || maskMax.y <= maskMin.y) {
+              if (fontApplied)
+                ImGui::PopFont();
               if (styleApplied)
                 ImGui::GetStyle() = savedStyle;
               continue;
             }
             if (drawMax.x <= maskMin.x || drawMin.x >= maskMax.x ||
                 drawMax.y <= maskMin.y || drawMin.y >= maskMax.y) {
+              if (fontApplied)
+                ImGui::PopFont();
               if (styleApplied)
                 ImGui::GetStyle() = savedStyle;
               continue;
@@ -8526,6 +8530,8 @@ void Engine::renderViewport() {
               ImGui::PopClipRect();
             }
             ImGui::PopID();
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -13051,14 +13057,19 @@ void Engine::renderViewport() {
       const float lw2 = 2.0f * gizmoOverlayScaleClamped;
 
       auto forwardFromRotation = [](const SceneObject &obj) {
+        glm::mat4 rotation(1.0f);
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.x),
+                               glm::vec3(1.0f, 0.0f, 0.0f));
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.y),
+                               glm::vec3(0.0f, 1.0f, 0.0f));
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.z),
+                               glm::vec3(0.0f, 0.0f, 1.0f));
         glm::vec3 f = glm::normalize(
-            glm::vec3(glm::sin(glm::radians(obj.rotation.y)) *
-                          glm::cos(glm::radians(obj.rotation.x)),
-                      glm::sin(glm::radians(obj.rotation.x)),
-                      glm::cos(glm::radians(obj.rotation.y)) *
-                          glm::cos(glm::radians(obj.rotation.x))));
-        if (glm::length(f) < 1e-3f || !std::isfinite(f.x))
-          f = glm::vec3(0.0f, -1.0f, 0.0f);
+            glm::vec3(rotation * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
+        if (glm::length(f) < 1e-3f || !std::isfinite(f.x) ||
+            !std::isfinite(f.y) || !std::isfinite(f.z)) {
+          f = glm::vec3(0.0f, 0.0f, 1.0f);
+        }
         return f;
       };
 
@@ -13475,6 +13486,44 @@ void Engine::renderViewport() {
                     IM_COL32(255, 238, 180, fgA), brightness);
       }
     };
+    auto drawPlayerControllerGroundProbe = [&]() {
+      if (activePlayerId < 0 ||
+          playerControllerGroundProbeDebug.playerId != activePlayerId) {
+        return;
+      }
+
+      const SceneObject *playerObj = nullptr;
+      for (const auto &obj : sceneObjects) {
+        if (obj.id == activePlayerId) {
+          playerObj = &obj;
+          break;
+        }
+      }
+      if (!playerObj || !playerObj->hasPlayerController ||
+          !playerObj->playerController.enabled) {
+        return;
+      }
+
+      auto screenStart = projectToScreen(playerControllerGroundProbeDebug.rayStart);
+      auto screenEnd = projectToScreen(playerControllerGroundProbeDebug.hasHit
+                                           ? playerControllerGroundProbeDebug.hitPos
+                                           : playerControllerGroundProbeDebug.rayEnd);
+      if (!screenStart || !screenEnd) {
+        return;
+      }
+
+      ImDrawList *dl = ImGui::GetWindowDrawList();
+      const ImU32 lineColor = playerControllerGroundProbeDebug.hasHit
+                                  ? IM_COL32(92, 255, 174, 220)
+                                  : IM_COL32(255, 183, 92, 220);
+      const ImU32 startColor = IM_COL32(210, 245, 255, 230);
+      const ImU32 endColor = playerControllerGroundProbeDebug.hasHit
+                                 ? IM_COL32(92, 255, 174, 240)
+                                 : IM_COL32(255, 183, 92, 240);
+      dl->AddLine(*screenStart, *screenEnd, lineColor, 2.4f);
+      dl->AddCircleFilled(*screenStart, 3.5f, startColor);
+      dl->AddCircleFilled(*screenEnd, 3.5f, endColor);
+    };
     auto drawWireCube = [&](const glm::mat4 &worldFromLocal,
                             const glm::vec3 &localMin,
                             const glm::vec3 &localMax, ImU32 color,
@@ -13684,6 +13733,7 @@ void Engine::renderViewport() {
       for (const auto &obj : sceneObjects) {
         drawMainTypeGizmoIcon(obj);
       }
+      drawPlayerControllerGroundProbe();
     }
 
     viewportDrawList->PopClipRect();
@@ -15292,6 +15342,8 @@ void Engine::renderUiCanvas3DTargets() {
           }
           if (drawMax.x <= maskMin.x || drawMin.x >= maskMax.x ||
               drawMax.y <= maskMin.y || drawMin.y >= maskMax.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -16548,6 +16600,8 @@ void Engine::renderPlayerViewport() {
           maskMax.x = std::min(maskMax.x, overlayPos.x + overlaySize.x);
           maskMax.y = std::min(maskMax.y, overlayPos.y + overlaySize.y);
           if (maskMax.x <= maskMin.x || maskMax.y <= maskMin.y) {
+            if (fontApplied)
+              ImGui::PopFont();
             if (styleApplied)
               ImGui::GetStyle() = savedStyle;
             continue;
@@ -16580,6 +16634,8 @@ void Engine::renderPlayerViewport() {
             ImGui::PopClipRect();
           }
           ImGui::PopID();
+          if (fontApplied)
+            ImGui::PopFont();
           if (styleApplied)
             ImGui::GetStyle() = savedStyle;
           continue;

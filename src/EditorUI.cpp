@@ -358,7 +358,7 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
     
     // Shader files
     if (ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" ||
-        ext == ".shader") {
+        ext == ".shader" || ext == ".modushader") {
         return FileCategory::Shader;
     }
     

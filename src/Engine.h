@@ -20,6 +20,7 @@
 #include "ManagedScriptRuntime.h"
 #include "Profiler.h"
 #include "SpritesheetFormat.h"
+#include "VideoPlayer.h"
 #if !MODULARITY_RUNTIME_ONLY
 #include "ThirdParty/ImGuiColorTextEdit/TextEditor.h"
 #endif
@@ -30,6 +31,7 @@
 #include <atomic>
 #include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <cstdint>
@@ -114,10 +116,16 @@ private:
     std::string inspectedAlbedo;
     std::string inspectedOverlay;
     std::string inspectedNormal;
+    std::string inspectedShaderPack;
     std::string inspectedVertShader;
     std::string inspectedFragShader;
     bool inspectedUseOverlay = false;
     bool inspectedMaterialValid = false;
+    bool materialColorSamplerActive = false;
+    bool materialColorSamplerAwaitMouseRelease = false;
+    bool materialColorSamplerHasResult = false;
+    std::string materialColorSamplerTargetId;
+    glm::vec4 materialColorSamplerResult = glm::vec4(1.0f);
     struct SceneSnapshot {
         std::vector<SceneObject> objects;
         std::vector<int> selectedIds;
@@ -133,6 +141,7 @@ private:
     PlayModeSnapshot playModeSnapshot;
 
     std::vector<SceneObject> sceneObjects;
+    std::unordered_map<int, std::unique_ptr<VideoPlayer>> videoPlayers;
     std::unordered_map<int, size_t> sceneObjectIndexById;
     const SceneObject* sceneObjectIndexData = nullptr;
     size_t sceneObjectIndexCount = 0;
@@ -385,6 +394,14 @@ private:
     bool gizmoShowShadowCaster2DBounds = true;
     float sceneGizmoIconScale = 1.0f;
     float sceneGizmoOverlayScale = 1.0f;
+    struct PlayerControllerGroundProbeDebug {
+        int playerId = -1;
+        glm::vec3 rayStart = glm::vec3(0.0f);
+        glm::vec3 rayEnd = glm::vec3(0.0f);
+        glm::vec3 hitPos = glm::vec3(0.0f);
+        bool hasHit = false;
+    };
+    PlayerControllerGroundProbeDebug playerControllerGroundProbeDebug;
     bool showGameViewport = true;
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
@@ -922,6 +939,8 @@ private:
     void updatePlayerController(float delta);
     void updateRigidbody2D(float delta);
     void updateCameraFollow2D(float delta);
+    void syncVideoPlayers(float delta);
+    void clearVideoPlayers();
     void updateRuntimeAnimations(float delta);
     void updateAIAgents(float delta);
     void updateSkeletalAnimations(float delta);
@@ -1061,11 +1080,13 @@ private:
     bool loadMaterialData(const std::string& path, MaterialProperties& props,
                           std::string& albedo, std::string& overlay,
                           std::string& normal, bool& useOverlay,
+                          std::string* shaderPackOut = nullptr,
                           std::string* vertexShaderOut = nullptr,
                           std::string* fragmentShaderOut = nullptr);
     bool saveMaterialData(const std::string& path, const MaterialProperties& props,
                           const std::string& albedo, const std::string& overlay,
                           const std::string& normal, bool useOverlay,
+                          const std::string& shaderPack,
                           const std::string& vertexShader,
                           const std::string& fragmentShader);
     bool hasInstalledPackage(const char* id) const;

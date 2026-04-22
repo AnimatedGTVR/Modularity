@@ -597,6 +597,14 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "audioCustomMidGain=" << obj.audioSource.customMidGain << "\n";
                 file << "audioCustomEndGain=" << obj.audioSource.customEndGain << "\n";
             }
+            file << "hasVideoPlayer=" << (obj.hasVideoPlayer ? 1 : 0) << "\n";
+            if (obj.hasVideoPlayer) {
+                file << "videoEnabled=" << (obj.videoPlayer.enabled ? 1 : 0) << "\n";
+                file << "videoPath=" << obj.videoPlayer.videoPath << "\n";
+                file << "videoPlayOnAwake=" << (obj.videoPlayer.playOnAwake ? 1 : 0) << "\n";
+                file << "videoLoop=" << (obj.videoPlayer.loop ? 1 : 0) << "\n";
+                file << "videoPlaybackSpeed=" << obj.videoPlayer.playbackSpeed << "\n";
+            }
             file << "hasReverbZone=" << (obj.hasReverbZone ? 1 : 0) << "\n";
             if (obj.hasReverbZone) {
                 file << "reverbEnabled=" << (obj.reverbZone.enabled ? 1 : 0) << "\n";
@@ -730,11 +738,14 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
             file << "materialShininess=" << obj.material.shininess << "\n";
             file << "materialTextureMix=" << obj.material.textureMix << "\n";
+            file << "materialUvTiling=" << obj.material.uvTiling.x << "," << obj.material.uvTiling.y << "\n";
+            file << "materialUvOffset=" << obj.material.uvOffset.x << "," << obj.material.uvOffset.y << "\n";
             file << "materialTextureFilter=" << static_cast<int>(obj.material.textureFilter) << "\n";
             file << "materialPath=" << obj.materialPath << "\n";
             file << "albedoTex=" << obj.albedoTexturePath << "\n";
             file << "overlayTex=" << obj.overlayTexturePath << "\n";
             file << "normalMap=" << obj.normalMapPath << "\n";
+            file << "shaderPack=" << obj.shaderPackPath << "\n";
             file << "vertexShader=" << obj.vertexShaderPath << "\n";
             file << "fragmentShader=" << obj.fragmentShaderPath << "\n";
             file << "useOverlay=" << (obj.useOverlay ? 1 : 0) << "\n";
@@ -776,6 +787,7 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "lightSoftShadows=" << (obj.light.softShadows ? 1 : 0) << "\n";
             file << "lightShadowBias=" << obj.light.shadowBias << "\n";
             file << "lightShadowSoftness=" << obj.light.shadowSoftness << "\n";
+            file << "lightShadowResolution=" << obj.light.shadowResolution << "\n";
             file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
             if (obj.hasLight2D) {
                 file << "light2dEnabled=" << (obj.light2D.enabled ? 1 : 0) << "\n";
@@ -1268,6 +1280,12 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"audioCustomMidDistance", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customMidDistance = std::stof(value); }},
         {"audioCustomMidGain", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customMidGain = std::stof(value); }},
         {"audioCustomEndGain", +[](SceneObject& obj, const std::string& value) { obj.audioSource.customEndGain = std::stof(value); }},
+        {"hasVideoPlayer", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = std::stoi(value) != 0; }},
+        {"videoEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.enabled = std::stoi(value) != 0; }},
+        {"videoPath", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.videoPath = value; }},
+        {"videoPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playOnAwake = std::stoi(value) != 0; }},
+        {"videoLoop", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.loop = std::stoi(value) != 0; }},
+        {"videoPlaybackSpeed", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playbackSpeed = std::stof(value); }},
         {"hasReverbZone", +[](SceneObject& obj, const std::string& value) { obj.hasReverbZone = std::stoi(value) != 0; }},
         {"reverbEnabled", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.enabled = std::stoi(value) != 0; }},
         {"reverbPreset", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.preset = static_cast<ReverbPreset>(std::stoi(value)); }},
@@ -1363,6 +1381,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"materialSpecular", +[](SceneObject& obj, const std::string& value) { obj.material.specularStrength = std::stof(value); }},
         {"materialShininess", +[](SceneObject& obj, const std::string& value) { obj.material.shininess = std::stof(value); }},
         {"materialTextureMix", +[](SceneObject& obj, const std::string& value) { obj.material.textureMix = std::stof(value); }},
+        {"materialUvTiling", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvTiling); }},
+        {"materialUvOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvOffset); }},
         {"materialTextureFilter", +[](SceneObject& obj, const std::string& value) {
              int filterValue = std::stoi(value);
              obj.material.textureFilter = (filterValue == 1)
@@ -1373,6 +1393,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"albedoTex", +[](SceneObject& obj, const std::string& value) { obj.albedoTexturePath = value; }},
         {"overlayTex", +[](SceneObject& obj, const std::string& value) { obj.overlayTexturePath = value; }},
         {"normalMap", +[](SceneObject& obj, const std::string& value) { obj.normalMapPath = value; }},
+        {"shaderPack", +[](SceneObject& obj, const std::string& value) { obj.shaderPackPath = value; }},
         {"vertexShader", +[](SceneObject& obj, const std::string& value) { obj.vertexShaderPath = value; }},
         {"fragmentShader", +[](SceneObject& obj, const std::string& value) { obj.fragmentShaderPath = value; }},
         {"useOverlay", +[](SceneObject& obj, const std::string& value) { obj.useOverlay = (std::stoi(value) != 0); }},
@@ -1415,6 +1436,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"lightSoftShadows", +[](SceneObject& obj, const std::string& value) { obj.light.softShadows = (std::stoi(value) != 0); }},
         {"lightShadowBias", +[](SceneObject& obj, const std::string& value) { obj.light.shadowBias = std::stof(value); }},
         {"lightShadowSoftness", +[](SceneObject& obj, const std::string& value) { obj.light.shadowSoftness = std::stof(value); }},
+        {"lightShadowResolution", +[](SceneObject& obj, const std::string& value) { obj.light.shadowResolution = std::clamp(std::stoi(value), 0, 8192); }},
         {"lightEnabled", +[](SceneObject& obj, const std::string& value) { obj.light.enabled = (std::stoi(value) != 0); }},
         {"light2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.light2D.enabled = (std::stoi(value) != 0); obj.hasLight2D = true; }},
         {"light2dType", +[](SceneObject& obj, const std::string& value) { obj.light2D.type = static_cast<Light2DType>(std::stoi(value)); obj.hasLight2D = true; }},

@@ -67,6 +67,8 @@ struct MaterialProperties {
     float specularStrength = 0.5f;
     float shininess = 32.0f;
     float textureMix = 0.3f;  // Blend factor between albedo and overlay
+    glm::vec2 uvTiling = glm::vec2(1.0f);
+    glm::vec2 uvOffset = glm::vec2(0.0f);
     TextureFilter textureFilter = TextureFilter::Bilinear;
 };
 
@@ -330,6 +332,7 @@ struct LightComponent {
     bool softShadows = true;
     float shadowBias = 0.02f;
     float shadowSoftness = 0.04f;
+    int shadowResolution = 0; // 0 = use renderer default
     bool enabled = true;
 };
 
@@ -649,6 +652,14 @@ struct AudioSourceComponent {
     float customEndGain = 0.0f;
 };
 
+struct VideoPlayerComponent {
+    bool enabled = true;
+    std::string videoPath;
+    bool playOnAwake = true;
+    bool loop = true;
+    float playbackSpeed = 1.0f;
+};
+
 struct ReverbZoneComponent {
     bool enabled = true;
     ReverbPreset preset = ReverbPreset::Room;
@@ -747,6 +758,7 @@ public:
     std::string albedoTexturePath;
     std::string overlayTexturePath;
     std::string normalMapPath;
+    std::string shaderPackPath;
     std::string vertexShaderPath;
     std::string fragmentShaderPath;
     bool useOverlay = false;
@@ -773,6 +785,8 @@ public:
     PlayerControllerComponent playerController;
     bool hasAudioSource = false;
     AudioSourceComponent audioSource;
+    bool hasVideoPlayer = false;
+    VideoPlayerComponent videoPlayer;
     bool hasReverbZone = false;
     ReverbZoneComponent reverbZone;
     bool hasGroundBakedType = false;
@@ -790,6 +804,8 @@ public:
     bool hasRig25DNode = false;
     Rig25DNodeComponent rig25DNode;
     UIElementComponent ui;
+    bool runtimeHasAlbedoTextureOverride = false;
+    unsigned int runtimeAlbedoTextureOverrideId = 0;
     std::vector<std::string> inspectorComponentOrder;
     int nextInspectorScriptId = 1;
 
@@ -900,6 +916,7 @@ inline const std::vector<std::string>& GetDefaultInspectorComponentOrderTemplate
         "collider2d",
         "parallax2d",
         "audio_source",
+        "video_player",
         "ground_baked",
         "obstacle",
         "ai_agent",
@@ -937,7 +954,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     obj.nextInspectorScriptId = nextScriptId;
 
     std::vector<std::string> presentKeys;
-    presentKeys.reserve(23 + obj.scripts.size());
+    presentKeys.reserve(24 + obj.scripts.size());
     if (HasUIComponent(obj)) presentKeys.push_back("ui");
     if (obj.hasCollider) presentKeys.push_back("collider");
     if (obj.hasPlayerController) presentKeys.push_back("player_controller");
@@ -946,6 +963,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     if (obj.hasCollider2D) presentKeys.push_back("collider2d");
     if (obj.hasParallaxLayer2D) presentKeys.push_back("parallax2d");
     if (obj.hasAudioSource) presentKeys.push_back("audio_source");
+    if (obj.hasVideoPlayer) presentKeys.push_back("video_player");
     if (obj.hasGroundBakedType) presentKeys.push_back("ground_baked");
     if (obj.hasObsticleObject) presentKeys.push_back("obstacle");
     if (obj.hasAIAgent) presentKeys.push_back("ai_agent");

@@ -26,6 +26,7 @@ layout(location = 0) out vec4 fragColor;
 layout(push_constant) uniform ScenePushConstants {
     mat4 mvp;
     vec4 color;
+    vec4 uvTransform;
     vec4 params;
     vec4 lighting;
     vec4 objectPos;
@@ -35,10 +36,11 @@ void main() {
     bool hasOverlay = (uScene.params.z > 0.5);
     bool hasNormalMap = (uScene.lighting.w > 0.5);
     float mixAmount = clamp(uScene.params.x, 0.0, 1.0);
-    vec4 texel = texture(texture1, inTexCoord);
+    vec2 uv = inTexCoord * uScene.uvTransform.xy + uScene.uvTransform.zw;
+    vec4 texel = texture(texture1, uv);
     vec3 texColor = texel.rgb;
     if (hasOverlay) {
-        vec3 overlay = texture(overlayTex, inTexCoord).rgb;
+        vec3 overlay = texture(overlayTex, uv).rgb;
         texColor = mix(texColor, overlay, mixAmount);
     }
     vec3 baseColor = texColor * inColor.rgb;
@@ -52,7 +54,7 @@ void main() {
     vec3 N = normalize(inNormal);
     if (hasNormalMap) {
         // Approximate normal-map perturbation in object space for the procedural preview mesh.
-        vec3 mapN = texture(normalMap, inTexCoord).xyz * 2.0 - 1.0;
+        vec3 mapN = texture(normalMap, uv).xyz * 2.0 - 1.0;
         mapN = normalize(vec3(mapN.xy * 0.75, max(0.05, mapN.z)));
         N = normalize(mix(N, mapN, 0.65));
     }

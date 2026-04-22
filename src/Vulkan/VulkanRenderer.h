@@ -93,6 +93,8 @@ private:
         std::string overlayPath;
         std::string normalPath;
         float mixAmount = 0.3f;
+        glm::vec2 uvTiling = glm::vec2(1.0f);
+        glm::vec2 uvOffset = glm::vec2(0.0f);
         float ambientStrength = 0.2f;
         float specularStrength = 0.5f;
         float shininess = 32.0f;

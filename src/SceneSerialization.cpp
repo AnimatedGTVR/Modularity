@@ -436,9 +436,9 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             "",
             {
                 "materialColor", "materialAlpha", "materialAmbient", "materialSpecular",
-                "materialShininess", "materialTextureMix", "materialTextureFilter",
+                "materialShininess", "materialTextureMix", "materialUvTiling", "materialUvOffset", "materialTextureFilter",
                 "materialPath", "albedoTex", "overlayTex", "normalMap",
-                "vertexShader", "fragmentShader", "useOverlay", "additionalMaterialCount"
+                "shaderPack", "vertexShader", "fragmentShader", "useOverlay", "additionalMaterialCount"
             },
             {"additionalMaterial"},
             {},
@@ -449,11 +449,14 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"materialSpecular", "specular"},
                 {"materialShininess", "shininess"},
                 {"materialTextureMix", "textureMix"},
+                {"materialUvTiling", "uvTiling"},
+                {"materialUvOffset", "uvOffset"},
                 {"materialTextureFilter", "textureFilter"},
                 {"materialPath", "materialPath"},
                 {"albedoTex", "albedoTexture"},
                 {"overlayTex", "overlayTexture"},
                 {"normalMap", "normalMap"},
+                {"shaderPack", "shaderPack"},
                 {"vertexShader", "vertexShader"},
                 {"fragmentShader", "fragmentShader"},
                 {"useOverlay", "useOverlay"},
@@ -465,11 +468,14 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"specular", "materialSpecular"},
                 {"shininess", "materialShininess"},
                 {"textureMix", "materialTextureMix"},
+                {"uvTiling", "materialUvTiling"},
+                {"uvOffset", "materialUvOffset"},
                 {"textureFilter", "materialTextureFilter"},
                 {"materialPath", "materialPath"},
                 {"albedoTexture", "albedoTex"},
                 {"overlayTexture", "overlayTex"},
                 {"normalMap", "normalMap"},
+                {"shaderPack", "shaderPack"},
                 {"vertexShader", "vertexShader"},
                 {"fragmentShader", "fragmentShader"},
                 {"useOverlay", "useOverlay"},
@@ -588,6 +594,26 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             {},
             {},
             {}
+        },
+        {
+            "VideoPlayer",
+            "hasVideoPlayer",
+            "videoEnabled",
+            {"videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed"},
+            {},
+            {},
+            {
+                {"videoPath", "path"},
+                {"videoPlayOnAwake", "playOnAwake"},
+                {"videoLoop", "loop"},
+                {"videoPlaybackSpeed", "playbackSpeed"},
+            },
+            {
+                {"path", "videoPath"},
+                {"playOnAwake", "videoPlayOnAwake"},
+                {"loop", "videoLoop"},
+                {"playbackSpeed", "videoPlaybackSpeed"},
+            }
         },
         {
             "ReverbZone",
@@ -1199,6 +1225,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "hasAudioSource", "audioEnabled", "audioClip", "audioVolume", "audioLoop", "audioPlayOnStart", "audioSpatial",
             "audioSpatialBlend", "audioMinDistance", "audioMaxDistance", "audioRolloffMode", "audioRolloff", "audioCustomMidDistance",
             "audioCustomMidGain", "audioCustomEndGain",
+            "hasVideoPlayer", "videoEnabled", "videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed",
             "hasReverbZone", "reverbEnabled", "reverbPreset", "reverbShape", "reverbBox", "reverbRadius", "reverbBlend",
             "reverbMinDistance", "reverbMaxDistance", "reverbRoom", "reverbRoomHF", "reverbRoomLF", "reverbDecayTime", "reverbDecayHFRatio",
             "reverbReflections", "reverbReflectionsDelay", "reverbReverb", "reverbReverbDelay", "reverbHFReference", "reverbLFReference",
@@ -1210,6 +1237,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "hasRig25DRoot", "rig25dRootEnabled",
             "hasRig25DNode", "rig25dNodeEnabled", "rig25dNodeId", "rig25dNodeName",
             "hasAnimation", "animEnabled", "animClipAsset",
+            "hasVideoPlayer", "videoEnabled", "videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed",
             "animClipCount",
         };
         for (const std::string& key : fixedKeys) {
@@ -1263,7 +1291,8 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "hasSkeletalAnimation", "skelEnabled", "skelUseGpu", "skelAllowCpuFallback", "skelUseAnimation",
             "skelClipIndex", "skelPlaySpeed", "skelLoop", "skelMaxBones",
             "materialColor", "materialAlpha", "materialAmbient", "materialSpecular", "materialShininess", "materialTextureMix",
-            "materialTextureFilter", "materialPath", "albedoTex", "overlayTex", "normalMap", "vertexShader", "fragmentShader",
+            "materialUvTiling", "materialUvOffset",
+            "materialTextureFilter", "materialPath", "albedoTex", "overlayTex", "normalMap", "shaderPack", "vertexShader", "fragmentShader",
             "useOverlay", "additionalMaterialCount"
         };
         for (const std::string& key : postAnimationKeys) {
@@ -1278,7 +1307,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
         const std::vector<std::string> postMaterialKeys = {
             "nextInspectorScriptId", "componentOrder", "scripts", "scriptCount",
             "lightColor", "lightType", "lightIntensity", "lightRange", "lightEdgeFade", "lightInner", "lightOuter",
-            "lightSize", "lightCastShadows", "lightSoftShadows", "lightShadowBias", "lightShadowSoftness", "lightEnabled",
+            "lightSize", "lightCastShadows", "lightSoftShadows", "lightShadowBias", "lightShadowSoftness", "lightShadowResolution", "lightEnabled",
             "light2dEnabled", "light2dType", "light2dColor", "light2dIntensity", "light2dRadius", "light2dInnerRadius",
             "light2dOuterRadius", "light2dFalloffStrength", "light2dInnerSpotAngle", "light2dOuterSpotAngle",
             "light2dBlendStyle", "light2dOrder", "light2dOverlap", "light2dShadowStrength", "light2dVolumetric",

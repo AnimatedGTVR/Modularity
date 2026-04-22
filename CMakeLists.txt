@@ -149,6 +149,48 @@ if(MODULARITY_ENABLE_SNDFILE AND PkgConfig_FOUND)
     pkg_check_modules(SNDFILE QUIET IMPORTED_TARGET sndfile)
 endif()
 
+set(MODULARITY_HAS_FFMPEG OFF)
+if(PkgConfig_FOUND)
+    pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
+        libavformat
+        libavcodec
+        libavutil
+        libswscale
+    )
+endif()
+
+if(FFMPEG_FOUND)
+    add_library(modularity_ffmpeg INTERFACE)
+    target_link_libraries(modularity_ffmpeg INTERFACE PkgConfig::FFMPEG)
+    set(MODULARITY_HAS_FFMPEG ON)
+else()
+    find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h)
+    find_library(FFMPEG_AVFORMAT_LIBRARY avformat)
+    find_library(FFMPEG_AVCODEC_LIBRARY avcodec)
+    find_library(FFMPEG_AVUTIL_LIBRARY avutil)
+    find_library(FFMPEG_SWSCALE_LIBRARY swscale)
+
+    if(FFMPEG_INCLUDE_DIR AND
+       FFMPEG_AVFORMAT_LIBRARY AND
+       FFMPEG_AVCODEC_LIBRARY AND
+       FFMPEG_AVUTIL_LIBRARY AND
+       FFMPEG_SWSCALE_LIBRARY)
+        add_library(modularity_ffmpeg INTERFACE)
+        target_include_directories(modularity_ffmpeg INTERFACE ${FFMPEG_INCLUDE_DIR})
+        target_link_libraries(modularity_ffmpeg INTERFACE
+            ${FFMPEG_AVFORMAT_LIBRARY}
+            ${FFMPEG_AVCODEC_LIBRARY}
+            ${FFMPEG_AVUTIL_LIBRARY}
+            ${FFMPEG_SWSCALE_LIBRARY}
+        )
+        set(MODULARITY_HAS_FFMPEG ON)
+    endif()
+endif()
+
+if(NOT MODULARITY_HAS_FFMPEG)
+    message(FATAL_ERROR "FFmpeg development libraries are required for Modularity video playback integration.")
+endif()
+
 # ==================== Mono (managed scripting) ====================
 option(MODULARITY_USE_MONO "Enable Mono embedding for managed scripts" ON)
 
@@ -288,6 +330,7 @@ target_include_directories(core PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core PUBLIC glad glm imgui imguizmo)
+target_link_libraries(core PUBLIC modularity_ffmpeg)
 if(MODULARITY_HAS_VULKAN)
     target_link_libraries(core PUBLIC Vulkan::Vulkan)
 endif()
@@ -318,6 +361,7 @@ target_include_directories(core_player PUBLIC
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/assimp/include
 )
 target_link_libraries(core_player PUBLIC glad glm imgui imguizmo)
+target_link_libraries(core_player PUBLIC modularity_ffmpeg)
 if(MODULARITY_HAS_VULKAN)
     target_link_libraries(core_player PUBLIC Vulkan::Vulkan)
 endif()

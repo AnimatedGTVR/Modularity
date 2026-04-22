@@ -2,6 +2,7 @@
 
 #include "ModuCPPScriptApi.h"
 #include "ModuInputScriptApi.h"
+#include "ModuEngineScriptApi.h"
 #include "ModuCPPExperimentalScriptApi.h"
 
 #include <algorithm>

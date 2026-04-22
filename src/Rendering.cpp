@@ -454,6 +454,7 @@ bool IsStaticMergeCandidate(const SceneObject& obj) {
     if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj)) return false;
     if (obj.hasUI || obj.hasLight || obj.hasCamera || obj.hasPostFX) return false;
     if (obj.hasRigidbody || obj.hasRigidbody2D || obj.hasPlayerController) return false;
+    if (obj.hasVideoPlayer) return false;
     if (obj.hasAnimation || obj.hasSkeletalAnimation) return false;
     if (!obj.scripts.empty()) return false;
     if (obj.faceCamera) return false;
@@ -1166,6 +1167,7 @@ Renderer::~Renderer() {
     delete brightShader;
     delete blurShader;
     delete shadowDepthShader;
+    delete directionalShadowDepthShader;
     if (previewTarget.fbo) glDeleteFramebuffers(1, &previewTarget.fbo);
     if (previewTarget.texture) glDeleteTextures(1, &previewTarget.texture);
     if (previewTarget.rbo) glDeleteRenderbuffers(1, &previewTarget.rbo);
@@ -1193,6 +1195,11 @@ Renderer::~Renderer() {
         if (entry.second.depthCube) glDeleteTextures(1, &entry.second.depthCube);
     }
     shadowCubeMaps.clear();
+    for (auto& entry : shadowDirectionalMaps) {
+        if (entry.second.fbo) glDeleteFramebuffers(1, &entry.second.fbo);
+        if (entry.second.depthTexture) glDeleteTextures(1, &entry.second.depthTexture);
+    }
+    shadowDirectionalMaps.clear();
     for (auto& entry : mirrorTargets) {
         releaseRenderTarget(entry.second);
     }
@@ -1513,6 +1520,12 @@ void Renderer::initialize() {
         std::cerr << "Shadow depth shader compilation failed; shadows will be disabled.\n";
         delete shadowDepthShader;
         shadowDepthShader = nullptr;
+    }
+    directionalShadowDepthShader = new Shader(directionalShadowDepthVertPath.c_str(), directionalShadowDepthFragPath.c_str());
+    if (!directionalShadowDepthShader || directionalShadowDepthShader->ID == 0) {
+        std::cerr << "Directional shadow depth shader compilation failed; directional shadows will be disabled.\n";
+        delete directionalShadowDepthShader;
+        directionalShadowDepthShader = nullptr;
     }
     ShaderEntry entry;
     entry.shader.reset(defaultShader);
@@ -1899,7 +1912,7 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
             mirrorCam.up = glm::vec3(0.0f, 1.0f, 0.0f);
         }
 
-        renderSceneInternal(mirrorCam, sceneObjects, target.width, target.height, false, fovDeg, nearPlane, farPlane, false);
+        renderSceneInternal(mirrorCam, sceneObjects, target.width, target.height, false, fovDeg, nearPlane, farPlane, false, true);
 
         state.lastCameraPos = camera.position;
         state.lastCameraFront = camera.front;
@@ -2179,9 +2192,14 @@ void Renderer::renderSkybox(const glm::mat4& view, const glm::mat4& proj) {
 void Renderer::renderObject(const SceneObject& obj) {
     glm::mat4 model = BuildSceneObjectModelMatrix(obj);
 
+    const bool hasRuntimeAlbedoOverride =
+        obj.runtimeHasAlbedoTextureOverride && obj.runtimeAlbedoTextureOverrideId != 0;
     bool hasMaterialAsset = !obj.materialPath.empty();
     bool hasCustomShader = !obj.vertexShaderPath.empty() || !obj.fragmentShaderPath.empty();
-    bool hasAnySurfaceInput = !obj.albedoTexturePath.empty() || !obj.overlayTexturePath.empty() || !obj.normalMapPath.empty();
+    bool hasAnySurfaceInput = hasRuntimeAlbedoOverride ||
+                              !obj.albedoTexturePath.empty() ||
+                              !obj.overlayTexturePath.empty() ||
+                              !obj.normalMapPath.empty();
     bool missingMaterialAndShader = !hasMaterialAsset && !hasCustomShader && !hasAnySurfaceInput;
 
     shader->setMat4("model", model);
@@ -2191,6 +2209,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
+    shader->setVec4("uvTransform", glm::vec4(obj.material.uvTiling, obj.material.uvOffset));
     shader->setVec4("uvRect", BuildSpriteUvRect(obj));
     shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || missingMaterialAndShader);
 
@@ -2198,6 +2217,9 @@ void Renderer::renderObject(const SceneObject& obj) {
     if (missingMaterialAndShader && missingMaterialFallbackTexture != 0) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, missingMaterialFallbackTexture);
+    } else if (hasRuntimeAlbedoOverride) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, obj.runtimeAlbedoTextureOverrideId);
     } else {
         if (!obj.albedoTexturePath.empty()) {
             if (auto* t = getTexture(obj.albedoTexturePath, obj.material.textureFilter)) baseTex = t;
@@ -2278,7 +2300,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     }
 }
 
-void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects) {
+void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects, bool drawSkybox) {
     if (!defaultShader || width <= 0 || height <= 0) return;
     if (camera.orthographic) {
         glViewport(0, 0, width, height);
@@ -2303,21 +2325,25 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         glm::vec2 areaSize = glm::vec2(1.0f); // width/height for area lights
         float areaFade = 0.0f; // 0 sharp, 1 fully softened
         bool castShadows = false;
+        int shadowKind = 0; // 0 off, 1 cube, 2 directional
         int shadowMode = 0; // 0 off, 1 hard, 2 soft
         float shadowBias = 0.02f;
         float shadowSoftness = 0.04f;
         float shadowFar = 10.0f;
+        int shadowResolution = 512;
         int shadowMapIndex = -1;
+        glm::mat4 shadowMatrix = glm::mat4(1.0f);
     };
     auto forwardFromRotation = [](const SceneObject& obj) {
-        glm::vec3 f = glm::normalize(glm::vec3(
-            glm::sin(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x)),
-            glm::sin(glm::radians(obj.rotation.x)),
-            glm::cos(glm::radians(obj.rotation.y)) * glm::cos(glm::radians(obj.rotation.x))
-        ));
+        glm::mat4 rotation(1.0f);
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        rotation = glm::rotate(rotation, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        glm::vec3 f = glm::normalize(glm::vec3(rotation * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
         if (glm::length(f) < 1e-3f ||
             !std::isfinite(f.x) || !std::isfinite(f.y) || !std::isfinite(f.z)) {
-            f = glm::vec3(0.0f, -1.0f, 0.0f);
+            f = glm::vec3(0.0f, 0.0f, 1.0f);
         }
         return f;
     };
@@ -2359,9 +2385,18 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             LightUniform l;
             l.type = 0;
             l.sourceId = obj.id;
+            l.pos = obj.position;
             l.dir = forwardFromRotation(obj);
             l.color = obj.light.color;
             l.intensity = obj.light.intensity;
+            l.castShadows = obj.light.castShadows;
+            l.shadowMode = obj.light.castShadows ? (obj.light.softShadows ? 2 : 1) : 0;
+            l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
+            l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
+            l.shadowFar = glm::max(farPlane, nearPlane + 1.0f);
+            l.shadowResolution = (obj.light.shadowResolution > 0)
+                ? std::clamp(obj.light.shadowResolution, 128, 8192)
+                : shadowMapResolution;
             lights.push_back(l);
             if (lights.size() >= kMaxLights) break;
         } else if (obj.light.type == LightType::Spot) {
@@ -2380,6 +2415,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
             l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
             l.shadowFar = l.range;
+            l.shadowResolution = (obj.light.shadowResolution > 0)
+                ? std::clamp(obj.light.shadowResolution, 128, 8192)
+                : shadowMapResolution;
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -2399,6 +2437,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
             l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
             l.shadowFar = l.range;
+            l.shadowResolution = (obj.light.shadowResolution > 0)
+                ? std::clamp(obj.light.shadowResolution, 128, 8192)
+                : shadowMapResolution;
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -2422,6 +2463,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.shadowBias = glm::clamp(obj.light.shadowBias, 0.0001f, 0.2f);
             l.shadowSoftness = glm::clamp(obj.light.shadowSoftness, 0.0f, 0.2f);
             l.shadowFar = glm::max(l.range, 1.0f);
+            l.shadowResolution = (obj.light.shadowResolution > 0)
+                ? std::clamp(obj.light.shadowResolution, 128, 8192)
+                : shadowMapResolution;
             LightCandidate c;
             c.light = l;
             glm::vec3 delta = obj.position - camera.position;
@@ -2456,8 +2500,73 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     FrustumPlanes frustum = BuildFrustumPlanes(proj * view);
     const float timeSeconds = static_cast<float>(glfwGetTime());
 
+    auto buildDirectionalShadowMatrix = [&](const glm::vec3& lightDir) {
+        const glm::mat4 invViewProj = glm::inverse(proj * view);
+        std::array<glm::vec3, 8> corners;
+        int cornerIndex = 0;
+        for (int x = 0; x <= 1; ++x) {
+            for (int y = 0; y <= 1; ++y) {
+                for (int z = 0; z <= 1; ++z) {
+                    glm::vec4 corner = invViewProj * glm::vec4(
+                        x == 0 ? -1.0f : 1.0f,
+                        y == 0 ? -1.0f : 1.0f,
+                        z == 0 ? -1.0f : 1.0f,
+                        1.0f);
+                    corners[cornerIndex++] = glm::vec3(corner) / std::max(corner.w, 0.0001f);
+                }
+            }
+        }
+
+        glm::vec3 center(0.0f);
+        for (const glm::vec3& corner : corners) {
+            center += corner;
+        }
+        center /= static_cast<float>(corners.size());
+
+        glm::vec3 dir = glm::normalize(lightDir);
+        if (glm::length(dir) < 1e-4f || !std::isfinite(dir.x) || !std::isfinite(dir.y) || !std::isfinite(dir.z)) {
+            dir = glm::vec3(0.0f, -1.0f, 0.0f);
+        }
+
+        float radius = 0.0f;
+        for (const glm::vec3& corner : corners) {
+            radius = glm::max(radius, glm::length(corner - center));
+        }
+        radius = glm::max(radius, 5.0f);
+
+        glm::vec3 up = (std::abs(dir.y) > 0.95f) ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::mat4 lightView = glm::lookAt(center - dir * (radius * 2.0f), center, up);
+
+        glm::vec3 minBounds(std::numeric_limits<float>::max());
+        glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
+        for (const glm::vec3& corner : corners) {
+            glm::vec3 lightSpaceCorner = glm::vec3(lightView * glm::vec4(corner, 1.0f));
+            minBounds = glm::min(minBounds, lightSpaceCorner);
+            maxBounds = glm::max(maxBounds, lightSpaceCorner);
+        }
+
+        const float xyPadding = glm::max(radius * 0.15f, 2.0f);
+        const float zPadding = glm::max(radius * 0.5f, 10.0f);
+        minBounds.x -= xyPadding;
+        minBounds.y -= xyPadding;
+        minBounds.z -= zPadding;
+        maxBounds.x += xyPadding;
+        maxBounds.y += xyPadding;
+        maxBounds.z += zPadding;
+
+        const float nearPlane = glm::max(0.1f, -maxBounds.z);
+        const float farPlane = glm::max(nearPlane + 0.1f, -minBounds.z);
+        glm::mat4 lightProj = glm::ortho(
+            minBounds.x, maxBounds.x,
+            minBounds.y, maxBounds.y,
+            nearPlane, farPlane);
+        return lightProj * lightView;
+    };
+
     std::array<unsigned int, kMaxShadowMaps> shadowTextures = {0, 0, 0, 0};
-    std::unordered_set<int> activeShadowIds;
+    std::array<unsigned int, kMaxShadowMaps> shadowDirectionalTextures = {0, 0, 0, 0};
+    std::unordered_set<int> activeCubeShadowIds;
+    std::unordered_set<int> activeDirectionalShadowIds;
     auto releaseShadowCubeMap = [](ShadowCubeMap& map) {
         if (map.fbo) glDeleteFramebuffers(1, &map.fbo);
         if (map.depthCube) glDeleteTextures(1, &map.depthCube);
@@ -2465,10 +2574,20 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         map.depthCube = 0;
         map.resolution = 0;
     };
+    auto releaseDirectionalShadowMap = [](ShadowDirectionalMap& map) {
+        if (map.fbo) glDeleteFramebuffers(1, &map.fbo);
+        if (map.depthTexture) glDeleteTextures(1, &map.depthTexture);
+        map.fbo = 0;
+        map.depthTexture = 0;
+        map.resolution = 0;
+    };
     const bool hasShadowCasters = std::any_of(lights.begin(), lights.end(), [](const LightUniform& light) {
-        return light.castShadows && light.type != 0 && light.sourceId >= 0;
+        return light.castShadows && light.sourceId >= 0;
     });
-    if (shadowDepthShader && shadowDepthShader->ID != 0 && hasShadowCasters) {
+    const bool canRenderAnyShadowMaps =
+        (shadowDepthShader && shadowDepthShader->ID != 0) ||
+        (directionalShadowDepthShader && directionalShadowDepthShader->ID != 0);
+    if (canRenderAnyShadowMaps && hasShadowCasters) {
         MODU_PROFILE_SCOPE("Shadow Pass", ProfilerSampleCategory::RenderDetail);
         GLint prevViewport[4] = {0, 0, width, height};
         GLint prevFbo = 0;
@@ -2491,16 +2610,94 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         int shadowSlot = 0;
         for (auto& light : lights) {
             light.shadowMapIndex = -1;
+            light.shadowKind = 0;
+            light.shadowMatrix = glm::mat4(1.0f);
             if (shadowSlot >= kMaxShadowMaps) continue;
-            if (!light.castShadows || light.type == 0 || light.sourceId < 0) continue;
+            if (!light.castShadows || light.sourceId < 0) continue;
+
+            if (light.type == 0) {
+                if (!directionalShadowDepthShader || directionalShadowDepthShader->ID == 0) {
+                    continue;
+                }
+
+                ShadowDirectionalMap& shadowMap = shadowDirectionalMaps[light.sourceId];
+                if (shadowMap.fbo == 0 || shadowMap.depthTexture == 0 || shadowMap.resolution != light.shadowResolution) {
+                    releaseDirectionalShadowMap(shadowMap);
+
+                    glGenFramebuffers(1, &shadowMap.fbo);
+                    glGenTextures(1, &shadowMap.depthTexture);
+                    shadowMap.resolution = light.shadowResolution;
+
+                    glBindTexture(GL_TEXTURE_2D, shadowMap.depthTexture);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
+                                 shadowMap.resolution, shadowMap.resolution, 0,
+                                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+                    const float borderColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+                    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+
+                    glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMap.depthTexture, 0);
+                    glDrawBuffer(GL_NONE);
+                    glReadBuffer(GL_NONE);
+                    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                        std::cerr << "Failed to create directional shadow framebuffer for light " << light.sourceId << "\n";
+                        releaseDirectionalShadowMap(shadowMap);
+                        glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+                        continue;
+                    }
+                    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                }
+
+                if (shadowMap.fbo == 0 || shadowMap.depthTexture == 0) continue;
+
+                activeDirectionalShadowIds.insert(light.sourceId);
+                light.shadowMapIndex = shadowSlot;
+                light.shadowKind = 2;
+                light.shadowFar = glm::max(light.shadowFar, 1.0f);
+                light.shadowMatrix = buildDirectionalShadowMatrix(light.dir);
+                shadowDirectionalTextures[shadowSlot] = shadowMap.depthTexture;
+                ++shadowSlot;
+
+                directionalShadowDepthShader->use();
+                directionalShadowDepthShader->setMat4("lightSpaceMatrix", light.shadowMatrix);
+
+                glViewport(0, 0, shadowMap.resolution, shadowMap.resolution);
+                glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMap.depthTexture, 0);
+                glDrawBuffer(GL_NONE);
+                glReadBuffer(GL_NONE);
+                glClear(GL_DEPTH_BUFFER_BIT);
+
+                for (const auto& obj : sceneObjects) {
+                    if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj)) continue;
+                    if (obj.renderType == RenderType::Mirror) continue;
+                    if (obj.renderType == RenderType::Sprite) continue;
+                    if (obj.id == light.sourceId) continue;
+                    bool isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
+                    if (isUiCanvas3D) continue;
+                    if (obj.hasSkeletalAnimation && obj.skeletal.enabled) continue;
+
+                    Mesh* shadowMesh = selectMeshForObject(obj);
+                    if (!shadowMesh) continue;
+                    glm::mat4 model = buildModelMatrix(obj);
+                    directionalShadowDepthShader->setMat4("model", model);
+                    shadowMesh->draw();
+                }
+                continue;
+            }
 
             ShadowCubeMap& shadowMap = shadowCubeMaps[light.sourceId];
-            if (shadowMap.fbo == 0 || shadowMap.depthCube == 0 || shadowMap.resolution != shadowMapResolution) {
+            if (shadowMap.fbo == 0 || shadowMap.depthCube == 0 || shadowMap.resolution != light.shadowResolution) {
                 releaseShadowCubeMap(shadowMap);
 
                 glGenFramebuffers(1, &shadowMap.fbo);
                 glGenTextures(1, &shadowMap.depthCube);
-                shadowMap.resolution = shadowMapResolution;
+                shadowMap.resolution = light.shadowResolution;
 
                 glBindTexture(GL_TEXTURE_CUBE_MAP, shadowMap.depthCube);
                 for (int face = 0; face < 6; ++face) {
@@ -2530,9 +2727,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
             if (shadowMap.fbo == 0 || shadowMap.depthCube == 0) continue;
 
-            activeShadowIds.insert(light.sourceId);
+            activeCubeShadowIds.insert(light.sourceId);
             light.shadowFar = glm::max(light.shadowFar, 1.0f);
             light.shadowMapIndex = shadowSlot;
+            light.shadowKind = 1;
             shadowTextures[shadowSlot] = shadowMap.depthCube;
             ++shadowSlot;
 
@@ -2603,9 +2801,17 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 
     for (auto it = shadowCubeMaps.begin(); it != shadowCubeMaps.end(); ) {
-        if (activeShadowIds.find(it->first) == activeShadowIds.end()) {
+        if (activeCubeShadowIds.find(it->first) == activeCubeShadowIds.end()) {
             releaseShadowCubeMap(it->second);
             it = shadowCubeMaps.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = shadowDirectionalMaps.begin(); it != shadowDirectionalMaps.end(); ) {
+        if (activeDirectionalShadowIds.find(it->first) == activeDirectionalShadowIds.end()) {
+            releaseDirectionalShadowMap(it->second);
+            it = shadowDirectionalMaps.erase(it);
         } else {
             ++it;
         }
@@ -2626,9 +2832,15 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         glActiveTexture(GL_TEXTURE3 + slot);
         glBindTexture(GL_TEXTURE_CUBE_MAP, shadowTextures[slot]);
     }
+    for (int slot = 0; slot < kMaxShadowMaps; ++slot) {
+        glActiveTexture(GL_TEXTURE7 + slot);
+        glBindTexture(GL_TEXTURE_2D, shadowDirectionalTextures[slot]);
+    }
     glActiveTexture(GL_TEXTURE0);
 
-    renderSkybox(view, proj);
+    if (drawSkybox) {
+        renderSkybox(view, proj);
+    }
     rebuildStaticMergeBatches(sceneObjects);
 
     const std::string emptyPath;
@@ -2896,10 +3108,12 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         std::array<std::string, kMaxLights> areaSize;
         std::array<std::string, kMaxLights> areaFade;
         std::array<std::string, kMaxLights> shadowMap;
+        std::array<std::string, kMaxLights> shadowKind;
         std::array<std::string, kMaxLights> shadowMode;
         std::array<std::string, kMaxLights> shadowBias;
         std::array<std::string, kMaxLights> shadowSoftness;
         std::array<std::string, kMaxLights> shadowFar;
+        std::array<std::string, kMaxLights> shadowMatrix;
     };
     static const LightUniformNameCache kLightNames = []() {
         LightUniformNameCache names;
@@ -2916,10 +3130,12 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             names.areaSize[i] = "lightAreaSizeArr" + idx;
             names.areaFade[i] = "lightAreaFadeArr" + idx;
             names.shadowMap[i] = "lightShadowMapArr" + idx;
+            names.shadowKind[i] = "lightShadowKindArr" + idx;
             names.shadowMode[i] = "lightShadowModeArr" + idx;
             names.shadowBias[i] = "lightShadowBiasArr" + idx;
             names.shadowSoftness[i] = "lightShadowSoftnessArr" + idx;
             names.shadowFar[i] = "lightShadowFarArr" + idx;
+            names.shadowMatrix[i] = "lightShadowMatrixArr" + idx;
         }
         return names;
     }();
@@ -2953,6 +3169,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setInt("shadowCube1", 4);
             shader->setInt("shadowCube2", 5);
             shader->setInt("shadowCube3", 6);
+            shader->setInt("dirShadow0", 7);
+            shader->setInt("dirShadow1", 8);
+            shader->setInt("dirShadow2", 9);
+            shader->setInt("dirShadow3", 10);
             shader->setInt("lightCount", static_cast<int>(lights.size()));
             for (size_t i = 0; i < lights.size() && i < kMaxLights; ++i) {
                 const auto& l = lights[i];
@@ -2967,16 +3187,25 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 shader->setVec2(kLightNames.areaSize[i], l.areaSize);
                 shader->setFloat(kLightNames.areaFade[i], l.areaFade);
                 shader->setInt(kLightNames.shadowMap[i], l.shadowMapIndex);
+                shader->setInt(kLightNames.shadowKind[i], l.shadowKind);
                 shader->setInt(kLightNames.shadowMode[i], (l.shadowMapIndex >= 0) ? l.shadowMode : 0);
                 shader->setFloat(kLightNames.shadowBias[i], l.shadowBias);
                 shader->setFloat(kLightNames.shadowSoftness[i], l.shadowSoftness);
                 shader->setFloat(kLightNames.shadowFar[i], l.shadowFar);
+                shader->setMat4(kLightNames.shadowMatrix[i], l.shadowMatrix);
             }
         }
 
+        const bool hasRuntimeAlbedoOverride =
+            objPtr != nullptr &&
+            objPtr->runtimeHasAlbedoTextureOverride &&
+            objPtr->runtimeAlbedoTextureOverrideId != 0;
         bool hasMaterialAsset = !materialPath.empty();
         bool hasCustomShader = !vertPath.empty() || !fragPath.empty();
-        bool hasAnySurfaceInput = !albedoTexturePath.empty() || !overlayTexturePath.empty() || !normalMapPath.empty();
+        bool hasAnySurfaceInput = hasRuntimeAlbedoOverride ||
+                                  !albedoTexturePath.empty() ||
+                                  !overlayTexturePath.empty() ||
+                                  !normalMapPath.empty();
         bool missingMaterialAndShader = !hasMaterialAsset && !hasCustomShader && !hasAnySurfaceInput;
 
         shader->setBool("unlit", item.unlit || missingMaterialAndShader);
@@ -2988,6 +3217,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setFloat("specularStrength", item.material.specularStrength);
         shader->setFloat("shininess", item.material.shininess);
         shader->setFloat("mixAmount", item.material.textureMix);
+        shader->setVec4("uvTransform", glm::vec4(item.material.uvTiling, item.material.uvOffset));
         shader->setVec4("uvRect", objPtr ? BuildSpriteUvRect(*objPtr) : glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
 
         if (objPtr && objPtr->hasSkeletalAnimation && objPtr->skeletal.enabled) {
@@ -3016,6 +3246,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         if (!usingUiTargetTex) {
             if (missingMaterialAndShader && missingMaterialFallbackTexture != 0) {
                 bindTexture2D(GL_TEXTURE0, missingMaterialFallbackTexture);
+            } else if (hasRuntimeAlbedoOverride) {
+                bindTexture2D(GL_TEXTURE0, objPtr->runtimeAlbedoTextureOverrideId);
             } else {
                 if (!albedoTexturePath.empty()) {
                     if (auto* t = getTexture(albedoTexturePath, item.material.textureFilter)) baseTex = t;
@@ -3354,7 +3586,7 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     }
 
     RenderTarget& target = allowHistory ? postTarget : previewPostTarget;
-    ensureRenderTarget(target, width, height, false, true);
+    ensureRenderTarget(target, width, height, true, true);
     if (allowHistory) {
         ensureRenderTarget(historyTarget, width, height, false, true);
     }
@@ -3564,7 +3796,7 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     }
     {
         MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
-        renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true);
+        renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true, true);
     }
     std::vector<int> effectiveSelection;
     if (selectedIds && !selectedIds->empty()) {
@@ -3604,14 +3836,14 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
     activeStats = nullptr;
 }
 
-unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot) {
+unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot, bool transparentBackground) {
     if (glfwGetCurrentContext() == nullptr) {
         return 0;
     }
     resetStats(previewStats);
     activeStats = &previewStats;
     RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];
-    ensureRenderTarget(target, width, height, false, true);
+    ensureRenderTarget(target, width, height, transparentBackground, true);
     if (target.fbo == 0) {
         previewPostStats = {};
         activeStats = nullptr;
@@ -3620,7 +3852,11 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
 
     glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
     glViewport(0, 0, width, height);
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    if (transparentBackground) {
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (!camera.orthographic) {
@@ -3629,7 +3865,7 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     }
     {
         MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
-        renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true);
+        renderSceneInternal(camera, sceneObjects, width, height, true, fovDeg, nearPlane, farPlane, true, !transparentBackground);
     }
     if (!applyPostFX) {
         previewPostStats = {};

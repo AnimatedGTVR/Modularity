@@ -2,6 +2,7 @@
 #include "SceneSerializationInternal.h"
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
+#include "MaterialAssetUtils.h"
 #include "ModelLoader.h"
 #include "Render25D/MMeshLoader.h"
 #include "RuntimeContent.h"
@@ -68,6 +69,7 @@ struct MaterialFileData {
     std::string overlay;
     std::string normal;
     bool useOverlay = false;
+    std::string shaderPack;
     std::string vertexShader;
     std::string fragmentShader;
 };
@@ -481,6 +483,10 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
             outData.props.shininess = std::stof(val);
         } else if (key == "textureMix") {
             outData.props.textureMix = std::stof(val);
+        } else if (key == "uvTiling") {
+            sscanf(val.c_str(), "%f,%f", &outData.props.uvTiling.x, &outData.props.uvTiling.y);
+        } else if (key == "uvOffset") {
+            sscanf(val.c_str(), "%f,%f", &outData.props.uvOffset.x, &outData.props.uvOffset.y);
         } else if (key == "textureFilter") {
             std::string lower = val;
             std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -498,12 +504,23 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
             outData.normal = val;
         } else if (key == "useOverlay") {
             outData.useOverlay = std::stoi(val) != 0;
+        } else if (key == "shaderPack") {
+            outData.shaderPack = ResolveShaderPackReferencedPath(fs::path(path), val).string();
         } else if (key == "vertexShader") {
             outData.vertexShader = val;
         } else if (key == "fragmentShader") {
             outData.fragmentShader = val;
         }
     }
+
+    if (!outData.shaderPack.empty()) {
+        ShaderPackAssetData shaderPackData;
+        if (ReadShaderPackFile(outData.shaderPack, shaderPackData)) {
+            outData.vertexShader = shaderPackData.vertexShaderPath;
+            outData.fragmentShader = shaderPackData.fragmentShaderPath;
+        }
+    }
+
     return true;
 }
 
@@ -519,11 +536,14 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     f << "specular=" << data.props.specularStrength << "\n";
     f << "shininess=" << data.props.shininess << "\n";
     f << "textureMix=" << data.props.textureMix << "\n";
+    f << "uvTiling=" << data.props.uvTiling.x << "," << data.props.uvTiling.y << "\n";
+    f << "uvOffset=" << data.props.uvOffset.x << "," << data.props.uvOffset.y << "\n";
     f << "textureFilter=" << static_cast<int>(data.props.textureFilter) << "\n";
     f << "useOverlay=" << (data.useOverlay ? 1 : 0) << "\n";
     f << "albedo=" << data.albedo << "\n";
     f << "overlay=" << data.overlay << "\n";
     f << "normal=" << data.normal << "\n";
+    f << "shaderPack=" << data.shaderPack << "\n";
     f << "vertexShader=" << data.vertexShader << "\n";
     f << "fragmentShader=" << data.fragmentShader << "\n";
     return true;
@@ -2138,10 +2158,12 @@ bool RemapSceneObjectForRuntime(SceneObject& obj,
     if (!stager.stageFileReference(obj.albedoTexturePath, "Textures", error)) return false;
     if (!stager.stageFileReference(obj.overlayTexturePath, "Textures", error)) return false;
     if (!stager.stageFileReference(obj.normalMapPath, "Textures", error)) return false;
+    if (!stager.stageFileReference(obj.shaderPackPath, "Shaders", error)) return false;
     if (!stager.stageFileReference(obj.vertexShaderPath, "Shaders", error)) return false;
     if (!stager.stageFileReference(obj.fragmentShaderPath, "Shaders", error)) return false;
     if (!stager.stageDirectoryBackedReference(obj.meshPath, "Models", error)) return false;
     if (obj.hasAudioSource && !stager.stageFileReference(obj.audioSource.clipPath, "Audio", error)) return false;
+    if (obj.hasVideoPlayer && !stager.stageFileReference(obj.videoPlayer.videoPath, "Video", error)) return false;
     if (obj.hasLight2D && !stager.stageFileReference(obj.light2D.cookieTexturePath, "Textures", error)) return false;
     if (obj.hasAnimation) {
         if (!stager.stageFileReference(obj.animation.clipAssetPath, "Animations", error)) return false;
@@ -2820,6 +2842,7 @@ void Engine::restorePlayModeSnapshot() {
     markRuntimeScriptBindingsDirty();
     aiAgentRuntimeStates.clear();
     activePlayerId = -1;
+    playerControllerGroundProbeDebug = {};
     updateHierarchyWorldTransforms();
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
@@ -2856,6 +2879,7 @@ void Engine::undo() {
     markRuntimeScriptBindingsDirty();
     aiAgentRuntimeStates.clear();
     activePlayerId = -1;
+    playerControllerGroundProbeDebug = {};
     updateHierarchyWorldTransforms();
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
@@ -2891,6 +2915,7 @@ void Engine::redo() {
     markRuntimeScriptBindingsDirty();
     aiAgentRuntimeStates.clear();
     activePlayerId = -1;
+    playerControllerGroundProbeDebug = {};
     updateHierarchyWorldTransforms();
     gizmoHistoryCaptured = false;
     worldUiGizmoHistoryCaptured = false;
@@ -3415,6 +3440,7 @@ void Engine::run() {
         float runtimeAnimDelta = ((isPlaying && isPaused) ? 0.0f : deltaTime);
         {
             MODU_PROFILE_SCOPE("Animation", ProfilerSampleCategory::Animation);
+            syncVideoPlayers(runtimeAnimDelta);
             updateRuntimeAnimations(runtimeAnimDelta);
             updateSkeletalAnimations(deltaTime);
         }
@@ -3745,6 +3771,52 @@ void Engine::run() {
                     glfwMakeContextCurrent(backup_current_context);
                 }
             }
+
+            if (materialColorSamplerActive) {
+                if (materialColorSamplerAwaitMouseRelease) {
+                    if (!io.MouseDown[ImGuiMouseButton_Left]) {
+                        materialColorSamplerAwaitMouseRelease = false;
+                    }
+                } else if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                           ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    materialColorSamplerActive = false;
+                    materialColorSamplerTargetId.clear();
+                } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                           displayW > 0 && displayH > 0 &&
+                           io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+                    const float scaleX = static_cast<float>(displayW) / io.DisplaySize.x;
+                    const float scaleY = static_cast<float>(displayH) / io.DisplaySize.y;
+                    const int sampleX = std::clamp(
+                        static_cast<int>(std::floor(io.MousePos.x * scaleX)),
+                        0,
+                        displayW - 1
+                    );
+                    const int sampleY = std::clamp(
+                        displayH - 1 - static_cast<int>(std::floor(io.MousePos.y * scaleY)),
+                        0,
+                        displayH - 1
+                    );
+
+                    GLint previousReadFramebuffer = 0;
+                    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                    glReadBuffer(GL_BACK);
+
+                    std::array<unsigned char, 4> pixel = {0, 0, 0, 255};
+                    glReadPixels(sampleX, sampleY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+
+                    materialColorSamplerResult = glm::vec4(
+                        static_cast<float>(pixel[0]) / 255.0f,
+                        static_cast<float>(pixel[1]) / 255.0f,
+                        static_cast<float>(pixel[2]) / 255.0f,
+                        1.0f
+                    );
+                    materialColorSamplerHasResult = true;
+                    materialColorSamplerActive = false;
+                    materialColorSamplerAwaitMouseRelease = false;
+                }
+            }
         }
         if (runtime2DProfileThisFrame) {
             profileActualDrawMs += Runtime2DMsSince(drawRenderStart, Runtime2DClock::now());
@@ -3894,6 +3966,7 @@ void Engine::shutdown() {
         vulkanRenderer.reset();
     }
     vulkanRendererInitialized = false;
+    clearVideoPlayers();
     glfwTerminate();
 }
 #pragma endregion
@@ -4454,6 +4527,7 @@ void Engine::loadMaterialFromFile(SceneObject& obj) {
         obj.overlayTexturePath = data.overlay;
         obj.normalMapPath = data.normal;
         obj.useOverlay = data.useOverlay;
+        obj.shaderPackPath = data.shaderPack;
         obj.vertexShaderPath = data.vertexShader;
         obj.fragmentShaderPath = data.fragmentShader;
         addConsoleMessage("Applied material: " + obj.materialPath, ConsoleMessageType::Success);
@@ -4466,6 +4540,7 @@ void Engine::loadMaterialFromFile(SceneObject& obj) {
 bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props,
                               std::string& albedo, std::string& overlay,
                               std::string& normal, bool& useOverlay,
+                              std::string* shaderPackOut,
                               std::string* vertexShaderOut,
                               std::string* fragmentShaderOut)
 {
@@ -4478,6 +4553,7 @@ bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props
     overlay = data.overlay;
     normal = data.normal;
     useOverlay = data.useOverlay;
+    if (shaderPackOut) *shaderPackOut = data.shaderPack;
     if (vertexShaderOut) *vertexShaderOut = data.vertexShader;
     if (fragmentShaderOut) *fragmentShaderOut = data.fragmentShader;
     return true;
@@ -4486,6 +4562,7 @@ bool Engine::loadMaterialData(const std::string& path, MaterialProperties& props
 bool Engine::saveMaterialData(const std::string& path, const MaterialProperties& props,
                               const std::string& albedo, const std::string& overlay,
                               const std::string& normal, bool useOverlay,
+                              const std::string& shaderPack,
                               const std::string& vertexShader,
                               const std::string& fragmentShader)
 {
@@ -4495,6 +4572,7 @@ bool Engine::saveMaterialData(const std::string& path, const MaterialProperties&
     data.overlay = overlay;
     data.normal = normal;
     data.useOverlay = useOverlay;
+    data.shaderPack = shaderPack;
     data.vertexShader = vertexShader;
     data.fragmentShader = fragmentShader;
     return writeMaterialFile(data, path);
@@ -4512,6 +4590,7 @@ void Engine::saveMaterialToFile(const SceneObject& obj) {
         data.overlay = obj.overlayTexturePath;
         data.normal = obj.normalMapPath;
         data.useOverlay = obj.useOverlay;
+        data.shaderPack = obj.shaderPackPath;
         data.vertexShader = obj.vertexShaderPath;
         data.fragmentShader = obj.fragmentShaderPath;
 
@@ -5292,6 +5371,7 @@ void Engine::updatePlayerController(float delta) {
     }
     if (!player) {
         activePlayerId = -1;
+        playerControllerGroundProbeDebug = {};
         return;
     }
 
@@ -5380,6 +5460,9 @@ void Engine::updatePlayerController(float delta) {
 
     // Simple gravity and jump
     float capsuleHalf = std::max(0.1f, pc.height * 0.5f);
+    float groundProbeLead = std::clamp(capsuleHalf * 0.08f, 0.08f, 0.24f);
+    float groundProbeDepth = std::max(0.45f, capsuleHalf * 0.35f);
+    float groundSnap = std::clamp(capsuleHalf * 0.12f, 0.2f, 0.45f);
     glm::vec3 physVel;
     bool havePhysVel = physics.getLinearVelocity(player->id, physVel);
     if (havePhysVel) pc.verticalVelocity = physVel.y;
@@ -5392,13 +5475,20 @@ void Engine::updatePlayerController(float delta) {
     float hitStaticFriction = 0.9f;
     float hitDynamicFriction = 0.9f;
     float hitDist = 0.0f;
-    float probeDist = capsuleHalf + 0.4f;
-    glm::vec3 rayStart = player->position + glm::vec3(0.0f, 0.1f, 0.0f);
+    glm::vec3 rayStart = player->position + glm::vec3(0.0f, -capsuleHalf + groundProbeLead, 0.0f);
+    float probeDist = groundProbeLead + groundProbeDepth;
+    glm::vec3 rayEnd = rayStart + glm::vec3(0.0f, -probeDist, 0.0f);
     bool hitGround = physics.raycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
                                             player->id, &hitPos, &hitNormal, &hitDist,
                                             &hitActorId, &hitActorVelocity,
                                             &hitStaticFriction, &hitDynamicFriction);
-    bool grounded = hitGround && hitNormal.y > 0.25f && hitDist <= capsuleHalf + 0.2f && pc.verticalVelocity <= 0.35f;
+    bool grounded = hitGround && hitNormal.y > 0.25f && hitDist <= groundProbeLead + groundSnap && pc.verticalVelocity <= 0.35f;
+
+    playerControllerGroundProbeDebug.playerId = player->id;
+    playerControllerGroundProbeDebug.rayStart = rayStart;
+    playerControllerGroundProbeDebug.rayEnd = rayEnd;
+    playerControllerGroundProbeDebug.hitPos = hitGround ? hitPos : rayEnd;
+    playerControllerGroundProbeDebug.hasHit = hitGround;
 
     (void)hitActorId;
     (void)hitStaticFriction;
@@ -6021,6 +6111,84 @@ void Engine::updateCameraFollow2D(float delta) {
             }
         }
     }
+}
+
+void Engine::syncVideoPlayers(float delta) {
+    std::unordered_set<int> activeVideoIds;
+    activeVideoIds.reserve(sceneObjects.size());
+
+    for (SceneObject& obj : sceneObjects) {
+        obj.runtimeHasAlbedoTextureOverride = false;
+        obj.runtimeAlbedoTextureOverrideId = 0;
+
+        if (!obj.hasVideoPlayer ||
+            !obj.videoPlayer.enabled ||
+            !HasRendererComponent(obj) ||
+            obj.videoPlayer.videoPath.empty()) {
+            videoPlayers.erase(obj.id);
+            continue;
+        }
+
+        activeVideoIds.insert(obj.id);
+        auto& entry = videoPlayers[obj.id];
+        if (!entry) {
+            entry = std::make_unique<VideoPlayer>();
+        }
+
+        VideoPlayer& player = *entry;
+        if (!player.IsLoaded() || player.GetLoadedPath() != obj.videoPlayer.videoPath) {
+            if (!player.LoadVideo(obj.videoPlayer.videoPath)) {
+                std::cerr << "Failed to load video for object '" << obj.name << "'";
+                if (!obj.videoPlayer.videoPath.empty()) {
+                    std::cerr << " (" << obj.videoPlayer.videoPath << ")";
+                }
+                if (!player.GetLastError().empty()) {
+                    std::cerr << ": " << player.GetLastError();
+                }
+                std::cerr << std::endl;
+                videoPlayers.erase(obj.id);
+                continue;
+            }
+
+            if (obj.videoPlayer.playOnAwake) {
+                player.Play();
+            } else {
+                player.Pause();
+            }
+        }
+
+        player.SetLoop(obj.videoPlayer.loop);
+        player.SetPlaybackSpeed(obj.videoPlayer.playbackSpeed);
+        player.SetPointFiltering(obj.material.textureFilter == MaterialProperties::TextureFilter::Point);
+
+        if (!IsObjectEnabledInHierarchy(obj)) {
+            player.Pause();
+        } else if (obj.videoPlayer.playOnAwake) {
+            player.Play();
+        }
+
+        player.Update(delta);
+        if (player.HasTextureOverride()) {
+            obj.runtimeHasAlbedoTextureOverride = true;
+            obj.runtimeAlbedoTextureOverrideId = player.GetTextureId();
+        }
+    }
+
+    for (auto it = videoPlayers.begin(); it != videoPlayers.end();) {
+        if (activeVideoIds.find(it->first) == activeVideoIds.end()) {
+            it = videoPlayers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void Engine::clearVideoPlayers() {
+    for (SceneObject& obj : sceneObjects) {
+        obj.runtimeHasAlbedoTextureOverride = false;
+        obj.runtimeAlbedoTextureOverrideId = 0;
+    }
+    videoPlayers.clear();
 }
 #pragma endregion
 
@@ -8760,6 +8928,7 @@ void Engine::duplicateSelected() {
         newObj.albedoTexturePath = it->albedoTexturePath;
         newObj.overlayTexturePath = it->overlayTexturePath;
         newObj.normalMapPath = it->normalMapPath;
+        newObj.shaderPackPath = it->shaderPackPath;
         newObj.vertexShaderPath = it->vertexShaderPath;
         newObj.fragmentShaderPath = it->fragmentShaderPath;
         newObj.useOverlay = it->useOverlay;
@@ -8788,6 +8957,8 @@ void Engine::duplicateSelected() {
         newObj.localInitialized = true;
         newObj.hasAudioSource = it->hasAudioSource;
         newObj.audioSource = it->audioSource;
+        newObj.hasVideoPlayer = it->hasVideoPlayer;
+        newObj.videoPlayer = it->videoPlayer;
         newObj.hasReverbZone = it->hasReverbZone;
         newObj.reverbZone = it->reverbZone;
         newObj.hasGroundBakedType = it->hasGroundBakedType;

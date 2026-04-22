@@ -21,6 +21,8 @@ constexpr const char* kRequiredDeviceExtensions[] = {
 struct SceneDrawPushConstants {
     alignas(16) glm::mat4 mvp = glm::mat4(1.0f);
     alignas(16) glm::vec4 color = glm::vec4(1.0f);
+    // xy = tiling, zw = offset
+    alignas(16) glm::vec4 uvTransform = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
     // x = mixAmount, y = unlit(0/1), z = hasOverlay(0/1), w = timeSeconds
     alignas(16) glm::vec4 params = glm::vec4(0.3f, 0.0f, 0.0f, 0.0f);
     // x = ambientStrength, y = specularStrength, z = shininess, w = hasNormalMap(0/1)
@@ -83,6 +85,7 @@ bool wantsScrollUvVariant(const SceneObject& obj) {
 
 SceneDrawPushConstants buildScenePushConstants(const glm::mat4& mvpMat,
                                                const glm::vec4& color,
+                                               const glm::vec4& uvTransform,
                                                float mixAmount,
                                                float ambientStrength,
                                                float specularStrength,
@@ -95,6 +98,7 @@ SceneDrawPushConstants buildScenePushConstants(const glm::mat4& mvpMat,
     SceneDrawPushConstants push{};
     push.mvp = mvpMat;
     push.color = color;
+    push.uvTransform = uvTransform;
     push.params = glm::vec4(std::clamp(mixAmount, 0.0f, 1.0f),
                             unlit ? 1.0f : 0.0f,
                             hasOverlay ? 1.0f : 0.0f,
@@ -1769,6 +1773,7 @@ void VulkanRenderer::renderSceneTarget(VkCommandBuffer cmd,
 
             SceneDrawPushConstants push = buildScenePushConstants(proj * view * instance.model,
                                                                   instance.color,
+                                                                  glm::vec4(instance.uvTiling, instance.uvOffset),
                                                                   instance.mixAmount,
                                                                   instance.ambientStrength,
                                                                   instance.specularStrength,
@@ -1912,6 +1917,8 @@ void VulkanRenderer::setSceneDataForTarget(SceneCameraData& targetCamera,
         entry.instance.hasNormalMap = !obj.normalMapPath.empty();
         entry.instance.normalPath = entry.instance.hasNormalMap ? obj.normalMapPath : std::string();
         entry.instance.mixAmount = obj.material.textureMix;
+        entry.instance.uvTiling = obj.material.uvTiling;
+        entry.instance.uvOffset = obj.material.uvOffset;
         entry.instance.ambientStrength = obj.material.ambientStrength;
         entry.instance.specularStrength = obj.material.specularStrength;
         entry.instance.shininess = obj.material.shininess;

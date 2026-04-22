@@ -12,6 +12,7 @@ uniform float mixAmount = 0.2;
 uniform bool hasOverlay = false;
 uniform bool hasNormalMap = false;
 uniform bool unlit = false;
+uniform vec4 uvTransform = vec4(1.0, 1.0, 0.0, 0.0);
 
 uniform vec3 viewPos;
 uniform vec3 materialColor = vec3(1.0);
@@ -38,15 +39,21 @@ uniform float lightOuterCosArr[MAX_LIGHTS];
 uniform vec2 lightAreaSizeArr[MAX_LIGHTS];
 uniform float lightAreaFadeArr[MAX_LIGHTS];
 uniform int lightShadowMapArr[MAX_LIGHTS];
+uniform int lightShadowKindArr[MAX_LIGHTS]; // 0 off, 1 cube, 2 directional
 uniform int lightShadowModeArr[MAX_LIGHTS]; // 0 off, 1 hard, 2 soft
 uniform float lightShadowBiasArr[MAX_LIGHTS];
 uniform float lightShadowSoftnessArr[MAX_LIGHTS];
 uniform float lightShadowFarArr[MAX_LIGHTS];
+uniform mat4 lightShadowMatrixArr[MAX_LIGHTS];
 
 uniform samplerCube shadowCube0;
 uniform samplerCube shadowCube1;
 uniform samplerCube shadowCube2;
 uniform samplerCube shadowCube3;
+uniform sampler2D dirShadow0;
+uniform sampler2D dirShadow1;
+uniform sampler2D dirShadow2;
+uniform sampler2D dirShadow3;
 
 float sampleShadowCube(int mapIndex, vec3 sampleDir)
 {
@@ -57,20 +64,71 @@ float sampleShadowCube(int mapIndex, vec3 sampleDir)
     return 1.0;
 }
 
-float computeShadowOcclusion(int lightIndex, vec3 fragToLight, float nl)
+float sampleDirectionalShadow(int mapIndex, vec2 uv)
+{
+    if (mapIndex == 0) return texture(dirShadow0, uv).r;
+    if (mapIndex == 1) return texture(dirShadow1, uv).r;
+    if (mapIndex == 2) return texture(dirShadow2, uv).r;
+    if (mapIndex == 3) return texture(dirShadow3, uv).r;
+    return 1.0;
+}
+
+vec2 getDirectionalShadowTexelSize(int mapIndex)
+{
+    if (mapIndex == 0) return 1.0 / vec2(textureSize(dirShadow0, 0));
+    if (mapIndex == 1) return 1.0 / vec2(textureSize(dirShadow1, 0));
+    if (mapIndex == 2) return 1.0 / vec2(textureSize(dirShadow2, 0));
+    if (mapIndex == 3) return 1.0 / vec2(textureSize(dirShadow3, 0));
+    return vec2(0.0);
+}
+
+float computeShadowOcclusion(int lightIndex, vec3 lightToFrag, float nl, vec3 worldPos)
 {
     int mode = lightShadowModeArr[lightIndex];
     int mapIndex = lightShadowMapArr[lightIndex];
-    if (mode <= 0 || mapIndex < 0 || mapIndex >= MAX_SHADOW_MAPS) return 0.0;
-
-    float farPlane = max(lightShadowFarArr[lightIndex], 0.001);
-    float currentDepth = length(fragToLight);
-    if (currentDepth <= 0.0001) return 0.0;
+    int shadowKind = lightShadowKindArr[lightIndex];
+    if (mode <= 0 || mapIndex < 0 || mapIndex >= MAX_SHADOW_MAPS || shadowKind <= 0) return 0.0;
 
     float baseBias = max(lightShadowBiasArr[lightIndex], 0.0001);
     float slopeBias = baseBias * (1.0 - clamp(nl, 0.0, 1.0));
     float bias = max(baseBias * 0.25, slopeBias);
-    float hardDepth = sampleShadowCube(mapIndex, fragToLight) * farPlane;
+
+    if (shadowKind == 2) {
+        vec4 lightSpace = lightShadowMatrixArr[lightIndex] * vec4(worldPos, 1.0);
+        vec3 projCoords = lightSpace.xyz / max(lightSpace.w, 0.0001);
+        projCoords = projCoords * 0.5 + 0.5;
+        if (projCoords.z <= 0.0 || projCoords.z >= 1.0) return 0.0;
+        if (projCoords.x <= 0.0 || projCoords.x >= 1.0 || projCoords.y <= 0.0 || projCoords.y >= 1.0) return 0.0;
+
+        float closestDepth = sampleDirectionalShadow(mapIndex, projCoords.xy);
+        if (mode == 1) {
+            return (projCoords.z - bias > closestDepth) ? 1.0 : 0.0;
+        }
+
+        float softness = max(lightShadowSoftnessArr[lightIndex], 0.0);
+        vec2 texelSize = getDirectionalShadowTexelSize(mapIndex);
+        if (softness <= 0.0001 || texelSize.x <= 0.0 || texelSize.y <= 0.0) {
+            return (projCoords.z - bias > closestDepth) ? 1.0 : 0.0;
+        }
+
+        float radius = max(1.0, softness * 80.0);
+        float shadow = 0.0;
+        float sampleCount = 0.0;
+        for (int x = -1; x <= 1; ++x) {
+            for (int y = -1; y <= 1; ++y) {
+                vec2 offset = vec2(x, y) * texelSize * radius;
+                float sampleDepth = sampleDirectionalShadow(mapIndex, projCoords.xy + offset);
+                shadow += (projCoords.z - bias > sampleDepth) ? 1.0 : 0.0;
+                sampleCount += 1.0;
+            }
+        }
+        return shadow / max(sampleCount, 1.0);
+    }
+
+    float farPlane = max(lightShadowFarArr[lightIndex], 0.001);
+    float currentDepth = length(lightToFrag);
+    if (currentDepth <= 0.0001) return 0.0;
+    float hardDepth = sampleShadowCube(mapIndex, lightToFrag) * farPlane;
     if (mode == 1) {
         return (currentDepth - bias > hardDepth) ? 1.0 : 0.0;
     }
@@ -91,7 +149,7 @@ float computeShadowOcclusion(int lightIndex, vec3 fragToLight, float nl)
     float diskRadius = softness * (1.0 + currentDepth / farPlane);
     float shadow = 0.0;
     for (int i = 0; i < 20; ++i) {
-        float closestDepth = sampleShadowCube(mapIndex, fragToLight + sampleOffsetDirections[i] * diskRadius) * farPlane;
+        float closestDepth = sampleShadowCube(mapIndex, lightToFrag + sampleOffsetDirections[i] * diskRadius) * farPlane;
         shadow += (currentDepth - bias > closestDepth) ? 1.0 : 0.0;
     }
     return shadow / 20.0;
@@ -158,14 +216,15 @@ vec3 evaluateDirectSpecular(
 
 void main()
 {
+    vec2 uv = TexCoord * uvTransform.xy + uvTransform.zw;
     vec3 norm = normalize(Normal);
     vec3 viewDir = normalize(viewPos - FragPos);
 
     // Texture mixing (corrected)
-    vec4 tex1 = texture(texture1, TexCoord);
+    vec4 tex1 = texture(texture1, uv);
     vec3 texColor = tex1.rgb;
     if (hasOverlay) {
-        vec3 overlay = texture(overlayTex, TexCoord).rgb;
+        vec3 overlay = texture(overlayTex, uv).rgb;
         texColor = mix(texColor, overlay, mixAmount);
     }
     vec3 baseColor = texColor * materialColor;
@@ -181,11 +240,11 @@ void main()
 
     // Normal map (tangent-space)
     if (hasNormalMap) {
-        vec3 mapN = texture(normalMap, TexCoord).xyz * 2.0 - 1.0;
+        vec3 mapN = texture(normalMap, uv).xyz * 2.0 - 1.0;
         vec3 dp1 = dFdx(FragPos);
         vec3 dp2 = dFdy(FragPos);
-        vec2 duv1 = dFdx(TexCoord);
-        vec2 duv2 = dFdy(TexCoord);
+        vec2 duv1 = dFdx(uv);
+        vec2 duv2 = dFdy(uv);
         vec3 tangent = normalize(dp1 * duv2.y - dp2 * duv1.y);
         vec3 bitangent = normalize(-dp1 * duv2.x + dp2 * duv1.x);
         mat3 TBN = mat3(tangent, bitangent, normalize(Normal));
@@ -344,8 +403,8 @@ void main()
         }
 
         float shadow = 0.0;
-        if (ltype != 0) {
-            shadow = computeShadowOcclusion(i, lightPosArr[i] - FragPos, nl);
+        if (lightShadowKindArr[i] != 0) {
+            shadow = computeShadowOcclusion(i, FragPos - lightPosArr[i], nl, FragPos);
         }
 
         lighting += (1.0 - shadow) * (attenuation * diffuse + specular);

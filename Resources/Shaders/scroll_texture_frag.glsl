@@ -10,6 +10,7 @@ uniform sampler2D overlayTex;
 uniform float mixAmount = 0.2;
 uniform bool hasOverlay = false;
 uniform bool unlit = false;
+uniform vec4 uvTransform = vec4(1.0, 1.0, 0.0, 0.0);
 
 uniform float uTime = 0.0;
 uniform vec3 materialColor = vec3(1.0);
@@ -23,13 +24,14 @@ void main()
 {
     float speed = mix(0.08, 1.2, clamp(mixAmount, 0.0, 1.0));
     vec2 baseDir = normalize(vec2(1.0, 0.3));
-    vec2 baseUV = TexCoord + baseDir * (uTime * speed);
+    vec2 transformedUv = TexCoord * uvTransform.xy + uvTransform.zw;
+    vec2 baseUV = transformedUv + baseDir * (uTime * speed);
     vec4 baseSample = texture(texture1, baseUV);
 
     vec3 color = baseSample.rgb;
     if (hasOverlay) {
         vec2 overlayDir = normalize(vec2(-0.65, 1.0));
-        vec2 overlayUV = TexCoord + overlayDir * (uTime * speed * 0.65);
+        vec2 overlayUV = transformedUv + overlayDir * (uTime * speed * 0.65);
         vec3 overlayColor = texture(overlayTex, overlayUV).rgb;
         color = mix(color, overlayColor, clamp(mixAmount, 0.0, 1.0));
     }

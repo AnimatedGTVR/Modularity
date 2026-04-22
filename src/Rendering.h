@@ -173,6 +173,11 @@ private:
         unsigned int depthCube = 0;
         int resolution = 0;
     };
+    struct ShadowDirectionalMap {
+        unsigned int fbo = 0;
+        unsigned int depthTexture = 0;
+        int resolution = 0;
+    };
     struct MirrorUpdateState {
         glm::vec3 lastCameraPos = glm::vec3(FLT_MAX);
         glm::vec3 lastCameraFront = glm::vec3(0.0f);
@@ -188,6 +193,7 @@ private:
     Shader* brightShader = nullptr;
     Shader* blurShader = nullptr;
     Shader* shadowDepthShader = nullptr;
+    Shader* directionalShadowDepthShader = nullptr;
     Texture* texture1 = nullptr;
     Texture* texture2 = nullptr;
     unsigned int debugWhiteTexture = 0;
@@ -221,6 +227,8 @@ private:
     std::string selectionOutlineFragPath = "Resources/Shaders/selection_outline_frag.glsl";
     std::string shadowDepthVertPath = "Resources/Shaders/shadow_depth_vert.glsl";
     std::string shadowDepthFragPath = "Resources/Shaders/shadow_depth_frag.glsl";
+    std::string directionalShadowDepthVertPath = "Resources/Shaders/shadow_directional_depth_vert.glsl";
+    std::string directionalShadowDepthFragPath = "Resources/Shaders/shadow_directional_depth_frag.glsl";
     bool autoReloadShaders = true;
     int shadowMapResolution = 512;
     glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
@@ -240,6 +248,7 @@ private:
     uint64_t frameSerial = 0;
     uint64_t lastStaticMergeCheckFrameSerial = std::numeric_limits<uint64_t>::max();
     std::unordered_map<int, ShadowCubeMap> shadowCubeMaps;
+    std::unordered_map<int, ShadowDirectionalMap> shadowDirectionalMaps;
     std::unordered_map<int, RenderTarget> mirrorTargets;
     std::unordered_map<int, MirrorUpdateState> mirrorUpdateStates;
     std::unordered_map<int, RenderTarget> uiTargets;
@@ -272,7 +281,7 @@ private:
     void recordFullscreenDraw();
     void clearHistory();
     void clearTarget(RenderTarget& target);
-    void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects);
+    void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects, bool drawSkybox);
     unsigned int applyPostProcessing(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory);
     ResolvedPostFX gatherPostFX(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const;
     unsigned int findFramebufferForTexture(unsigned int texture) const;
@@ -303,7 +312,7 @@ public:
     void renderObject(const SceneObject& obj);
     void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false, const std::vector<int>* selectedIds = nullptr);
     void renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, const std::vector<int>& selectedIds, float fovDeg, float nearPlane, float farPlane);
-    unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false, int previewSlot = 0);
+    unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false, int previewSlot = 0, bool transparentBackground = false);
     void renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, const std::vector<int>* previewIds = nullptr);
     void endRender();
     PostFXSettings resolvePostFXSettings(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const;

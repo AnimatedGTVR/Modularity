@@ -26,6 +26,7 @@ layout(location = 0) out vec4 fragColor;
 layout(push_constant) uniform ScenePushConstants {
     mat4 mvp;
     vec4 color;
+    vec4 uvTransform;
     vec4 params;
     vec4 lighting;
     vec4 objectPos;
@@ -37,12 +38,13 @@ void main() {
     bool hasNormalMap = (uScene.lighting.w > 0.5);
     float speed = mix(0.08, 1.2, mixAmount);
     vec2 scrollDir = normalize(vec2(1.0, 0.3));
-    vec2 uv = inTexCoord + scrollDir * (uScene.params.w * speed);
+    vec2 transformedUv = inTexCoord * uScene.uvTransform.xy + uScene.uvTransform.zw;
+    vec2 uv = transformedUv + scrollDir * (uScene.params.w * speed);
     vec4 texel = texture(texture1, uv);
     vec3 texColor = texel.rgb;
     if (hasOverlay) {
         vec2 overlayDir = normalize(vec2(-0.65, 1.0));
-        vec2 overlayUv = inTexCoord + overlayDir * (uScene.params.w * speed * 0.65);
+        vec2 overlayUv = transformedUv + overlayDir * (uScene.params.w * speed * 0.65);
         vec3 overlay = texture(overlayTex, overlayUv).rgb;
         texColor = mix(texColor, overlay, mixAmount);
     }
