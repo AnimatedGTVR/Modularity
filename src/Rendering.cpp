@@ -71,6 +71,22 @@ bool HasDefaultSpriteUvRect(const SceneObject& obj) {
            std::abs(uvRect.w - 1.0f) <= 1e-5f;
 }
 
+glm::vec4 BuildSurfaceUvTransform(const SceneObject* obj, const MaterialProperties& material) {
+    glm::vec2 tiling = material.uvTiling;
+    glm::vec2 offset = material.uvOffset;
+
+    const bool hasRuntimeVideoOverride =
+        obj != nullptr &&
+        obj->runtimeHasAlbedoTextureOverride &&
+        obj->runtimeAlbedoTextureOverrideId != 0;
+    if (hasRuntimeVideoOverride) {
+        offset.x += tiling.x;
+        tiling.x = -tiling.x;
+    }
+
+    return glm::vec4(tiling, offset);
+}
+
 glm::mat4 BuildSceneObjectModelMatrix(const SceneObject& obj, const glm::vec3* cameraPosition = nullptr, const glm::vec3* cameraUp = nullptr) {
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, obj.position);
@@ -2209,7 +2225,7 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("specularStrength", obj.material.specularStrength);
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("mixAmount", obj.material.textureMix);
-    shader->setVec4("uvTransform", glm::vec4(obj.material.uvTiling, obj.material.uvOffset));
+    shader->setVec4("uvTransform", BuildSurfaceUvTransform(&obj, obj.material));
     shader->setVec4("uvRect", BuildSpriteUvRect(obj));
     shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || missingMaterialAndShader);
 
@@ -3217,7 +3233,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         shader->setFloat("specularStrength", item.material.specularStrength);
         shader->setFloat("shininess", item.material.shininess);
         shader->setFloat("mixAmount", item.material.textureMix);
-        shader->setVec4("uvTransform", glm::vec4(item.material.uvTiling, item.material.uvOffset));
+        shader->setVec4("uvTransform", BuildSurfaceUvTransform(objPtr, item.material));
         shader->setVec4("uvRect", objPtr ? BuildSpriteUvRect(*objPtr) : glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
 
         if (objPtr && objPtr->hasSkeletalAnimation && objPtr->skeletal.enabled) {

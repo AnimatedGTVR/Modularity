@@ -122,6 +122,7 @@ option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
 option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ON)
 option(MODULARITY_ENABLE_SNDFILE "Enable libsndfile-based audio import support" ON)
 set(MODULARITY_SCRIPT_SDK_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyScriptSDK.cmake)
+set(MODULARITY_RUNTIME_DLL_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyRuntimeDlls.cmake)
 
 set(MODULARITY_HAS_VULKAN OFF)
 if(MODULARITY_ENABLE_VULKAN)
@@ -217,6 +218,14 @@ if(MODULARITY_USE_MONO)
     if(NOT MONO_INCLUDE_DIR OR NOT MONO_LIBRARY)
         message(WARNING "Mono not found. Disabling MODULARITY_USE_MONO. Set MONO_ROOT to a Mono runtime with include/mono-2.0 and libmono-2.0-sgen.")
         set(MODULARITY_USE_MONO OFF CACHE BOOL "Enable Mono embedding for managed scripts" FORCE)
+    elseif(WIN32)
+        find_file(MONO_RUNTIME_DLL
+            NAMES mono-2.0-sgen.dll libmono-2.0-sgen.dll monosgen-2.0.dll
+            HINTS
+                ${MONO_ROOT}/bin
+                ${MONO_ROOT}/lib
+                ${MONO_ROOT}/lib64
+        )
     endif()
 endif()
 
@@ -315,6 +324,9 @@ set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "Disable Assimp tests" FORCE)
 set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "Disable Assimp samples" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "Disable Assimp tools" FORCE)
 set(ASSIMP_INSTALL OFF CACHE BOOL "Disable Assimp install targets" FORCE)
+if(WIN32)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build package with shared libraries." FORCE)
+endif()
 # Force vendored zlib/minizip in assimp to avoid host minizip/unzip.h dependency on clean builds.
 set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "Build Assimp zlib/minizip from source" FORCE)
 set(ASSIMP_BUILD_MINIZIP ON CACHE BOOL "Build Assimp minizip from source" FORCE)
@@ -380,6 +392,25 @@ if(SNDFILE_FOUND)
     target_link_libraries(core_player PUBLIC PkgConfig::SNDFILE)
 endif()
 target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
+
+function(modularity_stage_windows_runtime_dlls target_name)
+    if(NOT WIN32)
+        return()
+    endif()
+
+    set(runtime_dlls "$<TARGET_RUNTIME_DLLS:${target_name}>")
+    if(MODULARITY_USE_MONO AND MONO_RUNTIME_DLL)
+        list(APPEND runtime_dlls "${MONO_RUNTIME_DLL}")
+    endif()
+
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DDST_DIR=$<TARGET_FILE_DIR:${target_name}>"
+            "-DRUNTIME_DLLS=$<JOIN:${runtime_dlls},;>"
+            -P "${MODULARITY_RUNTIME_DLL_COPY_SCRIPT}"
+        VERBATIM
+    )
+endfunction()
 
 if(MODULARITY_ENABLE_PHYSX)
     set(PHYSX_ROOT_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/PhysX/physx CACHE PATH "PhysX root directory")
@@ -568,6 +599,13 @@ if(WIN32 AND MODULARITY_ENABLE_PHYSX)
             -D DST_DIR=$<TARGET_FILE_DIR:ModularityPlayer>
             -P ${PHYSX_COPY_SCRIPT}
     )
+endif()
+
+if(WIN32 AND MODULARITY_BUILD_EDITOR)
+    modularity_stage_windows_runtime_dlls(Modularity)
+endif()
+if(WIN32)
+    modularity_stage_windows_runtime_dlls(ModularityPlayer)
 endif()
 
 include(GNUInstallDirs)

@@ -5114,59 +5114,65 @@ void Engine::renderPlayControlsBar() {
       "Resources/Engine-Root/Editor/Pause Button Gray.png", "||", pauseTooltip,
       isPaused);
 
-  if (playPressed) {
-    ImGui::ClearActiveID();
-    bool newState = !isPlaying;
-    if (newState) {
-      // Reset script module state so Begin/static script state is fresh each
-      // play session.
-      resetScriptRuntimeStateForReload(false);
-      capturePlayModeSnapshot();
-      deferInspectorRefresh = true;
-      for (SceneObject &obj : sceneObjects) {
-        if (!obj.hasAnimation)
-          continue;
-        obj.animation.runtimePlaying = false;
-        obj.animation.runtimePaused = false;
-        obj.animation.runtimeTime = 0.0f;
-        obj.animation.runtimeDirection = 1.0f;
-        obj.animation.runtimeInitialized = false;
-        obj.animation.runtimeClipPath.clear();
-      }
-      if (physics.isReady() || physics.init()) {
-        physics.onPlayStart(sceneObjects);
+    if (playPressed) {
+      ImGui::ClearActiveID();
+      bool newState = !isPlaying;
+      if (newState) {
+        clearVideoPlayers();
+        videoAssetPreviewPlayer.reset();
+        videoAssetPreviewPath.clear();
+        // Reset script module state so Begin/static script state is fresh each
+        // play session.
+        resetScriptRuntimeStateForReload(false);
+        capturePlayModeSnapshot();
+        deferInspectorRefresh = true;
+        for (SceneObject &obj : sceneObjects) {
+          if (!obj.hasAnimation)
+            continue;
+          obj.animation.runtimePlaying = false;
+          obj.animation.runtimePaused = false;
+          obj.animation.runtimeTime = 0.0f;
+          obj.animation.runtimeDirection = 1.0f;
+          obj.animation.runtimeInitialized = false;
+          obj.animation.runtimeClipPath.clear();
+        }
+        if (physics.isReady() || physics.init()) {
+          physics.onPlayStart(sceneObjects);
+        } else {
+          addConsoleMessage(
+              "PhysX failed to initialize; physics disabled for play mode",
+              ConsoleMessageType::Warning);
+        }
+        audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
+        audio.onPlayStart(sceneObjects);
+        bool hasPlayerController = false;
+        for (const auto &obj : sceneObjects) {
+          if (IsObjectEnabledInHierarchy(obj) && obj.hasPlayerController &&
+              obj.playerController.enabled) {
+            hasPlayerController = true;
+            break;
+          }
+        }
+        if (hasPlayerController && showGameViewport) {
+          gameViewCursorLocked = true;
+          gameViewportFocused = true;
+        }
       } else {
-        addConsoleMessage(
-            "PhysX failed to initialize; physics disabled for play mode",
-            ConsoleMessageType::Warning);
-      }
-      audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
-      audio.onPlayStart(sceneObjects);
-      bool hasPlayerController = false;
-      for (const auto &obj : sceneObjects) {
-        if (IsObjectEnabledInHierarchy(obj) && obj.hasPlayerController &&
-            obj.playerController.enabled) {
-          hasPlayerController = true;
-          break;
+        clearVideoPlayers();
+        videoAssetPreviewPlayer.reset();
+        videoAssetPreviewPath.clear();
+        physics.onPlayStop();
+        audio.onPlayStop();
+        restorePlayModeSnapshot();
+        deferInspectorRefresh = true;
+        resetScriptRuntimeStateForReload(false);
+        isPaused = false;
+        if (specMode && (physics.isReady() || physics.init())) {
+          physics.onPlayStart(sceneObjects);
         }
       }
-      if (hasPlayerController && showGameViewport) {
-        gameViewCursorLocked = true;
-        gameViewportFocused = true;
-      }
-    } else {
-      physics.onPlayStop();
-      audio.onPlayStop();
-      restorePlayModeSnapshot();
-      deferInspectorRefresh = true;
-      resetScriptRuntimeStateForReload(false);
-      isPaused = false;
-      if (specMode && (physics.isReady() || physics.init())) {
-        physics.onPlayStart(sceneObjects);
-      }
+      isPlaying = newState;
     }
-    isPlaying = newState;
-  }
   if (pausePressed) {
     isPaused = !isPaused;
     if (isPaused)
@@ -5187,10 +5193,16 @@ void Engine::renderPlayControlsBar() {
     specMode = enable;
     if (!isPlaying) {
       if (specMode) {
+        clearVideoPlayers();
+        videoAssetPreviewPlayer.reset();
+        videoAssetPreviewPath.clear();
         physics.onPlayStart(sceneObjects);
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
       } else {
+        clearVideoPlayers();
+        videoAssetPreviewPlayer.reset();
+        videoAssetPreviewPath.clear();
         physics.onPlayStop();
         audio.onPlayStop();
       }

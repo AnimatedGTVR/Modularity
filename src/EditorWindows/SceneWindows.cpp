@@ -1538,6 +1538,8 @@ void Engine::renderInspectorPanel() {
     const AudioClipPreview* selectedAudioPreview = nullptr;
     fs::path selectedTexturePath;
     bool browserHasTexture = false;
+    fs::path selectedVideoPath;
+    bool browserHasVideo = false;
     static std::unordered_map<int, int> selectedRendererMaterialSlots;
     static std::string slotMaterialInspectorPath;
     static bool slotMaterialInspectorValid = false;
@@ -1588,6 +1590,10 @@ void Engine::renderInspectorPanel() {
             selectedTexturePath = entry.path();
             browserHasTexture = true;
         }
+        if (cat == FileCategory::Video) {
+            selectedVideoPath = entry.path();
+            browserHasVideo = true;
+        }
     } else {
         inspectedMaterialPath.clear();
         inspectedMaterialValid = false;
@@ -1606,6 +1612,27 @@ void Engine::renderInspectorPanel() {
         }
     } else {
         audioPreviewSelectedPath.clear();
+    }
+
+    const bool assetPreviewSuppressed = isPlaying || specMode || testMode || playerMode;
+    const bool shouldPreviewVideoAsset = !assetPreviewSuppressed && browserHasVideo && selectedObjectIds.empty();
+    if (!shouldPreviewVideoAsset) {
+        if (videoAssetPreviewPlayer) {
+            videoAssetPreviewPlayer.reset();
+            videoAssetPreviewPath.clear();
+        }
+    } else {
+        const fs::path resolvedVideoPath = resolveProjectAssetPath(selectedVideoPath.string());
+        const std::string resolvedVideoPathString = resolvedVideoPath.string();
+        if (videoAssetPreviewPath != resolvedVideoPathString) {
+            videoAssetPreviewPlayer.reset();
+            videoAssetPreviewPath = resolvedVideoPathString;
+        }
+
+        if (videoAssetPreviewPlayer) {
+            videoAssetPreviewPlayer->SetLoop(videoAssetPreviewLoop);
+            videoAssetPreviewPlayer->Update(videoAssetPreviewPlayer->IsPlaying() ? deltaTime : 0.0f);
+        }
     }
 
     auto drawWaveform = [&](const char* id, const AudioClipPreview* preview, const ImVec2& size, float progressRatio, float* seekRatioOut) {
@@ -2200,7 +2227,20 @@ void Engine::renderInspectorPanel() {
     enum class MaterialShaderPreset : int {
         Custom = 0,
         EngineLit = 1,
-        ScrollingUV = 2
+        StandardUnlit = 2,
+        ScrollingUV = 3
+    };
+
+    auto resolveStandardUnlitShaderPaths = [&]() {
+        std::string fragPath = "Resources/Shaders/standard_unlit_frag.glsl";
+        if (projectManager.currentProject.isLoaded) {
+            fs::path projFrag = projectManager.currentProject.assetsPath / "Shaders" / "standard_unlit_frag.glsl";
+            std::error_code ec;
+            if (fs::exists(projFrag, ec) && !ec) {
+                fragPath = projFrag.string();
+            }
+        }
+        return std::pair<std::string, std::string>{std::string(), fragPath};
     };
 
     auto resolveScrollingShaderPaths = [&]() {
@@ -2231,6 +2271,9 @@ void Engine::renderInspectorPanel() {
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         std::transform(fragFile.begin(), fragFile.end(), fragFile.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (fragFile == "standard_unlit_frag.glsl") {
+            return MaterialShaderPreset::StandardUnlit;
+        }
         if (vertFile == "scroll_texture_vert.glsl" && fragFile == "scroll_texture_frag.glsl") {
             return MaterialShaderPreset::ScrollingUV;
         }
@@ -2248,6 +2291,11 @@ void Engine::renderInspectorPanel() {
             nextPack.clear();
             nextVert.clear();
             nextFrag.clear();
+        } else if (preset == MaterialShaderPreset::StandardUnlit) {
+            auto standardUnlit = resolveStandardUnlitShaderPaths();
+            nextPack.clear();
+            nextVert = standardUnlit.first;
+            nextFrag = standardUnlit.second;
         } else if (preset == MaterialShaderPreset::ScrollingUV) {
             auto scrolling = resolveScrollingShaderPaths();
             nextPack.clear();
@@ -2264,25 +2312,7 @@ void Engine::renderInspectorPanel() {
     };
 
     auto resolveEditorAssetPath = [&](const std::string& rawPath) -> fs::path {
-        if (rawPath.empty()) {
-            return {};
-        }
-
-        std::error_code ec;
-        fs::path candidate(rawPath);
-        if (fs::exists(candidate, ec) && !ec) {
-            return candidate;
-        }
-
-        if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
-            ec.clear();
-            fs::path projectCandidate = projectManager.currentProject.projectPath / candidate;
-            if (fs::exists(projectCandidate, ec) && !ec) {
-                return projectCandidate.lexically_normal();
-            }
-        }
-
-        return candidate;
+        return resolveProjectAssetPath(rawPath);
     };
 
     auto revealAssetInProject = [&](const std::string& rawPath) {
@@ -2335,6 +2365,9 @@ void Engine::renderInspectorPanel() {
         }
 
         const MaterialShaderPreset preset = shaderPresetFromPaths(vertShaderPath, fragShaderPath);
+        if (preset == MaterialShaderPreset::StandardUnlit) {
+            return std::string("Standard Unlit");
+        }
         if (preset == MaterialShaderPreset::ScrollingUV) {
             return std::string("Scrolling UV");
         }
@@ -2708,7 +2741,10 @@ void Engine::renderInspectorPanel() {
             selectionHint = "Shader Pack";
         } else {
             MaterialShaderPreset preset = shaderPresetFromPaths(vertShaderPath, fragShaderPath);
-            if (preset == MaterialShaderPreset::ScrollingUV) {
+            if (preset == MaterialShaderPreset::StandardUnlit) {
+                selectionLabel = "Standard Unlit";
+                selectionHint = "Default engine shader";
+            } else if (preset == MaterialShaderPreset::ScrollingUV) {
                 selectionLabel = "Scrolling UV";
                 selectionHint = "Default engine shader";
             } else if (preset == MaterialShaderPreset::Custom && (!vertShaderPath.empty() || !fragShaderPath.empty())) {
@@ -2785,6 +2821,12 @@ void Engine::renderInspectorPanel() {
                 ImGui::Selectable("Engine Lit (Default)", shaderPresetFromPaths(vertShaderPath, fragShaderPath) == MaterialShaderPreset::EngineLit &&
                                                           shaderPackPath.empty())) {
                 changed |= applyShaderPreset(MaterialShaderPreset::EngineLit, shaderPackPath, vertShaderPath, fragShaderPath);
+                ImGui::CloseCurrentPopup();
+            }
+            if (matchesPopupFilter("Standard Unlit", filter) &&
+                ImGui::Selectable("Standard Unlit", shaderPresetFromPaths(vertShaderPath, fragShaderPath) == MaterialShaderPreset::StandardUnlit &&
+                                                   shaderPackPath.empty())) {
+                changed |= applyShaderPreset(MaterialShaderPreset::StandardUnlit, shaderPackPath, vertShaderPath, fragShaderPath);
                 ImGui::CloseCurrentPopup();
             }
             if (matchesPopupFilter("Scrolling UV", filter) &&
@@ -2931,6 +2973,13 @@ void Engine::renderInspectorPanel() {
                                   shaderPresetFromPaths(vertShaderPath, fragShaderPath) == MaterialShaderPreset::EngineLit &&
                                   shaderPackPath.empty())) {
                 changed |= applyShaderPreset(MaterialShaderPreset::EngineLit, shaderPackPath, vertShaderPath, fragShaderPath);
+                ImGui::CloseCurrentPopup();
+            }
+            if (matchesPopupFilter("Standard Unlit", filter) &&
+                ImGui::Selectable("Standard Unlit",
+                                  shaderPresetFromPaths(vertShaderPath, fragShaderPath) == MaterialShaderPreset::StandardUnlit &&
+                                  shaderPackPath.empty())) {
+                changed |= applyShaderPreset(MaterialShaderPreset::StandardUnlit, shaderPackPath, vertShaderPath, fragShaderPath);
                 ImGui::CloseCurrentPopup();
             }
             if (matchesPopupFilter("Scrolling UV", filter) &&
@@ -3192,8 +3241,14 @@ void Engine::renderInspectorPanel() {
                               0.0f,
                               "%.2f"))
         {
-            materialValue.uvTiling.x = std::max(0.0001f, materialValue.uvTiling.x);
-            materialValue.uvTiling.y = std::max(0.0001f, materialValue.uvTiling.y);
+            auto sanitizeUvTiling = [](float value) {
+                if (std::abs(value) >= 0.0001f) {
+                    return value;
+                }
+                return (value < 0.0f) ? -0.0001f : 0.0001f;
+            };
+            materialValue.uvTiling.x = sanitizeUvTiling(materialValue.uvTiling.x);
+            materialValue.uvTiling.y = sanitizeUvTiling(materialValue.uvTiling.y);
             changed = true;
         }
         drawMaterialInlineLabel("UV Offset");
@@ -3566,9 +3621,82 @@ void Engine::renderInspectorPanel() {
         }
     };
 
-    const bool assetPreviewSuppressed = isPlaying || specMode || testMode || playerMode;
+    auto renderVideoAssetPanel = [&](const char* headerTitle) {
+        if (!browserHasVideo) return;
+
+        ImGui::SeparatorText(headerTitle);
+        ImGui::TextDisabled("%s", selectedVideoPath.filename().string().c_str());
+        drawTrimmedPathText(selectedVideoPath.string(), ImVec4(0.92f, 0.72f, 0.78f, 1.0f));
+        ImGui::Spacing();
+
+        if (!videoAssetPreviewPlayer) {
+            ImGui::TextDisabled("Preview is loaded on demand.");
+        }
+
+        if (ImGui::Button("Play", ImVec2(72.0f, 0.0f))) {
+            if (!videoAssetPreviewPlayer && !videoAssetPreviewPath.empty()) {
+                videoAssetPreviewPlayer = std::make_unique<VideoPlayer>();
+                videoAssetPreviewPlayer->SetLoop(videoAssetPreviewLoop);
+                if (!videoAssetPreviewPlayer->LoadVideo(videoAssetPreviewPath)) {
+                    videoAssetPreviewPlayer.reset();
+                }
+            }
+            if (videoAssetPreviewPlayer) {
+                videoAssetPreviewPlayer->SetLoop(videoAssetPreviewLoop);
+                videoAssetPreviewPlayer->Play();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop", ImVec2(72.0f, 0.0f))) {
+            if (videoAssetPreviewPlayer) {
+                videoAssetPreviewPlayer->Stop();
+                videoAssetPreviewPlayer.reset();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Loop", &videoAssetPreviewLoop) && videoAssetPreviewPlayer) {
+            videoAssetPreviewPlayer->SetLoop(videoAssetPreviewLoop);
+        }
+
+        if (videoAssetPreviewPlayer && !videoAssetPreviewPlayer->GetLastError().empty() && !videoAssetPreviewPlayer->IsLoaded()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", videoAssetPreviewPlayer->GetLastError().c_str());
+            return;
+        }
+
+        if (videoAssetPreviewPlayer && videoAssetPreviewPlayer->IsLoaded()) {
+            ImGui::TextDisabled("Duration: %.2fs", videoAssetPreviewPlayer->GetDurationSeconds());
+            ImGui::TextDisabled("Resolution: %d x %d",
+                                videoAssetPreviewPlayer->GetWidth(),
+                                videoAssetPreviewPlayer->GetHeight());
+            ImGui::TextDisabled("Preview audio is not implemented.");
+        }
+
+        ImGui::Spacing();
+        if (videoAssetPreviewPlayer &&
+            videoAssetPreviewPlayer->HasTextureOverride() &&
+            videoAssetPreviewPlayer->GetTextureId() != 0 &&
+            videoAssetPreviewPlayer->GetWidth() > 0 &&
+            videoAssetPreviewPlayer->GetHeight() > 0) {
+            static float videoAssetPreviewZoom = 1.0f;
+            ImGui::SliderFloat("Preview Zoom", &videoAssetPreviewZoom, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+
+            const float maxWidth = ImGui::GetContentRegionAvail().x;
+            const float baseWidth = 240.0f * videoAssetPreviewZoom;
+            const float width = std::min(maxWidth, baseWidth);
+            const float aspect = static_cast<float>(videoAssetPreviewPlayer->GetWidth()) /
+                                 static_cast<float>(std::max(1, videoAssetPreviewPlayer->GetHeight()));
+            ImVec2 imageSize(width, width / std::max(0.0001f, aspect));
+            ImGui::Image((ImTextureID)(intptr_t)videoAssetPreviewPlayer->GetTextureId(),
+                         imageSize,
+                         ImVec2(0, 0),
+                         ImVec2(1, 1));
+        } else if (videoAssetPreviewPlayer && videoAssetPreviewPlayer->IsLoaded()) {
+            ImGui::TextDisabled("Press Play to preview the video.");
+        }
+    };
+
     if (selectedObjectIds.empty()) {
-        if (assetPreviewSuppressed && (browserHasMaterial || browserHasAudio || browserHasTexture)) {
+        if (assetPreviewSuppressed && (browserHasMaterial || browserHasAudio || browserHasTexture || browserHasVideo)) {
             ImGui::TextDisabled("Asset previews are disabled while the scene is running.");
             ImGui::Spacing();
             ImGui::TextDisabled("Select an object to inspect components, or stop playback to edit assets.");
@@ -3576,6 +3704,8 @@ void Engine::renderInspectorPanel() {
             renderMaterialAssetPanel("Material Asset", true);
         } else if (browserHasAudio) {
             renderAudioAssetPanel("Audio Clip", nullptr);
+        } else if (browserHasVideo) {
+            renderVideoAssetPanel("Video Asset");
         } else if (browserHasTexture) {
             renderTextureAssetPanel("Texture");
         } else {
@@ -5871,6 +6001,16 @@ void Engine::renderInspectorPanel() {
                     player.videoPath = pathBuf;
                     changed = true;
                 }
+                ImGui::SameLine();
+                const bool canUseSelectedVideo = !fileBrowser.selectedFile.empty() &&
+                                                 fs::exists(fileBrowser.selectedFile) &&
+                                                 browserHasVideo;
+                ImGui::BeginDisabled(!canUseSelectedVideo);
+                if (ImGui::SmallButton("Use Selection")) {
+                    player.videoPath = selectedVideoPath.string();
+                    changed = true;
+                }
+                ImGui::EndDisabled();
                 if (boolRow("Play On Awake", &player.playOnAwake)) { changed = true; }
                 if (boolRow("Loop", &player.loop)) { changed = true; }
                 fieldRow("Playback Speed");

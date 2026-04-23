@@ -16,6 +16,7 @@ enum class FileCategory {
     Model,
     Material,
     Texture,
+    Video,
     Shader,
     Script,
     Audio,
@@ -68,6 +69,7 @@ public:
     bool isModelFile(const fs::directory_entry& entry) const;
     bool isSceneFile(const fs::directory_entry& entry) const;
     bool isTextureFile(const fs::directory_entry& entry) const;
+    bool isVideoFile(const fs::directory_entry& entry) const;
     bool matchesFilter(const fs::directory_entry& entry) const;
     
     // Legacy compatibility

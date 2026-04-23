@@ -44,6 +44,9 @@ namespace FileIcons {
                 case FileCategory::Material:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Material.png";
                     break;
+                case FileCategory::Video:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png";
+                    break;
                 case FileCategory::Audio:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Audio File.png";
                     break;
@@ -523,6 +526,7 @@ namespace FileIcons {
             case FileCategory::Model:   DrawModelIcon(drawList, pos, size, color); break;
             case FileCategory::Material:DrawShaderIcon(drawList, pos, size, color); break;
             case FileCategory::Texture: DrawTextureIcon(drawList, pos, size, color); break;
+            case FileCategory::Video:   DrawTextureIcon(drawList, pos, size, color); break;
             case FileCategory::Shader:  DrawShaderIcon(drawList, pos, size, color); break;
             case FileCategory::Script:  DrawScriptIcon(drawList, pos, size, color); break;
             case FileCategory::Audio:   DrawAudioIcon(drawList, pos, size, color); break;
@@ -775,6 +779,7 @@ namespace {
             case FileCategory::Model: return "Model";
             case FileCategory::Material: return "Material";
             case FileCategory::Texture: return "Texture";
+            case FileCategory::Video: return "Video";
             case FileCategory::Shader: return "Shader";
             case FileCategory::Script: return "Script";
             case FileCategory::Audio: return "Audio";
@@ -1188,6 +1193,9 @@ void Engine::renderFileBrowserPanel() {
             return;
         }
         FileCategory category = fileBrowser.getFileCategory(entry);
+        if (category == FileCategory::Video) {
+            return;
+        }
         if (category == FileCategory::Script || category == FileCategory::Shader) {
             openScriptInEditor(entry.path());
             return;
@@ -1613,6 +1621,7 @@ void Engine::renderFileBrowserPanel() {
             case FileCategory::Model:   return IM_COL32(100, 220, 140, 255);  // Green
             case FileCategory::Material:return IM_COL32(220, 200, 120, 255);  // Gold
             case FileCategory::Texture: return IM_COL32(220, 130, 220, 255);  // Purple/pink
+            case FileCategory::Video:   return IM_COL32(220, 90, 120, 255);   // Red
             case FileCategory::Shader:  return IM_COL32(255, 140, 90, 255);   // Orange
             case FileCategory::Script:  return IM_COL32(130, 200, 255, 255);  // Light blue
             case FileCategory::Audio:   return IM_COL32(255, 180, 100, 255);  // Warm orange
@@ -2329,6 +2338,7 @@ void Engine::renderFileBrowserPanel() {
                 case FileCategory::Model:    nameColor = IM_COL32(152, 224, 170, 255); break;
                 case FileCategory::Material: nameColor = IM_COL32(236, 205, 132, 255); break;
                 case FileCategory::Texture:  nameColor = IM_COL32(220, 171, 226, 255); break;
+                case FileCategory::Video:    nameColor = IM_COL32(238, 164, 182, 255); break;
                 default: break;
             }
 

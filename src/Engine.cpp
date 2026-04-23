@@ -2361,6 +2361,28 @@ void PruneRuntimeCache(const fs::path& appDataPath,
 #pragma endregion
 
 #pragma region Window + Selection Utilities
+fs::path Engine::resolveProjectAssetPath(const std::string& rawPath) const {
+    if (rawPath.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    fs::path candidate(rawPath);
+    if (fs::exists(candidate, ec) && !ec) {
+        return candidate.lexically_normal();
+    }
+
+    if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
+        ec.clear();
+        fs::path projectCandidate = projectManager.currentProject.projectPath / candidate;
+        if (fs::exists(projectCandidate, ec) && !ec) {
+            return projectCandidate.lexically_normal();
+        }
+    }
+
+    return candidate.lexically_normal();
+}
+
 void window_size_callback(GLFWwindow* window, int width, int height) {
     if (auto* engine = static_cast<Engine*>(glfwGetWindowUserPointer(window))) {
         engine->onWindowResized(width, height);
@@ -3966,6 +3988,8 @@ void Engine::shutdown() {
         vulkanRenderer.reset();
     }
     vulkanRendererInitialized = false;
+    videoAssetPreviewPlayer.reset();
+    videoAssetPreviewPath.clear();
     clearVideoPlayers();
     glfwTerminate();
 }
@@ -6114,12 +6138,23 @@ void Engine::updateCameraFollow2D(float delta) {
 }
 
 void Engine::syncVideoPlayers(float delta) {
+    for (SceneObject& obj : sceneObjects) {
+        obj.runtimeHasAlbedoTextureOverride = false;
+        obj.runtimeAlbedoTextureOverrideId = 0;
+    }
+
+    const bool runtimeVideoActive = isPlaying || specMode || testMode || playerMode;
+    if (!runtimeVideoActive) {
+        if (!videoPlayers.empty()) {
+            clearVideoPlayers();
+        }
+        return;
+    }
+
     std::unordered_set<int> activeVideoIds;
     activeVideoIds.reserve(sceneObjects.size());
 
     for (SceneObject& obj : sceneObjects) {
-        obj.runtimeHasAlbedoTextureOverride = false;
-        obj.runtimeAlbedoTextureOverrideId = 0;
 
         if (!obj.hasVideoPlayer ||
             !obj.videoPlayer.enabled ||
@@ -6136,8 +6171,9 @@ void Engine::syncVideoPlayers(float delta) {
         }
 
         VideoPlayer& player = *entry;
-        if (!player.IsLoaded() || player.GetLoadedPath() != obj.videoPlayer.videoPath) {
-            if (!player.LoadVideo(obj.videoPlayer.videoPath)) {
+        const fs::path resolvedVideoPath = resolveProjectAssetPath(obj.videoPlayer.videoPath);
+        if (!player.IsLoaded() || player.GetLoadedPath() != resolvedVideoPath.string()) {
+            if (!player.LoadVideo(resolvedVideoPath.string())) {
                 std::cerr << "Failed to load video for object '" << obj.name << "'";
                 if (!obj.videoPlayer.videoPath.empty()) {
                     std::cerr << " (" << obj.videoPlayer.videoPath << ")";

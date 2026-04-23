@@ -29,7 +29,10 @@ public:
     bool IsLoaded() const { return m_loaded; }
     bool IsPlaying() const { return m_playing && !m_paused; }
     const std::string& GetLoadedPath() const { return m_loadedPath; }
-    const std::string& GetLastError() const { return m_lastError; }
+    std::string GetLastError() const;
+    int GetWidth() const { return m_width; }
+    int GetHeight() const { return m_height; }
+    double GetDurationSeconds() const { return m_durationSeconds; }
 
 private:
     struct DecoderState;
@@ -53,17 +56,21 @@ private:
     void ClearQueuedFramesLocked();
     bool OpenDecoder(const std::string& path);
     bool EnsureTextureAllocated();
+    bool EnsureConversionContextForFrame();
     void ApplyTextureFilter();
     bool SeekToStart();
     DecodeResult DecodeIntoSlot(FrameSlot& slot, double& outPtsSeconds);
     double ResolveFramePtsSeconds() const;
     void WorkerMain();
+    void SetLastError(std::string error);
 
     std::unique_ptr<DecoderState> m_decoder;
     std::thread m_workerThread;
     std::mutex m_queueMutex;
+    mutable std::mutex m_stateMutex;
     std::condition_variable m_queueCv;
     std::array<FrameSlot, kFrameQueueCapacity> m_frameQueue;
+    std::vector<unsigned char> m_uploadBuffer;
     size_t m_queueReadIndex = 0;
     size_t m_queueCount = 0;
     bool m_workerExitRequested = false;

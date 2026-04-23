@@ -34,6 +34,7 @@ struct VideoPlayer::DecoderState {
     double fallbackFrameDurationSeconds = 1.0 / 30.0;
     mutable double nextFallbackPtsSeconds = 0.0;
     bool drainingDecoder = false;
+    bool hasPendingPacket = false;
 };
 
 VideoPlayer::VideoPlayer() = default;
@@ -42,6 +43,16 @@ VideoPlayer::~VideoPlayer() {
     StopWorker();
     ShutdownDecoder();
     DestroyTexture();
+}
+
+std::string VideoPlayer::GetLastError() const {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    return m_lastError;
+}
+
+void VideoPlayer::SetLastError(std::string error) {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_lastError = std::move(error);
 }
 
 bool VideoPlayer::LoadVideo(const std::string& path) {
@@ -57,7 +68,7 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
 
     m_loaded = false;
     m_loadedPath.clear();
-    m_lastError.clear();
+    SetLastError("");
     m_width = 0;
     m_height = 0;
     m_durationSeconds = 0.0;
@@ -67,7 +78,7 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
     m_hasPresentedFrame = false;
 
     if (path.empty()) {
-        m_lastError = "Video path is empty.";
+        SetLastError("Video path is empty.");
         return false;
     }
 
@@ -77,14 +88,31 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
 
     if (!EnsureTextureAllocated()) {
         ShutdownDecoder();
-        m_lastError = "Failed to allocate OpenGL texture for video playback.";
+        SetLastError("Failed to allocate OpenGL texture for video playback.");
         return false;
     }
 
     const size_t pixelBytes = static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4u;
+    m_uploadBuffer.assign(pixelBytes, 0u);
     for (FrameSlot& slot : m_frameQueue) {
         slot.pixels.assign(pixelBytes, 0u);
         slot.ptsSeconds = 0.0;
+    }
+
+    double firstFramePtsSeconds = 0.0;
+    const DecodeResult firstDecodeResult = DecodeIntoSlot(m_frameQueue[0], firstFramePtsSeconds);
+    if (firstDecodeResult == DecodeResult::FrameReady) {
+        m_frameQueue[0].ptsSeconds = firstFramePtsSeconds;
+        m_queueReadIndex = 0;
+        m_queueCount = 1;
+    } else if (firstDecodeResult == DecodeResult::Error) {
+        ShutdownDecoder();
+        SetLastError(GetLastError().empty() ? "Failed to decode the first video frame." : GetLastError());
+        return false;
+    } else {
+        ShutdownDecoder();
+        SetLastError("The video stream ended before a frame could be decoded.");
+        return false;
     }
 
     m_loaded = true;
@@ -162,8 +190,9 @@ void VideoPlayer::Update(float deltaSeconds) {
     }
 
     constexpr double kPresentLeadSeconds = 0.0015;
-    size_t uploadIndex = 0;
     bool shouldUpload = false;
+    int uploadWidth = 0;
+    int uploadHeight = 0;
 
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
@@ -182,26 +211,33 @@ void VideoPlayer::Update(float deltaSeconds) {
             const FrameSlot& front = m_frameQueue[m_queueReadIndex];
             const bool shouldPrimeTexture = !m_hasPresentedFrame;
             if (shouldPrimeTexture || front.ptsSeconds <= m_playbackTimeSeconds + kPresentLeadSeconds) {
-                uploadIndex = m_queueReadIndex;
+                if (m_uploadBuffer.size() != front.pixels.size()) {
+                    m_uploadBuffer.resize(front.pixels.size());
+                }
+                std::copy(front.pixels.begin(), front.pixels.end(), m_uploadBuffer.begin());
                 shouldUpload = true;
+                uploadWidth = m_width;
+                uploadHeight = m_height;
+                m_queueReadIndex = (m_queueReadIndex + 1) % kFrameQueueCapacity;
+                --m_queueCount;
             }
         }
     }
 
     if (shouldUpload) {
-        const FrameSlot& slot = m_frameQueue[uploadIndex];
         glBindTexture(GL_TEXTURE_2D, m_textureId);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, slot.pixels.data());
+#ifdef GL_UNPACK_ROW_LENGTH
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_PIXELS
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_ROWS
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+#endif
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uploadWidth, uploadHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_uploadBuffer.data());
         glBindTexture(GL_TEXTURE_2D, 0);
-
-        {
-            std::lock_guard<std::mutex> lock(m_queueMutex);
-            if (m_queueCount > 0 && m_queueReadIndex == uploadIndex) {
-                m_queueReadIndex = (m_queueReadIndex + 1) % kFrameQueueCapacity;
-                --m_queueCount;
-            }
-        }
 
         m_hasPresentedFrame = true;
         m_queueCv.notify_all();
@@ -303,19 +339,19 @@ bool VideoPlayer::OpenDecoder(const std::string& path) {
 
     int result = avformat_open_input(&decoder->formatContext, path.c_str(), nullptr, nullptr);
     if (result < 0) {
-        m_lastError = "Failed to open video '" + path + "': " + FfmpegErrorString(result);
+        SetLastError("Failed to open video '" + path + "': " + FfmpegErrorString(result));
         return false;
     }
 
     result = avformat_find_stream_info(decoder->formatContext, nullptr);
     if (result < 0) {
-        m_lastError = "Failed to read video stream info: " + FfmpegErrorString(result);
+        SetLastError("Failed to read video stream info: " + FfmpegErrorString(result));
         return false;
     }
 
     decoder->videoStreamIndex = av_find_best_stream(decoder->formatContext, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (decoder->videoStreamIndex < 0) {
-        m_lastError = "No video stream found in '" + path + "'.";
+        SetLastError("No video stream found in '" + path + "'.");
         return false;
     }
 
@@ -323,53 +359,37 @@ bool VideoPlayer::OpenDecoder(const std::string& path) {
     const AVCodecParameters* params = stream->codecpar;
     const AVCodec* codec = avcodec_find_decoder(params->codec_id);
     if (codec == nullptr) {
-        m_lastError = "No decoder available for the video's codec.";
+        SetLastError("No decoder available for the video's codec.");
         return false;
     }
 
     decoder->codecContext = avcodec_alloc_context3(codec);
     if (decoder->codecContext == nullptr) {
-        m_lastError = "Failed to allocate FFmpeg codec context.";
+        SetLastError("Failed to allocate FFmpeg codec context.");
         return false;
     }
 
     result = avcodec_parameters_to_context(decoder->codecContext, params);
     if (result < 0) {
-        m_lastError = "Failed to copy codec parameters: " + FfmpegErrorString(result);
+        SetLastError("Failed to copy codec parameters: " + FfmpegErrorString(result));
         return false;
     }
 
     result = avcodec_open2(decoder->codecContext, codec, nullptr);
     if (result < 0) {
-        m_lastError = "Failed to open video decoder: " + FfmpegErrorString(result);
+        SetLastError("Failed to open video decoder: " + FfmpegErrorString(result));
         return false;
     }
 
     decoder->packet = av_packet_alloc();
     decoder->frame = av_frame_alloc();
     if (decoder->packet == nullptr || decoder->frame == nullptr) {
-        m_lastError = "Failed to allocate FFmpeg packet/frame buffers.";
+        SetLastError("Failed to allocate FFmpeg packet/frame buffers.");
         return false;
     }
 
     m_width = std::max(1, decoder->codecContext->width);
     m_height = std::max(1, decoder->codecContext->height);
-
-    decoder->swsContext = sws_getContext(
-        m_width,
-        m_height,
-        decoder->codecContext->pix_fmt,
-        m_width,
-        m_height,
-        AV_PIX_FMT_RGBA,
-        SWS_BILINEAR,
-        nullptr,
-        nullptr,
-        nullptr);
-    if (decoder->swsContext == nullptr) {
-        m_lastError = "Failed to create FFmpeg swscale conversion context.";
-        return false;
-    }
 
     decoder->timeBase = stream->time_base;
 
@@ -413,20 +433,67 @@ bool VideoPlayer::EnsureTextureAllocated() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     ApplyTextureFilter();
+    glBindTexture(GL_TEXTURE_2D, m_textureId);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+#ifdef GL_UNPACK_ROW_LENGTH
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_PIXELS
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_ROWS
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+#endif
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_width, m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
+}
+
+bool VideoPlayer::EnsureConversionContextForFrame() {
+    if (m_decoder == nullptr || m_decoder->frame == nullptr) {
+        SetLastError("No decoded video frame is available for color conversion.");
+        return false;
+    }
+
+    const int sourceWidth = std::max(1, m_decoder->frame->width);
+    const int sourceHeight = std::max(1, m_decoder->frame->height);
+    const AVPixelFormat sourceFormat = static_cast<AVPixelFormat>(m_decoder->frame->format);
+    if (sourceFormat == AV_PIX_FMT_NONE) {
+        SetLastError("Decoded video frame reported an invalid pixel format.");
+        return false;
+    }
+
+    SwsContext* swsContext = sws_getCachedContext(
+        m_decoder->swsContext,
+        sourceWidth,
+        sourceHeight,
+        sourceFormat,
+        m_width,
+        m_height,
+        AV_PIX_FMT_RGBA,
+        SWS_BILINEAR,
+        nullptr,
+        nullptr,
+        nullptr);
+    if (swsContext == nullptr) {
+        SetLastError("Failed to create FFmpeg swscale conversion context.");
+        return false;
+    }
+
+    m_decoder->swsContext = swsContext;
     return true;
 }
 
 void VideoPlayer::ApplyTextureFilter() {
     if (m_textureId == 0) return;
 
+    GLint previouslyBoundTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previouslyBoundTexture);
     glBindTexture(GL_TEXTURE_2D, m_textureId);
     const GLint filter = m_pointFiltering ? GL_NEAREST : GL_LINEAR;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previouslyBoundTexture));
 }
 
 bool VideoPlayer::SeekToStart() {
@@ -436,7 +503,7 @@ bool VideoPlayer::SeekToStart() {
 
     const int seekResult = av_seek_frame(m_decoder->formatContext, m_decoder->videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
     if (seekResult < 0) {
-        m_lastError = "Failed to seek video back to the start: " + FfmpegErrorString(seekResult);
+        SetLastError("Failed to seek video back to the start: " + FfmpegErrorString(seekResult));
         return false;
     }
 
@@ -445,6 +512,7 @@ bool VideoPlayer::SeekToStart() {
     av_packet_unref(m_decoder->packet);
     m_decoder->nextFallbackPtsSeconds = 0.0;
     m_decoder->drainingDecoder = false;
+    m_decoder->hasPendingPacket = false;
     return true;
 }
 
@@ -459,13 +527,24 @@ VideoPlayer::DecodeResult VideoPlayer::DecodeIntoSlot(FrameSlot& slot, double& o
     for (;;) {
         const int receiveResult = avcodec_receive_frame(m_decoder->codecContext, m_decoder->frame);
         if (receiveResult == 0) {
-            sws_scale(m_decoder->swsContext,
-                      m_decoder->frame->data,
-                      m_decoder->frame->linesize,
-                      0,
-                      m_height,
-                      dstData,
-                      dstLinesize);
+            if (!EnsureConversionContextForFrame()) {
+                av_frame_unref(m_decoder->frame);
+                return DecodeResult::Error;
+            }
+
+            const int sourceHeight = std::max(1, m_decoder->frame->height);
+            const int scaledRows = sws_scale(m_decoder->swsContext,
+                                             m_decoder->frame->data,
+                                             m_decoder->frame->linesize,
+                                             0,
+                                             sourceHeight,
+                                             dstData,
+                                             dstLinesize);
+            if (scaledRows <= 0) {
+                SetLastError("Failed to convert decoded video frame to RGBA.");
+                av_frame_unref(m_decoder->frame);
+                return DecodeResult::Error;
+            }
 
             outPtsSeconds = ResolveFramePtsSeconds();
             av_frame_unref(m_decoder->frame);
@@ -478,7 +557,7 @@ VideoPlayer::DecodeResult VideoPlayer::DecodeIntoSlot(FrameSlot& slot, double& o
         }
 
         if (receiveResult != AVERROR(EAGAIN) && receiveResult != AVERROR_EOF) {
-            m_lastError = "Failed while decoding video frame: " + FfmpegErrorString(receiveResult);
+            SetLastError("Failed while decoding video frame: " + FfmpegErrorString(receiveResult));
             return DecodeResult::Error;
         }
 
@@ -487,26 +566,43 @@ VideoPlayer::DecodeResult VideoPlayer::DecodeIntoSlot(FrameSlot& slot, double& o
             return DecodeResult::EndOfStream;
         }
 
-        const int readResult = av_read_frame(m_decoder->formatContext, m_decoder->packet);
-        if (readResult == AVERROR_EOF) {
-            m_decoder->drainingDecoder = true;
-            avcodec_send_packet(m_decoder->codecContext, nullptr);
-            continue;
-        }
-        if (readResult < 0) {
-            m_lastError = "Failed to read video packet: " + FfmpegErrorString(readResult);
-            return DecodeResult::Error;
-        }
+        if (!m_decoder->hasPendingPacket) {
+            const int readResult = av_read_frame(m_decoder->formatContext, m_decoder->packet);
+            if (readResult == AVERROR_EOF) {
+                m_decoder->drainingDecoder = true;
+                const int flushResult = avcodec_send_packet(m_decoder->codecContext, nullptr);
+                if (flushResult < 0 && flushResult != AVERROR_EOF) {
+                    SetLastError("Failed to flush video decoder: " + FfmpegErrorString(flushResult));
+                    return DecodeResult::Error;
+                }
+                continue;
+            }
+            if (readResult < 0) {
+                SetLastError("Failed to read video packet: " + FfmpegErrorString(readResult));
+                return DecodeResult::Error;
+            }
 
-        if (m_decoder->packet->stream_index != m_decoder->videoStreamIndex) {
-            av_packet_unref(m_decoder->packet);
-            continue;
+            if (m_decoder->packet->stream_index != m_decoder->videoStreamIndex) {
+                av_packet_unref(m_decoder->packet);
+                continue;
+            }
+
+            m_decoder->hasPendingPacket = true;
         }
 
         const int sendResult = avcodec_send_packet(m_decoder->codecContext, m_decoder->packet);
+        if (sendResult == 0) {
+            av_packet_unref(m_decoder->packet);
+            m_decoder->hasPendingPacket = false;
+            continue;
+        }
+        if (sendResult == AVERROR(EAGAIN)) {
+            continue;
+        }
         av_packet_unref(m_decoder->packet);
-        if (sendResult < 0 && sendResult != AVERROR(EAGAIN)) {
-            m_lastError = "Failed to submit packet to decoder: " + FfmpegErrorString(sendResult);
+        m_decoder->hasPendingPacket = false;
+        if (sendResult < 0) {
+            SetLastError("Failed to submit packet to decoder: " + FfmpegErrorString(sendResult));
             return DecodeResult::Error;
         }
     }
@@ -613,8 +709,9 @@ void VideoPlayer::WorkerMain() {
         if (!m_loadedPath.empty()) {
             std::cerr << " for '" << m_loadedPath << "'";
         }
-        if (!m_lastError.empty()) {
-            std::cerr << ": " << m_lastError;
+        const std::string lastError = GetLastError();
+        if (!lastError.empty()) {
+            std::cerr << ": " << lastError;
         }
         std::cerr << std::endl;
     }

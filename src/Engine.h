@@ -362,6 +362,9 @@ private:
     bool audioPreviewAutoPlay = false;
     float audioPreviewVolume = 1.0f;
     float audioPreviewBaseVolume = 1.0f;
+    bool videoAssetPreviewLoop = false;
+    std::unique_ptr<VideoPlayer> videoAssetPreviewPlayer;
+    std::string videoAssetPreviewPath;
     enum class EditorFeedbackSoundCategory {
         Click = 0,
         Error = 1,
@@ -941,6 +944,7 @@ private:
     void updateCameraFollow2D(float delta);
     void syncVideoPlayers(float delta);
     void clearVideoPlayers();
+    fs::path resolveProjectAssetPath(const std::string& rawPath) const;
     void updateRuntimeAnimations(float delta);
     void updateAIAgents(float delta);
     void updateSkeletalAnimations(float delta);

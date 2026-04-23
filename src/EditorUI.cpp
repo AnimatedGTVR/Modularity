@@ -355,6 +355,12 @@ FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) cons
         ext == ".tga" || ext == ".dds" || ext == ".hdr") {
         return FileCategory::Texture;
     }
+
+    // Video files
+    if (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".avi" ||
+        ext == ".mkv" || ext == ".webm" || ext == ".wmv" || ext == ".ogv") {
+        return FileCategory::Video;
+    }
     
     // Shader files
     if (ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" ||
@@ -390,6 +396,7 @@ const char* FileBrowser::getFileIcon(const fs::directory_entry& entry) const {
         case FileCategory::Model:   return "model";
         case FileCategory::Material: return "material";
         case FileCategory::Texture: return "image";
+        case FileCategory::Video:   return "video";
         case FileCategory::Shader:  return "shader";
         case FileCategory::Script:  return "code";
         case FileCategory::Audio:   return "audio";
@@ -408,6 +415,10 @@ bool FileBrowser::isSceneFile(const fs::directory_entry& entry) const {
 
 bool FileBrowser::isTextureFile(const fs::directory_entry& entry) const {
     return getFileCategory(entry) == FileCategory::Texture;
+}
+
+bool FileBrowser::isVideoFile(const fs::directory_entry& entry) const {
+    return getFileCategory(entry) == FileCategory::Video;
 }
 
 bool FileBrowser::isOBJFile(const fs::directory_entry& entry) const {
