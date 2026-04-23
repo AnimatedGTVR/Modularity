@@ -3,39 +3,145 @@ add ModuEngine;
 
 public class EditorWindowSample : ModuBehaviour
 {
-    private bool toggle = false;
-    private float sliderValue = 0.5f;
-    private string note = "Hello from script!";
-
     void RenderEditorWindow()
     {
-        ImGui::TextUnformatted("EditorWindowSample");
+        auto& config = Config<EditorWindowSampleConfig>();
+        bindConfig(ctx, config);
+
+        bool changed = false;
+
+        ImGui::TextUnformatted("Editor Window Sample");
         ImGui::Separator();
 
-        ImGui::Checkbox("Toggle", &toggle);
-        ImGui::SliderFloat("Value", &sliderValue, 0.0f, 1.0f, "%.2f");
-        EditString("Note", note, 128, "note");
+        changed |= ImGui::Checkbox("Clamp FPS To 120", &config.clampFps);
+        changed |= ImGui::DragFloat("Move Step", &config.moveStep, 0.01f, 0.01f, 10.0f, "%.2f");
+        changed |= ImGui::DragFloat("Rotate Step", &config.rotateStep, 1.0f, 1.0f, 180.0f, "%.1f");
+        changed |= ImGui::DragFloat("Scale Step", &config.scaleStep, 0.01f, 0.01f, 2.0f, "%.2f");
+        changed |= EditString("Log Message", config.note, 128, "note");
 
-        if (ImGui::Button("Log Message"))
-            ctx.AddConsoleMessage("Script tab says: " + note);
-
-        if (obj)
+        if (changed)
         {
-            ImGui::Separator();
-            ImGui::TextDisabled("Selected object: %s (id=%d)", obj->name.c_str(), obj->id);
-            if (ImGui::Button("Nudge +Y"))
-            {
-                Vector3 pos = obj->position;
-                pos.y += 0.25f;
-                ctx.SetPosition(pos);
-                ctx.MarkDirty();
-            }
+            config.moveStep = Clamp(config.moveStep, 0.01f, 10.0f);
+            config.rotateStep = Clamp(config.rotateStep, 1.0f, 180.0f);
+            config.scaleStep = Clamp(config.scaleStep, 0.01f, 2.0f);
+            ctx.SaveAutoSettings();
         }
-        else
+
+        if (config.clampFps)
         {
-            ImGui::TextDisabled("Select an object to enable actions");
+            ctx.SetFPSCap(true, 120.0f);
+        }
+
+        if (ImGui::Button("Log To Console"))
+        {
+            ctx.AddConsoleMessage("EditorWindowSample: " + config.note);
+        }
+
+        ImGui::Separator();
+
+        if (!obj)
+        {
+            ImGui::TextDisabled("Select an object to use the transform tools.");
+            return;
+        }
+
+        ImGui::TextDisabled("Selected object: %s (id=%d)", obj.name.c_str(), obj.id);
+
+        vec3 position = obj.position;
+        if (ImGui::DragFloat3("Position", &position.x, config.moveStep, -10000.0f, 10000.0f, "%.2f"))
+        {
+            ctx.SetPosition(position);
+            ctx.MarkDirty();
+        }
+
+        vec3 rotation = obj.rotation;
+        if (ImGui::DragFloat3("Rotation", &rotation.x, config.rotateStep, -3600.0f, 3600.0f, "%.1f"))
+        {
+            ctx.SetRotation(rotation);
+            ctx.MarkDirty();
+        }
+
+        vec3 scale = obj.scale;
+        if (ImGui::DragFloat3("Scale", &scale.x, config.scaleStep, 0.01f, 1000.0f, "%.2f"))
+        {
+            scale.x = Max(scale.x, 0.01f);
+            scale.y = Max(scale.y, 0.01f);
+            scale.z = Max(scale.z, 0.01f);
+            ctx.SetScale(scale);
+            ctx.MarkDirty();
+        }
+
+        if (ImGui::Button("Nudge +Y"))
+        {
+            position = obj.position;
+            position.y += config.moveStep;
+            ctx.SetPosition(position);
+            ctx.MarkDirty();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Rotate +Y"))
+        {
+            rotation = obj.rotation;
+            rotation.y += config.rotateStep;
+            ctx.SetRotation(rotation);
+            ctx.MarkDirty();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Grow Uniform"))
+        {
+            scale = obj.scale + vec3(config.scaleStep);
+            scale.x = Max(scale.x, 0.01f);
+            scale.y = Max(scale.y, 0.01f);
+            scale.z = Max(scale.z, 0.01f);
+            ctx.SetScale(scale);
+            ctx.MarkDirty();
+        }
+
+        if (ImGui::Button("Reset Local Transform"))
+        {
+            ctx.SetPosition(vec3(0.0f));
+            ctx.SetRotation(vec3(0.0f));
+            ctx.SetScale(vec3(1.0f));
+            ctx.MarkDirty();
         }
     }
 
     void ExitRenderEditorWindow() {}
 }
+
+namespace
+{
+
+struct EditorWindowSampleConfig
+{
+    bool clampFps = false;
+    float moveStep = 0.25f;
+    float rotateStep = 15.0f;
+    float scaleStep = 0.10f;
+    std::string note = "Hello from ModuCPP";
+};
+
+void bindConfig(ScriptContext& ctx, EditorWindowSampleConfig& config)
+{
+    BindSetting(ctx, "clampFps", config.clampFps);
+    BindSetting(ctx, "moveStep", config.moveStep);
+    BindSetting(ctx, "rotateStep", config.rotateStep);
+    BindSetting(ctx, "scaleStep", config.scaleStep);
+    BindSetting(ctx, "note", config.note);
+}
+
+float Clamp(float value, float minValue, float maxValue)
+{
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
+
+float Max(float a, float b)
+{
+    return a > b ? a : b;
+}
+
+} // namespace

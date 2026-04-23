@@ -626,9 +626,36 @@ namespace {
         return replaced.str();
     }
 
+    bool includeEnvHasStandardLibrary() {
+        const std::string includeEnv = getEnvValue("INCLUDE");
+        if (includeEnv.empty()) return false;
+
+        size_t start = 0;
+        while (start <= includeEnv.size()) {
+            const size_t end = includeEnv.find(';', start);
+            std::string rawPart = (end == std::string::npos)
+                ? includeEnv.substr(start)
+                : includeEnv.substr(start, end - start);
+            const std::string part = trimCopy(rawPart);
+            if (!part.empty()) {
+                std::error_code ec;
+                const fs::path includePath = fs::path(part);
+                if (fs::exists(includePath / "algorithm", ec) ||
+                    fs::exists(includePath / "vector", ec) ||
+                    fs::exists(includePath / "string", ec)) {
+                    return true;
+                }
+            }
+
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+
+        return false;
+    }
+
     std::string wrapWithVsDevCmdIfNeeded(const std::string& command) {
-        std::string includeEnv = getEnvValue("INCLUDE");
-        if (!includeEnv.empty()) return command;
+        if (includeEnvHasStandardLibrary()) return command;
 
         std::string vsDevCmd = findVsDevCmd();
         if (vsDevCmd.empty()) return command;
