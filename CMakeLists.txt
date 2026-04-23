@@ -124,6 +124,7 @@ option(MODULARITY_ENABLE_SNDFILE "Enable libsndfile-based audio import support" 
 set(MODULARITY_SCRIPT_SDK_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyScriptSDK.cmake)
 set(MODULARITY_RUNTIME_DLL_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyRuntimeDlls.cmake)
 set(MODULARITY_FFMPEG_RUNTIME_DLLS)
+set(MODULARITY_FFMPEG_RUNTIME_DLL_DIRS)
 
 set(MODULARITY_HAS_VULKAN OFF)
 if(MODULARITY_ENABLE_VULKAN)
@@ -247,11 +248,15 @@ else()
             )
                 if(ffmpeg_runtime_dll)
                     list(APPEND MODULARITY_FFMPEG_RUNTIME_DLLS "${ffmpeg_runtime_dll}")
+                    get_filename_component(ffmpeg_runtime_dir "${ffmpeg_runtime_dll}" DIRECTORY)
+                    list(APPEND MODULARITY_FFMPEG_RUNTIME_DLL_DIRS "${ffmpeg_runtime_dir}")
                 endif()
             endforeach()
             list(REMOVE_DUPLICATES MODULARITY_FFMPEG_RUNTIME_DLLS)
+            list(REMOVE_DUPLICATES MODULARITY_FFMPEG_RUNTIME_DLL_DIRS)
             if(MODULARITY_FFMPEG_RUNTIME_DLLS)
                 message(STATUS "Windows FFmpeg runtime DLLs: ${MODULARITY_FFMPEG_RUNTIME_DLLS}")
+                message(STATUS "Windows FFmpeg runtime DLL directories: ${MODULARITY_FFMPEG_RUNTIME_DLL_DIRS}")
             else()
                 message(WARNING "FFmpeg import libraries were found, but matching Windows runtime DLLs were not detected. The executables will rely on PATH to locate avformat/avcodec/avutil/swscale.")
             endif()
@@ -482,6 +487,7 @@ function(modularity_stage_windows_runtime_dlls target_name)
         COMMAND ${CMAKE_COMMAND}
             "-DDST_DIR=$<TARGET_FILE_DIR:${target_name}>"
             "-DRUNTIME_DLLS=$<JOIN:${runtime_dlls},;>"
+            "-DRUNTIME_DLL_DIRS=$<JOIN:${MODULARITY_FFMPEG_RUNTIME_DLL_DIRS},;>"
             -P "${MODULARITY_RUNTIME_DLL_COPY_SCRIPT}"
         VERBATIM
     )
