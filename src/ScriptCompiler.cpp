@@ -153,6 +153,8 @@ namespace {
     }
 
 #if defined(_WIN32)
+    std::string findVsTool(const char* toolName);
+
     fs::path getCurrentExecutablePath() {
         std::wstring buffer(MAX_PATH, L'\0');
         for (;;) {
