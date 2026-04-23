@@ -123,6 +123,7 @@ option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ON)
 option(MODULARITY_ENABLE_SNDFILE "Enable libsndfile-based audio import support" ON)
 set(MODULARITY_SCRIPT_SDK_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyScriptSDK.cmake)
 set(MODULARITY_RUNTIME_DLL_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyRuntimeDlls.cmake)
+set(MODULARITY_FFMPEG_RUNTIME_DLLS)
 
 set(MODULARITY_HAS_VULKAN OFF)
 if(MODULARITY_ENABLE_VULKAN)
@@ -136,6 +137,55 @@ if(MODULARITY_ENABLE_VULKAN)
 endif()
 
 file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" MODULARITY_SOURCE_DIR_CMAKE)
+
+function(modularity_find_windows_imported_runtime_dll out_var import_lib stem)
+    if(NOT WIN32)
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    if(NOT import_lib)
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    get_filename_component(import_dir "${import_lib}" DIRECTORY)
+    get_filename_component(import_parent "${import_dir}" DIRECTORY)
+
+    set(search_dirs
+        "${import_dir}"
+        "${import_parent}"
+        "${import_parent}/bin"
+        "${import_parent}/bin/x64"
+        "${import_parent}/bin/Release"
+        "${import_parent}/../bin"
+        "${import_parent}/../bin/x64"
+        "${import_parent}/../bin/Release"
+    )
+    list(REMOVE_DUPLICATES search_dirs)
+
+    foreach(search_dir IN LISTS search_dirs)
+        if(NOT EXISTS "${search_dir}")
+            continue()
+        endif()
+
+        file(GLOB dll_candidates
+            "${search_dir}/${stem}.dll"
+            "${search_dir}/${stem}-*.dll"
+            "${search_dir}/lib${stem}.dll"
+            "${search_dir}/lib${stem}-*.dll"
+        )
+        list(SORT dll_candidates COMPARE NATURAL ORDER DESCENDING)
+        list(LENGTH dll_candidates dll_count)
+        if(dll_count GREATER 0)
+            list(GET dll_candidates 0 resolved_dll)
+            set(${out_var} "${resolved_dll}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+
+    set(${out_var} "" PARENT_SCOPE)
+endfunction()
 
 # ==================== Third-party libraries ====================
 
@@ -151,7 +201,7 @@ if(MODULARITY_ENABLE_SNDFILE AND PkgConfig_FOUND)
 endif()
 
 set(MODULARITY_HAS_FFMPEG OFF)
-if(PkgConfig_FOUND)
+if(PkgConfig_FOUND AND NOT WIN32)
     pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
         libavformat
         libavcodec
@@ -184,6 +234,28 @@ else()
             ${FFMPEG_AVUTIL_LIBRARY}
             ${FFMPEG_SWSCALE_LIBRARY}
         )
+        if(WIN32)
+            modularity_find_windows_imported_runtime_dll(FFMPEG_AVFORMAT_DLL "${FFMPEG_AVFORMAT_LIBRARY}" "avformat")
+            modularity_find_windows_imported_runtime_dll(FFMPEG_AVCODEC_DLL "${FFMPEG_AVCODEC_LIBRARY}" "avcodec")
+            modularity_find_windows_imported_runtime_dll(FFMPEG_AVUTIL_DLL "${FFMPEG_AVUTIL_LIBRARY}" "avutil")
+            modularity_find_windows_imported_runtime_dll(FFMPEG_SWSCALE_DLL "${FFMPEG_SWSCALE_LIBRARY}" "swscale")
+            foreach(ffmpeg_runtime_dll IN ITEMS
+                "${FFMPEG_AVFORMAT_DLL}"
+                "${FFMPEG_AVCODEC_DLL}"
+                "${FFMPEG_AVUTIL_DLL}"
+                "${FFMPEG_SWSCALE_DLL}"
+            )
+                if(ffmpeg_runtime_dll)
+                    list(APPEND MODULARITY_FFMPEG_RUNTIME_DLLS "${ffmpeg_runtime_dll}")
+                endif()
+            endforeach()
+            list(REMOVE_DUPLICATES MODULARITY_FFMPEG_RUNTIME_DLLS)
+            if(MODULARITY_FFMPEG_RUNTIME_DLLS)
+                message(STATUS "Windows FFmpeg runtime DLLs: ${MODULARITY_FFMPEG_RUNTIME_DLLS}")
+            else()
+                message(WARNING "FFmpeg import libraries were found, but matching Windows runtime DLLs were not detected. The executables will rely on PATH to locate avformat/avcodec/avutil/swscale.")
+            endif()
+        endif()
         set(MODULARITY_HAS_FFMPEG ON)
     endif()
 endif()
@@ -401,6 +473,9 @@ function(modularity_stage_windows_runtime_dlls target_name)
     set(runtime_dlls "$<TARGET_RUNTIME_DLLS:${target_name}>")
     if(MODULARITY_USE_MONO AND MONO_RUNTIME_DLL)
         list(APPEND runtime_dlls "${MONO_RUNTIME_DLL}")
+    endif()
+    if(MODULARITY_FFMPEG_RUNTIME_DLLS)
+        list(APPEND runtime_dlls ${MODULARITY_FFMPEG_RUNTIME_DLLS})
     endif()
 
     add_custom_command(TARGET ${target_name} POST_BUILD
