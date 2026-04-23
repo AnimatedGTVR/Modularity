@@ -549,6 +549,22 @@ namespace {
             }
         }
 
+        const std::string clPath = findVsTool("cl.exe");
+        if (!clPath.empty()) {
+            std::error_code ec;
+            fs::path candidate = fs::path(clPath).parent_path();
+            for (int depth = 0; depth < 8 && !candidate.empty(); ++depth) {
+                fs::path devCmd = candidate / "Common7" / "Tools" / "VsDevCmd.bat";
+                if (fs::exists(devCmd, ec)) {
+                    cachedPath = devCmd.string();
+                    return cachedPath;
+                }
+                fs::path parent = candidate.parent_path();
+                if (parent == candidate) break;
+                candidate = parent;
+            }
+        }
+
         std::string programFilesX86 = getEnvValue("ProgramFiles(x86)");
         if (programFilesX86.empty()) {
             programFilesX86 = getEnvValue("ProgramFiles");
@@ -559,7 +575,8 @@ namespace {
         if (!fs::exists(vswhere)) return std::string();
 
         std::ostringstream cmd;
-        cmd << "\"" << vswhere.string() << "\" -latest -products * -requires Microsoft.Component.MSBuild "
+        cmd << "\"" << vswhere.string() << "\" -latest -products * "
+            << "-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 "
             << "-property installationPath";
         std::string installPath = trimCopy(runCapture(cmd.str()));
         if (installPath.empty()) return std::string();
