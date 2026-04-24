@@ -291,8 +291,11 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
     std::vector<std::pair<int, int>> braceStack;
     bool inBlockComment = false;
     bool unterminatedString = false;
+    bool deprecatedUsage = false;
     int unterminatedStringLine = 0;
     int unterminatedStringColumn = 0;
+    int deprecatedUsageLine = 0;
+    int deprecatedUsageColumn = 0;
 
     auto isSemicolonRequired = [](const std::string& trimmed, const std::string& nextTrimmed) {
         if (trimmed.empty()) return false;
@@ -381,6 +384,12 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         char stringDelimiter = '\0';
         bool escaping = false;
         bool sawCode = false;
+
+        if (line.find("ModuNode") != std::string::npos) {
+            deprecatedUsage = true;
+            deprecatedUsageColumn = 0;
+            deprecatedUsageLine = lineNumber;
+        }
 
         for (size_t i = 0; i < line.size(); ++i) {
             const char c = line[i];
@@ -478,6 +487,19 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             diagnostic.sourceLine = sourceLine;
             diagnostics.push_back(std::move(diagnostic));
         }
+
+    }
+    if (deprecatedUsage) {
+        ScriptDiagnostic diagnostic = makeScriptDiagnostic(
+            ScriptDiagnosticId::BuildWarning,
+            "ModuCPP",
+            deprecatedUsageLine,
+            "ModuNode is deprecated",
+            "Use ModuBehaviour Instead"
+        );
+        diagnostic.column = deprecatedUsageColumn;
+        diagnostic.severity = ScriptDiagnosticSeverity::Warning;
+        diagnostics.push_back(std::move(diagnostic));
     }
 
     if (unterminatedString) {
@@ -944,8 +966,6 @@ std::string ModularityLspServer::extractCompletionPrefix(const std::string& text
     const std::string currentLine = extractLine(text, line);
     const int clampedCharacter = std::clamp(character, 0, static_cast<int>(currentLine.size()));
 
-    // Walk backwards over identifier characters, ':', and (for ModuCPP) '.'
-    // to find the full qualified token e.g. "std::vector" or "obj.method"
     int start = clampedCharacter;
     while (start > 0) {
         const char c = currentLine[static_cast<size_t>(start - 1)];
@@ -960,12 +980,6 @@ std::string ModularityLspServer::extractCompletionPrefix(const std::string& text
         static_cast<size_t>(start),
         static_cast<size_t>(clampedCharacter - start));
 
-    // Strip any leading scope/accessor qualifier so the bare identifier tail
-    // is matched against the pool (which stores bare names).
-    // "std::to_str"  -> "to_str"
-    // "obj.metho"    -> "metho"
-    // "foo::bar::ba" -> "ba"
-    // "plain"        -> "plain"
     const size_t colonPos = fullPrefix.rfind("::");
     if (colonPos != std::string::npos) {
         return fullPrefix.substr(colonPos + 2);

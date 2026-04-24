@@ -265,7 +265,20 @@ namespace {
             "TryPlayAnimationClipNamed", "ResolveUITextTarget", "SetUITextLabel",
             "SetUITextEffects", "SetRigidbody2DSimulated", "DrawStdStringInput",
             "DrawObjectRefInput", "IsAudioClipPath", "DrawAudioClipInput",
-            "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure"
+            "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure",
+            // ImGui
+            "ImGui", "ImVec2", "ImVec4", "ImGuiCol_Text", "ImGuiInputTextFlags_EnterReturnsTrue",
+            "Text", "TextUnformatted", "TextWrapped", "TextDisabled", "TextColored",
+            "Button", "SmallButton", "InputText", "InputInt", "InputFloat",
+            "SliderFloat", "SliderInt", "Checkbox", "Combo", "BeginChild", "EndChild",
+            "BeginTabBar", "EndTabBar", "BeginTabItem", "EndTabItem",
+            "Separator", "Spacing", "SameLine", "NewLine", "Indent", "Unindent",
+            "PushStyleColor", "PopStyleColor", "PushItemWidth", "PopItemWidth",
+            "SetNextItemWidth", "GetContentRegionAvail", "SetScrollHereY",
+            "GetScrollY", "GetScrollMaxY", "CollapsingHeader", "TreeNode", "TreePop",
+            "OpenPopup", "BeginPopup", "EndPopup", "BeginMenuBar", "EndMenuBar",
+            "BeginMenu", "EndMenu", "MenuItem", "IsItemHovered", "IsItemClicked",
+            "IsItemActive", "GetItemRectSize", "SetTooltip", "BeginTooltip", "EndTooltip",
         };
         return std::vector<std::string>(std::begin(kBuiltins), std::end(kBuiltins));
     }
@@ -687,8 +700,18 @@ std::vector<std::string> ScriptLanguageService::buildCompletionList(const std::v
                                                                     const std::string& prefix,
                                                                     size_t limit) {
     std::vector<std::string> matches;
-    if (prefix.empty()) return matches;
     std::unordered_set<std::string> seen;
+
+    if (prefix.empty()) {
+        for (const auto& entry : pool) {
+            if (seen.insert(entry).second) {
+                matches.push_back(entry);
+            }
+            if (matches.size() >= limit) break;
+        }
+        return matches;
+    }
+
     for (const auto& entry : pool) {
         if (entry.rfind(prefix, 0) == 0) {
             if (seen.insert(entry).second) {
