@@ -1,7 +1,7 @@
 # Modularity Engine License
-
-Copyright © [2025-2026]
-Shock Interactive LLC & Tareno Labs™ LLC
+Copyright © 2025–2026
+Tareno Labs™ (LLC in formation)
+[The Modularity contributions are by the respective authors.]
 
 ## 1. Definitions
 For the purposes of this license:
@@ -47,7 +47,7 @@ This requirement applies **only to the Engine itself**, not to software built us
 You may distribute the Engine in original or modified form **only under this license**.
 
 You may **not**:
-- Sell the Engine itself as a standalone commercial engine product  
+- Sell or redistribute the Engine itself as a standalone competing engine product 
 - Sublicense the Engine under a different license  
 - Rebrand the Engine and present it as a different engine  
 
@@ -64,7 +64,7 @@ Example attribution:
 - **Powered by the Modularity Engine**
 
 ## 8. Trademarks
-The names **"Modularity"** and **"ModuEngine"** are trademarks of Shock Interactive LLC and Tareno Labs™ LLC.
+The names "Modularity" and "ModuEngine" are trademarks of Tareno Labs™.
 These trademarks may **not** be used to imply endorsement, official status, or affiliation without explicit permission from the trademark holders.
 
 ## 9. Disclaimer
