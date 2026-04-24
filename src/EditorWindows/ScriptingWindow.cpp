@@ -12,13 +12,7 @@
 #endif
 
 namespace {
-    enum class ScriptEditorLanguage {
-        Cpp,
-        C,
-        GLSL,
-        HLSL,
-        Lua
-    };
+    using ScriptEditorLanguage = ScriptLanguageServiceLanguage;
 
     static std::string trimLeft(const std::string& value);
 
@@ -597,62 +591,16 @@ void Engine::refreshScriptingFileList() {
         return;
     }
 
-    const std::unordered_set<std::string> validExt = {
-        ".cpp", ".cc", ".cxx", ".c", ".moducpp", ".hpp", ".h", ".inl",
-        ".glsl", ".vert", ".frag", ".hlsl", ".shader", ".lua"
-    };
-
-    std::vector<fs::path> roots;
     fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
     ScriptBuildConfig config;
     std::string error;
-    const fs::path projectRoot = projectManager.currentProject.projectPath;
-    if (scriptCompiler.loadConfig(configPath, config, error)) {
-        roots.push_back(config.scriptsDir);
-    } else {
-        roots.push_back(projectManager.currentProject.assetsPath / "Scripts");
-    }
-    roots.push_back(projectRoot / "Scripts");
-    roots.push_back(projectRoot / "Assets" / "Scripts");
-    roots.push_back(projectManager.currentProject.assetsPath / "Shaders");
-
-    std::unordered_set<std::string> uniquePaths;
-    for (const auto& root : roots) {
-        std::error_code ec;
-        fs::path resolvedRoot = root;
-        if (!resolvedRoot.empty() && !resolvedRoot.is_absolute()) {
-            resolvedRoot = projectRoot / resolvedRoot;
-        }
-        if (resolvedRoot.empty() || !fs::exists(resolvedRoot, ec) || !fs::is_directory(resolvedRoot, ec)) {
-            continue;
-        }
-        for (auto it = fs::recursive_directory_iterator(resolvedRoot, ec);
-             it != fs::recursive_directory_iterator(); ++it) {
-            if (it->is_directory()) continue;
-            std::string ext = extensionLower(it->path());
-            if (validExt.find(ext) == validExt.end()) continue;
-            fs::path normalized = it->path().lexically_normal();
-            std::string key = normalized.string();
-            if (!uniquePaths.insert(key).second) continue;
-            scriptingFileList.push_back(normalized);
-        }
-    }
-
-    std::sort(scriptingFileList.begin(), scriptingFileList.end());
-
-    std::unordered_set<std::string> uniqueSymbols;
-    for (const auto& scriptPath : scriptingFileList) {
-        std::ifstream file(scriptPath);
-        if (!file.is_open()) continue;
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::vector<std::string> symbols = buildSymbolList(buffer.str());
-        for (auto& symbol : symbols) {
-            uniqueSymbols.insert(symbol);
-        }
-    }
-    scriptingCompletions.assign(uniqueSymbols.begin(), uniqueSymbols.end());
-    std::sort(scriptingCompletions.begin(), scriptingCompletions.end());
+    const bool hasConfig = scriptCompiler.loadConfig(configPath, config, error);
+    ScriptLanguageServiceProjectData projectData = ScriptLanguageService::scanProjectFiles(
+        projectManager.currentProject.projectPath,
+        projectManager.currentProject.assetsPath,
+        hasConfig ? &config : nullptr);
+    scriptingFileList = std::move(projectData.files);
+    scriptingCompletions = std::move(projectData.projectSymbols);
 }
 
 void Engine::openScriptInEditor(const fs::path& path) {
@@ -681,11 +629,11 @@ void Engine::openScriptInEditor(const fs::path& path) {
         scriptTextEditorReady = true;
     }
 
-    ScriptEditorLanguage language = detectScriptEditorLanguage(normalized);
-    const auto& keywords = keywordsForLanguage(language);
-    std::vector<std::string> functionIdentifiers = extractFunctionIdentifiers(scriptEditorState.buffer, keywords);
-    std::vector<std::string> defineIdentifiers = extractDefineIdentifiers(scriptEditorState.buffer);
-    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(language, functionIdentifiers, defineIdentifiers));
+    scriptLanguageDocument = ScriptLanguageService::analyzeDocument(normalized, scriptEditorState.buffer);
+    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(
+        scriptLanguageDocument.language,
+        scriptLanguageDocument.functions,
+        scriptLanguageDocument.defines));
 
     scriptTextEditor.SetText(scriptEditorState.buffer);
     scriptEditorState.dirty = false;
@@ -727,7 +675,7 @@ void Engine::renderScriptingWindow() {
     static std::unordered_map<std::string, std::string> functionSignatures;
     static uint64_t identifiersHash = 0;
     static fs::path identifiersFilePath;
-    static ScriptEditorLanguage activeLanguage = ScriptEditorLanguage::Cpp;
+    static ScriptLanguageServiceLanguage activeLanguage = ScriptLanguageServiceLanguage::Cpp;
     static std::vector<std::string> completionPool;
     static std::vector<std::string> activeSuggestions;
     static std::string activePrefix;
@@ -906,7 +854,7 @@ void Engine::renderScriptingWindow() {
     ImGui::TextUnformatted(fileLabel.c_str());
 
     bool hasFile = !scriptEditorState.filePath.empty();
-    bool canCompileFile = hasFile && isCompilableScriptPath(scriptEditorState.filePath);
+    bool canCompileFile = hasFile && ScriptLanguageService::isCompilableScriptPath(scriptEditorState.filePath);
     ImGui::SameLine();
     if (!hasFile) {
         ImGui::BeginDisabled();
@@ -991,7 +939,7 @@ void Engine::renderScriptingWindow() {
                     scriptTextEditorReady = true;
                 }
 
-                ScriptEditorLanguage language = detectScriptEditorLanguage(scriptEditorState.filePath);
+                ScriptLanguageServiceLanguage language = ScriptLanguageService::detectLanguage(scriptEditorState.filePath);
                 uint64_t bufferHash = hashBuffer(scriptEditorState.buffer);
                 bool fileChanged = (identifiersFilePath != scriptEditorState.filePath);
                 bool languageChanged = (activeLanguage != language);
@@ -1000,11 +948,13 @@ void Engine::renderScriptingWindow() {
                     identifiersFilePath = scriptEditorState.filePath;
                     activeLanguage = language;
 
-                    const auto& keywords = keywordsForLanguage(language);
-                    bufferIdentifiers = extractIdentifiers(scriptEditorState.buffer, keywords);
-                    bufferFunctions = extractFunctionIdentifiers(scriptEditorState.buffer, keywords);
-                    bufferDefines = extractDefineIdentifiers(scriptEditorState.buffer);
-                    functionSignatures = extractFunctionSignatures(scriptEditorState.buffer, keywords);
+                    scriptLanguageDocument = ScriptLanguageService::analyzeDocument(
+                        scriptEditorState.filePath,
+                        scriptEditorState.buffer);
+                    bufferIdentifiers = scriptLanguageDocument.identifiers;
+                    bufferFunctions = scriptLanguageDocument.functions;
+                    bufferDefines = scriptLanguageDocument.defines;
+                    functionSignatures = scriptLanguageDocument.functionSignatures;
                     if (language == ScriptEditorLanguage::Cpp || language == ScriptEditorLanguage::C) {
                         functionSignatures["Begin"] = "void Begin()";
                         functionSignatures["TickUpdate"] = "void TickUpdate(float deltaTime)";
@@ -1012,7 +962,10 @@ void Engine::renderScriptingWindow() {
                         functionSignatures["TestEditor"] = "void TestEditor()";
                         functionSignatures["Update"] = "void Update(float deltaTime)";
                     }
-                    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(language, bufferFunctions, bufferDefines));
+                    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(
+                        scriptLanguageDocument.language,
+                        bufferFunctions,
+                        bufferDefines));
                     completionPoolDirty = true;
                 }
 
@@ -1072,7 +1025,7 @@ void Engine::renderScriptingWindow() {
                         completionManuallyDismissed = false;
                     }
                     if (!activePrefix.empty()) {
-                        activeSuggestions = buildCompletionList(completionPool, activePrefix);
+                        activeSuggestions = ScriptLanguageService::buildCompletionList(completionPool, activePrefix);
                     } else {
                         activeSuggestions.clear();
                     }
@@ -1282,7 +1235,26 @@ void Engine::renderScriptingWindow() {
                 uint64_t newHash = hashBuffer(scriptEditorState.buffer);
                 if (newHash != symbolsHash) {
                     symbolsHash = newHash;
-                    symbols = buildSymbolList(scriptEditorState.buffer);
+                    scriptLanguageDocument = ScriptLanguageService::analyzeDocument(
+                        scriptEditorState.filePath,
+                        scriptEditorState.buffer);
+                    bufferIdentifiers = scriptLanguageDocument.identifiers;
+                    bufferFunctions = scriptLanguageDocument.functions;
+                    bufferDefines = scriptLanguageDocument.defines;
+                    functionSignatures = scriptLanguageDocument.functionSignatures;
+                    if (scriptLanguageDocument.language == ScriptEditorLanguage::Cpp ||
+                        scriptLanguageDocument.language == ScriptEditorLanguage::C) {
+                        functionSignatures["Begin"] = "void Begin()";
+                        functionSignatures["TickUpdate"] = "void TickUpdate(float deltaTime)";
+                        functionSignatures["Spec"] = "void Spec()";
+                        functionSignatures["TestEditor"] = "void TestEditor()";
+                        functionSignatures["Update"] = "void Update(float deltaTime)";
+                    }
+                    symbols = scriptLanguageDocument.symbols;
+                    scriptTextEditor.SetLanguageDefinition(buildLanguageDefinition(
+                        scriptLanguageDocument.language,
+                        bufferFunctions,
+                        bufferDefines));
                     completionPoolDirty = true;
                 }
                 bool poolRebuiltAfterRender = rebuildCompletionPool();
@@ -1370,7 +1342,7 @@ void Engine::renderScriptingWindow() {
 
                 if (editorFocused && hasEditorRect && scriptTextEditor.HasCursorScreenPosition()) {
                     std::string signatureLabel;
-                    FunctionCallContext callCtx = detectFunctionCallContext(
+                    ScriptLanguageServiceFunctionCallContext callCtx = ScriptLanguageService::detectFunctionCallContext(
                         scriptTextEditor.GetCurrentLineText(),
                         scriptTextEditor.GetCursorPosition().mColumn);
                     if (callCtx.valid) {
@@ -1390,7 +1362,7 @@ void Engine::renderScriptingWindow() {
                             signatureLabel = callCtx.functionName + "(...)";
                         }
 
-                        std::vector<std::string> params = splitSignatureParameters(signatureLabel);
+                        std::vector<std::string> params = ScriptLanguageService::splitSignatureParameters(signatureLabel);
                         const float sigWidth = 420.0f;
                         const float sigHeight = params.empty()
                             ? lineHeight * 2.2f
