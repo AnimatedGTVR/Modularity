@@ -22,6 +22,10 @@
 #include <cstring>
 #include <ctime>
 #include <sstream>
+#if defined(_WIN32)
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+#endif
 #include "ThirdParty/glm/gtc/constants.hpp"
 #include "ThirdParty/glfw/deps/stb_image_write.h"
 
@@ -1430,6 +1434,179 @@ std::vector<std::string> splitLines(const std::string& value) {
     }
     return lines;
 }
+
+#if defined(_WIN32)
+std::wstring utf8ToWide(const std::string& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int required = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+    if (required <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<size_t>(required - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide.data(), required);
+    return wide;
+}
+
+std::string wideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+    const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return {};
+    }
+    std::string utf8(static_cast<size_t>(required - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, utf8.data(), required, nullptr, nullptr);
+    return utf8;
+}
+
+bool crackHttpUrl(const std::string& url,
+                  std::wstring& hostOut,
+                  std::wstring& pathOut,
+                  INTERNET_PORT& portOut,
+                  bool& secureOut) {
+    std::wstring wideUrl = utf8ToWide(url);
+    if (wideUrl.empty()) {
+        return false;
+    }
+
+    URL_COMPONENTS components{};
+    wchar_t hostBuffer[512] = {};
+    wchar_t pathBuffer[2048] = {};
+    wchar_t extraBuffer[2048] = {};
+    components.dwStructSize = sizeof(components);
+    components.lpszHostName = hostBuffer;
+    components.dwHostNameLength = static_cast<DWORD>(std::size(hostBuffer));
+    components.lpszUrlPath = pathBuffer;
+    components.dwUrlPathLength = static_cast<DWORD>(std::size(pathBuffer));
+    components.lpszExtraInfo = extraBuffer;
+    components.dwExtraInfoLength = static_cast<DWORD>(std::size(extraBuffer));
+
+    if (!WinHttpCrackUrl(wideUrl.c_str(), 0, 0, &components)) {
+        return false;
+    }
+
+    hostOut.assign(components.lpszHostName, components.dwHostNameLength);
+    pathOut.assign(components.lpszUrlPath, components.dwUrlPathLength);
+    pathOut.append(components.lpszExtraInfo, components.dwExtraInfoLength);
+    if (pathOut.empty()) {
+        pathOut = L"/";
+    }
+    portOut = components.nPort;
+    secureOut = components.nScheme == INTERNET_SCHEME_HTTPS;
+    return !hostOut.empty();
+}
+
+std::string httpPostWindows(const std::string& url,
+                            const std::string& contentType,
+                            const std::string& body,
+                            const std::string& headers) {
+    std::wstring host;
+    std::wstring path;
+    INTERNET_PORT port = 0;
+    bool secure = false;
+    if (!crackHttpUrl(url, host, path, port, secure)) {
+        return "Failed to parse URL: " + url;
+    }
+
+    HINTERNET session = WinHttpOpen(L"Modularity/1.0",
+                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS,
+                                    0);
+    if (!session) {
+        return "WinHttpOpen failed";
+    }
+
+    HINTERNET connection = WinHttpConnect(session, host.c_str(), port, 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        return "WinHttpConnect failed";
+    }
+
+    const DWORD requestFlags = secure ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = WinHttpOpenRequest(connection,
+                                           L"POST",
+                                           path.c_str(),
+                                           nullptr,
+                                           WINHTTP_NO_REFERER,
+                                           WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                           requestFlags);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return "WinHttpOpenRequest failed";
+    }
+
+    std::wstring wideHeaders;
+    if (!contentType.empty()) {
+        wideHeaders += L"Content-Type: " + utf8ToWide(contentType) + L"\r\n";
+    }
+    for (const std::string& header : splitLines(headers)) {
+        wideHeaders += utf8ToWide(header) + L"\r\n";
+    }
+
+    BOOL sendOk = WinHttpSendRequest(request,
+                                     wideHeaders.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : wideHeaders.c_str(),
+                                     wideHeaders.empty() ? 0 : static_cast<DWORD>(wideHeaders.size()),
+                                     body.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(body.data()),
+                                     static_cast<DWORD>(body.size()),
+                                     static_cast<DWORD>(body.size()),
+                                     0);
+    if (!sendOk) {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return "WinHttpSendRequest failed";
+    }
+
+    if (!WinHttpReceiveResponse(request, nullptr)) {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return "WinHttpReceiveResponse failed";
+    }
+
+    std::string response;
+    for (;;) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available)) {
+            response = "WinHttpQueryDataAvailable failed";
+            break;
+        }
+        if (available == 0) {
+            break;
+        }
+
+        std::string chunk(static_cast<size_t>(available), '\0');
+        DWORD read = 0;
+        if (!WinHttpReadData(request, chunk.data(), available, &read)) {
+            response = "WinHttpReadData failed";
+            break;
+        }
+        chunk.resize(static_cast<size_t>(read));
+        response += chunk;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    if (WinHttpQueryHeaders(request,
+                            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX,
+                            &statusCode,
+                            &statusCodeSize,
+                            WINHTTP_NO_HEADER_INDEX) && statusCode >= 400) {
+        response = "HTTP " + std::to_string(statusCode) + "\n" + response;
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return response;
+}
+#endif
 
 fs::path resolveExecutablePath(const fs::path& buildRoot, const char* exeBaseName) {
 #ifdef _WIN32
@@ -9801,6 +9978,9 @@ std::string Engine::httpPostFromScript(const std::string& url,
                                        const std::string& contentType,
                                        const std::string& body,
                                        const std::string& headers) {
+#if defined(_WIN32)
+    return httpPostWindows(url, contentType, body, headers);
+#else
     std::error_code ec;
     fs::path tempRoot = fs::temp_directory_path(ec);
     if (ec || tempRoot.empty()) {
@@ -9847,6 +10027,7 @@ std::string Engine::httpPostFromScript(const std::string& url,
         return "curl POST failed: " + url;
     }
     return output;
+#endif
 }
 
 std::string Engine::readFileTextFromScript(const std::string& path) const {
