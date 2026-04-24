@@ -20,7 +20,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 5 // god forbid me that i have to REMIND myself to change this one value so i don't keep asking AI about Compilation issues. :sob:
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 6 // god forbid me that i have to REMIND myself to change this one value so i don't keep asking AI about Compilation issues. :sob:
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
@@ -196,6 +196,12 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     void SetSettingFloat(const std::string& key, float value);
     glm::vec3 GetSettingVec3(const std::string& key, const glm::vec3& fallback = glm::vec3(0.0f)) const;
     void SetSettingVec3(const std::string& key, const glm::vec3& value);
+    // Utility I/O helpers
+    std::string HttpPost(const std::string& url, const std::string& contentType,
+                         const std::string& body, const std::string& headers = "");
+    std::string ReadFileText(const std::string& path) const;
+    bool WriteFileText(const std::string& path, const std::string& content);
+    bool DeleteFile(const std::string& path);
     // Console helper
     void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
     // Auto-binding helpers: bind once per call, optionally load stored value.

@@ -1403,6 +1403,34 @@ bool runCommandStreaming(const std::string& command,
     return returnCode == 0;
 }
 
+std::string escapeShellArg(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (char c : value) {
+        if (c == '"') {
+            escaped += "\\\"";
+        } else {
+            escaped.push_back(c);
+        }
+    }
+    return escaped;
+}
+
+std::vector<std::string> splitLines(const std::string& value) {
+    std::vector<std::string> lines;
+    std::stringstream ss(value);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    return lines;
+}
+
 fs::path resolveExecutablePath(const fs::path& buildRoot, const char* exeBaseName) {
 #ifdef _WIN32
     std::string exeName = std::string(exeBaseName) + ".exe";
@@ -2381,6 +2409,24 @@ fs::path Engine::resolveProjectAssetPath(const std::string& rawPath) const {
     }
 
     return candidate.lexically_normal();
+}
+
+fs::path Engine::resolveProjectPathFromScript(const std::string& rawPath) const {
+    if (rawPath.empty()) {
+        return {};
+    }
+
+    fs::path candidate(rawPath);
+    if (candidate.is_absolute()) {
+        return candidate.lexically_normal();
+    }
+
+    if (projectManager.currentProject.isLoaded && !projectManager.currentProject.projectPath.empty()) {
+        return (projectManager.currentProject.projectPath / candidate).lexically_normal();
+    }
+
+    std::error_code ec;
+    return (fs::current_path(ec) / candidate).lexically_normal();
 }
 
 void window_size_callback(GLFWwindow* window, int width, int height) {
@@ -9749,6 +9795,120 @@ bool Engine::createScriptAsset(ScriptScaffoldKind kind,
 
 void Engine::markProjectDirty() {
     projectManager.currentProject.hasUnsavedChanges = true;
+}
+
+std::string Engine::httpPostFromScript(const std::string& url,
+                                       const std::string& contentType,
+                                       const std::string& body,
+                                       const std::string& headers) {
+    std::error_code ec;
+    fs::path tempRoot = fs::temp_directory_path(ec);
+    if (ec || tempRoot.empty()) {
+        tempRoot = resolveProjectPathFromScript("Library/Temp");
+    } else {
+        tempRoot /= "ModularityScriptHttp";
+    }
+
+    fs::create_directories(tempRoot, ec);
+    if (ec) {
+        return "Failed to create HTTP temp directory: " + tempRoot.string();
+    }
+
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path bodyPath = tempRoot / ("request_" + std::to_string(stamp) + ".json");
+
+    {
+        std::ofstream out(bodyPath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            return "Failed to write HTTP request body: " + bodyPath.string();
+        }
+        out << body;
+        if (!out.good()) {
+            return "Failed to flush HTTP request body: " + bodyPath.string();
+        }
+    }
+
+    std::ostringstream command;
+    command << "curl -sS -L -X POST";
+    if (!contentType.empty()) {
+        command << " -H \"Content-Type: " << escapeShellArg(contentType) << "\"";
+    }
+    for (const std::string& header : splitLines(headers)) {
+        command << " -H \"" << escapeShellArg(header) << "\"";
+    }
+    command << " --data-binary @\"" << escapeShellArg(bodyPath.string()) << "\""
+            << " \"" << escapeShellArg(url) << "\" 2>&1";
+
+    std::string output;
+    const bool ok = runCommandCapture(command.str(), output);
+    fs::remove(bodyPath, ec);
+
+    if (!ok && output.empty()) {
+        return "curl POST failed: " + url;
+    }
+    return output;
+}
+
+std::string Engine::readFileTextFromScript(const std::string& path) const {
+    const fs::path resolved = resolveProjectPathFromScript(path);
+    if (resolved.empty()) {
+        return {};
+    }
+
+    std::ifstream in(resolved, std::ios::binary);
+    if (!in.is_open()) {
+        return {};
+    }
+
+    std::ostringstream content;
+    content << in.rdbuf();
+    return content.str();
+}
+
+bool Engine::writeFileTextFromScript(const std::string& path, const std::string& content) {
+    const fs::path resolved = resolveProjectPathFromScript(path);
+    if (resolved.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    fs::create_directories(resolved.parent_path(), ec);
+    if (ec) {
+        return false;
+    }
+
+    std::ofstream out(resolved, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    out << content;
+    if (!out.good()) {
+        return false;
+    }
+
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
+}
+
+bool Engine::deleteFileFromScript(const std::string& path) {
+    const fs::path resolved = resolveProjectPathFromScript(path);
+    if (resolved.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const bool removed = fs::remove(resolved, ec);
+    if (!removed || ec) {
+        return false;
+    }
+
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
 }
 
 bool Engine::setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity) {

@@ -45,23 +45,24 @@ public class EditorWindowSample : ModuBehaviour
             return;
         }
 
-        ImGui::TextDisabled("Selected object: %s (id=%d)", obj.name.c_str(), obj.id);
+        SceneObject* selected = ctx.object;
+        ImGui::TextDisabled("Selected object: %s (id=%d)", selected->name.c_str(), selected->id);
 
-        vec3 position = obj.position;
+        vec3 position = selected->position;
         if (ImGui::DragFloat3("Position", &position.x, config.moveStep, -10000.0f, 10000.0f, "%.2f"))
         {
             ctx.SetPosition(position);
             ctx.MarkDirty();
         }
 
-        vec3 rotation = obj.rotation;
+        vec3 rotation = selected->rotation;
         if (ImGui::DragFloat3("Rotation", &rotation.x, config.rotateStep, -3600.0f, 3600.0f, "%.1f"))
         {
             ctx.SetRotation(rotation);
             ctx.MarkDirty();
         }
 
-        vec3 scale = obj.scale;
+        vec3 scale = selected->scale;
         if (ImGui::DragFloat3("Scale", &scale.x, config.scaleStep, 0.01f, 1000.0f, "%.2f"))
         {
             scale.x = Max(scale.x, 0.01f);
@@ -73,7 +74,7 @@ public class EditorWindowSample : ModuBehaviour
 
         if (ImGui::Button("Nudge +Y"))
         {
-            position = obj.position;
+            position = selected->position;
             position.y += config.moveStep;
             ctx.SetPosition(position);
             ctx.MarkDirty();
@@ -82,7 +83,7 @@ public class EditorWindowSample : ModuBehaviour
         ImGui::SameLine();
         if (ImGui::Button("Rotate +Y"))
         {
-            rotation = obj.rotation;
+            rotation = selected->rotation;
             rotation.y += config.rotateStep;
             ctx.SetRotation(rotation);
             ctx.MarkDirty();
@@ -91,7 +92,7 @@ public class EditorWindowSample : ModuBehaviour
         ImGui::SameLine();
         if (ImGui::Button("Grow Uniform"))
         {
-            scale = obj.scale + vec3(config.scaleStep);
+            scale = selected->scale + vec3(config.scaleStep);
             scale.x = Max(scale.x, 0.01f);
             scale.y = Max(scale.y, 0.01f);
             scale.z = Max(scale.z, 0.01f);

@@ -1131,6 +1131,12 @@ public:
     void markProjectDirty();
     // Script-accessible logging wrapper
     void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
+    fs::path resolveProjectPathFromScript(const std::string& rawPath) const;
+    std::string httpPostFromScript(const std::string& url, const std::string& contentType,
+                                   const std::string& body, const std::string& headers);
+    std::string readFileTextFromScript(const std::string& path) const;
+    bool writeFileTextFromScript(const std::string& path, const std::string& content);
+    bool deleteFileFromScript(const std::string& path);
     // Runtime input queries for script helpers.
     bool isRuntimeKeyDown(int key) const;
     bool isRuntimeMouseDown(int button) const;

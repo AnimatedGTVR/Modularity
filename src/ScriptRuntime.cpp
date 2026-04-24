@@ -1348,6 +1348,37 @@ void ScriptContext::AddConsoleMessage(const std::string& message, ConsoleMessage
     }
 }
 
+std::string ScriptContext::HttpPost(const std::string& url,
+                                    const std::string& contentType,
+                                    const std::string& body,
+                                    const std::string& headers) {
+    if (!engine) {
+        return "No engine available";
+    }
+    return engine->httpPostFromScript(url, contentType, body, headers);
+}
+
+std::string ScriptContext::ReadFileText(const std::string& path) const {
+    if (!engine) {
+        return {};
+    }
+    return engine->readFileTextFromScript(path);
+}
+
+bool ScriptContext::WriteFileText(const std::string& path, const std::string& content) {
+    if (!engine) {
+        return false;
+    }
+    return engine->writeFileTextFromScript(path, content);
+}
+
+bool ScriptContext::DeleteFile(const std::string& path) {
+    if (!engine) {
+        return false;
+    }
+    return engine->deleteFileFromScript(path);
+}
+
 void ScriptContext::AutoSetting(const std::string& key, bool& value) {
     if (!script) return;
     if (autoSettings.end() != std::find_if(autoSettings.begin(), autoSettings.end(),
