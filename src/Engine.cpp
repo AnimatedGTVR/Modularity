@@ -10148,9 +10148,62 @@ int Engine::startHttpPostFromScript(const std::string& url,
             response = httpPostWindows(url, contentType, body, headers);
         }
 #else
-        response = httpPostFromScript(url, contentType, body, headers);
-        if (state->stream && !response.empty()) {
-            pushChunk(response);
+        if (state->stream) {
+            std::error_code ec;
+            fs::path tempRoot = fs::temp_directory_path(ec);
+            if (ec || tempRoot.empty()) {
+                tempRoot = resolveProjectPathFromScript("Library/Temp");
+            } else {
+                tempRoot /= "ModularityScriptHttp";
+            }
+
+            fs::create_directories(tempRoot, ec);
+            if (ec) {
+                response = "Failed to create HTTP temp directory: " + tempRoot.string();
+            } else {
+                const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+                const fs::path bodyPath = tempRoot / ("request_" + std::to_string(stamp) + ".json");
+
+                {
+                    std::ofstream out(bodyPath, std::ios::binary | std::ios::trunc);
+                    if (!out.is_open()) {
+                        response = "Failed to write HTTP request body: " + bodyPath.string();
+                    } else {
+                        out << body;
+                        if (!out.good()) {
+                            response = "Failed to flush HTTP request body: " + bodyPath.string();
+                        }
+                    }
+                }
+
+                if (response.empty()) {
+                    std::ostringstream command;
+                    command << "curl -N -sS -L -X POST";
+                    if (!contentType.empty()) {
+                        command << " -H \"Content-Type: " << escapeShellArg(contentType) << "\"";
+                    }
+                    for (const std::string& header : splitLines(headers)) {
+                        command << " -H \"" << escapeShellArg(header) << "\"";
+                    }
+                    command << " --data-binary @\"" << escapeShellArg(bodyPath.string()) << "\""
+                            << " \"" << escapeShellArg(url) << "\" 2>&1";
+
+                    int curlExit = -1;
+                    const bool ok = runCommandStreaming(command.str(), [&](const std::string& chunk) {
+                        response += chunk;
+                        pushChunk(chunk);
+                    }, &curlExit);
+
+                    fs::remove(bodyPath, ec);
+                    if (!ok && response.empty()) {
+                        response = "curl POST failed: " + url;
+                    }
+                } else {
+                    fs::remove(bodyPath, ec);
+                }
+            }
+        } else {
+            response = httpPostFromScript(url, contentType, body, headers);
         }
 #endif
 
