@@ -288,6 +288,7 @@ ScriptLanguageServiceLanguage ScriptLanguageService::detectLanguage(const fs::pa
     if (ext == ".glsl" || ext == ".vert" || ext == ".frag") return ScriptLanguageServiceLanguage::GLSL;
     if (ext == ".hlsl" || ext == ".shader") return ScriptLanguageServiceLanguage::HLSL;
     if (ext == ".lua") return ScriptLanguageServiceLanguage::Lua;
+    if (ext == ".moducpp") return ScriptLanguageServiceLanguage::ModuCPP;
     return ScriptLanguageServiceLanguage::Cpp;
 }
 

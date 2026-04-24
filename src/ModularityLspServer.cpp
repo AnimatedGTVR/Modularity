@@ -285,11 +285,11 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         if (trimmed[0] == '#') return false;
         if (trimmed == "{" || trimmed == "}") return false;
         const char last = trimmed.back();
-        if (last == ';' || last == '{' || last == '}' || last == ':' || last == ',') return false;
+        if (last == ';' || last == '{' || last == '}' || last == ':' || last == ',' || last == '(') return false;
 
         static const char* kContinuationSuffixes[] = {
             "||", "&&", "+=", "-=", "*=", "/=", "!=", "==", "<=", ">=",
-            "<<", ">>", "->", "?", "=", "+", "-", "*", "/", "|", "&", "^", "~"
+            "<<", ">>", "->", "?", "=", "+", "-", "*", "/", "|", "&", "^", "~", "("
         };
         for (const char* suffix : kContinuationSuffixes) {
             const size_t len = std::strlen(suffix);
@@ -312,13 +312,26 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
 
         static const char* kPrefixes[] = {
             "if", "else", "for", "while", "switch", "case", "default", "class", "struct",
-            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch", "void", "SubScript"
+            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch", "SubScript"
         };
         for (const char* prefix : kPrefixes) {
             const size_t len = std::strlen(prefix);
             if (trimmed.rfind(prefix, 0) == 0 &&
                 (trimmed.size() == len || std::isspace(static_cast<unsigned char>(trimmed[len])) || trimmed[len] == '(' || trimmed[len] == ':')) {
                 return false;
+            }
+        }
+
+        if (last == ')') {
+            if (nextTrimmed == "{" || nextTrimmed.rfind("{", 0) == 0) {
+                return false;
+            }
+            const size_t parenPos = trimmed.find('(');
+            if (parenPos != std::string::npos && parenPos > 0) {
+                const std::string beforeParen = trimmed.substr(0, parenPos);
+                if (beforeParen.find(' ') != std::string::npos) {
+                    return false;
+                }
             }
         }
         return true;
