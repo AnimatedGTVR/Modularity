@@ -273,24 +273,46 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
     using namespace Modularity;
 
     std::vector<ScriptDiagnostic> diagnostics;
-    std::istringstream input(doc.text);
-    std::string line;
     std::vector<std::pair<int, int>> braceStack;
     bool inBlockComment = false;
     bool unterminatedString = false;
     int unterminatedStringLine = 0;
     int unterminatedStringColumn = 0;
 
-    auto isSemicolonRequired = [](const std::string& trimmed) {
+    auto isSemicolonRequired = [](const std::string& trimmed, const std::string& nextTrimmed) {
         if (trimmed.empty()) return false;
         if (trimmed.rfind("//", 0) == 0) return false;
         if (trimmed[0] == '#') return false;
         if (trimmed == "{" || trimmed == "}") return false;
         const char last = trimmed.back();
         if (last == ';' || last == '{' || last == '}' || last == ':' || last == ',') return false;
+
+        static const char* kContinuationSuffixes[] = {
+            "||", "&&", "+=", "-=", "*=", "/=", "!=", "==", "<=", ">=",
+            "<<", ">>", "->", "?", "=", "+", "-", "*", "/", "|", "&", "^", "~"
+        };
+        for (const char* suffix : kContinuationSuffixes) {
+            const size_t len = std::strlen(suffix);
+            if (trimmed.size() >= len && trimmed.substr(trimmed.size() - len) == suffix) {
+                return false;
+            }
+        }
+
+        if (!nextTrimmed.empty()) {
+            static const char* kContinuationPrefixes[] = {
+                "||", "&&", "+=", "-=", "*=", "/=", "!=", "==", "<=", ">=",
+                "<<", ">>", "->", "?", ":", ".", "+", "-", "*", "/", "|", "&", "^"
+            };
+            for (const char* prefix : kContinuationPrefixes) {
+                if (nextTrimmed.rfind(prefix, 0) == 0) {
+                    return false;
+                }
+            }
+        }
+
         static const char* kPrefixes[] = {
             "if", "else", "for", "while", "switch", "case", "default", "class", "struct",
-            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch"
+            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch", "void", "SubScript"
         };
         for (const char* prefix : kPrefixes) {
             const size_t len = std::strlen(prefix);
@@ -310,8 +332,23 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         return value.substr(start, end - start);
     };
 
-    for (int lineNumber = 1; std::getline(input, line); ++lineNumber) {
+    std::vector<std::string> lines;
+    {
+        std::istringstream input(doc.text);
+        std::string tmp;
+        while (std::getline(input, tmp)) {
+            lines.push_back(tmp);
+        }
+    }
+
+    for (int lineIndex = 0; lineIndex < static_cast<int>(lines.size()); ++lineIndex) {
+        const int lineNumber = lineIndex + 1;
+        const std::string& line = lines[lineIndex];
         const std::string sourceLine = line;
+        const std::string nextTrimmed = (lineIndex + 1 < static_cast<int>(lines.size()))
+            ? trim(lines[lineIndex + 1])
+            : std::string{};
+
         bool inString = false;
         char stringDelimiter = '\0';
         bool escaping = false;
@@ -393,7 +430,7 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         }
 
         const std::string trimmed = trim(line);
-        if (sawCode && isSemicolonRequired(trimmed)) {
+        if (sawCode && isSemicolonRequired(trimmed, nextTrimmed)) {
             ScriptDiagnostic diagnostic = makeScriptDiagnostic(
                 ScriptDiagnosticId::MissingSemicolon,
                 "ModuCPP",
