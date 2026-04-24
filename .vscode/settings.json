@@ -7,5 +7,6 @@
     "cmake.sourceDirectory": "${workspaceFolder}",
     "C_Cpp.errorSquiggles": "disabled",
     "git.detectSubmodules": true,
-    "git.autoRepositoryDetection": "subFolders"
+    "git.autoRepositoryDetection": "subFolders",
+    "moducpp.lsp.executable": "c:\\Users\\theja\\Code\\Modularity\\build\\release\\Modularity.exe"
 }

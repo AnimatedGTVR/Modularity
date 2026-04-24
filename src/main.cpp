@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "CrashReporter.h"
+#include "ModularityLspServer.h"
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -60,7 +61,27 @@ static void logStartupDebug(const char* message) {
 #endif
 }
 
+static bool isLspMode(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = (argv && argv[i]) ? argv[i] : "";
+    if (arg == "--lsp") {
+      return true;
+    }
+  }
+  return false;
+}
+
 static int ModularityMain(int argc, char** argv) {
+  if (isLspMode(argc, argv)) {
+    if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
+      std::error_code ec;
+      std::filesystem::current_path(exeDir, ec);
+    }
+
+    ModularityLspServer lspServer;
+    return lspServer.run(argc, argv);
+  }
+
   if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) {
     return 0;
   }
@@ -76,7 +97,7 @@ static int ModularityMain(int argc, char** argv) {
   const std::string executablePath = (argc > 0 && argv && argv[0]) ? argv[0] : "";
   Modularity::CrashReporter::Initialize("Modularity", executablePath);
 
-  return Modularity::CrashReporter::RunProtected([]() -> int {
+  return Modularity::CrashReporter::RunProtected([argc, argv]() -> int {
     logStartupDebug("[DEBUG] Starting engine initialization...");
     Engine engine;
 
