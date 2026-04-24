@@ -457,7 +457,15 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             unterminatedString = false;
         }
 
-        const std::string trimmed = trim(line);
+        const std::string trimmed = [&] {
+            std::string t = trim(line);
+            const size_t commentPos = t.find("//");
+            if (commentPos != std::string::npos) {
+                t = trim(t.substr(0, commentPos));
+            }
+            return t;
+        }();
+        
         if (sawCode && isSemicolonRequired(trimmed, nextTrimmed)) {
             ScriptDiagnostic diagnostic = makeScriptDiagnostic(
                 ScriptDiagnosticId::MissingSemicolon,
@@ -706,14 +714,25 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
         JsonValue item(rapidjson::kObjectType);
         addJsonMember(item, "label", entry, alloc);
         addJsonMember(item, "insertText", entry, alloc);
-        int kind = 6;
-        if (keywords.find(entry) != keywords.end()) kind = 14;
-        else if (it->second.analysis.functionSignatures.find(entry) != it->second.analysis.functionSignatures.end() ||
-                 projectFunctionSignatures.find(entry) != projectFunctionSignatures.end()) kind = 3;
-        else if (std::find(it->second.analysis.variables.begin(), it->second.analysis.variables.end(), entry) != it->second.analysis.variables.end() ||
-                 std::find(it->second.analysis.moducppInspectorFields.begin(), it->second.analysis.moducppInspectorFields.end(), entry) != it->second.analysis.moducppInspectorFields.end()) kind = 6;
-        else if (std::find(it->second.analysis.defines.begin(), it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end()) kind = 21;
+        int kind = 6; // Variable as default
+        const bool isFunction =
+            it->second.analysis.functionSignatures.count(entry) > 0 ||
+            projectFunctionSignatures.count(entry) > 0;
+        const bool isVariable =
+            std::find(it->second.analysis.variables.begin(),
+                      it->second.analysis.variables.end(), entry) != it->second.analysis.variables.end() ||
+            std::find(it->second.analysis.moducppInspectorFields.begin(),
+                      it->second.analysis.moducppInspectorFields.end(), entry) != it->second.analysis.moducppInspectorFields.end();
+        const bool isDefine =
+            std::find(it->second.analysis.defines.begin(),
+                      it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end();
+
+        if (keywords.find(entry) != keywords.end())   kind = 14; // Keyword
+        else if (isFunction)                           kind = 3;  // Function
+        else if (isDefine)                             kind = 21; // Constant
+        else if (isVariable)                           kind = 6;  // Variable
         addJsonMember(item, "kind", kind, alloc);
+        
         if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
             addJsonMember(item, "detail", "ModuCPP", alloc);
         }
@@ -922,8 +941,11 @@ std::string ModularityLspServer::extractLine(const std::string& text, int line) 
 
 std::string ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
                                                          ScriptLanguageServiceLanguage language) {
-    std::string currentLine = extractLine(text, line);
+    const std::string currentLine = extractLine(text, line);
     const int clampedCharacter = std::clamp(character, 0, static_cast<int>(currentLine.size()));
+
+    // Walk backwards over identifier characters, ':', and (for ModuCPP) '.'
+    // to find the full qualified token e.g. "std::vector" or "obj.method"
     int start = clampedCharacter;
     while (start > 0) {
         const char c = currentLine[static_cast<size_t>(start - 1)];
@@ -933,5 +955,25 @@ std::string ModularityLspServer::extractCompletionPrefix(const std::string& text
         }
         --start;
     }
-    return currentLine.substr(static_cast<size_t>(start), static_cast<size_t>(clampedCharacter - start));
+
+    const std::string fullPrefix = currentLine.substr(
+        static_cast<size_t>(start),
+        static_cast<size_t>(clampedCharacter - start));
+
+    // Strip any leading scope/accessor qualifier so the bare identifier tail
+    // is matched against the pool (which stores bare names).
+    // "std::to_str"  -> "to_str"
+    // "obj.metho"    -> "metho"
+    // "foo::bar::ba" -> "ba"
+    // "plain"        -> "plain"
+    const size_t colonPos = fullPrefix.rfind("::");
+    if (colonPos != std::string::npos) {
+        return fullPrefix.substr(colonPos + 2);
+    }
+    const size_t dotPos = fullPrefix.rfind('.');
+    if (dotPos != std::string::npos) {
+        return fullPrefix.substr(dotPos + 1);
+    }
+
+    return fullPrefix;
 }
