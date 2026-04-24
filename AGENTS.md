@@ -74,5 +74,5 @@ Code modification expectations:
 - Do not rename files, classes, methods, or fields without a strong reason
 - When changing serialization, scene objects, materials, rendering, or inspector behavior, check for downstream impact
 - For bug fixes, preserve existing behavior outside the failing case
-- Return the closest production-ready result possible, not pseudocode
+- Return the closest production-ready result possible, not pseudocode.
 </INSTRUCTIONS>
