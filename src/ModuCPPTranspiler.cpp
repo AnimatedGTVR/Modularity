@@ -64,6 +64,7 @@ struct MethodSpec {
     std::string originalParams;
     std::string transpiledParams;
     std::string body;
+    int bodySourceLine = 0;
     bool isStatic = false;
     bool hasContext = false;
     bool contextIsPointer = false;
@@ -1315,6 +1316,7 @@ bool lowerParameterDecl(const std::string& rawParam, std::string& outLowered,
 }
 
 bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
+                     int bodySourceLine,
                      MethodSpec& outMethod, std::string& error) {
     std::string signature = trimCopy(signatureDecl);
     if (signature.empty()) return false;
@@ -1392,6 +1394,7 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     }
     outMethod.originalParams = trimCopy(signature.substr(openParen + 1, closeParen - openParen - 1));
     outMethod.body = body;
+    outMethod.bodySourceLine = bodySourceLine;
     if (hasExpressionBody) {
         outMethod.body = isVoidReturnType(outMethod.returnType)
             ? (expressionBody + ";")
@@ -2387,7 +2390,8 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
             }
 
             MethodSpec method;
-            if (!parseMethodDecl(signatureDecl, methodBody, method, error)) {
+            const int methodBodySourceLine = lineNumberForOffset(sourceText, bodyStart + nextOpenBrace + 1);
+            if (!parseMethodDecl(signatureDecl, methodBody, methodBodySourceLine, method, error)) {
                 return false;
             }
             outClass.methods.push_back(std::move(method));
@@ -2414,7 +2418,8 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
             }
             if (!looksLikeFieldInitializer) {
                 std::string methodError;
-                if (parseMethodDecl(methodSignature, std::string(), method, methodError)) {
+                const int methodBodySourceLine = lineNumberForOffset(sourceText, bodyStart + i);
+                if (parseMethodDecl(methodSignature, std::string(), methodBodySourceLine, method, methodError)) {
                     outClass.methods.push_back(std::move(method));
                     i = nextSemicolon + 1;
                     continue;
@@ -2603,6 +2608,17 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             return it->second;
         }
         return mappedTypeCache.emplace(typeName, mapScriptTypeToCpp(typeName)).first->second;
+    };
+
+    auto emitSourceLineDirective = [&](int line) {
+        if (line <= 0) {
+            return;
+        }
+        out << "#line " << line << " \"" << escapeCStringLiteral(sourcePath.lexically_normal().generic_string()) << "\"\n";
+    };
+
+    auto emitGeneratedLineDirective = [&]() {
+        out << "#line 1 \"" << escapeCStringLiteral(sourcePath.filename().string() + ".gen.cpp") << "\"\n";
     };
 
     auto findDirectionalClipWalkField = [&](size_t idleFieldIndex) -> const FieldSpec* {
@@ -4290,11 +4306,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         // (e.g. 'float dt') so that re-declarations in the body (e.g. 'float dt = time.deltaTime')
         // don't shadow the injected parameters and cause a compile error.
         const bool needsBodyScope = method.autoInjectedContext || method.autoInjectedDeltaTime;
+        emitSourceLineDirective(method.bodySourceLine);
         if (needsBodyScope) {
             out << "    {\n" << transformedBody << "\n    }\n";
         } else {
             out << transformedBody << "\n";
         }
+        emitGeneratedLineDirective();
         out << "}\n\n";
     }
 

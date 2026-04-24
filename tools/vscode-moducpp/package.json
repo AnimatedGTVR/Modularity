@@ -1,0 +1,53 @@
+{
+  "name": "moducpp-language-tools",
+  "displayName": "ModuCPP Language Tools",
+  "description": "Language Server Protocol diagnostics for ModuCPP scripts.",
+  "version": "0.1.0",
+  "publisher": "modularity",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:moducpp",
+    "workspaceContains:**/*.moducpp",
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "moducpp",
+        "aliases": [
+          "ModuCPP",
+          "moducpp"
+        ],
+        "extensions": [
+          ".moducpp"
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "ModuCPP",
+      "properties": {
+        "moducpp.diagnostics.command": {
+          "type": "string",
+          "default": "",
+          "description": "Optional command run by the language server to produce ModuCPP transpiler/C++ compiler diagnostics. Use ${file} and ${workspaceFolder} placeholders."
+        },
+        "moducpp.diagnostics.cwd": {
+          "type": "string",
+          "default": "${workspaceFolder}",
+          "description": "Working directory for moducpp.diagnostics.command."
+        },
+        "moducpp.diagnostics.enableEditorChecks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable a small set of high-confidence editor-only ModuCPP surface syntax checks. The engine/compiler diagnostics command remains the source of truth."
+        }
+      }
+    }
+  }
+}
