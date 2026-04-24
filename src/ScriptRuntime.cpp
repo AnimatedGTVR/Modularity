@@ -1361,6 +1361,34 @@ std::string ScriptContext::HttpPost(const std::string& url,
     return engine->httpPostFromScript(url, contentType, body, headers);
 }
 
+int ScriptContext::StartHttpPost(const std::string& url,
+                                 const std::string& contentType,
+                                 const std::string& body,
+                                 const std::string& headers,
+                                 bool stream) {
+    if (!engine) {
+        return 0;
+    }
+    return engine->startHttpPostFromScript(url, contentType, body, headers, stream);
+}
+
+bool ScriptContext::PollHttpPost(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess) {
+    outChunk.clear();
+    outDone = true;
+    outSuccess = false;
+    if (!engine || requestId <= 0) {
+        return false;
+    }
+    return engine->pollHttpPostFromScript(requestId, outChunk, outDone, outSuccess);
+}
+
+void ScriptContext::CancelHttpPost(int requestId) {
+    if (!engine || requestId <= 0) {
+        return;
+    }
+    engine->cancelHttpPostFromScript(requestId);
+}
+
 std::string ScriptContext::ReadFileText(const std::string& path) const {
     if (!engine) {
         return {};
@@ -1380,6 +1408,43 @@ bool ScriptContext::DeleteFile(const std::string& path) {
         return false;
     }
     return engine->deleteFileFromScript(path);
+}
+
+std::string ScriptContext::ListFiles(const std::string& path, bool recursive, int maxEntries) const {
+    if (!engine) {
+        return {};
+    }
+    return engine->listFilesFromScript(path, recursive, maxEntries);
+}
+
+std::string ScriptContext::SearchFiles(const std::string& root,
+                                       const std::string& query,
+                                       int maxResults) const {
+    if (!engine) {
+        return {};
+    }
+    return engine->searchFilesFromScript(root, query, maxResults);
+}
+
+std::string ScriptContext::GetProgramRootPath() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getProgramRootPathFromScript().string();
+}
+
+std::string ScriptContext::GetEngineDocsRootPath() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getEngineDocsRootPathFromScript().string();
+}
+
+bool ScriptContext::SaveProject() {
+    if (!engine) {
+        return false;
+    }
+    return engine->saveProjectFromScript();
 }
 
 void ScriptContext::AutoSetting(const std::string& key, bool& value) {

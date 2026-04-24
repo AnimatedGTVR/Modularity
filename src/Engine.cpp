@@ -1502,7 +1502,8 @@ bool crackHttpUrl(const std::string& url,
 std::string httpPostWindows(const std::string& url,
                             const std::string& contentType,
                             const std::string& body,
-                            const std::string& headers) {
+                            const std::string& headers,
+                            const std::function<bool(const std::string&)>& onChunk = {}) {
     std::wstring host;
     std::wstring path;
     INTERNET_PORT port = 0;
@@ -1587,6 +1588,12 @@ std::string httpPostWindows(const std::string& url,
             break;
         }
         chunk.resize(static_cast<size_t>(read));
+        if (onChunk && !chunk.empty()) {
+            if (!onChunk(chunk)) {
+                response = "HTTP request cancelled";
+                break;
+            }
+        }
         response += chunk;
     }
 
@@ -2436,6 +2443,7 @@ bool CopyRuntimeResourcesSubset(const fs::path& sourceRoot,
                                 const fs::path& runtimeRoot,
                                 std::string& error) {
     const fs::path resourcesRoot = sourceRoot / "Resources";
+    const fs::path docsRoot = sourceRoot / "docs";
     if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Shaders", runtimeRoot, fs::path("Resources") / "Shaders", error)) {
         return false;
     }
@@ -2451,6 +2459,11 @@ bool CopyRuntimeResourcesSubset(const fs::path& sourceRoot,
     const fs::path logoPath = resourcesRoot / "Engine-Root" / "Modu-Logo.png";
     if (fs::exists(logoPath)) {
         if (!CopyFileIntoRuntimeRoot(logoPath, runtimeRoot, fs::path("Resources") / "Engine-Root" / "Modu-Logo.png", error)) {
+            return false;
+        }
+    }
+    if (fs::exists(docsRoot)) {
+        if (!CopyDirectoryIntoRuntimeRoot(docsRoot, runtimeRoot, "docs", error)) {
             return false;
         }
     }
@@ -2593,6 +2606,41 @@ fs::path Engine::resolveProjectPathFromScript(const std::string& rawPath) const 
         return {};
     }
 
+    auto expandScriptRootToken = [&](const std::string& value) -> fs::path {
+        struct TokenRoot {
+            const char* token;
+            fs::path root;
+        };
+
+        const std::array<TokenRoot, 3> tokenRoots = {{
+            {"MODU_ROOT", getProgramRootPathFromScript()},
+            {"PROJECT_ROOT", projectManager.currentProject.projectPath},
+            {"DOCS_ROOT", getEngineDocsRootPathFromScript()}
+        }};
+
+        for (const TokenRoot& entry : tokenRoots) {
+            const std::string token = entry.token;
+            if (value == token) {
+                return entry.root;
+            }
+            if (value.size() > token.size() &&
+                value.compare(0, token.size(), token) == 0 &&
+                (value[token.size()] == '/' || value[token.size()] == '\\')) {
+                const std::string suffix = value.substr(token.size() + 1);
+                if (entry.root.empty()) {
+                    return {};
+                }
+                return (entry.root / fs::path(suffix)).lexically_normal();
+            }
+        }
+
+        return {};
+    };
+
+    if (fs::path expanded = expandScriptRootToken(rawPath); !expanded.empty()) {
+        return expanded;
+    }
+
     fs::path candidate(rawPath);
     if (candidate.is_absolute()) {
         return candidate.lexically_normal();
@@ -2604,6 +2652,41 @@ fs::path Engine::resolveProjectPathFromScript(const std::string& rawPath) const 
 
     std::error_code ec;
     return (fs::current_path(ec) / candidate).lexically_normal();
+}
+
+fs::path Engine::getProgramRootPathFromScript() const {
+    fs::path executablePath = resolveCurrentExecutablePath();
+    if (!executablePath.empty()) {
+        return executablePath.parent_path().lexically_normal();
+    }
+
+    std::error_code ec;
+    return fs::current_path(ec).lexically_normal();
+}
+
+fs::path Engine::getEngineDocsRootPathFromScript() const {
+    std::vector<fs::path> roots;
+    roots.push_back(getProgramRootPathFromScript());
+    std::error_code ec;
+    roots.push_back(fs::current_path(ec));
+
+    for (const fs::path& root : roots) {
+        fs::path candidate = root;
+        for (int depth = 0; depth < 5 && !candidate.empty(); ++depth) {
+            fs::path docsPath = candidate / "docs";
+            if (fs::exists(docsPath, ec) && fs::is_directory(docsPath, ec) && !ec) {
+                return docsPath.lexically_normal();
+            }
+            ec.clear();
+            fs::path parent = candidate.parent_path();
+            if (parent == candidate) {
+                break;
+            }
+            candidate = parent;
+        }
+    }
+
+    return {};
 }
 
 void window_size_callback(GLFWwindow* window, int width, int height) {
@@ -10030,6 +10113,106 @@ std::string Engine::httpPostFromScript(const std::string& url,
 #endif
 }
 
+int Engine::startHttpPostFromScript(const std::string& url,
+                                    const std::string& contentType,
+                                    const std::string& body,
+                                    const std::string& headers,
+                                    bool stream) {
+    const int requestId = nextScriptHttpRequestId.fetch_add(1);
+    auto state = std::make_shared<ScriptHttpRequestState>();
+    state->id = requestId;
+    state->stream = stream;
+
+    {
+        std::scoped_lock lock(scriptHttpRequestsMutex);
+        scriptHttpRequests[requestId] = state;
+    }
+
+    std::thread([this, state, url, contentType, body, headers]() {
+        auto pushChunk = [&](const std::string& chunk) -> bool {
+            std::scoped_lock lock(state->mutex);
+            if (state->cancelled) {
+                return false;
+            }
+            if (!chunk.empty()) {
+                state->pendingChunks.push_back(chunk);
+            }
+            return true;
+        };
+
+        std::string response;
+#if defined(_WIN32)
+        if (state->stream) {
+            response = httpPostWindows(url, contentType, body, headers, pushChunk);
+        } else {
+            response = httpPostWindows(url, contentType, body, headers);
+        }
+#else
+        response = httpPostFromScript(url, contentType, body, headers);
+        if (state->stream && !response.empty()) {
+            pushChunk(response);
+        }
+#endif
+
+        {
+            std::scoped_lock lock(state->mutex);
+            state->bufferedResponse = response;
+            if (!state->stream && !response.empty()) {
+                state->pendingChunks.push_back(response);
+            }
+            state->success = response.rfind("HTTP ", 0) != 0 &&
+                             response.find("failed") == std::string::npos &&
+                             response.find("cancelled") == std::string::npos;
+            state->done = true;
+        }
+    }).detach();
+
+    return requestId;
+}
+
+bool Engine::pollHttpPostFromScript(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess) {
+    std::shared_ptr<ScriptHttpRequestState> state;
+    {
+        std::scoped_lock lock(scriptHttpRequestsMutex);
+        auto it = scriptHttpRequests.find(requestId);
+        if (it == scriptHttpRequests.end()) {
+            outChunk.clear();
+            outDone = true;
+            outSuccess = false;
+            return false;
+        }
+        state = it->second;
+    }
+
+    outChunk.clear();
+    {
+        std::scoped_lock lock(state->mutex);
+        if (!state->pendingChunks.empty()) {
+            outChunk = std::move(state->pendingChunks.front());
+            state->pendingChunks.pop_front();
+        }
+        outDone = state->done && state->pendingChunks.empty();
+        outSuccess = state->success;
+    }
+
+    if (outDone) {
+        std::scoped_lock lock(scriptHttpRequestsMutex);
+        scriptHttpRequests.erase(requestId);
+    }
+
+    return true;
+}
+
+void Engine::cancelHttpPostFromScript(int requestId) {
+    std::scoped_lock lock(scriptHttpRequestsMutex);
+    auto it = scriptHttpRequests.find(requestId);
+    if (it == scriptHttpRequests.end()) {
+        return;
+    }
+    std::scoped_lock stateLock(it->second->mutex);
+    it->second->cancelled = true;
+}
+
 std::string Engine::readFileTextFromScript(const std::string& path) const {
     const fs::path resolved = resolveProjectPathFromScript(path);
     if (resolved.empty()) {
@@ -10090,6 +10273,154 @@ bool Engine::deleteFileFromScript(const std::string& path) {
         projectManager.currentProject.hasUnsavedChanges = true;
     }
     return true;
+}
+
+std::string Engine::listFilesFromScript(const std::string& path, bool recursive, int maxEntries) const {
+    fs::path resolved = path.empty() ? getProgramRootPathFromScript() : fs::path(path);
+    if (!resolved.is_absolute()) {
+        resolved = resolveProjectPathFromScript(path);
+    }
+    if (resolved.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    if (!fs::exists(resolved, ec) || ec) {
+        return "Path not found: " + resolved.string();
+    }
+
+    std::vector<std::string> entries;
+    maxEntries = std::max(maxEntries, 1);
+    auto pushEntry = [&](const fs::path& p, bool isDirectory) {
+        std::string line = p.lexically_normal().string();
+        if (isDirectory) {
+            line += "/";
+        }
+        entries.push_back(line);
+    };
+
+    if (fs::is_regular_file(resolved, ec) && !ec) {
+        pushEntry(resolved, false);
+    } else if (recursive) {
+        for (auto it = fs::recursive_directory_iterator(resolved, fs::directory_options::skip_permission_denied, ec);
+             !ec && it != fs::recursive_directory_iterator(); ++it) {
+            pushEntry(it->path(), it->is_directory());
+            if (static_cast<int>(entries.size()) >= maxEntries) {
+                break;
+            }
+        }
+    } else {
+        for (auto it = fs::directory_iterator(resolved, fs::directory_options::skip_permission_denied, ec);
+             !ec && it != fs::directory_iterator(); ++it) {
+            pushEntry(it->path(), it->is_directory());
+            if (static_cast<int>(entries.size()) >= maxEntries) {
+                break;
+            }
+        }
+    }
+
+    std::sort(entries.begin(), entries.end());
+    std::ostringstream out;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i > 0) {
+            out << '\n';
+        }
+        out << entries[i];
+    }
+    if (entries.empty()) {
+        out << "(no files)";
+    }
+    return out.str();
+}
+
+std::string Engine::searchFilesFromScript(const std::string& root,
+                                          const std::string& query,
+                                          int maxResults) const {
+    fs::path resolvedRoot = root.empty() ? getProgramRootPathFromScript() : fs::path(root);
+    if (!resolvedRoot.is_absolute()) {
+        resolvedRoot = resolveProjectPathFromScript(root);
+    }
+    if (resolvedRoot.empty()) {
+        return {};
+    }
+
+    const std::string needleRaw = RenameTrim(query);
+    if (needleRaw.empty()) {
+        return {};
+    }
+
+    auto lowerCopy = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return value;
+    };
+
+    const std::string needle = lowerCopy(needleRaw);
+    maxResults = std::max(maxResults, 1);
+    std::vector<std::string> results;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(resolvedRoot, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); ++it) {
+        if (!it->is_regular_file()) {
+            continue;
+        }
+
+        const fs::path filePath = it->path().lexically_normal();
+        const std::string pathText = filePath.string();
+        if (lowerCopy(pathText).find(needle) != std::string::npos) {
+            results.push_back(pathText);
+        } else {
+            std::ifstream in(filePath, std::ios::binary);
+            if (!in.is_open()) {
+                continue;
+            }
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            std::string content = ss.str();
+            if (content.size() > 512 * 1024) {
+                continue;
+            }
+            std::string lowered = lowerCopy(content);
+            size_t found = lowered.find(needle);
+            if (found != std::string::npos) {
+                size_t start = content.rfind('\n', found);
+                start = (start == std::string::npos) ? 0 : start + 1;
+                size_t end = content.find('\n', found);
+                if (end == std::string::npos) {
+                    end = content.size();
+                }
+                std::string snippet = RenameTrim(content.substr(start, end - start));
+                if (snippet.size() > 140) {
+                    snippet = snippet.substr(0, 140) + "...";
+                }
+                results.push_back(pathText + " :: " + snippet);
+            }
+        }
+
+        if (static_cast<int>(results.size()) >= maxResults) {
+            break;
+        }
+    }
+
+    std::ostringstream out;
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (i > 0) {
+            out << '\n';
+        }
+        out << results[i];
+    }
+    if (results.empty()) {
+        out << "(no matches)";
+    }
+    return out.str();
+}
+
+bool Engine::saveProjectFromScript() {
+    if (!projectManager.currentProject.isLoaded) {
+        return false;
+    }
+    return saveCurrentScene(false);
 }
 
 bool Engine::setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity) {

@@ -634,6 +634,9 @@ if(MODULARITY_BUILD_EDITOR)
             ${CMAKE_SOURCE_DIR}/Resources
             $<TARGET_FILE_DIR:Modularity>/Resources
         COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/docs
+            $<TARGET_FILE_DIR:Modularity>/docs
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Template-Projects
             $<TARGET_FILE_DIR:Modularity>/Template-Projects
         COMMAND ${CMAKE_COMMAND}
@@ -647,6 +650,9 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_SOURCE_DIR}/Resources
             $<TARGET_FILE_DIR:ModularityPlayer>/Resources
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/docs
+            $<TARGET_FILE_DIR:ModularityPlayer>/docs
         COMMAND ${CMAKE_COMMAND}
             "-DSRC_ROOT=${CMAKE_SOURCE_DIR}"
             "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"

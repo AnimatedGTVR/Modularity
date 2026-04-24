@@ -735,6 +735,19 @@ private:
     std::unordered_set<std::string> autoCompileQueued;
     std::unordered_set<std::string> nativeScriptMissingLogged;
     std::unordered_set<std::string> nativeScriptLoadErrorLogged;
+    struct ScriptHttpRequestState {
+        int id = 0;
+        std::mutex mutex;
+        std::deque<std::string> pendingChunks;
+        std::string bufferedResponse;
+        bool done = false;
+        bool success = false;
+        bool cancelled = false;
+        bool stream = false;
+    };
+    std::mutex scriptHttpRequestsMutex;
+    std::unordered_map<int, std::shared_ptr<ScriptHttpRequestState>> scriptHttpRequests;
+    std::atomic<int> nextScriptHttpRequestId = 1;
     bool managedAutoCompileQueued = false;
     double managedAutoCompileLastScan = 0.0;
     double managedAutoCompileScanInterval = 5.0;
@@ -1132,11 +1145,20 @@ public:
     // Script-accessible logging wrapper
     void addConsoleMessageFromScript(const std::string& message, ConsoleMessageType type);
     fs::path resolveProjectPathFromScript(const std::string& rawPath) const;
+    fs::path getProgramRootPathFromScript() const;
+    fs::path getEngineDocsRootPathFromScript() const;
     std::string httpPostFromScript(const std::string& url, const std::string& contentType,
                                    const std::string& body, const std::string& headers);
+    int startHttpPostFromScript(const std::string& url, const std::string& contentType,
+                                const std::string& body, const std::string& headers, bool stream);
+    bool pollHttpPostFromScript(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess);
+    void cancelHttpPostFromScript(int requestId);
     std::string readFileTextFromScript(const std::string& path) const;
     bool writeFileTextFromScript(const std::string& path, const std::string& content);
     bool deleteFileFromScript(const std::string& path);
+    std::string listFilesFromScript(const std::string& path, bool recursive, int maxEntries) const;
+    std::string searchFilesFromScript(const std::string& root, const std::string& query, int maxResults) const;
+    bool saveProjectFromScript();
     // Runtime input queries for script helpers.
     bool isRuntimeKeyDown(int key) const;
     bool isRuntimeMouseDown(int button) const;

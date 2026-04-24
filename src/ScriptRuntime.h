@@ -20,7 +20,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 7 // god forbid me that i have to REMIND myself to change this one value so i don't keep asking AI about Compilation issues. :sob:
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 8 // god forbid me that i have to REMIND myself to change this one value so i don't keep asking AI about Compilation issues. :sob:
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
@@ -199,9 +199,19 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     // Utility I/O helpers
     std::string HttpPost(const std::string& url, const std::string& contentType,
                          const std::string& body, const std::string& headers = "");
+    int StartHttpPost(const std::string& url, const std::string& contentType,
+                      const std::string& body, const std::string& headers = "",
+                      bool stream = false);
+    bool PollHttpPost(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess);
+    void CancelHttpPost(int requestId);
     std::string ReadFileText(const std::string& path) const;
     bool WriteFileText(const std::string& path, const std::string& content);
     bool DeleteFile(const std::string& path);
+    std::string ListFiles(const std::string& path, bool recursive = false, int maxEntries = 200) const;
+    std::string SearchFiles(const std::string& root, const std::string& query, int maxResults = 50) const;
+    std::string GetProgramRootPath() const;
+    std::string GetEngineDocsRootPath() const;
+    bool SaveProject();
     // Console helper
     void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
     // Auto-binding helpers: bind once per call, optionally load stored value.
