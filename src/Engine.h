@@ -13,6 +13,7 @@
 #include "MeshBuilder.h"
 #include "ScriptCompiler.h"
 #include "ScriptDiagnostics.h"
+#include "ScriptLanguageService.h"
 #include "ScriptRuntime.h"
 #include "PhysicsSystem.h"
 #include "AudioSystem.h"
@@ -821,6 +822,7 @@ private:
     ScriptEditorState scriptEditorState;
     std::vector<fs::path> scriptingFileList;
     std::vector<std::string> scriptingCompletions;
+    ScriptLanguageServiceDocumentData scriptLanguageDocument;
 #if !MODULARITY_RUNTIME_ONLY
     TextEditor scriptTextEditor;
     bool scriptTextEditorReady = false;
