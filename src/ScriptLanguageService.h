@@ -11,7 +11,8 @@ enum class ScriptLanguageServiceLanguage {
     C,
     GLSL,
     HLSL,
-    Lua
+    Lua,
+    ModuCPP
 };
 
 struct ScriptLanguageServiceProjectData {
