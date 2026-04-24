@@ -10,6 +10,9 @@
 
 #if defined(_WIN32)
     #include <Windows.h>
+#   ifdef DeleteFile
+#       undef DeleteFile
+#   endif
 #else
     #include <dlfcn.h>
 #endif
