@@ -982,6 +982,10 @@ void Engine::renderScriptingWindow() {
                     for (const auto& entry : bufferIdentifiers) poolSet.insert(entry);
                     for (const auto& entry : bufferFunctions) poolSet.insert(entry);
                     for (const auto& entry : bufferDefines) poolSet.insert(entry);
+                    for (const auto& entry : scriptLanguageDocument.variables) poolSet.insert(entry);
+                    for (const auto& entry : scriptLanguageDocument.moducppImports) poolSet.insert(entry);
+                    for (const auto& entry : scriptLanguageDocument.moducppInspectorFields) poolSet.insert(entry);
+                    for (const auto& entry : scriptLanguageDocument.moducppCompletions) poolSet.insert(entry);
                     completionPool.assign(poolSet.begin(), poolSet.end());
                     std::sort(completionPool.begin(), completionPool.end());
                     completionPoolDirty = false;

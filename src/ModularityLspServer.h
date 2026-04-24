@@ -30,6 +30,7 @@ private:
     void sendResponse(const rapidjson::Value& id, rapidjson::Document& payload);
     void sendErrorResponse(const rapidjson::Value& id, int code, const std::string& message);
     void sendNotification(const char* method, rapidjson::Value& params);
+    void sendLogMessage(const std::string& message, int type = 3);
     void publishDiagnostics(const DocumentState& doc);
     std::vector<Modularity::ScriptDiagnostic> collectLiveDiagnostics(const DocumentState& doc) const;
 
@@ -49,7 +50,8 @@ private:
     static const rapidjson::Value* getId(const rapidjson::Document& request);
     static rapidjson::Value makeStringValue(const std::string& value, rapidjson::Document::AllocatorType& alloc);
     static std::string extractLine(const std::string& text, int line);
-    static std::string extractCompletionPrefix(const std::string& text, int line, int character);
+    static std::string extractCompletionPrefix(const std::string& text, int line, int character,
+                                               ScriptLanguageServiceLanguage language);
 
     Project project;
     PackageManager packageManager;
@@ -58,6 +60,9 @@ private:
     bool hasBuildConfig = false;
     std::vector<fs::path> projectFiles;
     std::vector<std::string> projectSymbols;
+    std::vector<std::string> projectCompletions;
+    std::unordered_map<std::string, std::string> projectFunctionSignatures;
+    std::vector<std::string> projectScanWarnings;
     std::unordered_map<std::string, DocumentState> openDocuments;
     bool shutdownRequested = false;
     bool exitRequested = false;

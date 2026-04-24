@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
+#include <regex>
 #include <sstream>
 
 namespace {
@@ -46,6 +48,94 @@ namespace {
         return defineLine.substr(start, i - start);
     }
 
+    static std::string trimCopy(const std::string& value) {
+        std::string trimmed = trimLeft(value);
+        while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+            trimmed.pop_back();
+        }
+        return trimmed;
+    }
+
+    static std::string normalizeModuCppMemberAccess(std::string value) {
+        size_t pos = 0;
+        while ((pos = value.find("::", pos)) != std::string::npos) {
+            value.replace(pos, 2, ".");
+            ++pos;
+        }
+        return value;
+    }
+
+    static std::vector<std::string> splitTopLevelComma(const std::string& text) {
+        std::vector<std::string> parts;
+        std::string current;
+        int parenDepth = 0;
+        int angleDepth = 0;
+        int bracketDepth = 0;
+        int braceDepth = 0;
+        bool inString = false;
+        bool inChar = false;
+        bool escaped = false;
+
+        for (char c : text) {
+            if (inString || inChar) {
+                current.push_back(c);
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if ((inString && c == '"') || (inChar && c == '\'')) {
+                    inString = false;
+                    inChar = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                current.push_back(c);
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                current.push_back(c);
+                continue;
+            }
+
+            if (c == '(') ++parenDepth;
+            else if (c == ')') parenDepth = std::max(0, parenDepth - 1);
+            else if (c == '<') ++angleDepth;
+            else if (c == '>') angleDepth = std::max(0, angleDepth - 1);
+            else if (c == '[') ++bracketDepth;
+            else if (c == ']') bracketDepth = std::max(0, bracketDepth - 1);
+            else if (c == '{') ++braceDepth;
+            else if (c == '}') braceDepth = std::max(0, braceDepth - 1);
+
+            if (c == ',' && parenDepth == 0 && angleDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
+                parts.push_back(trimCopy(current));
+                current.clear();
+                continue;
+            }
+            current.push_back(c);
+        }
+        parts.push_back(trimCopy(current));
+        return parts;
+    }
+
+    static std::string identifierTailFromExpression(const std::string& expression) {
+        std::string expr = trimCopy(expression);
+        if (expr.empty()) return {};
+        while (!expr.empty() && (expr.back() == ')' || expr.back() == ']' || expr.back() == ';')) {
+            expr.pop_back();
+            expr = trimCopy(expr);
+        }
+        size_t end = expr.size();
+        size_t start = end;
+        while (start > 0 && isIdentifierBody(static_cast<unsigned char>(expr[start - 1]))) {
+            --start;
+        }
+        if (start >= end) return {};
+        return expr.substr(start, end - start);
+    }
+
     static std::vector<std::string> extractDefineIdentifiers(const std::string& text) {
         std::unordered_set<std::string> unique;
         std::istringstream input(text);
@@ -61,6 +151,138 @@ namespace {
         std::vector<std::string> out(unique.begin(), unique.end());
         std::sort(out.begin(), out.end());
         return out;
+    }
+
+    static std::vector<std::string> extractModuCppImports(const std::string& text) {
+        std::unordered_set<std::string> unique;
+        std::istringstream input(text);
+        std::string line;
+        while (std::getline(input, line)) {
+            std::string trimmed = trimLeft(line);
+            if (trimmed.rfind("add ", 0) != 0 && trimmed.rfind("#include ", 0) != 0) continue;
+            size_t start = trimmed.find(' ');
+            if (start == std::string::npos) continue;
+            while (start < trimmed.size() && std::isspace(static_cast<unsigned char>(trimmed[start]))) ++start;
+            size_t end = start;
+            while (end < trimmed.size()) {
+                const char c = trimmed[end];
+                if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != ':' && c != '.') break;
+                ++end;
+            }
+            if (end > start) {
+                unique.insert(normalizeModuCppMemberAccess(trimmed.substr(start, end - start)));
+            }
+        }
+        std::vector<std::string> out(unique.begin(), unique.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    static void appendUnique(std::unordered_set<std::string>& unique, const std::string& value) {
+        if (value.size() >= 2) {
+            unique.insert(value);
+        }
+    }
+
+    static std::vector<std::string> extractAutoFieldIdentifiers(const std::string& text) {
+        std::unordered_set<std::string> unique;
+        size_t pos = 0;
+        while ((pos = text.find("AutoFields", pos)) != std::string::npos) {
+            size_t open = text.find('(', pos + 10);
+            if (open == std::string::npos) break;
+            int depth = 1;
+            size_t close = std::string::npos;
+            for (size_t i = open + 1; i < text.size(); ++i) {
+                if (text[i] == '(') ++depth;
+                else if (text[i] == ')') {
+                    --depth;
+                    if (depth == 0) {
+                        close = i;
+                        break;
+                    }
+                }
+            }
+            if (close == std::string::npos) break;
+            for (const std::string& part : splitTopLevelComma(text.substr(open + 1, close - open - 1))) {
+                appendUnique(unique, identifierTailFromExpression(part));
+            }
+            pos = close + 1;
+        }
+        std::vector<std::string> out(unique.begin(), unique.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    static std::vector<std::string> extractVariableIdentifiers(const std::string& text,
+                                                              ScriptLanguageServiceLanguage language,
+                                                              const std::unordered_set<std::string>& keywords) {
+        std::unordered_set<std::string> unique;
+        static const std::regex kVariableDecl(
+            R"((?:^|[;\{\}\n])\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|static|const|constexpr|inline|mutable|volatile|auto|ref|to|\s)*\s*([A-Za-z_][A-Za-z0-9_:.\s<>\*&]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\{|\(|;|,|\[))");
+
+        for (std::sregex_iterator it(text.begin(), text.end(), kVariableDecl), end; it != end; ++it) {
+            std::string name = (*it)[2].str();
+            if (keywords.find(name) == keywords.end()) {
+                appendUnique(unique, name);
+            }
+        }
+
+        if (language == ScriptLanguageServiceLanguage::ModuCPP) {
+            static const std::regex kEachDecl(R"(\beach\s*\(\s*(?:ref\s+)?([A-Za-z_][A-Za-z0-9_:.\s<>\*&]*)?\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b)");
+            for (std::sregex_iterator it(text.begin(), text.end(), kEachDecl), end; it != end; ++it) {
+                appendUnique(unique, (*it)[2].str());
+            }
+        }
+
+        std::vector<std::string> out(unique.begin(), unique.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    static std::vector<std::string> moduCppBuiltins() {
+        static const char* kBuiltins[] = {
+            "add", "to", "ref", "each", "in", "SubScript", "AutoFields", "ModuCPP", "ModuCPP.Experimental",
+            "ModuNode", "ModuBehaviour", "SceneObj", "SceneObject", "ScriptContext", "List", "IEnum",
+            "string", "vec2", "vec3", "Vector2", "Vector3", "ConsoleMessageType", "UISliderStyle",
+            "UIButtonStyle", "UIElementType", "Header", "Slider", "ObjectRef", "ObjectList",
+            "DialogueLines", "ClipGridPair", "Separator", "SoundSet", "range", "step",
+            "Begin", "TickUpdate", "Update", "Spec", "TestEditor", "RenderEditorWindow",
+            "ExitRenderEditorWindow", "Script_OnInspector", "Config", "State", "BindSetting",
+            "BindArray", "BindArray2D", "SerializeSubScript", "DeserializeSubScript",
+            "SerializeSubScriptArray", "DeserializeSubScriptArray", "EditSubScript",
+            "EditSubScriptArray", "SetFrameDeltaTime", "StartTimer", "TimerReady", "IntRD",
+            "IntR", "IntRU", "MODU_SCRIPT", "GetProjectGravityScale", "SetProjectGravityScale",
+            "EditFloat", "EditVec3", "EditBool", "EditInt", "EditString", "hasRigidbody2D",
+            "getRigidbody2DVelocity", "setRigidbody2DVelocity", "moveTowards",
+            "TryMoveRigidbody2D", "moveRigidbody2D", "movePosition2D", "warnOnce",
+            "warnMissingComponentOnce", "hasAudioSource", "playSound", "EditClipSelector",
+            "EditDirectionalClipGrid", "EditSoundSet", "KeyDown", "KeyPressed",
+            "IsRuntimeKeyDown", "IsSubmitDown", "Trim", "ParseInt", "ParseFloat", "ParseBool",
+            "GetScriptSetting", "SetScriptSetting", "EscapeField", "UnescapeField",
+            "SplitEscaped", "JoinEscaped", "DeserializeObjectRefs", "SerializeObjectRefs",
+            "MakeObjectRef", "IsAllDigits", "ResolveSceneObjectRef", "SetObjectEnabledState",
+            "SetObjectsEnabledState", "GetObjectReferencePosition", "GetCurrentObjectName",
+            "TryPlayAnimationClipNamed", "ResolveUITextTarget", "SetUITextLabel",
+            "SetUITextEffects", "SetRigidbody2DSimulated", "DrawStdStringInput",
+            "DrawObjectRefInput", "IsAudioClipPath", "DrawAudioClipInput",
+            "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure"
+        };
+        return std::vector<std::string>(std::begin(kBuiltins), std::end(kBuiltins));
+    }
+
+    static std::unordered_map<std::string, std::string> moduCppBuiltinSignatures() {
+        return {
+            {"Begin", "void Begin()"},
+            {"TickUpdate", "void TickUpdate(float deltaTime)"},
+            {"Update", "void Update(float deltaTime)"},
+            {"Spec", "void Spec()"},
+            {"TestEditor", "void TestEditor()"},
+            {"RenderEditorWindow", "void RenderEditorWindow()"},
+            {"ExitRenderEditorWindow", "void ExitRenderEditorWindow()"},
+            {"Script_OnInspector", "void Script_OnInspector()"},
+            {"AutoFields", "AutoFields(field, ...)"},
+            {"each", "each(ref value in values)"}
+        };
     }
 
     static std::vector<std::string> extractFunctionIdentifiers(const std::string& text,
@@ -267,6 +489,18 @@ const std::unordered_set<std::string>& ScriptLanguageService::keywordsForLanguag
         "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto",
         "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"
     };
+    static const std::unordered_set<std::string> kModuCppKeywords = {
+        "add", "alignof", "and", "and_eq", "auto", "bitand", "bitor", "bool", "break", "case",
+        "catch", "char", "class", "compl", "concept", "const", "const_cast", "constexpr", "continue",
+        "co_await", "co_return", "co_yield", "decltype", "default", "delete", "do", "double",
+        "dynamic_cast", "each", "else", "enum", "explicit", "extern", "false", "float", "for",
+        "friend", "goto", "if", "in", "inline", "int", "long", "mutable", "namespace", "new",
+        "noexcept", "not", "not_eq", "null", "nullptr", "operator", "or", "or_eq", "private",
+        "protected", "public", "ref", "register", "reinterpret_cast", "requires", "return", "short",
+        "signed", "sizeof", "static", "static_cast", "struct", "SubScript", "switch", "template",
+        "this", "throw", "to", "true", "try", "typedef", "typeid", "typename", "union", "unsigned",
+        "using", "virtual", "void", "volatile", "while", "xor", "xor_eq"
+    };
 
     switch (language) {
         case ScriptLanguageServiceLanguage::C:
@@ -276,6 +510,8 @@ const std::unordered_set<std::string>& ScriptLanguageService::keywordsForLanguag
             return kGlslKeywords;
         case ScriptLanguageServiceLanguage::Lua:
             return kLuaKeywords;
+        case ScriptLanguageServiceLanguage::ModuCPP:
+            return kModuCppKeywords;
         case ScriptLanguageServiceLanguage::Cpp:
         default:
             return kCppKeywords;
@@ -316,7 +552,10 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     }
     roots.push_back(projectRoot / "Scripts");
     roots.push_back(projectRoot / "Assets" / "Scripts");
+    roots.push_back(projectRoot / "include");
+    roots.push_back(projectRoot / "src");
     roots.push_back(assetsPath / "Shaders");
+    roots.push_back(projectRoot / "Shaders");
 
     std::unordered_set<std::string> uniquePaths;
     for (const auto& root : roots) {
@@ -326,11 +565,25 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
             resolvedRoot = projectRoot / resolvedRoot;
         }
         if (resolvedRoot.empty() || !fs::exists(resolvedRoot, ec) || !fs::is_directory(resolvedRoot, ec)) {
+            if (!resolvedRoot.empty()) {
+                result.scanWarnings.push_back("Skipped missing script language scan root: " + resolvedRoot.string());
+            }
             continue;
         }
         for (auto it = fs::recursive_directory_iterator(resolvedRoot, ec);
-             it != fs::recursive_directory_iterator(); ++it) {
-            if (it->is_directory()) continue;
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) {
+                result.scanWarnings.push_back("Stopped scanning " + resolvedRoot.string() + ": " + ec.message());
+                break;
+            }
+            if (it->is_directory()) {
+                const std::string dirName = it->path().filename().string();
+                if (dirName == ".git" || dirName == "build" || dirName == "cmake-build-debug" ||
+                    dirName == "cmake-build-release" || dirName == "ThirdParty") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
             const std::string ext = extensionLower(it->path());
             if (kValidExt.find(ext) == kValidExt.end()) continue;
             fs::path normalized = it->path().lexically_normal();
@@ -343,19 +596,57 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     std::sort(result.files.begin(), result.files.end());
 
     std::unordered_set<std::string> uniqueSymbols;
+    std::unordered_set<std::string> uniqueCompletions;
     for (const auto& scriptPath : result.files) {
         std::ifstream file(scriptPath);
-        if (!file.is_open()) continue;
+        if (!file.is_open()) {
+            result.scanWarnings.push_back("Could not read script language source: " + scriptPath.string());
+            continue;
+        }
         std::stringstream buffer;
         buffer << file.rdbuf();
-        const std::vector<std::string> symbols = buildSymbolList(buffer.str());
+        const std::string text = buffer.str();
+        const ScriptLanguageServiceLanguage language = detectLanguage(scriptPath);
+        const auto& keywords = keywordsForLanguage(language);
+        const std::vector<std::string> symbols = buildSymbolList(text);
         for (const auto& symbol : symbols) {
             uniqueSymbols.insert(symbol);
+            uniqueCompletions.insert(symbol);
         }
+        for (const auto& identifier : extractIdentifiers(text, keywords)) {
+            uniqueCompletions.insert(identifier);
+        }
+        for (const auto& function : extractFunctionIdentifiers(text, keywords)) {
+            uniqueCompletions.insert(function);
+        }
+        for (const auto& define : extractDefineIdentifiers(text)) {
+            uniqueCompletions.insert(define);
+        }
+        for (const auto& variable : extractVariableIdentifiers(text, language, keywords)) {
+            uniqueCompletions.insert(variable);
+        }
+        for (const auto& field : extractAutoFieldIdentifiers(text)) {
+            uniqueCompletions.insert(field);
+        }
+        for (const auto& importName : extractModuCppImports(text)) {
+            uniqueCompletions.insert(importName);
+        }
+        for (const auto& [name, signature] : extractFunctionSignatures(text, keywords)) {
+            result.functionSignatures.emplace(name, signature);
+        }
+    }
+
+    for (const std::string& builtin : moduCppBuiltins()) {
+        uniqueCompletions.insert(builtin);
+    }
+    for (const auto& [name, signature] : moduCppBuiltinSignatures()) {
+        result.functionSignatures.emplace(name, signature);
     }
 
     result.projectSymbols.assign(uniqueSymbols.begin(), uniqueSymbols.end());
     std::sort(result.projectSymbols.begin(), result.projectSymbols.end());
+    result.projectCompletions.assign(uniqueCompletions.begin(), uniqueCompletions.end());
+    std::sort(result.projectCompletions.begin(), result.projectCompletions.end());
     return result;
 }
 
@@ -368,7 +659,27 @@ ScriptLanguageServiceDocumentData ScriptLanguageService::analyzeDocument(const f
     result.functions = extractFunctionIdentifiers(text, keywords);
     result.defines = extractDefineIdentifiers(text);
     result.symbols = buildSymbolList(text);
+    result.variables = extractVariableIdentifiers(text, result.language, keywords);
+    result.moducppImports = result.language == ScriptLanguageServiceLanguage::ModuCPP
+        ? extractModuCppImports(text)
+        : std::vector<std::string>{};
+    result.moducppInspectorFields = result.language == ScriptLanguageServiceLanguage::ModuCPP
+        ? extractAutoFieldIdentifiers(text)
+        : std::vector<std::string>{};
+    if (result.language == ScriptLanguageServiceLanguage::ModuCPP) {
+        std::unordered_set<std::string> completions;
+        for (const auto& entry : moduCppBuiltins()) completions.insert(entry);
+        for (const auto& entry : result.moducppImports) completions.insert(entry);
+        for (const auto& entry : result.moducppInspectorFields) completions.insert(entry);
+        result.moducppCompletions.assign(completions.begin(), completions.end());
+        std::sort(result.moducppCompletions.begin(), result.moducppCompletions.end());
+    }
     result.functionSignatures = extractFunctionSignatures(text, keywords);
+    if (result.language == ScriptLanguageServiceLanguage::ModuCPP) {
+        for (const auto& [name, signature] : moduCppBuiltinSignatures()) {
+            result.functionSignatures.emplace(name, signature);
+        }
+    }
     return result;
 }
 
@@ -463,7 +774,7 @@ ScriptLanguageServiceFunctionCallContext ScriptLanguageService::detectFunctionCa
             while (start >= 0) {
                 unsigned char ch = static_cast<unsigned char>(currentLine[static_cast<size_t>(start)]);
                 char raw = currentLine[static_cast<size_t>(start)];
-                if (isIdentifierBody(ch) || raw == ':' || raw == '~') {
+                if (isIdentifierBody(ch) || raw == ':' || raw == '.' || raw == '~') {
                     --start;
                     continue;
                 }

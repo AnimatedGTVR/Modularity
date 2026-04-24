@@ -157,6 +157,12 @@ bool ModularityLspServer::initializeProject(const fs::path& workspacePath) {
         hasBuildConfig ? &buildConfig : nullptr);
     projectFiles = std::move(projectData.files);
     projectSymbols = std::move(projectData.projectSymbols);
+    projectCompletions = std::move(projectData.projectCompletions);
+    projectFunctionSignatures = std::move(projectData.functionSignatures);
+    projectScanWarnings = std::move(projectData.scanWarnings);
+    if (projectCompletions.empty()) {
+        projectScanWarnings.push_back("ModuCPP language service found no workspace completions.");
+    }
     return true;
 }
 
@@ -230,6 +236,15 @@ void ModularityLspServer::sendNotification(const char* method, JsonValue& params
     paramsValue.CopyFrom(params, alloc);
     notification.AddMember(JsonValue("params", alloc), paramsValue, alloc);
     writeJson(jsonToString(notification));
+}
+
+void ModularityLspServer::sendLogMessage(const std::string& message, int type) {
+    JsonDocument params;
+    params.SetObject();
+    JsonAllocator& alloc = params.GetAllocator();
+    addJsonMember(params, "type", type, alloc);
+    addJsonMember(params, "message", message, alloc);
+    sendNotification("window/logMessage", params);
 }
 
 void ModularityLspServer::publishDiagnostics(const DocumentState& doc) {
@@ -549,6 +564,7 @@ void ModularityLspServer::handleInitialize(const JsonDocument& request) {
     completionTriggers.PushBack(makeStringValue(".", alloc), alloc);
     completionTriggers.PushBack(makeStringValue(":", alloc), alloc);
     completionTriggers.PushBack(makeStringValue("_", alloc), alloc);
+    completionTriggers.PushBack(makeStringValue(">", alloc), alloc);
     completionProvider.AddMember(JsonValue("triggerCharacters", alloc), completionTriggers, alloc);
     capabilities.AddMember(JsonValue("completionProvider", alloc), completionProvider, alloc);
 
@@ -564,6 +580,9 @@ void ModularityLspServer::handleInitialize(const JsonDocument& request) {
     const JsonValue* id = getId(request);
     if (id != nullptr) {
         sendResponse(*id, result);
+    }
+    for (const std::string& warning : projectScanWarnings) {
+        sendLogMessage("[ModuCPP LSP] " + warning, 2);
     }
 }
 
@@ -656,7 +675,7 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
 
     const int line = params["position"]["line"].GetInt();
     const int character = params["position"]["character"].GetInt();
-    const std::string prefix = extractCompletionPrefix(it->second.text, line, character);
+    const std::string prefix = extractCompletionPrefix(it->second.text, line, character, it->second.analysis.language);
 
     std::unordered_set<std::string> poolSet;
     const auto& keywords = ScriptLanguageService::keywordsForLanguage(it->second.analysis.language);
@@ -665,11 +684,20 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
     for (const auto& entry : it->second.analysis.functions) poolSet.insert(entry);
     for (const auto& entry : it->second.analysis.defines) poolSet.insert(entry);
     for (const auto& entry : it->second.analysis.symbols) poolSet.insert(entry);
+    for (const auto& entry : it->second.analysis.variables) poolSet.insert(entry);
+    for (const auto& entry : it->second.analysis.moducppImports) poolSet.insert(entry);
+    for (const auto& entry : it->second.analysis.moducppInspectorFields) poolSet.insert(entry);
+    for (const auto& entry : it->second.analysis.moducppCompletions) poolSet.insert(entry);
     for (const auto& entry : projectSymbols) poolSet.insert(entry);
+    for (const auto& entry : projectCompletions) poolSet.insert(entry);
 
     std::vector<std::string> pool(poolSet.begin(), poolSet.end());
     std::sort(pool.begin(), pool.end());
     std::vector<std::string> completions = ScriptLanguageService::buildCompletionList(pool, prefix);
+    if (completions.empty() && !prefix.empty() &&
+        it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
+        sendLogMessage("[ModuCPP LSP] No completion candidates found for prefix '" + prefix + "'.", 3);
+    }
 
     JsonDocument result;
     result.SetArray();
@@ -678,6 +706,17 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
         JsonValue item(rapidjson::kObjectType);
         addJsonMember(item, "label", entry, alloc);
         addJsonMember(item, "insertText", entry, alloc);
+        int kind = 6;
+        if (keywords.find(entry) != keywords.end()) kind = 14;
+        else if (it->second.analysis.functionSignatures.find(entry) != it->second.analysis.functionSignatures.end() ||
+                 projectFunctionSignatures.find(entry) != projectFunctionSignatures.end()) kind = 3;
+        else if (std::find(it->second.analysis.variables.begin(), it->second.analysis.variables.end(), entry) != it->second.analysis.variables.end() ||
+                 std::find(it->second.analysis.moducppInspectorFields.begin(), it->second.analysis.moducppInspectorFields.end(), entry) != it->second.analysis.moducppInspectorFields.end()) kind = 6;
+        else if (std::find(it->second.analysis.defines.begin(), it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end()) kind = 21;
+        addJsonMember(item, "kind", kind, alloc);
+        if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
+            addJsonMember(item, "detail", "ModuCPP", alloc);
+        }
         result.PushBack(item, alloc);
     }
     sendResponse(*id, result);
@@ -715,10 +754,21 @@ void ModularityLspServer::handleSignatureHelp(const JsonDocument& request) {
     auto findSignature = [&](const std::string& name) -> std::string {
         auto fit = it->second.analysis.functionSignatures.find(name);
         if (fit != it->second.analysis.functionSignatures.end()) return fit->second;
+        fit = projectFunctionSignatures.find(name);
+        if (fit != projectFunctionSignatures.end()) return fit->second;
         size_t scope = name.rfind("::");
         if (scope != std::string::npos && scope + 2 < name.size()) {
             fit = it->second.analysis.functionSignatures.find(name.substr(scope + 2));
             if (fit != it->second.analysis.functionSignatures.end()) return fit->second;
+            fit = projectFunctionSignatures.find(name.substr(scope + 2));
+            if (fit != projectFunctionSignatures.end()) return fit->second;
+        }
+        size_t dot = name.rfind('.');
+        if (dot != std::string::npos && dot + 1 < name.size()) {
+            fit = it->second.analysis.functionSignatures.find(name.substr(dot + 1));
+            if (fit != it->second.analysis.functionSignatures.end()) return fit->second;
+            fit = projectFunctionSignatures.find(name.substr(dot + 1));
+            if (fit != projectFunctionSignatures.end()) return fit->second;
         }
         return {};
     };
@@ -726,6 +776,7 @@ void ModularityLspServer::handleSignatureHelp(const JsonDocument& request) {
     signatureLabel = findSignature(callCtx.functionName);
     if (signatureLabel.empty() &&
         (it->second.analysis.language == ScriptLanguageServiceLanguage::Cpp ||
+         it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP ||
          it->second.analysis.language == ScriptLanguageServiceLanguage::C)) {
         if (callCtx.functionName == "Begin") signatureLabel = "void Begin()";
         else if (callCtx.functionName == "TickUpdate") signatureLabel = "void TickUpdate(float deltaTime)";
@@ -869,13 +920,15 @@ std::string ModularityLspServer::extractLine(const std::string& text, int line) 
     return current;
 }
 
-std::string ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character) {
+std::string ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
+                                                         ScriptLanguageServiceLanguage language) {
     std::string currentLine = extractLine(text, line);
     const int clampedCharacter = std::clamp(character, 0, static_cast<int>(currentLine.size()));
     int start = clampedCharacter;
     while (start > 0) {
         const char c = currentLine[static_cast<size_t>(start - 1)];
-        if (!isIdentifierBody(static_cast<unsigned char>(c)) && c != ':') {
+        const bool isModuCppAccessor = language == ScriptLanguageServiceLanguage::ModuCPP && c == '.';
+        if (!isIdentifierBody(static_cast<unsigned char>(c)) && c != ':' && !isModuCppAccessor) {
             break;
         }
         --start;

@@ -18,6 +18,9 @@ enum class ScriptLanguageServiceLanguage {
 struct ScriptLanguageServiceProjectData {
     std::vector<fs::path> files;
     std::vector<std::string> projectSymbols;
+    std::vector<std::string> projectCompletions;
+    std::unordered_map<std::string, std::string> functionSignatures;
+    std::vector<std::string> scanWarnings;
 };
 
 struct ScriptLanguageServiceDocumentData {
@@ -26,6 +29,10 @@ struct ScriptLanguageServiceDocumentData {
     std::vector<std::string> functions;
     std::vector<std::string> defines;
     std::vector<std::string> symbols;
+    std::vector<std::string> variables;
+    std::vector<std::string> moducppImports;
+    std::vector<std::string> moducppInspectorFields;
+    std::vector<std::string> moducppCompletions;
     std::unordered_map<std::string, std::string> functionSignatures;
 };
 
