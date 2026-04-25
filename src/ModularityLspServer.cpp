@@ -391,7 +391,7 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         bool escaping = false;
         bool sawCode = false;
 
-        if (line.find("ModuNode") != std::string::npos) {
+        if (line.find("ModuBehaviour") != std::string::npos) {
             deprecatedUsage = true;
             deprecatedUsageColumn = 0;
             deprecatedUsageLine = lineNumber;
@@ -500,8 +500,8 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             ScriptDiagnosticId::BuildWarning,
             "ModuCPP",
             deprecatedUsageLine,
-            "ModuNode is deprecated",
-            "Use ModuBehaviour Instead"
+            "Hey, ModuBehaviour is deprecated!",
+            "Use 'ModuNode' Instead."
         );
         diagnostic.column = deprecatedUsageColumn;
         diagnostic.severity = ScriptDiagnosticSeverity::Warning;
@@ -513,7 +513,7 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             ScriptDiagnosticId::UnclosedString,
             "ModuCPP",
             unterminatedStringLine,
-            "String was opened but not closed.",
+            "A string was opened but not closed.",
             "Add the missing closing quote."
         );
         diagnostic.column = unterminatedStringColumn;
