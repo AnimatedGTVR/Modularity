@@ -63,5 +63,8 @@ public:
     static ScriptLanguageServiceFunctionCallContext detectFunctionCallContext(const std::string& currentLine,
                                                                               int cursorColumn);
 
+    static std::vector<std::string> buildQualifiedCompletionPool(const std::vector<std::string>& pool,
+                                                                 const std::string& qualifier);
+
     static const std::unordered_set<std::string>& keywordsForLanguage(ScriptLanguageServiceLanguage language);
 };

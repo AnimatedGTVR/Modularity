@@ -105,7 +105,13 @@ int ModularityLspServer::run(int argc, char** argv) {
     }
 
     if (!workspacePath.empty()) {
-        initializeProject(workspacePath);
+        try {
+            initializeProject(workspacePath);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[ModuCPP LSP] initializeProject threw: %s\n", e.what());
+        } catch (...) {
+            fprintf(stderr, "[ModuCPP LSP] initializeProject threw unknown exception\n");
+        }
     }
 
     while (!exitRequested) {
@@ -291,8 +297,11 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
     std::vector<std::pair<int, int>> braceStack;
     bool inBlockComment = false;
     bool unterminatedString = false;
+    bool deprecatedUsage = false;
     int unterminatedStringLine = 0;
     int unterminatedStringColumn = 0;
+    int deprecatedUsageLine = 0;
+    int deprecatedUsageColumn = 0;
 
     auto isSemicolonRequired = [](const std::string& trimmed, const std::string& nextTrimmed) {
         if (trimmed.empty()) return false;
@@ -382,6 +391,12 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         bool escaping = false;
         bool sawCode = false;
 
+        if (line.find("ModuNode") != std::string::npos) {
+            deprecatedUsage = true;
+            deprecatedUsageColumn = 0;
+            deprecatedUsageLine = lineNumber;
+        }
+
         for (size_t i = 0; i < line.size(); ++i) {
             const char c = line[i];
             const char next = (i + 1 < line.size()) ? line[i + 1] : '\0';
@@ -457,7 +472,15 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             unterminatedString = false;
         }
 
-        const std::string trimmed = trim(line);
+        const std::string trimmed = [&] {
+            std::string t = trim(line);
+            const size_t commentPos = t.find("//");
+            if (commentPos != std::string::npos) {
+                t = trim(t.substr(0, commentPos));
+            }
+            return t;
+        }();
+        
         if (sawCode && isSemicolonRequired(trimmed, nextTrimmed)) {
             ScriptDiagnostic diagnostic = makeScriptDiagnostic(
                 ScriptDiagnosticId::MissingSemicolon,
@@ -470,6 +493,19 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             diagnostic.sourceLine = sourceLine;
             diagnostics.push_back(std::move(diagnostic));
         }
+
+    }
+    if (deprecatedUsage) {
+        ScriptDiagnostic diagnostic = makeScriptDiagnostic(
+            ScriptDiagnosticId::BuildWarning,
+            "ModuCPP",
+            deprecatedUsageLine,
+            "ModuNode is deprecated",
+            "Use ModuBehaviour Instead"
+        );
+        diagnostic.column = deprecatedUsageColumn;
+        diagnostic.severity = ScriptDiagnosticSeverity::Warning;
+        diagnostics.push_back(std::move(diagnostic));
     }
 
     if (unterminatedString) {
@@ -528,6 +564,11 @@ void ModularityLspServer::handleMessage(const JsonDocument& request) {
         handleSignatureHelp(request);
     } else if (method == "textDocument/documentSymbol") {
         handleDocumentSymbol(request);
+    }  else if (method == "workspace/didChangeWatchedFiles") {
+        if (!project.projectPath.empty()) {
+            initializeProject(project.projectPath);
+            sendLogMessage("[ModuCPP LSP] Workspace rescanned.", 3);
+        }
     } else {
         const JsonValue* id = getId(request);
         if (id != nullptr) {
@@ -675,7 +716,8 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
 
     const int line = params["position"]["line"].GetInt();
     const int character = params["position"]["character"].GetInt();
-    const std::string prefix = extractCompletionPrefix(it->second.text, line, character, it->second.analysis.language);
+    const CompletionPrefix prefix = extractCompletionPrefix(
+    it->second.text, line, character, it->second.analysis.language);
 
     std::unordered_set<std::string> poolSet;
     const auto& keywords = ScriptLanguageService::keywordsForLanguage(it->second.analysis.language);
@@ -693,10 +735,16 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
 
     std::vector<std::string> pool(poolSet.begin(), poolSet.end());
     std::sort(pool.begin(), pool.end());
-    std::vector<std::string> completions = ScriptLanguageService::buildCompletionList(pool, prefix);
-    if (completions.empty() && !prefix.empty() &&
+    std::vector<std::string> qualifiedPool = prefix.hasQualifier ? ScriptLanguageService::buildQualifiedCompletionPool(pool, prefix.qualifier) : pool;
+    
+    
+    std::vector<std::string> completions = ScriptLanguageService::buildCompletionList(
+        qualifiedPool, prefix.term);
+
+    if (completions.empty() && (prefix.hasQualifier || !prefix.term.empty()) &&
         it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
-        sendLogMessage("[ModuCPP LSP] No completion candidates found for prefix '" + prefix + "'.", 3);
+        const std::string display = prefix.hasQualifier ? prefix.qualifier + "::" + prefix.term : prefix.term;
+        sendLogMessage("[ModuCPP LSP] No completion candidates found for prefix '" + display + "'.", 3);
     }
 
     JsonDocument result;
@@ -706,14 +754,25 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
         JsonValue item(rapidjson::kObjectType);
         addJsonMember(item, "label", entry, alloc);
         addJsonMember(item, "insertText", entry, alloc);
-        int kind = 6;
-        if (keywords.find(entry) != keywords.end()) kind = 14;
-        else if (it->second.analysis.functionSignatures.find(entry) != it->second.analysis.functionSignatures.end() ||
-                 projectFunctionSignatures.find(entry) != projectFunctionSignatures.end()) kind = 3;
-        else if (std::find(it->second.analysis.variables.begin(), it->second.analysis.variables.end(), entry) != it->second.analysis.variables.end() ||
-                 std::find(it->second.analysis.moducppInspectorFields.begin(), it->second.analysis.moducppInspectorFields.end(), entry) != it->second.analysis.moducppInspectorFields.end()) kind = 6;
-        else if (std::find(it->second.analysis.defines.begin(), it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end()) kind = 21;
+        int kind = 6; // Variable as default
+        const bool isFunction =
+            it->second.analysis.functionSignatures.count(entry) > 0 ||
+            projectFunctionSignatures.count(entry) > 0;
+        const bool isVariable =
+            std::find(it->second.analysis.variables.begin(),
+                      it->second.analysis.variables.end(), entry) != it->second.analysis.variables.end() ||
+            std::find(it->second.analysis.moducppInspectorFields.begin(),
+                      it->second.analysis.moducppInspectorFields.end(), entry) != it->second.analysis.moducppInspectorFields.end();
+        const bool isDefine =
+            std::find(it->second.analysis.defines.begin(),
+                      it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end();
+
+        if (keywords.find(entry) != keywords.end())   kind = 14; // Keyword
+        else if (isFunction)                           kind = 3;  // Function
+        else if (isDefine)                             kind = 21; // Constant
+        else if (isVariable)                           kind = 6;  // Variable
         addJsonMember(item, "kind", kind, alloc);
+        
         if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
             addJsonMember(item, "detail", "ModuCPP", alloc);
         }
@@ -920,10 +979,11 @@ std::string ModularityLspServer::extractLine(const std::string& text, int line) 
     return current;
 }
 
-std::string ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
+ModularityLspServer::CompletionPrefix ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
                                                          ScriptLanguageServiceLanguage language) {
-    std::string currentLine = extractLine(text, line);
+    const std::string currentLine = extractLine(text, line);
     const int clampedCharacter = std::clamp(character, 0, static_cast<int>(currentLine.size()));
+
     int start = clampedCharacter;
     while (start > 0) {
         const char c = currentLine[static_cast<size_t>(start - 1)];
@@ -933,5 +993,19 @@ std::string ModularityLspServer::extractCompletionPrefix(const std::string& text
         }
         --start;
     }
-    return currentLine.substr(static_cast<size_t>(start), static_cast<size_t>(clampedCharacter - start));
+
+    const std::string fullToken = currentLine.substr(
+        static_cast<size_t>(start),
+        static_cast<size_t>(clampedCharacter - start));
+
+    const size_t colonPos = fullToken.rfind("::");
+    if (colonPos != std::string::npos) {
+        return { fullToken.substr(0, colonPos), fullToken.substr(colonPos + 2), true };
+    }
+    const size_t dotPos = fullToken.rfind('.');
+    if (dotPos != std::string::npos) {
+        return { fullToken.substr(0, dotPos), fullToken.substr(dotPos + 1), true };
+    }
+
+    return {"", fullToken, false};
 }

@@ -6,6 +6,8 @@
 #include <iterator>
 #include <regex>
 #include <sstream>
+static const size_t kMaxIncludeFileBytes = 256 * 1024; // 256kb cap per file
+static const size_t kMaxIncludeFiles = 128;
 
 namespace {
     static std::string toLowerCopy(std::string value) {
@@ -214,23 +216,79 @@ namespace {
     }
 
     static std::vector<std::string> extractVariableIdentifiers(const std::string& text,
-                                                              ScriptLanguageServiceLanguage language,
-                                                              const std::unordered_set<std::string>& keywords) {
+                                                               ScriptLanguageServiceLanguage language,
+                                                               const std::unordered_set<std::string>& keywords) {
         std::unordered_set<std::string> unique;
-        static const std::regex kVariableDecl(
-            R"((?:^|[;\{\}\n])\s*(?:\[[^\]]+\]\s*)*(?:public|private|protected|static|const|constexpr|inline|mutable|volatile|auto|ref|to|\s)*\s*([A-Za-z_][A-Za-z0-9_:.\s<>\*&]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\{|\(|;|,|\[))");
 
-        for (std::sregex_iterator it(text.begin(), text.end(), kVariableDecl), end; it != end; ++it) {
-            std::string name = (*it)[2].str();
-            if (keywords.find(name) == keywords.end()) {
-                appendUnique(unique, name);
-            }
+        std::istringstream stream(text);
+        std::string line;
+        while (std::getline(stream, line)) {
+            // Strip leading whitespace
+            size_t i = 0;
+            while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+            if (i >= line.size()) continue;
+
+            // Skip comments, preprocessor, and access specifiers
+            if (line[i] == '/' || line[i] == '#') continue;
+
+            // Must contain an = { ( ; or , to be a declaration line
+            const bool hasAssignOrEnd = line.find('=') != std::string::npos ||
+                                        line.find(';') != std::string::npos ||
+                                        line.find('{') != std::string::npos;
+            if (!hasAssignOrEnd) continue;
+
+            // Skip lines that look like function definitions (contain a paren before any = or ;)
+            const size_t parenPos = line.find('(');
+            const size_t assignPos = line.find_first_of("=;{");
+            if (parenPos != std::string::npos && parenPos < assignPos) continue;
+
+            // Walk backwards from = or ; to find the variable name
+            size_t nameEnd = assignPos;
+            while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(line[nameEnd - 1]))) --nameEnd;
+            if (nameEnd == 0) continue;
+
+            // Must end with an identifier character
+            if (!isIdentifierBody(static_cast<unsigned char>(line[nameEnd - 1]))) continue;
+
+            size_t nameStart = nameEnd;
+            while (nameStart > 0 && isIdentifierBody(static_cast<unsigned char>(line[nameStart - 1]))) --nameStart;
+
+            if (nameEnd <= nameStart) continue;
+            const std::string name = line.substr(nameStart, nameEnd - nameStart);
+
+            // Must have a space before it (i.e. a type precedes it)
+            if (nameStart == 0 || !std::isspace(static_cast<unsigned char>(line[nameStart - 1]))) continue;
+
+            if (name.size() < 2) continue;
+            if (keywords.find(name) != keywords.end()) continue;
+            if (!isIdentifierStart(static_cast<unsigned char>(name[0]))) continue;
+
+            unique.insert(name);
         }
 
+        // ModuCPP each loop variables
         if (language == ScriptLanguageServiceLanguage::ModuCPP) {
-            static const std::regex kEachDecl(R"(\beach\s*\(\s*(?:ref\s+)?([A-Za-z_][A-Za-z0-9_:.\s<>\*&]*)?\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b)");
-            for (std::sregex_iterator it(text.begin(), text.end(), kEachDecl), end; it != end; ++it) {
-                appendUnique(unique, (*it)[2].str());
+            std::istringstream stream2(text);
+            while (std::getline(stream2, line)) {
+                // Match: each( [ref] <type> <name> in
+                const size_t eachPos = line.find("each");
+                if (eachPos == std::string::npos) continue;
+                size_t i = eachPos + 4;
+                while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+                if (i >= line.size() || line[i] != '(') continue;
+                ++i;
+                while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+                // optional ref
+                if (line.substr(i, 3) == "ref") { i += 3; while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i; }
+                // skip type
+                while (i < line.size() && !std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+                while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) ++i;
+                // read name
+                size_t nameStart = i;
+                while (i < line.size() && isIdentifierBody(static_cast<unsigned char>(line[i]))) ++i;
+                if (i > nameStart) {
+                    unique.insert(line.substr(nameStart, i - nameStart));
+                }
             }
         }
 
@@ -265,7 +323,34 @@ namespace {
             "TryPlayAnimationClipNamed", "ResolveUITextTarget", "SetUITextLabel",
             "SetUITextEffects", "SetRigidbody2DSimulated", "DrawStdStringInput",
             "DrawObjectRefInput", "IsAudioClipPath", "DrawAudioClipInput",
-            "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure"
+            "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure",
+            // ImGui
+            //"ImGui::Text", "ImGui::TextUnformatted", "ImGui::TextWrapped", "ImGui::TextDisabled", "ImGui::TextColored",
+            //"ImGui::Button", "ImGui::SmallButton", "ImGui::InvisibleButton", "ImGui::ArrowButton",
+            //"ImGui::InputText", "ImGui::InputTextMultiline", "ImGui::InputInt", "ImGui::InputFloat", "ImGui::InputFloat2", "ImGui::InputFloat3",
+            //"ImGui::SliderFloat", "ImGui::SliderInt", "ImGui::SliderFloat2", "ImGui::SliderFloat3",
+            //"ImGui::Checkbox", "ImGui::RadioButton",
+            //"ImGui::Combo", "ImGui::BeginCombo", "ImGui::EndCombo",
+            //"ImGui::ColorEdit3", "ImGui::ColorEdit4", "ImGui::ColorPicker3", "ImGui::ColorPicker4",
+            //"ImGui::BeginChild", "ImGui::EndChild",
+            //"ImGui::BeginTabBar", "ImGui::EndTabBar", "ImGui::BeginTabItem", "ImGui::EndTabItem",
+            //"ImGui::BeginMenuBar", "ImGui::EndMenuBar", "ImGui::BeginMenu", "ImGui::EndMenu", "ImGui::MenuItem",
+            //"ImGui::BeginPopup", "ImGui::BeginPopupModal", "ImGui::EndPopup", "ImGui::OpenPopup", "ImGui::CloseCurrentPopup",
+            //"ImGui::BeginTooltip", "ImGui::EndTooltip", "ImGui::SetTooltip",
+            //"ImGui::BeginTable", "ImGui::EndTable", "ImGui::TableNextRow", "ImGui::TableNextColumn", "ImGui::TableSetupColumn",
+            //"ImGui::CollapsingHeader", "ImGui::TreeNode", "ImGui::TreePop", "ImGui::TreeNodeEx",
+            //"ImGui::Separator", "ImGui::SameLine", "ImGui::Spacing", "ImGui::NewLine", "ImGui::Indent", "ImGui::Unindent",
+            //"ImGui::PushStyleColor", "ImGui::PopStyleColor", "ImGui::PushStyleVar", "ImGui::PopStyleVar",
+            //"ImGui::PushItemWidth", "ImGui::PopItemWidth", "ImGui::SetNextItemWidth",
+            //"ImGui::GetContentRegionAvail", "ImGui::GetWindowSize", "ImGui::GetWindowPos",
+            //"ImGui::SetScrollHereY", "ImGui::GetScrollY", "ImGui::GetScrollMaxY",
+            //"ImGui::IsItemHovered", "ImGui::IsItemClicked", "ImGui::IsItemActive", "ImGui::IsItemEdited",
+            //"ImGui::IsWindowFocused", "ImGui::IsWindowHovered",
+            //"ImGui::GetIO", "ImGui::GetStyle", "ImGui::GetDrawList",
+            //"ImGui::SetNextWindowSize", "ImGui::SetNextWindowPos", "ImGui::SetNextWindowContentSize",
+            //"ImGui::Begin", "ImGui::End",
+            //"ImGui::Image", "ImGui::ImageButton",
+            //"ImGui::ProgressBar", "ImGui::Bullet",
         };
         return std::vector<std::string>(std::begin(kBuiltins), std::end(kBuiltins));
     }
@@ -534,6 +619,56 @@ bool ScriptLanguageService::isCompilableScriptPath(const fs::path& path) {
            ext == ".moducpp" || ext == ".cs" || ext == ".csproj";
 }
 
+static std::vector<std::string> extractQualifiedCallIdentifiers(const std::string& text) {
+    std::unordered_set<std::string> unique;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == '"' || text[i] == '\'') {
+            const char delim = text[i++];
+            while (i < text.size() && text[i] != delim) {
+                if (text[i] == '\\') ++i;
+                ++i;
+            }
+            ++i;
+            continue;
+        }
+        if (i + 1 < text.size() && text[i] == '/' && text[i+1] == '/') {
+            while (i < text.size() && text[i] != '\n') ++i;
+            continue;
+        }
+        if (i + 1 < text.size() && text[i] == '/' && text[i+1] == '*') {
+            i += 2;
+            while (i + 1 < text.size() && !(text[i] == '*' && text[i+1] == '/')) ++i;
+            i += 2;
+            continue;
+        }
+        if (!isIdentifierStart(static_cast<unsigned char>(text[i]))) {
+            ++i;
+            continue;
+        }
+        size_t start = i;
+        while (i < text.size()) {
+            if (isIdentifierBody(static_cast<unsigned char>(text[i]))) {
+                ++i;
+            } else if (i + 1 < text.size() && text[i] == ':' && text[i+1] == ':') {
+                i += 2;
+            } else {
+                break;
+            }
+        }
+        const std::string token = text.substr(start, i - start);
+        if (token.find("::") == std::string::npos) continue;
+        size_t j = i;
+        while (j < text.size() && std::isspace(static_cast<unsigned char>(text[j]))) ++j;
+        if (j < text.size() && text[j] == '(') {
+            unique.insert(token);
+        }
+    }
+    std::vector<std::string> out(unique.begin(), unique.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const fs::path& projectRoot,
                                                                          const fs::path& assetsPath,
                                                                          const ScriptBuildConfig* config) {
@@ -544,21 +679,75 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
         ".glsl", ".vert", ".frag", ".hlsl", ".shader", ".lua"
     };
 
-    std::vector<fs::path> roots;
-    if (config != nullptr) {
-        roots.push_back(config->scriptsDir);
-    } else {
-        roots.push_back(assetsPath / "Scripts");
-    }
-    roots.push_back(projectRoot / "Scripts");
-    roots.push_back(projectRoot / "Assets" / "Scripts");
-    roots.push_back(projectRoot / "include");
-    roots.push_back(projectRoot / "src");
-    roots.push_back(assetsPath / "Shaders");
-    roots.push_back(projectRoot / "Shaders");
+    std::vector<fs::path> projectRoots;
+    std::vector<fs::path> includeRoots;
 
+    if (config != nullptr) {
+        projectRoots.push_back(config->scriptsDir);
+        for (const fs::path& includeDir : config->includeDirs) {
+            includeRoots.push_back(includeDir);
+        }
+    } else {
+        projectRoots.push_back(assetsPath / "Scripts");
+    }
+    projectRoots.push_back(projectRoot / "Scripts");
+    projectRoots.push_back(projectRoot / "Assets" / "Scripts");
+    projectRoots.push_back(projectRoot / "include");
+    projectRoots.push_back(projectRoot / "src");
+    projectRoots.push_back(assetsPath / "Shaders");
+    projectRoots.push_back(projectRoot / "Shaders");
+
+    std::unordered_set<std::string> uniqueSymbols;
+    std::unordered_set<std::string> uniqueCompletions;
     std::unordered_set<std::string> uniquePaths;
-    for (const auto& root : roots) {
+
+    // Scan include dirs — qualified calls only, capped per file
+    size_t includeFilesScanned = 0;
+    for (const auto& root : includeRoots) {
+        std::error_code ec;
+        fs::path resolvedRoot = root;
+        if (!resolvedRoot.empty() && !resolvedRoot.is_absolute()) {
+            resolvedRoot = projectRoot / resolvedRoot;
+        }
+        if (resolvedRoot.empty() || !fs::exists(resolvedRoot, ec) || !fs::is_directory(resolvedRoot, ec)) continue;
+
+        for (auto it = fs::recursive_directory_iterator(resolvedRoot, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (includeFilesScanned >= kMaxIncludeFiles) break;
+            if (it->is_directory()) {
+                const std::string dirName = it->path().filename().string();
+                if (dirName == ".git" || dirName == "build" || dirName == "ThirdParty") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+            const std::string ext = extensionLower(it->path());
+            if (ext != ".h" && ext != ".hpp" && ext != ".inl") continue;
+
+            std::error_code sec;
+            const auto fileSize = fs::file_size(it->path(), sec);
+            if (sec || fileSize > kMaxIncludeFileBytes) continue;
+
+            std::ifstream file(it->path());
+            if (!file.is_open()) continue;
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            const std::string text = buffer.str();
+
+            // Only qualified calls — no bare identifiers flooding the pool
+            for (const auto& qualified : extractQualifiedCallIdentifiers(text)) {
+                uniqueCompletions.insert(qualified);
+            }
+            for (const auto& [name, signature] : extractFunctionSignatures(text, keywordsForLanguage(ScriptLanguageServiceLanguage::Cpp))) {
+                result.functionSignatures.emplace(name, signature);
+            }
+            ++includeFilesScanned;
+        }
+    }
+
+    // Scan project files fully
+    for (const auto& root : projectRoots) {
         std::error_code ec;
         fs::path resolvedRoot = root;
         if (!resolvedRoot.empty() && !resolvedRoot.is_absolute()) {
@@ -595,8 +784,6 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
 
     std::sort(result.files.begin(), result.files.end());
 
-    std::unordered_set<std::string> uniqueSymbols;
-    std::unordered_set<std::string> uniqueCompletions;
     for (const auto& scriptPath : result.files) {
         std::ifstream file(scriptPath);
         if (!file.is_open()) {
@@ -608,40 +795,24 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
         const std::string text = buffer.str();
         const ScriptLanguageServiceLanguage language = detectLanguage(scriptPath);
         const auto& keywords = keywordsForLanguage(language);
-        const std::vector<std::string> symbols = buildSymbolList(text);
-        for (const auto& symbol : symbols) {
+        for (const auto& symbol : buildSymbolList(text)) {
             uniqueSymbols.insert(symbol);
             uniqueCompletions.insert(symbol);
         }
-        for (const auto& identifier : extractIdentifiers(text, keywords)) {
-            uniqueCompletions.insert(identifier);
-        }
-        for (const auto& function : extractFunctionIdentifiers(text, keywords)) {
-            uniqueCompletions.insert(function);
-        }
-        for (const auto& define : extractDefineIdentifiers(text)) {
-            uniqueCompletions.insert(define);
-        }
-        for (const auto& variable : extractVariableIdentifiers(text, language, keywords)) {
-            uniqueCompletions.insert(variable);
-        }
-        for (const auto& field : extractAutoFieldIdentifiers(text)) {
-            uniqueCompletions.insert(field);
-        }
-        for (const auto& importName : extractModuCppImports(text)) {
-            uniqueCompletions.insert(importName);
-        }
+        for (const auto& identifier : extractIdentifiers(text, keywords)) uniqueCompletions.insert(identifier);
+        for (const auto& function : extractFunctionIdentifiers(text, keywords)) uniqueCompletions.insert(function);
+        for (const auto& define : extractDefineIdentifiers(text)) uniqueCompletions.insert(define);
+        for (const auto& variable : extractVariableIdentifiers(text, language, keywords)) uniqueCompletions.insert(variable);
+        for (const auto& field : extractAutoFieldIdentifiers(text)) uniqueCompletions.insert(field);
+        for (const auto& importName : extractModuCppImports(text)) uniqueCompletions.insert(importName);
+        for (const auto& qualified : extractQualifiedCallIdentifiers(text)) uniqueCompletions.insert(qualified);
         for (const auto& [name, signature] : extractFunctionSignatures(text, keywords)) {
             result.functionSignatures.emplace(name, signature);
         }
     }
 
-    for (const std::string& builtin : moduCppBuiltins()) {
-        uniqueCompletions.insert(builtin);
-    }
-    for (const auto& [name, signature] : moduCppBuiltinSignatures()) {
-        result.functionSignatures.emplace(name, signature);
-    }
+    for (const std::string& builtin : moduCppBuiltins()) uniqueCompletions.insert(builtin);
+    for (const auto& [name, signature] : moduCppBuiltinSignatures()) result.functionSignatures.emplace(name, signature);
 
     result.projectSymbols.assign(uniqueSymbols.begin(), uniqueSymbols.end());
     std::sort(result.projectSymbols.begin(), result.projectSymbols.end());
@@ -683,12 +854,47 @@ ScriptLanguageServiceDocumentData ScriptLanguageService::analyzeDocument(const f
     return result;
 }
 
+std::vector<std::string> ScriptLanguageService::buildQualifiedCompletionPool(
+    const std::vector<std::string>& pool,
+    const std::string& qualifier) {
+
+    if (qualifier.empty()) return pool;
+
+    const std::string colonPrefix = qualifier + "::";
+    const std::string dotPrefix   = qualifier + ".";
+
+    std::vector<std::string> filtered;
+    for (const auto& entry : pool) {
+        std::string tail;
+        if (entry.rfind(colonPrefix, 0) == 0) {
+            tail = entry.substr(colonPrefix.size());
+        } else if (entry.rfind(dotPrefix, 0) == 0) {
+            tail = entry.substr(dotPrefix.size());
+        }
+        if (!tail.empty() && tail.find(':') == std::string::npos && tail.find('.') == std::string::npos) {
+            filtered.push_back(tail);
+        }
+    }
+
+    return filtered;
+}
+
 std::vector<std::string> ScriptLanguageService::buildCompletionList(const std::vector<std::string>& pool,
                                                                     const std::string& prefix,
                                                                     size_t limit) {
     std::vector<std::string> matches;
-    if (prefix.empty()) return matches;
     std::unordered_set<std::string> seen;
+
+    if (prefix.empty()) {
+        for (const auto& entry : pool) {
+            if (seen.insert(entry).second) {
+                matches.push_back(entry);
+            }
+            if (matches.size() >= limit) break;
+        }
+        return matches;
+    }
+
     for (const auto& entry : pool) {
         if (entry.rfind(prefix, 0) == 0) {
             if (seen.insert(entry).second) {
