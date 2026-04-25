@@ -1,0 +1,6 @@
+add ModuCPP;
+public class CollisionTest : ModuNode {
+    public SceneObj[] enable;
+    public SceneObj[] disable;
+    OnCollideEnter(Col other) to each enable.state(true); && each disable.state(false);;
+}

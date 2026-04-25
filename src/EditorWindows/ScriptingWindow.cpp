@@ -6,6 +6,7 @@
 #include <cctype>
 #include <unordered_set>
 #include <unordered_map>
+#include <cstdlib>
 
 #if defined(_WIN32)
 #include <shellapi.h>
@@ -222,6 +223,73 @@ namespace {
         editor.SetShowWhitespaces(true);
         editor.SetAllowTabInput(false);
         editor.SetSmartTabDelete(true);
+    }
+
+    static std::string shellQuote(const fs::path& path) {
+        std::string value = path.string();
+#ifdef _WIN32
+        std::string escaped;
+        escaped.reserve(value.size() + 2);
+        escaped.push_back('"');
+        for (char c : value) {
+            if (c == '"') escaped.push_back('\\');
+            escaped.push_back(c);
+        }
+        escaped.push_back('"');
+        return escaped;
+#else
+        std::string escaped = "'";
+        for (char c : value) {
+            if (c == '\'') escaped += "'\\''";
+            else escaped.push_back(c);
+        }
+        escaped.push_back('\'');
+        return escaped;
+#endif
+    }
+
+    static fs::path findProjectRootForScript(const fs::path& scriptPath, const Project& currentProject) {
+        std::error_code ec;
+        if (currentProject.isLoaded && !currentProject.projectPath.empty() &&
+            fs::exists(currentProject.projectPath / "project.modu", ec)) {
+            return currentProject.projectPath.lexically_normal();
+        }
+
+        fs::path current = scriptPath;
+        if (!fs::is_directory(current, ec)) {
+            current = current.parent_path();
+        }
+        if (current.is_relative()) {
+            current = fs::absolute(current, ec);
+            if (ec) current = scriptPath.parent_path();
+        }
+
+        while (!current.empty()) {
+            if (fs::exists(current / "project.modu", ec)) {
+                return current.lexically_normal();
+            }
+            fs::path parent = current.parent_path();
+            if (parent == current) break;
+            current = parent;
+        }
+        return {};
+    }
+
+    static bool openScriptInVSCodeWorkspace(const fs::path& scriptPath, const fs::path& projectRoot) {
+        if (projectRoot.empty()) return false;
+#ifdef _WIN32
+        const std::string command = "code -r " + shellQuote(projectRoot) +
+                                    " -g " + shellQuote(scriptPath);
+#elif __linux__
+        const std::string command = "if command -v code >/dev/null 2>&1; then code -r " +
+                                    shellQuote(projectRoot) + " -g " + shellQuote(scriptPath) +
+                                    " >/dev/null 2>&1 & else exit 127; fi";
+#else
+        (void)scriptPath;
+        (void)projectRoot;
+        return false;
+#endif
+        return std::system(command.c_str()) == 0;
     }
 
     static bool openPathInDefaultEditor(const fs::path& path) {
@@ -610,7 +678,8 @@ void Engine::openScriptInEditor(const fs::path& path) {
     fs::path normalized = (ec ? path : absPath).lexically_normal();
 
     if (!hasScriptingWindowPackage()) {
-        if (!openPathInDefaultEditor(normalized)) {
+        const fs::path projectRoot = findProjectRootForScript(normalized, projectManager.currentProject);
+        if (!openScriptInVSCodeWorkspace(normalized, projectRoot) && !openPathInDefaultEditor(normalized)) {
             addConsoleMessage("Failed to open script in the system editor: " + normalized.string(),
                               ConsoleMessageType::Error);
         }

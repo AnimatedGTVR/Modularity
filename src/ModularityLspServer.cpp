@@ -23,6 +23,10 @@ namespace {
         return std::isalnum(c) || c == '_';
     }
 
+    static bool isIdentifierStart(unsigned char c) {
+        return std::isalpha(c) || c == '_';
+    }
+
     static std::string jsonToString(const JsonValue& value) {
         rapidjson::StringBuffer buffer;
         rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -88,6 +92,85 @@ namespace {
         }
         return decoded;
     }
+
+    struct DeprecationRule {
+        const char* symbolName;
+        Modularity::ScriptDiagnosticSeverity severity;
+        const char* message;
+        const char* replacement;
+        const char* reason;
+    };
+
+    static const std::vector<DeprecationRule>& deprecationRegistry() {
+        static const std::vector<DeprecationRule> kRules = {
+            {
+                "ModuBehaviour",
+                Modularity::ScriptDiagnosticSeverity::Warning,
+                "ModuBehaviour is deprecated. Use ModuNode instead.",
+                "ModuNode",
+                "ModuNode is the current native script base class."
+            }
+        };
+        return kRules;
+    }
+
+    static const DeprecationRule* findDeprecationRule(const std::string& symbol) {
+        for (const DeprecationRule& rule : deprecationRegistry()) {
+            if (symbol == rule.symbolName) return &rule;
+        }
+        return nullptr;
+    }
+
+    static std::string wordAtPosition(const std::string& text, int line, int character) {
+        std::istringstream stream(text);
+        std::string current;
+        for (int i = 0; i <= line; ++i) {
+            if (!std::getline(stream, current)) return {};
+        }
+        int pos = std::clamp(character, 0, static_cast<int>(current.size()));
+        if (pos > 0 && (pos == static_cast<int>(current.size()) ||
+                        !isIdentifierBody(static_cast<unsigned char>(current[static_cast<size_t>(pos)])))) {
+            --pos;
+        }
+        if (pos < 0 || pos >= static_cast<int>(current.size()) ||
+            !isIdentifierBody(static_cast<unsigned char>(current[static_cast<size_t>(pos)]))) {
+            return {};
+        }
+        int start = pos;
+        while (start > 0 && isIdentifierBody(static_cast<unsigned char>(current[static_cast<size_t>(start - 1)]))) {
+            --start;
+        }
+        int end = pos + 1;
+        while (end < static_cast<int>(current.size()) &&
+               isIdentifierBody(static_cast<unsigned char>(current[static_cast<size_t>(end)]))) {
+            ++end;
+        }
+        return current.substr(static_cast<size_t>(start), static_cast<size_t>(end - start));
+    }
+
+    static bool containsIdentifier(const std::vector<std::string>& values, const std::string& symbol) {
+        return std::find(values.begin(), values.end(), symbol) != values.end();
+    }
+
+    static fs::path findProjectRoot(fs::path path) {
+        std::error_code ec;
+        if (!path.empty() && !fs::is_directory(path, ec)) {
+            path = path.parent_path();
+        }
+        if (path.is_relative()) {
+            fs::path absolute = fs::absolute(path, ec);
+            if (!ec) path = absolute;
+        }
+        while (!path.empty()) {
+            if (fs::exists(path / "project.modu", ec)) {
+                return path.lexically_normal();
+            }
+            fs::path parent = path.parent_path();
+            if (parent == path) break;
+            path = parent;
+        }
+        return {};
+    }
 }
 
 int ModularityLspServer::run(int argc, char** argv) {
@@ -133,9 +216,12 @@ int ModularityLspServer::run(int argc, char** argv) {
 
 bool ModularityLspServer::initializeProject(const fs::path& workspacePath) {
     std::error_code ec;
-    fs::path normalized = workspacePath;
-    if (!normalized.empty() && !fs::is_directory(normalized, ec)) {
-        normalized = normalized.parent_path();
+    fs::path normalized = findProjectRoot(workspacePath);
+    if (normalized.empty()) {
+        normalized = workspacePath;
+        if (!normalized.empty() && !fs::is_directory(normalized, ec)) {
+            normalized = normalized.parent_path();
+        }
     }
     if (normalized.empty()) {
         return false;
@@ -164,6 +250,7 @@ bool ModularityLspServer::initializeProject(const fs::path& workspacePath) {
     projectFiles = std::move(projectData.files);
     projectSymbols = std::move(projectData.projectSymbols);
     projectCompletions = std::move(projectData.projectCompletions);
+    projectSymbolDetails = std::move(projectData.symbolDetails);
     projectFunctionSignatures = std::move(projectData.functionSignatures);
     projectScanWarnings = std::move(projectData.scanWarnings);
     if (projectCompletions.empty()) {
@@ -297,16 +384,16 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
     std::vector<std::pair<int, int>> braceStack;
     bool inBlockComment = false;
     bool unterminatedString = false;
-    bool deprecatedUsage = false;
     int unterminatedStringLine = 0;
     int unterminatedStringColumn = 0;
-    int deprecatedUsageLine = 0;
-    int deprecatedUsageColumn = 0;
 
-    auto isSemicolonRequired = [](const std::string& trimmed, const std::string& nextTrimmed) {
+    const bool isModuCppDocument = doc.analysis.language == ScriptLanguageServiceLanguage::ModuCPP;
+
+    auto isSemicolonRequired = [isModuCppDocument](const std::string& trimmed, const std::string& nextTrimmed) {
         if (trimmed.empty()) return false;
         if (trimmed.rfind("//", 0) == 0) return false;
         if (trimmed[0] == '#') return false;
+        if (isModuCppDocument && trimmed[0] == '[') return false;
         if (trimmed == "{" || trimmed == "}") return false;
         const char last = trimmed.back();
         if (last == ';' || last == '{' || last == '}' || last == ':' || last == ',' || last == '(') return false;
@@ -336,7 +423,8 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
 
         static const char* kPrefixes[] = {
             "if", "else", "for", "while", "switch", "case", "default", "class", "struct",
-            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch", "SubScript"
+            "enum", "namespace", "public", "private", "protected", "template", "do", "try", "catch", "SubScript",
+            "inspector"
         };
         for (const char* prefix : kPrefixes) {
             const size_t len = std::strlen(prefix);
@@ -391,12 +479,6 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
         bool escaping = false;
         bool sawCode = false;
 
-        if (line.find("ModuBehaviour") != std::string::npos) {
-            deprecatedUsage = true;
-            deprecatedUsageColumn = 0;
-            deprecatedUsageLine = lineNumber;
-        }
-
         for (size_t i = 0; i < line.size(); ++i) {
             const char c = line[i];
             const char next = (i + 1 < line.size()) ? line[i + 1] : '\0';
@@ -448,6 +530,28 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             }
 
             sawCode = true;
+            if (isIdentifierStart(static_cast<unsigned char>(c))) {
+                const size_t start = i;
+                while (i < line.size() && isIdentifierBody(static_cast<unsigned char>(line[i]))) {
+                    ++i;
+                }
+                const std::string symbol = line.substr(start, i - start);
+                if (const DeprecationRule* rule = findDeprecationRule(symbol)) {
+                    ScriptDiagnostic diagnostic = makeScriptDiagnostic(
+                        ScriptDiagnosticId::BuildWarning,
+                        "ModuCPP",
+                        lineNumber,
+                        rule->message,
+                        std::string("Use '") + rule->replacement + "' instead."
+                    );
+                    diagnostic.column = static_cast<int>(start) + 1;
+                    diagnostic.severity = rule->severity;
+                    diagnostic.sourceLine = sourceLine;
+                    diagnostics.push_back(std::move(diagnostic));
+                }
+                --i;
+                continue;
+            }
             if (c == '{') {
                 braceStack.emplace_back(lineNumber, static_cast<int>(i) + 1);
             } else if (c == '}') {
@@ -493,19 +597,6 @@ std::vector<Modularity::ScriptDiagnostic> ModularityLspServer::collectLiveDiagno
             diagnostic.sourceLine = sourceLine;
             diagnostics.push_back(std::move(diagnostic));
         }
-
-    }
-    if (deprecatedUsage) {
-        ScriptDiagnostic diagnostic = makeScriptDiagnostic(
-            ScriptDiagnosticId::BuildWarning,
-            "ModuCPP",
-            deprecatedUsageLine,
-            "Hey, ModuBehaviour is deprecated!",
-            "Use 'ModuNode' Instead."
-        );
-        diagnostic.column = deprecatedUsageColumn;
-        diagnostic.severity = ScriptDiagnosticSeverity::Warning;
-        diagnostics.push_back(std::move(diagnostic));
     }
 
     if (unterminatedString) {
@@ -562,6 +653,8 @@ void ModularityLspServer::handleMessage(const JsonDocument& request) {
         handleCompletion(request);
     } else if (method == "textDocument/signatureHelp") {
         handleSignatureHelp(request);
+    } else if (method == "textDocument/hover") {
+        handleHover(request);
     } else if (method == "textDocument/documentSymbol") {
         handleDocumentSymbol(request);
     }  else if (method == "workspace/didChangeWatchedFiles") {
@@ -615,6 +708,7 @@ void ModularityLspServer::handleInitialize(const JsonDocument& request) {
     signatureTriggers.PushBack(makeStringValue(",", alloc), alloc);
     signatureProvider.AddMember(JsonValue("triggerCharacters", alloc), signatureTriggers, alloc);
     capabilities.AddMember(JsonValue("signatureHelpProvider", alloc), signatureProvider, alloc);
+    addJsonMember(capabilities, "hoverProvider", true, alloc);
     addJsonMember(capabilities, "documentSymbolProvider", true, alloc);
     result.AddMember(JsonValue("capabilities", alloc), capabilities, alloc);
 
@@ -766,14 +860,18 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
         const bool isDefine =
             std::find(it->second.analysis.defines.begin(),
                       it->second.analysis.defines.end(), entry) != it->second.analysis.defines.end();
+        const bool isContextSymbol = projectSymbolDetails.find(entry) != projectSymbolDetails.end();
 
         if (keywords.find(entry) != keywords.end())   kind = 14; // Keyword
         else if (isFunction)                           kind = 3;  // Function
+        else if (isContextSymbol)                      kind = 13; // Property
         else if (isDefine)                             kind = 21; // Constant
         else if (isVariable)                           kind = 6;  // Variable
         addJsonMember(item, "kind", kind, alloc);
         
-        if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
+        if (isContextSymbol) {
+            addJsonMember(item, "detail", projectSymbolDetails[entry], alloc);
+        } else if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
             addJsonMember(item, "detail", "ModuCPP", alloc);
         }
         result.PushBack(item, alloc);
@@ -864,6 +962,99 @@ void ModularityLspServer::handleSignatureHelp(const JsonDocument& request) {
     result.AddMember(JsonValue("signatures", alloc), signatures, alloc);
     addJsonMember(result, "activeSignature", 0, alloc);
     addJsonMember(result, "activeParameter", std::max(0, callCtx.activeParameter), alloc);
+    sendResponse(*id, result);
+}
+
+void ModularityLspServer::handleHover(const JsonDocument& request) {
+    const JsonValue* id = getId(request);
+    if (id == nullptr) return;
+    if (!request.HasMember("params") || !request["params"].IsObject()) {
+        sendErrorResponse(*id, -32602, "Missing params");
+        return;
+    }
+    const JsonValue& params = request["params"];
+    if (!params.HasMember("textDocument") || !params["textDocument"].IsObject() ||
+        !params.HasMember("position") || !params["position"].IsObject()) {
+        sendErrorResponse(*id, -32602, "Missing hover params");
+        return;
+    }
+
+    const std::string uri = params["textDocument"]["uri"].GetString();
+    auto it = openDocuments.find(uri);
+    if (it == openDocuments.end()) {
+        sendErrorResponse(*id, -32602, "Document not open");
+        return;
+    }
+
+    const int line = params["position"]["line"].GetInt();
+    const int character = params["position"]["character"].GetInt();
+    const std::string symbol = wordAtPosition(it->second.text, line, character);
+
+    JsonDocument result;
+    if (symbol.empty()) {
+        result.SetNull();
+        sendResponse(*id, result);
+        return;
+    }
+
+    std::vector<std::string> sections;
+    if (const DeprecationRule* rule = findDeprecationRule(symbol)) {
+        std::string text = std::string("**Deprecated:** ") + rule->message;
+        if (rule->replacement && rule->replacement[0] != '\0') {
+            text += "\n\nReplacement: `" + std::string(rule->replacement) + "`";
+        }
+        if (rule->reason && rule->reason[0] != '\0') {
+            text += "\n\n" + std::string(rule->reason);
+        }
+        sections.push_back(text);
+    }
+
+    std::string signature;
+    if (const auto localSignature = it->second.analysis.functionSignatures.find(symbol);
+        localSignature != it->second.analysis.functionSignatures.end()) {
+        signature = localSignature->second;
+    } else if (const auto projectSignature = projectFunctionSignatures.find(symbol);
+               projectSignature != projectFunctionSignatures.end()) {
+        signature = projectSignature->second;
+    }
+    if (!signature.empty()) {
+        sections.push_back("```cpp\n" + signature + "\n```");
+    }
+
+    const auto& keywords = ScriptLanguageService::keywordsForLanguage(it->second.analysis.language);
+    if (keywords.find(symbol) != keywords.end()) {
+        sections.push_back("`" + symbol + "` keyword");
+    }
+
+    auto detailIt = projectSymbolDetails.find(symbol);
+    if (detailIt != projectSymbolDetails.end()) {
+        sections.push_back("`" + symbol + "`\n\n" + detailIt->second);
+    } else if (containsIdentifier(projectSymbols, symbol) || containsIdentifier(projectCompletions, symbol)) {
+        sections.push_back("`" + symbol + "` project symbol");
+    } else if (containsIdentifier(it->second.analysis.symbols, symbol) ||
+               containsIdentifier(it->second.analysis.functions, symbol) ||
+               containsIdentifier(it->second.analysis.variables, symbol)) {
+        sections.push_back("`" + symbol + "` document symbol");
+    }
+
+    if (sections.empty()) {
+        result.SetNull();
+        sendResponse(*id, result);
+        return;
+    }
+
+    std::string markdown;
+    for (const std::string& section : sections) {
+        if (!markdown.empty()) markdown += "\n\n---\n\n";
+        markdown += section;
+    }
+
+    result.SetObject();
+    JsonAllocator& alloc = result.GetAllocator();
+    JsonValue contents(rapidjson::kObjectType);
+    addJsonMember(contents, "kind", "markdown", alloc);
+    addJsonMember(contents, "value", markdown, alloc);
+    result.AddMember(JsonValue("contents", alloc), contents, alloc);
     sendResponse(*id, result);
 }
 

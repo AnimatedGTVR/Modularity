@@ -47,6 +47,7 @@ private:
     void handleDidClose(const rapidjson::Document& request);
     void handleCompletion(const rapidjson::Document& request);
     void handleSignatureHelp(const rapidjson::Document& request);
+    void handleHover(const rapidjson::Document& request);
     void handleDocumentSymbol(const rapidjson::Document& request);
 
     static fs::path uriToPath(const std::string& uri);
@@ -67,6 +68,7 @@ private:
     std::vector<fs::path> projectFiles;
     std::vector<std::string> projectSymbols;
     std::vector<std::string> projectCompletions;
+    std::unordered_map<std::string, std::string> projectSymbolDetails;
     std::unordered_map<std::string, std::string> projectFunctionSignatures;
     std::vector<std::string> projectScanWarnings;
     std::unordered_map<std::string, DocumentState> openDocuments;

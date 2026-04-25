@@ -17,8 +17,10 @@ enum class ScriptLanguageServiceLanguage {
 
 struct ScriptLanguageServiceProjectData {
     std::vector<fs::path> files;
+    std::vector<fs::path> contextFiles;
     std::vector<std::string> projectSymbols;
     std::vector<std::string> projectCompletions;
+    std::unordered_map<std::string, std::string> symbolDetails;
     std::unordered_map<std::string, std::string> functionSignatures;
     std::vector<std::string> scanWarnings;
 };

@@ -542,6 +542,65 @@ namespace {
         std::sort(out.begin(), out.end());
         return out;
     }
+
+    static void addContextSymbol(std::unordered_map<std::string, std::string>& symbols,
+                                 const std::string& name,
+                                 const fs::path& sourcePath,
+                                 const char* kind) {
+        if (name.size() < 2 || !isIdentifierStart(static_cast<unsigned char>(name[0]))) return;
+        for (char c : name) {
+            if (!isIdentifierBody(static_cast<unsigned char>(c)) && c != '.' && c != ':' && c != '-') {
+                return;
+            }
+        }
+        symbols.emplace(name, std::string(kind) + " from " + sourcePath.filename().string());
+    }
+
+    static std::unordered_map<std::string, std::string> extractContextSymbols(const fs::path& sourcePath,
+                                                                              const std::string& text) {
+        static const std::unordered_set<std::string> kIgnored = {
+            "true", "false", "null", "none", "type", "name", "id", "path", "file", "enabled",
+            "position", "rotation", "scale", "x", "y", "z", "w"
+        };
+        std::unordered_map<std::string, std::string> symbols;
+        std::istringstream input(text);
+        std::string line;
+        while (std::getline(input, line)) {
+            std::string trimmed = trimCopy(line);
+            if (trimmed.empty() || trimmed.rfind("#", 0) == 0 || trimmed.rfind("//", 0) == 0) continue;
+
+            size_t sep = trimmed.find_first_of(":=");
+            if (sep != std::string::npos) {
+                std::string key = trimCopy(trimmed.substr(0, sep));
+                if (!key.empty() && key.front() == '"' && key.back() == '"' && key.size() > 1) {
+                    key = key.substr(1, key.size() - 2);
+                }
+                if (kIgnored.find(toLowerCopy(key)) == kIgnored.end()) {
+                    addContextSymbol(symbols, key, sourcePath, ".ctx key");
+                }
+            }
+
+            std::string token;
+            token.reserve(64);
+            auto flushToken = [&]() {
+                if (token.size() >= 2 && kIgnored.find(toLowerCopy(token)) == kIgnored.end()) {
+                    addContextSymbol(symbols, token, sourcePath, ".ctx symbol");
+                }
+                token.clear();
+            };
+            for (char c : trimmed) {
+                if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == ':' || c == '-') {
+                    token.push_back(c);
+                } else if (!token.empty()) {
+                    flushToken();
+                }
+            }
+            if (!token.empty()) {
+                flushToken();
+            }
+        }
+        return symbols;
+    }
 }
 
 const std::unordered_set<std::string>& ScriptLanguageService::keywordsForLanguage(
@@ -678,9 +737,13 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
         ".cpp", ".cc", ".cxx", ".c", ".moducpp", ".hpp", ".h", ".inl",
         ".glsl", ".vert", ".frag", ".hlsl", ".shader", ".lua"
     };
+    static const std::unordered_set<std::string> kContextExt = {
+        ".ctx"
+    };
 
     std::vector<fs::path> projectRoots;
     std::vector<fs::path> includeRoots;
+    std::vector<fs::path> contextRoots;
 
     if (config != nullptr) {
         projectRoots.push_back(config->scriptsDir);
@@ -696,6 +759,8 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     projectRoots.push_back(projectRoot / "src");
     projectRoots.push_back(assetsPath / "Shaders");
     projectRoots.push_back(projectRoot / "Shaders");
+    contextRoots.push_back(projectRoot);
+    contextRoots.push_back(assetsPath);
 
     std::unordered_set<std::string> uniqueSymbols;
     std::unordered_set<std::string> uniqueCompletions;
@@ -746,6 +811,38 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
         }
     }
 
+    // Scan Modularity context metadata separately. .ctx files are not parsed as code.
+    for (const auto& root : contextRoots) {
+        std::error_code ec;
+        fs::path resolvedRoot = root;
+        if (!resolvedRoot.empty() && !resolvedRoot.is_absolute()) {
+            resolvedRoot = projectRoot / resolvedRoot;
+        }
+        if (resolvedRoot.empty() || !fs::exists(resolvedRoot, ec) || !fs::is_directory(resolvedRoot, ec)) continue;
+
+        for (auto it = fs::recursive_directory_iterator(resolvedRoot, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) {
+                result.scanWarnings.push_back("Stopped scanning context metadata in " + resolvedRoot.string() + ": " + ec.message());
+                break;
+            }
+            if (it->is_directory()) {
+                const std::string dirName = it->path().filename().string();
+                if (dirName == ".git" || dirName == "build" || dirName == "cmake-build-debug" ||
+                    dirName == "cmake-build-release" || dirName == "ThirdParty" || dirName == "Library" ||
+                    dirName == "Cache") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+            if (kContextExt.find(extensionLower(it->path())) == kContextExt.end()) continue;
+            fs::path normalized = it->path().lexically_normal();
+            std::string key = std::string("ctx:") + normalized.string();
+            if (!uniquePaths.insert(key).second) continue;
+            result.contextFiles.push_back(normalized);
+        }
+    }
+
     // Scan project files fully
     for (const auto& root : projectRoots) {
         std::error_code ec;
@@ -774,6 +871,13 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
                 continue;
             }
             const std::string ext = extensionLower(it->path());
+            if (kContextExt.find(ext) != kContextExt.end()) {
+                fs::path normalized = it->path().lexically_normal();
+                std::string key = std::string("ctx:") + normalized.string();
+                if (!uniquePaths.insert(key).second) continue;
+                result.contextFiles.push_back(normalized);
+                continue;
+            }
             if (kValidExt.find(ext) == kValidExt.end()) continue;
             fs::path normalized = it->path().lexically_normal();
             std::string key = normalized.string();
@@ -783,6 +887,7 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     }
 
     std::sort(result.files.begin(), result.files.end());
+    std::sort(result.contextFiles.begin(), result.contextFiles.end());
 
     for (const auto& scriptPath : result.files) {
         std::ifstream file(scriptPath);
@@ -808,6 +913,22 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
         for (const auto& qualified : extractQualifiedCallIdentifiers(text)) uniqueCompletions.insert(qualified);
         for (const auto& [name, signature] : extractFunctionSignatures(text, keywords)) {
             result.functionSignatures.emplace(name, signature);
+        }
+    }
+
+    for (const auto& contextPath : result.contextFiles) {
+        std::ifstream file(contextPath);
+        if (!file.is_open()) {
+            result.scanWarnings.push_back("Could not read Modularity context source: " + contextPath.string());
+            continue;
+        }
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        const std::string text = buffer.str();
+        for (const auto& [name, detail] : extractContextSymbols(contextPath, text)) {
+            uniqueSymbols.insert(name);
+            uniqueCompletions.insert(name);
+            result.symbolDetails.emplace(name, detail);
         }
     }
 
