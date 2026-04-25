@@ -267,32 +267,32 @@ namespace {
             "DrawObjectRefInput", "IsAudioClipPath", "DrawAudioClipInput",
             "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure",
             // ImGui
-            "ImGui::Text", "ImGui::TextUnformatted", "ImGui::TextWrapped", "ImGui::TextDisabled", "ImGui::TextColored",
-            "ImGui::Button", "ImGui::SmallButton", "ImGui::InvisibleButton", "ImGui::ArrowButton",
-            "ImGui::InputText", "ImGui::InputTextMultiline", "ImGui::InputInt", "ImGui::InputFloat", "ImGui::InputFloat2", "ImGui::InputFloat3",
-            "ImGui::SliderFloat", "ImGui::SliderInt", "ImGui::SliderFloat2", "ImGui::SliderFloat3",
-            "ImGui::Checkbox", "ImGui::RadioButton",
-            "ImGui::Combo", "ImGui::BeginCombo", "ImGui::EndCombo",
-            "ImGui::ColorEdit3", "ImGui::ColorEdit4", "ImGui::ColorPicker3", "ImGui::ColorPicker4",
-            "ImGui::BeginChild", "ImGui::EndChild",
-            "ImGui::BeginTabBar", "ImGui::EndTabBar", "ImGui::BeginTabItem", "ImGui::EndTabItem",
-            "ImGui::BeginMenuBar", "ImGui::EndMenuBar", "ImGui::BeginMenu", "ImGui::EndMenu", "ImGui::MenuItem",
-            "ImGui::BeginPopup", "ImGui::BeginPopupModal", "ImGui::EndPopup", "ImGui::OpenPopup", "ImGui::CloseCurrentPopup",
-            "ImGui::BeginTooltip", "ImGui::EndTooltip", "ImGui::SetTooltip",
-            "ImGui::BeginTable", "ImGui::EndTable", "ImGui::TableNextRow", "ImGui::TableNextColumn", "ImGui::TableSetupColumn",
-            "ImGui::CollapsingHeader", "ImGui::TreeNode", "ImGui::TreePop", "ImGui::TreeNodeEx",
-            "ImGui::Separator", "ImGui::SameLine", "ImGui::Spacing", "ImGui::NewLine", "ImGui::Indent", "ImGui::Unindent",
-            "ImGui::PushStyleColor", "ImGui::PopStyleColor", "ImGui::PushStyleVar", "ImGui::PopStyleVar",
-            "ImGui::PushItemWidth", "ImGui::PopItemWidth", "ImGui::SetNextItemWidth",
-            "ImGui::GetContentRegionAvail", "ImGui::GetWindowSize", "ImGui::GetWindowPos",
-            "ImGui::SetScrollHereY", "ImGui::GetScrollY", "ImGui::GetScrollMaxY",
-            "ImGui::IsItemHovered", "ImGui::IsItemClicked", "ImGui::IsItemActive", "ImGui::IsItemEdited",
-            "ImGui::IsWindowFocused", "ImGui::IsWindowHovered",
-            "ImGui::GetIO", "ImGui::GetStyle", "ImGui::GetDrawList",
-            "ImGui::SetNextWindowSize", "ImGui::SetNextWindowPos", "ImGui::SetNextWindowContentSize",
-            "ImGui::Begin", "ImGui::End",
-            "ImGui::Image", "ImGui::ImageButton",
-            "ImGui::ProgressBar", "ImGui::Bullet",
+            //"ImGui::Text", "ImGui::TextUnformatted", "ImGui::TextWrapped", "ImGui::TextDisabled", "ImGui::TextColored",
+            //"ImGui::Button", "ImGui::SmallButton", "ImGui::InvisibleButton", "ImGui::ArrowButton",
+            //"ImGui::InputText", "ImGui::InputTextMultiline", "ImGui::InputInt", "ImGui::InputFloat", "ImGui::InputFloat2", "ImGui::InputFloat3",
+            //"ImGui::SliderFloat", "ImGui::SliderInt", "ImGui::SliderFloat2", "ImGui::SliderFloat3",
+            //"ImGui::Checkbox", "ImGui::RadioButton",
+            //"ImGui::Combo", "ImGui::BeginCombo", "ImGui::EndCombo",
+            //"ImGui::ColorEdit3", "ImGui::ColorEdit4", "ImGui::ColorPicker3", "ImGui::ColorPicker4",
+            //"ImGui::BeginChild", "ImGui::EndChild",
+            //"ImGui::BeginTabBar", "ImGui::EndTabBar", "ImGui::BeginTabItem", "ImGui::EndTabItem",
+            //"ImGui::BeginMenuBar", "ImGui::EndMenuBar", "ImGui::BeginMenu", "ImGui::EndMenu", "ImGui::MenuItem",
+            //"ImGui::BeginPopup", "ImGui::BeginPopupModal", "ImGui::EndPopup", "ImGui::OpenPopup", "ImGui::CloseCurrentPopup",
+            //"ImGui::BeginTooltip", "ImGui::EndTooltip", "ImGui::SetTooltip",
+            //"ImGui::BeginTable", "ImGui::EndTable", "ImGui::TableNextRow", "ImGui::TableNextColumn", "ImGui::TableSetupColumn",
+            //"ImGui::CollapsingHeader", "ImGui::TreeNode", "ImGui::TreePop", "ImGui::TreeNodeEx",
+            //"ImGui::Separator", "ImGui::SameLine", "ImGui::Spacing", "ImGui::NewLine", "ImGui::Indent", "ImGui::Unindent",
+            //"ImGui::PushStyleColor", "ImGui::PopStyleColor", "ImGui::PushStyleVar", "ImGui::PopStyleVar",
+            //"ImGui::PushItemWidth", "ImGui::PopItemWidth", "ImGui::SetNextItemWidth",
+            //"ImGui::GetContentRegionAvail", "ImGui::GetWindowSize", "ImGui::GetWindowPos",
+            //"ImGui::SetScrollHereY", "ImGui::GetScrollY", "ImGui::GetScrollMaxY",
+            //"ImGui::IsItemHovered", "ImGui::IsItemClicked", "ImGui::IsItemActive", "ImGui::IsItemEdited",
+            //"ImGui::IsWindowFocused", "ImGui::IsWindowHovered",
+            //"ImGui::GetIO", "ImGui::GetStyle", "ImGui::GetDrawList",
+            //"ImGui::SetNextWindowSize", "ImGui::SetNextWindowPos", "ImGui::SetNextWindowContentSize",
+            //"ImGui::Begin", "ImGui::End",
+            //"ImGui::Image", "ImGui::ImageButton",
+            //"ImGui::ProgressBar", "ImGui::Bullet",
         };
         return std::vector<std::string>(std::begin(kBuiltins), std::end(kBuiltins));
     }
@@ -583,6 +583,12 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     roots.push_back(projectRoot / "src");
     roots.push_back(assetsPath / "Shaders");
     roots.push_back(projectRoot / "Shaders");
+
+    if (config != nullptr) {
+        for (const fs::path& includeDir : config->includeDirs) {
+            roots.push_back(includeDir);
+        }
+    }
 
     std::unordered_set<std::string> uniquePaths;
     for (const auto& root : roots) {

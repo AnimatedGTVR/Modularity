@@ -105,7 +105,13 @@ int ModularityLspServer::run(int argc, char** argv) {
     }
 
     if (!workspacePath.empty()) {
-        initializeProject(workspacePath);
+        try {
+            initializeProject(workspacePath);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[ModuCPP LSP] initializeProject threw: %s\n", e.what());
+        } catch (...) {
+            fprintf(stderr, "[ModuCPP LSP] initializeProject threw unknown exception\n");
+        }
     }
 
     while (!exitRequested) {
@@ -558,6 +564,11 @@ void ModularityLspServer::handleMessage(const JsonDocument& request) {
         handleSignatureHelp(request);
     } else if (method == "textDocument/documentSymbol") {
         handleDocumentSymbol(request);
+    }  else if (method == "workspace/didChangeWatchedFiles") {
+        if (!project.projectPath.empty()) {
+            initializeProject(project.projectPath);
+            sendLogMessage("[ModuCPP LSP] Workspace rescanned.", 3);
+        }
     } else {
         const JsonValue* id = getId(request);
         if (id != nullptr) {
