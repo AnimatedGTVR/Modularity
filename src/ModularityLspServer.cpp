@@ -705,7 +705,8 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
 
     const int line = params["position"]["line"].GetInt();
     const int character = params["position"]["character"].GetInt();
-    const std::string prefix = extractCompletionPrefix(it->second.text, line, character, it->second.analysis.language);
+    const CompletionPrefix prefix = extractCompletionPrefix(
+    it->second.text, line, character, it->second.analysis.language);
 
     std::unordered_set<std::string> poolSet;
     const auto& keywords = ScriptLanguageService::keywordsForLanguage(it->second.analysis.language);
@@ -723,10 +724,16 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
 
     std::vector<std::string> pool(poolSet.begin(), poolSet.end());
     std::sort(pool.begin(), pool.end());
-    std::vector<std::string> completions = ScriptLanguageService::buildCompletionList(pool, prefix);
-    if (completions.empty() && !prefix.empty() &&
+    std::vector<std::string> qualifiedPool = prefix.hasQualifier ? ScriptLanguageService::buildQualifiedCompletionPool(pool, prefix.qualifier) : pool;
+    
+    
+    std::vector<std::string> completions = ScriptLanguageService::buildCompletionList(
+        qualifiedPool, prefix.term);
+
+    if (completions.empty() && (prefix.hasQualifier || !prefix.term.empty()) &&
         it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
-        sendLogMessage("[ModuCPP LSP] No completion candidates found for prefix '" + prefix + "'.", 3);
+        const std::string display = prefix.hasQualifier ? prefix.qualifier + "::" + prefix.term : prefix.term;
+        sendLogMessage("[ModuCPP LSP] No completion candidates found for prefix '" + display + "'.", 3);
     }
 
     JsonDocument result;
@@ -961,7 +968,7 @@ std::string ModularityLspServer::extractLine(const std::string& text, int line) 
     return current;
 }
 
-std::string ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
+ModularityLspServer::CompletionPrefix ModularityLspServer::extractCompletionPrefix(const std::string& text, int line, int character,
                                                          ScriptLanguageServiceLanguage language) {
     const std::string currentLine = extractLine(text, line);
     const int clampedCharacter = std::clamp(character, 0, static_cast<int>(currentLine.size()));
@@ -976,18 +983,18 @@ std::string ModularityLspServer::extractCompletionPrefix(const std::string& text
         --start;
     }
 
-    const std::string fullPrefix = currentLine.substr(
+    const std::string fullToken = currentLine.substr(
         static_cast<size_t>(start),
         static_cast<size_t>(clampedCharacter - start));
 
-    const size_t colonPos = fullPrefix.rfind("::");
+    const size_t colonPos = fullToken.rfind("::");
     if (colonPos != std::string::npos) {
-        return fullPrefix.substr(colonPos + 2);
+        return { fullToken.substr(0, colonPos), fullToken.substr(colonPos + 2), true };
     }
-    const size_t dotPos = fullPrefix.rfind('.');
+    const size_t dotPos = fullToken.rfind('.');
     if (dotPos != std::string::npos) {
-        return fullPrefix.substr(dotPos + 1);
+        return { fullToken.substr(0, dotPos), fullToken.substr(dotPos + 1), true };
     }
 
-    return fullPrefix;
+    return {"", fullToken, false};
 }

@@ -23,6 +23,12 @@ private:
         int version = 0;
         ScriptLanguageServiceDocumentData analysis;
     };
+    struct CompletionPrefix {
+        std::string qualifier;
+        std::string term;
+        bool hasQualifier;
+    };
+
 
     bool initializeProject(const fs::path& workspacePath);
     bool readMessage(std::string& outJson);
@@ -50,7 +56,7 @@ private:
     static const rapidjson::Value* getId(const rapidjson::Document& request);
     static rapidjson::Value makeStringValue(const std::string& value, rapidjson::Document::AllocatorType& alloc);
     static std::string extractLine(const std::string& text, int line);
-    static std::string extractCompletionPrefix(const std::string& text, int line, int character,
+    static CompletionPrefix extractCompletionPrefix(const std::string& text, int line, int character,
                                                ScriptLanguageServiceLanguage language);
 
     Project project;

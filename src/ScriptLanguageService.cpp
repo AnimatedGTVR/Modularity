@@ -267,18 +267,32 @@ namespace {
             "DrawObjectRefInput", "IsAudioClipPath", "DrawAudioClipInput",
             "DrawObjectRefListEditor", "IEnum_Start", "IEnum_Stop", "IEnum_Ensure",
             // ImGui
-            "ImGui", "ImVec2", "ImVec4", "ImGuiCol_Text", "ImGuiInputTextFlags_EnterReturnsTrue",
-            "Text", "TextUnformatted", "TextWrapped", "TextDisabled", "TextColored",
-            "Button", "SmallButton", "InputText", "InputInt", "InputFloat",
-            "SliderFloat", "SliderInt", "Checkbox", "Combo", "BeginChild", "EndChild",
-            "BeginTabBar", "EndTabBar", "BeginTabItem", "EndTabItem",
-            "Separator", "Spacing", "SameLine", "NewLine", "Indent", "Unindent",
-            "PushStyleColor", "PopStyleColor", "PushItemWidth", "PopItemWidth",
-            "SetNextItemWidth", "GetContentRegionAvail", "SetScrollHereY",
-            "GetScrollY", "GetScrollMaxY", "CollapsingHeader", "TreeNode", "TreePop",
-            "OpenPopup", "BeginPopup", "EndPopup", "BeginMenuBar", "EndMenuBar",
-            "BeginMenu", "EndMenu", "MenuItem", "IsItemHovered", "IsItemClicked",
-            "IsItemActive", "GetItemRectSize", "SetTooltip", "BeginTooltip", "EndTooltip",
+            "ImGui::Text", "ImGui::TextUnformatted", "ImGui::TextWrapped", "ImGui::TextDisabled", "ImGui::TextColored",
+            "ImGui::Button", "ImGui::SmallButton", "ImGui::InvisibleButton", "ImGui::ArrowButton",
+            "ImGui::InputText", "ImGui::InputTextMultiline", "ImGui::InputInt", "ImGui::InputFloat", "ImGui::InputFloat2", "ImGui::InputFloat3",
+            "ImGui::SliderFloat", "ImGui::SliderInt", "ImGui::SliderFloat2", "ImGui::SliderFloat3",
+            "ImGui::Checkbox", "ImGui::RadioButton",
+            "ImGui::Combo", "ImGui::BeginCombo", "ImGui::EndCombo",
+            "ImGui::ColorEdit3", "ImGui::ColorEdit4", "ImGui::ColorPicker3", "ImGui::ColorPicker4",
+            "ImGui::BeginChild", "ImGui::EndChild",
+            "ImGui::BeginTabBar", "ImGui::EndTabBar", "ImGui::BeginTabItem", "ImGui::EndTabItem",
+            "ImGui::BeginMenuBar", "ImGui::EndMenuBar", "ImGui::BeginMenu", "ImGui::EndMenu", "ImGui::MenuItem",
+            "ImGui::BeginPopup", "ImGui::BeginPopupModal", "ImGui::EndPopup", "ImGui::OpenPopup", "ImGui::CloseCurrentPopup",
+            "ImGui::BeginTooltip", "ImGui::EndTooltip", "ImGui::SetTooltip",
+            "ImGui::BeginTable", "ImGui::EndTable", "ImGui::TableNextRow", "ImGui::TableNextColumn", "ImGui::TableSetupColumn",
+            "ImGui::CollapsingHeader", "ImGui::TreeNode", "ImGui::TreePop", "ImGui::TreeNodeEx",
+            "ImGui::Separator", "ImGui::SameLine", "ImGui::Spacing", "ImGui::NewLine", "ImGui::Indent", "ImGui::Unindent",
+            "ImGui::PushStyleColor", "ImGui::PopStyleColor", "ImGui::PushStyleVar", "ImGui::PopStyleVar",
+            "ImGui::PushItemWidth", "ImGui::PopItemWidth", "ImGui::SetNextItemWidth",
+            "ImGui::GetContentRegionAvail", "ImGui::GetWindowSize", "ImGui::GetWindowPos",
+            "ImGui::SetScrollHereY", "ImGui::GetScrollY", "ImGui::GetScrollMaxY",
+            "ImGui::IsItemHovered", "ImGui::IsItemClicked", "ImGui::IsItemActive", "ImGui::IsItemEdited",
+            "ImGui::IsWindowFocused", "ImGui::IsWindowHovered",
+            "ImGui::GetIO", "ImGui::GetStyle", "ImGui::GetDrawList",
+            "ImGui::SetNextWindowSize", "ImGui::SetNextWindowPos", "ImGui::SetNextWindowContentSize",
+            "ImGui::Begin", "ImGui::End",
+            "ImGui::Image", "ImGui::ImageButton",
+            "ImGui::ProgressBar", "ImGui::Bullet",
         };
         return std::vector<std::string>(std::begin(kBuiltins), std::end(kBuiltins));
     }
@@ -694,6 +708,31 @@ ScriptLanguageServiceDocumentData ScriptLanguageService::analyzeDocument(const f
         }
     }
     return result;
+}
+
+std::vector<std::string> ScriptLanguageService::buildQualifiedCompletionPool(
+    const std::vector<std::string>& pool,
+    const std::string& qualifier) {
+
+    if (qualifier.empty()) return pool;
+
+    const std::string colonPrefix = qualifier + "::";
+    const std::string dotPrefix   = qualifier + ".";
+
+    std::vector<std::string> filtered;
+    for (const auto& entry : pool) {
+        std::string tail;
+        if (entry.rfind(colonPrefix, 0) == 0) {
+            tail = entry.substr(colonPrefix.size());
+        } else if (entry.rfind(dotPrefix, 0) == 0) {
+            tail = entry.substr(dotPrefix.size());
+        }
+        if (!tail.empty() && tail.find(':') == std::string::npos && tail.find('.') == std::string::npos) {
+            filtered.push_back(tail);
+        }
+    }
+
+    return filtered;
 }
 
 std::vector<std::string> ScriptLanguageService::buildCompletionList(const std::vector<std::string>& pool,
