@@ -1,0 +1,26 @@
+add ModuCPP;
+add ModuInput;
+public class InputsTest : ModuNode {
+    // This is when we add OpenXR Support in the future lol.
+    public SceneObj[] enable;
+    public SceneObj[] disable;
+    public bool ShouldEnableAndDisable;
+    void Begin() to ShouldEnableAndDisable = true;
+    void TickUpdate() {
+        if (ShouldEnableAndDisable) {
+            if (XR.Left.Trigger(Down)) {
+                each disable.state(true);
+            }
+            else if (XR.Left.Trigger(Up)) {
+                each enable.state(true);
+            }
+
+            if (XR.Right.Trigger(Down)) {
+                each disable.state(false);
+            }
+            else if (XR.Right.Trigger(Up)) {
+                each enable.state(false);
+            }
+        }
+    }  
+}

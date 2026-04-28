@@ -73,6 +73,8 @@ struct MethodSpec {
     bool autoInjectedContext = false;
     bool autoInjectedDeltaTime = false;
     bool hasDeltaTimeParam = false;
+    bool isCalc = false;
+    std::string collisionHoldDuration;
     std::string deltaTimeParamName = "dt";
 };
 
@@ -747,9 +749,18 @@ bool isLifecycleMethodName(const std::string& name) {
         "TestEditor",
         "RenderEditorWindow",
         "ExitRenderEditorWindow",
-        "Script_OnInspector"
+        "Script_OnInspector",
+        "OnCollideEnter",
+        "OnCollideHold",
+        "OnCollideExit"
     };
     return kNames.find(name) != kNames.end();
+}
+
+bool isCollisionMethodName(const std::string& name) {
+    return name == "OnCollideEnter" ||
+           name == "OnCollideHold" ||
+           name == "OnCollideExit";
 }
 
 bool looksLikeDeltaTimeParameter(const std::string& parameter) {
@@ -772,6 +783,7 @@ std::string mapScriptBaseTypeToCpp(const std::string& rawType) {
     if (normalized == "string") return "std::string";
     if (normalized == "vector2" || normalized == "vec2") return "glm::vec2";
     if (normalized == "vector3" || normalized == "vec3") return "glm::vec3";
+    if (normalized == "col") return "SceneObject*";
     if (normalized == "sceneobj*" || normalized == "sceneobject*") return "SceneObject*";
     if (normalized == "sceneobj" || normalized == "sceneobject") return "SceneObject";
     return normalizedType;
@@ -1315,6 +1327,121 @@ bool lowerParameterDecl(const std::string& rawParam, std::string& outLowered,
     return true;
 }
 
+bool parameterHasExplicitType(const std::string& rawParam) {
+    std::string param = trimCopy(rawParam);
+    if (param.empty()) return true;
+    const size_t eqPos = findTopLevelChar(param, '=');
+    if (eqPos != std::string::npos) {
+        param = trimCopy(param.substr(0, eqPos));
+    }
+    if (param.rfind("ref ", 0) == 0) {
+        param = trimCopy(param.substr(4));
+    }
+    const std::string name = extractParamName(param);
+    if (name.empty()) return true;
+    const size_t namePos = param.rfind(name);
+    if (namePos == std::string::npos) return true;
+    return !trimCopy(param.substr(0, namePos)).empty();
+}
+
+std::string normalizeUntypedParameters(const std::string& params) {
+    std::vector<std::string> parts = splitTopLevel(params, ',');
+    std::ostringstream out;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::string param = trimCopy(parts[i]);
+        if (!param.empty() && !parameterHasExplicitType(param)) {
+            param = "auto " + param;
+        }
+        if (i > 0) out << ", ";
+        out << param;
+    }
+    return out.str();
+}
+
+bool normalizeCalcSignature(std::string& signature, bool& outIsCalc, std::string& error) {
+    std::string trimmed = trimCopy(signature);
+    outIsCalc = false;
+    if (trimmed.rfind("Calc ", 0) != 0) {
+        return true;
+    }
+    outIsCalc = true;
+
+    trimmed = trimCopy(trimmed.substr(5));
+    const size_t openParen = findTopLevelChar(trimmed, '(');
+    if (openParen == std::string::npos) {
+        error = "Unsupported Calc declaration (missing parameter list): " + signature;
+        return false;
+    }
+    const size_t closeParen = findMatchingParen(trimmed, openParen);
+    if (closeParen == std::string::npos) {
+        error = "Unsupported Calc declaration (unmatched '('): " + signature;
+        return false;
+    }
+
+    const std::string beforeParen = trimCopy(trimmed.substr(0, openParen));
+    size_t nameEnd = beforeParen.size();
+    while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(beforeParen[nameEnd - 1])) != 0) {
+        --nameEnd;
+    }
+    size_t nameStart = nameEnd;
+    while (nameStart > 0 && isIdentifierChar(beforeParen[nameStart - 1])) {
+        --nameStart;
+    }
+    if (nameStart >= nameEnd) {
+        error = "Unsupported Calc declaration (missing name): " + signature;
+        return false;
+    }
+
+    const std::string returnType = trimCopy(beforeParen.substr(0, nameStart)).empty()
+        ? "auto"
+        : trimCopy(beforeParen.substr(0, nameStart));
+    const std::string name = beforeParen.substr(nameStart, nameEnd - nameStart);
+    const std::string params = normalizeUntypedParameters(trimmed.substr(openParen + 1, closeParen - openParen - 1));
+    const std::string trailing = trimCopy(trimmed.substr(closeParen + 1));
+
+    signature = returnType + " " + name + "(" + params + ")";
+    if (!trailing.empty()) {
+        signature += " " + trailing;
+    }
+    return true;
+}
+
+bool normalizeCollisionSignature(std::string& signature, std::string& outHoldDuration) {
+    outHoldDuration.clear();
+    std::string trimmed = trimCopy(signature);
+    const size_t openParen = findTopLevelChar(trimmed, '(');
+    if (openParen == std::string::npos) {
+        return false;
+    }
+    const std::string beforeParen = trimCopy(trimmed.substr(0, openParen));
+    if (!isCollisionMethodName(beforeParen)) {
+        return false;
+    }
+    const size_t closeParen = findMatchingParen(trimmed, openParen);
+    if (closeParen == std::string::npos) {
+        return false;
+    }
+
+    std::string params = trimCopy(trimmed.substr(openParen + 1, closeParen - openParen - 1));
+    std::vector<std::string> parts = splitTopLevel(params, ',');
+    if (parts.size() == 1) {
+        static const std::regex holdDurationPattern(
+            R"(^\s*Col\s+([A-Za-z_][A-Za-z0-9_]*)\s+([0-9]+(?:\.[0-9]+)?f?)\s*$)");
+        std::smatch match;
+        if (std::regex_match(parts[0], match, holdDurationPattern)) {
+            parts[0] = "Col " + match[1].str();
+            outHoldDuration = match[2].str();
+        }
+        params = trimCopy(parts[0]);
+    }
+    if (beforeParen == "OnCollideHold" && outHoldDuration.empty()) {
+        outHoldDuration = "2.0f";
+    }
+
+    signature = "void " + beforeParen + "(" + params + ")" + trimmed.substr(closeParen + 1);
+    return true;
+}
+
 bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
                      int bodySourceLine,
                      MethodSpec& outMethod, std::string& error) {
@@ -1328,6 +1455,12 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     } else if (signature.rfind(privatePrefix, 0) == 0) {
         signature = trimCopy(signature.substr(privatePrefix.size()));
     }
+    bool isCalc = false;
+    if (!normalizeCalcSignature(signature, isCalc, error)) {
+        return false;
+    }
+    outMethod.isCalc = isCalc;
+    normalizeCollisionSignature(signature, outMethod.collisionHoldDuration);
 
     const size_t openParen = findTopLevelChar(signature, '(');
     if (openParen == std::string::npos) {
@@ -1582,6 +1715,24 @@ std::string rewriteIncludeDirective(const std::string& directive, const fs::path
     }
 
     return "#include " + bracket + includeTarget + ((bracket == "<") ? ">" : "\"");
+}
+
+fs::path findNearestSiblingHeader(const fs::path& sourcePath, const std::string& headerName) {
+    std::error_code ec;
+    fs::path dir = sourcePath.parent_path();
+    while (!dir.empty()) {
+        fs::path candidate = dir / headerName;
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate;
+        }
+        fs::path parent = dir.parent_path();
+        if (parent == dir) {
+            break;
+        }
+        dir = std::move(parent);
+        ec.clear();
+    }
+    return sourcePath.parent_path() / headerName;
 }
 
 std::string stripIncludeDirectives(const std::string& sourceText) {
@@ -1885,14 +2036,39 @@ std::string normalizeModuPackageLines(const std::string& sourceText) {
     std::ostringstream out;
     std::string line;
     static const std::regex addPattern(R"(^(\s*)add\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*;\s*$)");
+    static const std::regex markPattern(R"(^(\s*)mark\s+([A-Za-z_][A-Za-z0-9_:]*)\s*;\s*$)");
     static const std::regex usingPattern(R"(^(\s*)using\s+([A-Za-z_][A-Za-z0-9_:.]*)\s*;\s*$)");
+    static const std::unordered_set<std::string> packageNames = {
+        "ModuCPP",
+        "ModuEngine",
+        "ModuInput",
+        "RMeshBuilder",
+        "ModuCPP.Experimental",
+    };
 
     while (std::getline(input, line)) {
         std::smatch match;
         if (std::regex_match(line, match, addPattern)) {
             const std::string indent = match[1].str();
             const std::string packageName = match[2].str();
-            out << indent << "#include \"" << packageName << "\"\n";
+            if (packageNames.find(packageName) != packageNames.end()) {
+                out << indent << "#include \"" << packageName << "\"\n";
+            } else {
+                std::string namespaceName = packageName;
+                size_t dotPos = 0;
+                while ((dotPos = namespaceName.find('.', dotPos)) != std::string::npos) {
+                    namespaceName.replace(dotPos, 1, "::");
+                    dotPos += 2;
+                }
+                out << indent << "namespace " << namespaceName << " {}\n";
+                out << indent << "using namespace " << namespaceName << ";\n";
+            }
+            continue;
+        }
+        if (std::regex_match(line, match, markPattern)) {
+            const std::string indent = match[1].str();
+            const std::string namespaceName = match[2].str();
+            out << indent << "namespace " << namespaceName << " {}\n";
             continue;
         }
         if (std::regex_match(line, match, usingPattern) &&
@@ -2049,8 +2225,131 @@ void replaceRegexAll(std::string& text, const std::regex& pattern, const std::st
     text = std::regex_replace(text, pattern, replacement);
 }
 
+std::string statementFromActionGroupItem(const std::string& item) {
+    std::string stmt = trimCopy(item);
+    if (stmt.empty()) return {};
+    if (stmt.back() != ';') {
+        stmt.push_back(';');
+    }
+    return stmt;
+}
+
+std::string rewriteThenSyntax(const std::string& sourceText) {
+    std::string out;
+    out.reserve(sourceText.size() + 32);
+
+    enum class Mode {
+        Normal,
+        LineComment,
+        BlockComment,
+        StringLiteral,
+        CharLiteral
+    };
+
+    Mode mode = Mode::Normal;
+    bool escaped = false;
+    size_t cursor = 0;
+    size_t i = 0;
+    while (i < sourceText.size()) {
+        const char c = sourceText[i];
+        const char next = (i + 1 < sourceText.size()) ? sourceText[i + 1] : '\0';
+
+        if (mode == Mode::Normal) {
+            if (c == '/' && next == '/') {
+                mode = Mode::LineComment;
+                i += 2;
+                continue;
+            }
+            if (c == '/' && next == '*') {
+                mode = Mode::BlockComment;
+                i += 2;
+                continue;
+            }
+            if (c == '"') {
+                mode = Mode::StringLiteral;
+                escaped = false;
+                ++i;
+                continue;
+            }
+            if (c == '\'') {
+                mode = Mode::CharLiteral;
+                escaped = false;
+                ++i;
+                continue;
+            }
+
+            if (sourceText.compare(i, 4, "then") == 0 &&
+                (i == 0 || !isIdentifierChar(sourceText[i - 1])) &&
+                (i + 4 >= sourceText.size() || !isIdentifierChar(sourceText[i + 4]))) {
+                out += sourceText.substr(cursor, i - cursor);
+                size_t afterThen = skipWhitespace(sourceText, i + 4);
+                if (afterThen < sourceText.size() && sourceText[afterThen] == '[') {
+                    const size_t close = findMatchingBracket(sourceText, afterThen);
+                    if (close != std::string::npos) {
+                        out += "{ ";
+                        const std::vector<std::string> items =
+                            splitTopLevel(sourceText.substr(afterThen + 1, close - afterThen - 1), ',');
+                        bool emittedAny = false;
+                        for (const std::string& item : items) {
+                            const std::string stmt = statementFromActionGroupItem(item);
+                            if (stmt.empty()) continue;
+                            if (emittedAny) out.push_back(' ');
+                            out += stmt;
+                            emittedAny = true;
+                        }
+                        out += " }";
+                        size_t nextPos = close + 1;
+                        nextPos = skipWhitespace(sourceText, nextPos);
+                        if (nextPos < sourceText.size() && sourceText[nextPos] == ';') {
+                            ++nextPos;
+                        }
+                        cursor = nextPos;
+                        i = nextPos;
+                        continue;
+                    }
+                }
+
+                out.push_back(' ');
+                cursor = afterThen;
+                i = afterThen;
+                continue;
+            }
+        } else if (mode == Mode::LineComment) {
+            if (c == '\n') {
+                mode = Mode::Normal;
+            }
+        } else if (mode == Mode::BlockComment) {
+            if (c == '*' && next == '/') {
+                mode = Mode::Normal;
+                i += 2;
+                continue;
+            }
+        } else if (mode == Mode::StringLiteral) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                mode = Mode::Normal;
+            }
+        } else if (mode == Mode::CharLiteral) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '\'') {
+                mode = Mode::Normal;
+            }
+        }
+        ++i;
+    }
+
+    out += sourceText.substr(cursor);
+    return out;
+}
+
 std::string rewriteSurfaceSyntax(const std::string& sourceText) {
-    std::string out = sourceText;
+    std::string out = rewriteThenSyntax(sourceText);
 
     replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
     replaceRegexAll(out, std::regex(R"(\b([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Z][A-Za-z0-9_]*)\b)"),
@@ -3126,7 +3425,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << passthrough << "\n";
     }
     if (needsDialoguePortSupport && spec.passthroughCode.find("DialoguePortShared.h") == std::string::npos) {
-        out << "#include \"" << (sourcePath.parent_path() / "DialoguePortShared.h").string() << "\"\n";
+        out << "#include \"" << findNearestSiblingHeader(sourcePath, "DialoguePortShared.h").string() << "\"\n";
     }
 
     out << "namespace " << supportNs << " {\n\n";
@@ -3604,6 +3903,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     };
 
     for (const MethodSpec& method : spec.methods) {
+        if (toLowerCopy(removeWhitespaceCopy(method.returnType)) == "auto") {
+            continue;
+        }
         if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ");\n";
     }
@@ -4221,6 +4523,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
     // Forward-declare all methods so they can call each other regardless of definition order.
     for (const MethodSpec& method : spec.methods) {
+        if (toLowerCopy(removeWhitespaceCopy(method.returnType)) == "auto") {
+            continue;
+        }
         if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ");\n";
     }
@@ -4236,6 +4541,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
         if (method.isStatic) out << "static ";
         out << method.returnType << " " << method.name << "(" << method.transpiledParams << ") {\n";
+        if (method.isCalc) {
+            emitSourceLineDirective(method.bodySourceLine);
+            out << transformedBody << "\n";
+            emitGeneratedLineDirective();
+            out << "}\n\n";
+            continue;
+        }
         if (method.isStatic) {
             out << transformedBody << "\n";
             out << "}\n\n";
@@ -4313,6 +4625,34 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << transformedBody << "\n";
         }
         emitGeneratedLineDirective();
+        out << "}\n\n";
+    }
+
+    auto findMethodByName = [&](const std::string& name) -> const MethodSpec* {
+        for (const MethodSpec& method : spec.methods) {
+            if (method.name == name) {
+                return &method;
+            }
+        }
+        return nullptr;
+    };
+    if (const MethodSpec* method = findMethodByName("OnCollideEnter")) {
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnCollideEnter(ScriptContext& ctx, SceneObject* other) {\n";
+        out << "    " << method->name << "(ctx, other, 0.0f);\n";
+        out << "}\n\n";
+    }
+    if (const MethodSpec* method = findMethodByName("OnCollideHold")) {
+        const std::string duration = method->collisionHoldDuration.empty() ? "2.0f" : method->collisionHoldDuration;
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT float Script_OnCollideHoldDuration() {\n";
+        out << "    return " << duration << ";\n";
+        out << "}\n\n";
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnCollideHold(ScriptContext& ctx, SceneObject* other) {\n";
+        out << "    " << method->name << "(ctx, other, " << duration << ");\n";
+        out << "}\n\n";
+    }
+    if (const MethodSpec* method = findMethodByName("OnCollideExit")) {
+        out << "extern \"C\" MODULARITY_SCRIPT_EXPORT void Script_OnCollideExit(ScriptContext& ctx, SceneObject* other) {\n";
+        out << "    " << method->name << "(ctx, other, 0.0f);\n";
         out << "}\n\n";
     }
 

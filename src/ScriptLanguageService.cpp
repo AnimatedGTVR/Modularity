@@ -299,17 +299,19 @@ namespace {
 
     static std::vector<std::string> moduCppBuiltins() {
         static const char* kBuiltins[] = {
-            "add", "to", "ref", "each", "in", "SubScript", "AutoFields", "ModuCPP", "ModuCPP.Experimental",
-            "ModuNode", "ModuBehaviour", "SceneObj", "SceneObject", "ScriptContext", "List", "IEnum",
+            "add", "mark", "Calc", "to", "then", "ref", "each", "in", "SubScript", "AutoFields",
+            "ModuCPP", "ModuCPP.Experimental",
+            "ModuNode", "ModuBehaviour", "SceneObj", "SceneObject", "Col", "ScriptContext", "List", "IEnum",
             "string", "vec2", "vec3", "Vector2", "Vector3", "ConsoleMessageType", "UISliderStyle",
             "UIButtonStyle", "UIElementType", "Header", "Slider", "ObjectRef", "ObjectList",
             "DialogueLines", "ClipGridPair", "Separator", "SoundSet", "range", "step",
             "Begin", "TickUpdate", "Update", "Spec", "TestEditor", "RenderEditorWindow",
-            "ExitRenderEditorWindow", "Script_OnInspector", "Config", "State", "BindSetting",
+            "ExitRenderEditorWindow", "Script_OnInspector", "OnCollideEnter", "OnCollideHold",
+            "OnCollideExit", "Config", "State", "BindSetting",
             "BindArray", "BindArray2D", "SerializeSubScript", "DeserializeSubScript",
             "SerializeSubScriptArray", "DeserializeSubScriptArray", "EditSubScript",
             "EditSubScriptArray", "SetFrameDeltaTime", "StartTimer", "TimerReady", "IntRD",
-            "IntR", "IntRU", "MODU_SCRIPT", "GetProjectGravityScale", "SetProjectGravityScale",
+            "IntR", "IntRU", "AddLog", "Type", "MODU_SCRIPT", "GetProjectGravityScale", "SetProjectGravityScale",
             "EditFloat", "EditVec3", "EditBool", "EditInt", "EditString", "hasRigidbody2D",
             "getRigidbody2DVelocity", "setRigidbody2DVelocity", "moveTowards",
             "TryMoveRigidbody2D", "moveRigidbody2D", "movePosition2D", "warnOnce",
@@ -365,6 +367,10 @@ namespace {
             {"RenderEditorWindow", "void RenderEditorWindow()"},
             {"ExitRenderEditorWindow", "void ExitRenderEditorWindow()"},
             {"Script_OnInspector", "void Script_OnInspector()"},
+            {"OnCollideEnter", "OnCollideEnter(Col other)"},
+            {"OnCollideHold", "OnCollideHold(Col other)"},
+            {"OnCollideExit", "OnCollideExit(Col other)"},
+            {"Calc", "Calc Name(value) to value"},
             {"AutoFields", "AutoFields(field, ...)"},
             {"each", "each(ref value in values)"}
         };

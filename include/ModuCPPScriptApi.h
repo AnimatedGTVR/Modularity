@@ -455,6 +455,23 @@ inline ObjectFacade MakeObjectFacade(ScriptContext& ctx) {
     return ObjectFacade(ctx);
 }
 
+namespace Type {
+inline constexpr ConsoleMessageType Info = ConsoleMessageType::Info;
+inline constexpr ConsoleMessageType Warning = ConsoleMessageType::Warning;
+inline constexpr ConsoleMessageType Error = ConsoleMessageType::Error;
+inline constexpr ConsoleMessageType Success = ConsoleMessageType::Success;
+} // namespace Type
+
+inline void AddLog(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info) {
+    if (ScriptContext* scriptCtx = ctxPtr()) {
+        scriptCtx->AddConsoleMessage(message, type);
+    }
+}
+
+inline void AddLog(const char* message, ConsoleMessageType type = ConsoleMessageType::Info) {
+    AddLog(std::string(message ? message : ""), type);
+}
+
 } // namespace ModuCPP
 
 #define MODUCPP_JOIN_IMPL(a, b) a##b

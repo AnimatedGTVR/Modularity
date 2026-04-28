@@ -84,7 +84,7 @@
 		"imports": {
 			"patterns": [
 				{
-					"match": "^\\s*(add)\\s+([A-Za-z_][A-Za-z0-9_:.]*)",
+					"match": "^\\s*(add|mark)\\s+([A-Za-z_][A-Za-z0-9_:.]*)",
 					"captures": {
 						"1": {
 							"name": "keyword.control.import.moducpp"
@@ -196,7 +196,7 @@
 			"patterns": [
 				{
 					"name": "keyword.control.moducpp",
-					"match": "\\b(if|else|for|while|do|switch|case|default|break|continue|return|goto|throw|try|catch|co_await|co_return|co_yield)\\b"
+					"match": "\\b(if|then|else|for|while|do|switch|case|default|break|continue|return|goto|throw|try|catch|co_await|co_return|co_yield)\\b"
 				},
 				{
 					"name": "keyword.operator.new-delete.moducpp",
@@ -204,7 +204,7 @@
 				},
 				{
 					"name": "keyword.other.moducpp",
-					"match": "\\b(add|to|ref|each|auto|decltype|sizeof|alignof|typeid|noexcept|requires|concept)\\b"
+					"match": "\\b(add|mark|Calc|to|ref|each|auto|decltype|sizeof|alignof|typeid|noexcept|requires|concept)\\b"
 				},
 				{
 					"name": "keyword.operator.cast.moducpp",
@@ -232,7 +232,7 @@
 				},
 				{
 					"name": "support.type.moducpp",
-					"match": "\\b(string|vec2|vec3|Vector2|Vector3|SceneObj|SceneObject|ScriptContext|List|IEnum|ConsoleMessageType|UISliderStyle|UIButtonStyle|UIElementType)\\b"
+					"match": "\\b(string|vec2|vec3|Vector2|Vector3|SceneObj|SceneObject|Col|ScriptContext|List|IEnum|ConsoleMessageType|UISliderStyle|UIButtonStyle|UIElementType)\\b"
 				},
 				{
 					"name": "support.class.moducpp",
@@ -244,7 +244,7 @@
 			"patterns": [
 				{
 					"name": "support.function.moducpp",
-					"match": "\\b(Config|State|BindSetting|BindArray|BindArray2D|SerializeSubScript|DeserializeSubScript|SerializeSubScriptArray|DeserializeSubScriptArray|EditSubScript|EditSubScriptArray|SetFrameDeltaTime|StartTimer|TimerReady|IntRD|IntR|IntRU|MODU_SCRIPT)\\b(?=\\s*[(<])"
+					"match": "\\b(Config|State|BindSetting|BindArray|BindArray2D|SerializeSubScript|DeserializeSubScript|SerializeSubScriptArray|DeserializeSubScriptArray|EditSubScript|EditSubScriptArray|SetFrameDeltaTime|StartTimer|TimerReady|IntRD|IntR|IntRU|AddLog|MODU_SCRIPT)\\b(?=\\s*[(<])"
 				},
 				{
 					"name": "support.function.engine.moducpp",

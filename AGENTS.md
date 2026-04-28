@@ -75,4 +75,6 @@ Code modification expectations:
 - When changing serialization, scene objects, materials, rendering, or inspector behavior, check for downstream impact
 - For bug fixes, preserve existing behavior outside the failing case
 - Return the closest production-ready result possible, not pseudocode.
+
+(oh and, if modifying ModuCPP, make sure to bump up the ABI version just in case.)
 </INSTRUCTIONS>
