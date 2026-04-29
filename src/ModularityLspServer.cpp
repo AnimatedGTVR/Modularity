@@ -1196,8 +1196,6 @@ ModularityLspServer::CompletionPrefix ModularityLspServer::extractCompletionPref
     const size_t dotPos = fullToken.rfind('.');
     if (dotPos != std::string::npos) {
         return { fullToken.substr(0, dotPos), fullToken.substr(dotPos + 1), true };
-
-
     }
 
     return {"", fullToken, false};
