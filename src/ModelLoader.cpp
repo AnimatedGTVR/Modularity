@@ -873,8 +873,8 @@ bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& ou
         aiProcess_SortByPType |
         aiProcess_ValidateDataStructure;
 
-    importer.SetPropertyBool("IMPORT_FBX_PRESERVE_PIVOTS", false);
-    importer.SetPropertyBool("IMPORT_FBX_OPTIMIZE_EMPTY_ANIMATION_CURVES", true);
+    importer.SetPropertyBool("IMPORT_FBX_PRESERVE_PIVOTS", true);
+    importer.SetPropertyBool("IMPORT_FBX_OPTIMIZE_EMPTY_ANIMATION_CURVES", false);
 
     ScopedImportedTempFile tempFile;
     std::string importError;

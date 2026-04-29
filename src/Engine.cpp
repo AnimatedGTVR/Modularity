@@ -4655,8 +4655,11 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
     if (projectManager.currentProject.isLoaded && rootSelectionId != -1 && !sceneData.animations.empty()) {
         std::unordered_map<std::string, std::string> pathByNodeName;
         pathByNodeName.reserve(sceneData.nodes.size());
+        std::unordered_map<std::string, size_t> nodeIndexByName;
+        nodeIndexByName.reserve(sceneData.nodes.size());
         for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
             pathByNodeName[sceneData.nodes[i].name] = sceneNodePaths[i];
+            nodeIndexByName[sceneData.nodes[i].name] = i;
         }
 
         fs::path animationDir = projectManager.currentProject.assetsPath / "Animations" / "Imported" / baseName;
@@ -4712,17 +4715,33 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
                                 << " 0 0 2 1\n";
                         }
                     };
-                    auto writeRotTrack = [&](const char* propertyId, const std::vector<ModelSceneData::AnimQuatKey>& keys, int component) {
-                        out << "track " << std::quoted(propertyId) << " 1 0\n";
-                        out << "keyCount " << keys.size() << "\n";
-                        for (const auto& key : keys) {
-                            const float t = clip.ticksPerSecond > 0.0
-                                ? key.time / static_cast<float>(clip.ticksPerSecond)
-                                : key.time / 25.0f;
-                            const glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(ExtractEulerXYZ(glm::mat3_cast(glm::normalize(key.value)))));
-                            out << "key " << uid++ << " " << t << " " << euler[component]
-                                << " 0 0 2 1\n";
+                    auto unwrapEulerNear = [](float angle, float reference) {
+                        float result = angle;
+                        while (result - reference > 180.0f) result -= 360.0f;
+                        while (reference - result > 180.0f) result += 360.0f;
+                        return result;
+                    };
+                    auto buildContinuousEulerKeys = [&](const ModelSceneData::AnimChannel& channel) {
+                        std::vector<glm::vec3> result;
+                        result.reserve(channel.rotations.size());
+                        glm::vec3 previous(0.0f);
+                        auto itNode = nodeIndexByName.find(channel.nodeName);
+                        if (itNode != nodeIndexByName.end()) {
+                            previous = sceneData.nodes[itNode->second].localRotation;
                         }
+                        bool havePrevious = true;
+                        for (const auto& key : channel.rotations) {
+                            glm::vec3 euler = glm::degrees(ExtractEulerXYZ(glm::mat3_cast(glm::normalize(key.value))));
+                            if (havePrevious) {
+                                euler.x = unwrapEulerNear(euler.x, previous.x);
+                                euler.y = unwrapEulerNear(euler.y, previous.y);
+                                euler.z = unwrapEulerNear(euler.z, previous.z);
+                            }
+                            result.push_back(euler);
+                            previous = euler;
+                            havePrevious = true;
+                        }
+                        return result;
                     };
 
                     for (const ModelSceneData::AnimChannel* channel : exportedChannels) {
@@ -4738,9 +4757,22 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
                             writeVecTrack("localPosition.z", channel->positions, 2);
                         }
                         if (!channel->rotations.empty()) {
-                            writeRotTrack("localRotation.x", channel->rotations, 0);
-                            writeRotTrack("localRotation.y", channel->rotations, 1);
-                            writeRotTrack("localRotation.z", channel->rotations, 2);
+                            const std::vector<glm::vec3> eulerKeys = buildContinuousEulerKeys(*channel);
+                            auto writeContinuousRotTrack = [&](const char* propertyId, int component) {
+                                out << "track " << std::quoted(propertyId) << " 1 0\n";
+                                out << "keyCount " << channel->rotations.size() << "\n";
+                                for (size_t k = 0; k < channel->rotations.size(); ++k) {
+                                    const auto& key = channel->rotations[k];
+                                    const float t = clip.ticksPerSecond > 0.0
+                                        ? key.time / static_cast<float>(clip.ticksPerSecond)
+                                        : key.time / 25.0f;
+                                    out << "key " << uid++ << " " << t << " " << eulerKeys[k][component]
+                                        << " 0 0 2 1\n";
+                                }
+                            };
+                            writeContinuousRotTrack("localRotation.x", 0);
+                            writeContinuousRotTrack("localRotation.y", 1);
+                            writeContinuousRotTrack("localRotation.z", 2);
                         }
                         if (!channel->scales.empty()) {
                             writeVecTrack("localScale.x", channel->scales, 0);
