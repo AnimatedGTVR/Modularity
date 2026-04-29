@@ -313,6 +313,7 @@ struct SkeletalAnimationComponent {
     int maxBones = 128;
     std::vector<std::string> boneNames;
     std::vector<int> boneNodeIds;
+    std::vector<int> armatureNodeIds;
     std::vector<glm::mat4> inverseBindMatrices;
     std::vector<glm::mat4> finalMatrices;
 };

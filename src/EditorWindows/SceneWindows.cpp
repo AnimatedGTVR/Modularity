@@ -6596,8 +6596,8 @@ void Engine::renderInspectorPanel() {
                 if (boolRow("GPU Skinning", &obj.skeletal.useGpuSkinning)) { changed = true; }
                 if (boolRow("CPU Fallback", &obj.skeletal.allowCpuFallback)) { changed = true; }
                 fieldRow("Max Bones");
-                if (ImGui::DragInt("##MaxBones", &obj.skeletal.maxBones, 1, 8, 256)) {
-                    obj.skeletal.maxBones = std::clamp(obj.skeletal.maxBones, 8, 256);
+                if (ImGui::DragInt("##MaxBones", &obj.skeletal.maxBones, 1, 8, 128)) {
+                    obj.skeletal.maxBones = std::clamp(obj.skeletal.maxBones, 8, 128);
                     changed = true;
                 }
                 endCompFields();

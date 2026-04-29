@@ -13259,11 +13259,16 @@ void Engine::renderViewport() {
             const std::unordered_map<int, const SceneObject *> &idLookup) {
           if (!skinnedObj.hasSkeletalAnimation || !skinnedObj.skeletal.enabled)
             return;
-          if (skinnedObj.skeletal.boneNodeIds.empty())
+          if (skinnedObj.skeletal.boneNodeIds.empty() &&
+              skinnedObj.skeletal.armatureNodeIds.empty())
             return;
 
           std::unordered_set<int> boneIds;
-          for (int id : skinnedObj.skeletal.boneNodeIds) {
+          const std::vector<int> &overlayNodeIds =
+              skinnedObj.skeletal.armatureNodeIds.empty()
+                  ? skinnedObj.skeletal.boneNodeIds
+                  : skinnedObj.skeletal.armatureNodeIds;
+          for (int id : overlayNodeIds) {
             if (id >= 0)
               boneIds.insert(id);
           }

@@ -4605,6 +4605,12 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
                 meshObj.skeletal.inverseBindMatrices = meshInfo->inverseBindMatrices;
                 meshObj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
                 meshObj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
+                meshObj.skeletal.armatureNodeIds.reserve(nodeObjectIds.size());
+                for (int nodeId : nodeObjectIds) {
+                    if (nodeId >= 0) {
+                        meshObj.skeletal.armatureNodeIds.push_back(nodeId);
+                    }
+                }
                 for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
                     if (b < meshInfo->boneNodePaths.size() && !meshInfo->boneNodePaths[b].empty()) {
                         auto itPath = nodeIdByPath.find(meshInfo->boneNodePaths[b]);
@@ -7055,15 +7061,19 @@ void Engine::updateSkeletalAnimations(float delta) {
         }
         float time = static_cast<float>(timeTicks);
 
-        for (size_t b = 0; b < obj.skeletal.boneNames.size(); ++b) {
-            int boneId = obj.skeletal.boneNodeIds.size() > b ? obj.skeletal.boneNodeIds[b] : -1;
+        std::vector<int> animatedNodeIds = obj.skeletal.armatureNodeIds;
+        if (animatedNodeIds.empty()) {
+            animatedNodeIds = obj.skeletal.boneNodeIds;
+        }
+
+        for (int boneId : animatedNodeIds) {
             if (boneId < 0) continue;
             SceneObject* boneObj = findObjectById(boneId);
             if (!boneObj) continue;
 
             const ModelSceneData::AnimChannel* channel = nullptr;
             for (const auto& ch : clip.channels) {
-                if (ch.nodeName == obj.skeletal.boneNames[b]) {
+                if (ch.nodeName == boneObj->name) {
                     channel = &ch;
                     break;
                 }
@@ -7166,6 +7176,7 @@ void Engine::rebuildSkeletalBindings() {
         obj.skeletal.inverseBindMatrices = meshInfo->inverseBindMatrices;
         obj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
         obj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
+        obj.skeletal.armatureNodeIds.clear();
         for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
             if (b < meshInfo->boneNodePaths.size() && !meshInfo->boneNodePaths[b].empty()) {
                 int resolvedId = resolveChildPath(obj.skeletal.skeletonRootId, meshInfo->boneNodePaths[b]);
@@ -7177,6 +7188,24 @@ void Engine::rebuildSkeletalBindings() {
             auto it = nameToId.find(meshInfo->boneNames[b]);
             if (it != nameToId.end()) {
                 obj.skeletal.boneNodeIds[b] = it->second;
+            }
+        }
+        if (obj.skeletal.skeletonRootId >= 0) {
+            std::vector<int> stack;
+            stack.push_back(obj.skeletal.skeletonRootId);
+            while (!stack.empty()) {
+                int currentId = stack.back();
+                stack.pop_back();
+                SceneObject* node = findObjectById(currentId);
+                if (!node) continue;
+                if (node->type == ObjectType::Empty) {
+                    obj.skeletal.armatureNodeIds.push_back(node->id);
+                }
+                for (int childId : node->childIds) {
+                    if (childId >= 0) {
+                        stack.push_back(childId);
+                    }
+                }
             }
         }
     }
