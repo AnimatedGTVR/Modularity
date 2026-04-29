@@ -4577,6 +4577,7 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
             if (meshInfo && meshInfo->isSkinned) {
                 meshObj.hasSkeletalAnimation = true;
                 meshObj.skeletal = SkeletalAnimationComponent{};
+                meshObj.skeletal.useAnimation = false;
                 meshObj.skeletal.skeletonRootId = rootSelectionId;
                 meshObj.skeletal.boneNames = meshInfo->boneNames;
                 meshObj.skeletal.inverseBindMatrices = meshInfo->inverseBindMatrices;
@@ -4615,6 +4616,151 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
         }
     }
 
+    int exportedClipCount = 0;
+    if (projectManager.currentProject.isLoaded && rootSelectionId != -1 && !sceneData.animations.empty()) {
+        std::vector<std::string> nodePaths(sceneData.nodes.size());
+        for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
+            std::vector<std::string> segments;
+            int cursor = static_cast<int>(i);
+            while (cursor >= 0 && cursor < static_cast<int>(sceneData.nodes.size())) {
+                if (cursor != 0) {
+                    segments.push_back(sceneData.nodes[static_cast<size_t>(cursor)].name);
+                }
+                cursor = sceneData.nodes[static_cast<size_t>(cursor)].parentIndex;
+            }
+            std::string path;
+            for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+                if (!path.empty()) path += '/';
+                path += *it;
+            }
+            nodePaths[i] = path;
+        }
+
+        std::unordered_map<std::string, std::string> pathByNodeName;
+        pathByNodeName.reserve(sceneData.nodes.size());
+        for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
+            pathByNodeName[sceneData.nodes[i].name] = nodePaths[i];
+        }
+
+        fs::path animationDir = projectManager.currentProject.assetsPath / "Animations" / "Imported" / baseName;
+        std::error_code ec;
+        fs::create_directories(animationDir, ec);
+        if (!ec) {
+            SceneObject* rootObj = findObjectById(rootSelectionId);
+            if (rootObj) {
+                rootObj->hasAnimation = true;
+                rootObj->animation.enabled = true;
+                rootObj->animation.playOnAwake = false;
+                rootObj->animation.runtimePlaying = false;
+                rootObj->animation.runtimeInitialized = false;
+                rootObj->animation.clips.clear();
+
+                for (size_t clipIndex = 0; clipIndex < sceneData.animations.size(); ++clipIndex) {
+                    const auto& clip = sceneData.animations[clipIndex];
+                    std::string clipName = clip.name.empty()
+                        ? ("Clip_" + std::to_string(clipIndex))
+                        : clip.name;
+                    fs::path outPath = animationDir / (sanitizeMaterialName(clipName) + ".moduanimate");
+                    std::ofstream out(outPath, std::ios::trunc);
+                    if (!out.is_open()) continue;
+
+                    const float sampleRate = static_cast<float>(std::clamp(clip.ticksPerSecond, 1.0, 240.0));
+                    const float durationSeconds = clip.ticksPerSecond > 0.0
+                        ? static_cast<float>(clip.duration / clip.ticksPerSecond)
+                        : static_cast<float>(clip.duration / 25.0);
+
+                    out << "moduanimateVersion 2\n";
+                    out << "name " << std::quoted(clipName) << "\n";
+                    out << "rootObjectId " << rootSelectionId << "\n";
+                    out << "duration " << std::max(0.01f, durationSeconds) << "\n";
+                    out << "sampleRate " << sampleRate << "\n";
+
+                    std::vector<const ModelSceneData::AnimChannel*> exportedChannels;
+                    for (const auto& channel : clip.channels) {
+                        if (pathByNodeName.find(channel.nodeName) != pathByNodeName.end()) {
+                            exportedChannels.push_back(&channel);
+                        }
+                    }
+
+                    out << "bindingCount " << exportedChannels.size() << "\n";
+                    uint64_t uid = 1;
+                    auto writeVecTrack = [&](const char* propertyId, const std::vector<ModelSceneData::AnimVecKey>& keys, int component) {
+                        out << "track " << std::quoted(propertyId) << " 1 0\n";
+                        out << "keyCount " << keys.size() << "\n";
+                        for (const auto& key : keys) {
+                            const float t = clip.ticksPerSecond > 0.0
+                                ? key.time / static_cast<float>(clip.ticksPerSecond)
+                                : key.time / 25.0f;
+                            out << "key " << uid++ << " " << t << " " << key.value[component]
+                                << " 0 0 2 1\n";
+                        }
+                    };
+                    auto writeRotTrack = [&](const char* propertyId, const std::vector<ModelSceneData::AnimQuatKey>& keys, int component) {
+                        out << "track " << std::quoted(propertyId) << " 1 0\n";
+                        out << "keyCount " << keys.size() << "\n";
+                        for (const auto& key : keys) {
+                            const float t = clip.ticksPerSecond > 0.0
+                                ? key.time / static_cast<float>(clip.ticksPerSecond)
+                                : key.time / 25.0f;
+                            const glm::vec3 euler = NormalizeEulerDegrees(glm::degrees(ExtractEulerXYZ(glm::mat3_cast(glm::normalize(key.value)))));
+                            out << "key " << uid++ << " " << t << " " << euler[component]
+                                << " 0 0 2 1\n";
+                        }
+                    };
+
+                    for (const ModelSceneData::AnimChannel* channel : exportedChannels) {
+                        out << "binding " << std::quoted(pathByNodeName[channel->nodeName]) << " " << std::quoted("SceneObject") << "\n";
+                        const size_t trackCount =
+                            (channel->positions.empty() ? 0u : 3u) +
+                            (channel->rotations.empty() ? 0u : 3u) +
+                            (channel->scales.empty() ? 0u : 3u);
+                        out << "trackCount " << trackCount << "\n";
+                        if (!channel->positions.empty()) {
+                            writeVecTrack("localPosition.x", channel->positions, 0);
+                            writeVecTrack("localPosition.y", channel->positions, 1);
+                            writeVecTrack("localPosition.z", channel->positions, 2);
+                        }
+                        if (!channel->rotations.empty()) {
+                            writeRotTrack("localRotation.x", channel->rotations, 0);
+                            writeRotTrack("localRotation.y", channel->rotations, 1);
+                            writeRotTrack("localRotation.z", channel->rotations, 2);
+                        }
+                        if (!channel->scales.empty()) {
+                            writeVecTrack("localScale.x", channel->scales, 0);
+                            writeVecTrack("localScale.y", channel->scales, 1);
+                            writeVecTrack("localScale.z", channel->scales, 2);
+                        }
+                    }
+
+                    if (out.good()) {
+                        fs::path storedPath = outPath;
+                        if (!projectManager.currentProject.projectPath.empty()) {
+                            std::error_code relEc;
+                            fs::path rel = fs::relative(outPath, projectManager.currentProject.projectPath, relEc);
+                            if (!relEc && !rel.empty()) {
+                                storedPath = rel;
+                            }
+                        }
+                        AnimationClipSlot slot;
+                        slot.name = clipName;
+                        slot.assetPath = storedPath.generic_string();
+                        rootObj->animation.clips.push_back(std::move(slot));
+                        ++exportedClipCount;
+                    }
+                }
+
+                if (!rootObj->animation.clips.empty()) {
+                    rootObj->animation.activeClipIndex = 0;
+                    rootObj->animation.clipAssetPath = rootObj->animation.clips.front().assetPath;
+                } else {
+                    rootObj->hasAnimation = false;
+                }
+            }
+        } else {
+            addConsoleMessage("Failed to create imported animation folder: " + animationDir.string(), ConsoleMessageType::Warning);
+        }
+    }
+
     updateHierarchyWorldTransforms();
     if (rootSelectionId != -1) {
         setPrimarySelection(rootSelectionId);
@@ -4627,7 +4773,8 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
     addConsoleMessage(
         "Imported model: " + baseName + " (" +
         std::to_string(sceneData.meshIndices.size()) + " meshes, " +
-        std::to_string(sceneData.nodes.size()) + " nodes)",
+        std::to_string(sceneData.nodes.size()) + " nodes" +
+        (exportedClipCount > 0 ? ", " + std::to_string(exportedClipCount) + " animation clips" : "") + ")",
         ConsoleMessageType::Success
     );
 }
@@ -6839,6 +6986,10 @@ void Engine::updateRuntimeAnimations(float delta) {
 
 #pragma region Skeletal Animation
 namespace {
+glm::vec3 quatToEulerXYZDegrees(const glm::quat& q) {
+    return glm::degrees(ExtractEulerXYZ(glm::mat3_cast(glm::normalize(q))));
+}
+
 glm::vec3 sampleVecKeys(const std::vector<ModelSceneData::AnimVecKey>& keys, float time, const glm::vec3& fallback) {
     if (keys.empty()) return fallback;
     if (time <= keys.front().time) return keys.front().value;
@@ -6913,7 +7064,7 @@ void Engine::updateSkeletalAnimations(float delta) {
             glm::vec3 scale = sampleVecKeys(channel->scales, time, boneObj->localScale);
 
             boneObj->localPosition = pos;
-            boneObj->localRotation = NormalizeEulerDegrees(glm::degrees(glm::eulerAngles(rot)));
+            boneObj->localRotation = NormalizeEulerDegrees(quatToEulerXYZDegrees(rot));
             boneObj->localScale = scale;
             boneObj->localInitialized = true;
         }
@@ -6964,6 +7115,7 @@ void Engine::rebuildSkeletalBindings() {
 
         if (!obj.hasSkeletalAnimation) {
             obj.skeletal = SkeletalAnimationComponent{};
+            obj.skeletal.useAnimation = false;
             obj.hasSkeletalAnimation = true;
         }
         obj.skeletal.skeletonRootId = obj.parentId;

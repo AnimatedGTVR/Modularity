@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -867,8 +868,13 @@ bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& ou
         aiProcess_FlipUVs |
         aiProcess_CalcTangentSpace |
         aiProcess_JoinIdenticalVertices |
+        aiProcess_LimitBoneWeights |
+        aiProcess_PopulateArmatureData |
         aiProcess_SortByPType |
         aiProcess_ValidateDataStructure;
+
+    importer.SetPropertyBool("IMPORT_FBX_PRESERVE_PIVOTS", false);
+    importer.SetPropertyBool("IMPORT_FBX_OPTIMIZE_EMPTY_ANIMATION_CURVES", true);
 
     ScopedImportedTempFile tempFile;
     std::string importError;
@@ -1340,10 +1346,20 @@ static glm::mat4 aiToGlm(const aiMatrix4x4& m) {
     );
 }
 
+static glm::vec3 extractEulerXYZDegrees(const glm::quat& q) {
+    const glm::mat3 m = glm::mat3_cast(glm::normalize(q));
+    float t1 = std::atan2(m[2][1], m[2][2]);
+    float c2 = std::sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+    float t2 = std::atan2(-m[2][0], c2);
+    float s1 = std::sin(t1);
+    float c1 = std::cos(t1);
+    float t3 = std::atan2(s1 * m[0][2] - c1 * m[0][1], c1 * m[1][1] - s1 * m[1][2]);
+    return glm::degrees(glm::vec3(-t1, -t2, -t3));
+}
+
 static glm::vec3 quatToEulerDegrees(const aiQuaternion& q) {
     glm::quat gq(q.w, q.x, q.y, q.z);
-    glm::vec3 euler = glm::degrees(glm::eulerAngles(gq));
-    return euler;
+    return extractEulerXYZDegrees(gq);
 }
 
 static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,

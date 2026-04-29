@@ -304,7 +304,7 @@ struct SkeletalAnimationComponent {
     bool enabled = true;
     bool useGpuSkinning = true;
     bool allowCpuFallback = true;
-    bool useAnimation = true;
+    bool useAnimation = false;
     int clipIndex = 0;
     float time = 0.0f;
     float playSpeed = 1.0f;
