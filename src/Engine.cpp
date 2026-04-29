@@ -3132,17 +3132,24 @@ glm::mat4 Engine::ComposeTransform(const glm::vec3& position, const glm::vec3& r
 #pragma endregion
 
 #pragma region Undo / Redo
-void Engine::recordState(const char* /*reason*/) {
+Engine::SceneSnapshot Engine::captureSceneSnapshot() const {
     SceneSnapshot snap;
     snap.objects = sceneObjects;
     snap.selectedIds = selectedObjectIds;
     snap.nextId = nextObjectId;
+    return snap;
+}
 
+void Engine::pushUndoSnapshot(SceneSnapshot snap, const char* /*reason*/) {
     undoStack.push_back(std::move(snap));
     if (undoStack.size() > 64) {
         undoStack.erase(undoStack.begin());
     }
     redoStack.clear();
+}
+
+void Engine::recordState(const char* reason) {
+    pushUndoSnapshot(captureSceneSnapshot(), reason);
 }
 
 void Engine::capturePlayModeSnapshot() {

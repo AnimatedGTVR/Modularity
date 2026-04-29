@@ -788,6 +788,15 @@ namespace {
         }
     }
 
+    std::string fileSelectionKey(const fs::path& path) {
+        std::error_code ec;
+        fs::path canonical = fs::weakly_canonical(path, ec);
+        if (!ec) {
+            return canonical.generic_string();
+        }
+        return fs::absolute(path, ec).lexically_normal().generic_string();
+    }
+
     fs::path makeUniquePath(const fs::path& basePath) {
         if (!fs::exists(basePath)) {
             return basePath;
@@ -1286,6 +1295,10 @@ void Engine::renderFileBrowserPanel() {
 
         if (created) {
             fileBrowser.selectedFile = target;
+            fileBrowser.selectedFiles.clear();
+            fileBrowser.selectedFileKeys.clear();
+            fileBrowser.selectedFiles.push_back(target);
+            fileBrowser.selectedFileKeys.insert(fileSelectionKey(target));
             fileBrowser.needsRefresh = true;
             fileBrowser.refresh();
             addConsoleMessage("Created: " + target.string(), ConsoleMessageType::Success);
@@ -1404,6 +1417,75 @@ void Engine::renderFileBrowserPanel() {
         return false;
     };
 
+    auto clearFileSelection = [&]() {
+        fileBrowser.selectedFiles.clear();
+        fileBrowser.selectedFileKeys.clear();
+    };
+
+    auto addFileSelection = [&](const fs::path& path) {
+        const std::string key = fileSelectionKey(path);
+        if (fileBrowser.selectedFileKeys.insert(key).second) {
+            fileBrowser.selectedFiles.push_back(path);
+        }
+    };
+
+    auto removeFileSelection = [&](const fs::path& path) {
+        const std::string key = fileSelectionKey(path);
+        if (fileBrowser.selectedFileKeys.erase(key) == 0) {
+            return;
+        }
+        fileBrowser.selectedFiles.erase(
+            std::remove_if(fileBrowser.selectedFiles.begin(), fileBrowser.selectedFiles.end(),
+                           [&](const fs::path& selected) {
+                               return fileSelectionKey(selected) == key;
+                           }),
+            fileBrowser.selectedFiles.end());
+    };
+
+    auto selectFileEntry = [&](int index) {
+        if (index < 0 || index >= static_cast<int>(fileBrowser.entries.size())) {
+            return;
+        }
+
+        const fs::path path = fileBrowser.entries[static_cast<size_t>(index)].path();
+        const bool ctrl = ImGui::GetIO().KeyCtrl;
+        const bool shift = ImGui::GetIO().KeyShift;
+
+        if (shift && fileBrowser.selectionAnchorIndex >= 0 &&
+            fileBrowser.selectionAnchorIndex < static_cast<int>(fileBrowser.entries.size())) {
+            if (!ctrl) {
+                clearFileSelection();
+            }
+            int first = std::min(fileBrowser.selectionAnchorIndex, index);
+            int last = std::max(fileBrowser.selectionAnchorIndex, index);
+            for (int i = first; i <= last; ++i) {
+                addFileSelection(fileBrowser.entries[static_cast<size_t>(i)].path());
+            }
+            fileBrowser.selectedFile = path;
+            return;
+        }
+
+        if (ctrl) {
+            const std::string key = fileSelectionKey(path);
+            if (fileBrowser.selectedFileKeys.find(key) != fileBrowser.selectedFileKeys.end()) {
+                removeFileSelection(path);
+                fileBrowser.selectedFile = fileBrowser.selectedFiles.empty()
+                    ? fs::path()
+                    : fileBrowser.selectedFiles.back();
+            } else {
+                addFileSelection(path);
+                fileBrowser.selectedFile = path;
+            }
+            fileBrowser.selectionAnchorIndex = index;
+            return;
+        }
+
+        clearFileSelection();
+        addFileSelection(path);
+        fileBrowser.selectedFile = path;
+        fileBrowser.selectionAnchorIndex = index;
+    };
+
     auto remapSelectedPathAfterMove = [&](const fs::path& sourcePath, const fs::path& movedPath) {
         fs::path selected = normalizePath(fileBrowser.selectedFile);
         fs::path source = normalizePath(sourcePath);
@@ -1411,6 +1493,8 @@ void Engine::renderFileBrowserPanel() {
         if (selected.empty()) return;
         if (selected == source) {
             fileBrowser.selectedFile = moved;
+            clearFileSelection();
+            addFileSelection(moved);
             return;
         }
         if (!isPathWithin(source, selected)) {
@@ -1422,6 +1506,8 @@ void Engine::renderFileBrowserPanel() {
             return;
         }
         fileBrowser.selectedFile = moved / rel;
+        clearFileSelection();
+        addFileSelection(fileBrowser.selectedFile);
     };
 
     auto importPathIntoDirectory = [&](const fs::path& sourcePath, const fs::path& destinationDir) {
@@ -2015,7 +2101,7 @@ void Engine::renderFileBrowserPanel() {
                 const auto& entry = fileBrowser.entries[i];
                 std::string filename = entry.path().filename().string();
                 FileCategory category = fileBrowser.getFileCategory(entry);
-                bool isSelected = fileBrowser.selectedFile == entry.path();
+                bool isSelected = fileBrowser.selectedFileKeys.find(fileSelectionKey(entry.path())) != fileBrowser.selectedFileKeys.end();
                 bool folderHasItems = category == FileCategory::Folder &&
                                       entry.is_directory() &&
                                       FolderHasVisibleItems(entry.path(), fileBrowser.showHiddenFiles);
@@ -2029,7 +2115,7 @@ void Engine::renderFileBrowserPanel() {
 
                 // Invisible button for the entire cell
                 if (ImGui::InvisibleButton("##cell", ImVec2(cellWidth, cellHeight))) {
-                    fileBrowser.selectedFile = entry.path();
+                    selectFileEntry(i);
                 }
                 bool hovered = ImGui::IsItemHovered();
                 bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(0);
@@ -2277,7 +2363,7 @@ void Engine::renderFileBrowserPanel() {
             const auto& entry = fileBrowser.entries[i];
             std::string filename = entry.path().filename().string();
             FileCategory category = fileBrowser.getFileCategory(entry);
-            bool isSelected = fileBrowser.selectedFile == entry.path();
+            bool isSelected = fileBrowser.selectedFileKeys.find(fileSelectionKey(entry.path())) != fileBrowser.selectedFileKeys.end();
             bool folderHasItems = category == FileCategory::Folder &&
                                   entry.is_directory() &&
                                   FolderHasVisibleItems(entry.path(), fileBrowser.showHiddenFiles);
@@ -2290,7 +2376,7 @@ void Engine::renderFileBrowserPanel() {
                                           category == FileCategory::Model);
             const float rowHeight = showRichPreview ? 34.0f : 21.0f;
             if (ImGui::Selectable("##row", isSelected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, rowHeight))) {
-                fileBrowser.selectedFile = entry.path();
+                selectFileEntry(i);
 
                 if (ImGui::IsMouseDoubleClicked(0)) {
                     openEntry(entry);
@@ -2558,6 +2644,9 @@ void Engine::renderFileBrowserPanel() {
         !ImGui::IsAnyItemHovered();
     if (fileMainBackgroundLeftClicked) {
         fileBrowser.selectedFile.clear();
+        fileBrowser.selectedFiles.clear();
+        fileBrowser.selectedFileKeys.clear();
+        fileBrowser.selectionAnchorIndex = -1;
     }
 
     if (ImGui::BeginDragDropTarget()) {
@@ -2610,6 +2699,10 @@ void Engine::renderFileBrowserPanel() {
             if (fileBrowser.selectedFile == pendingDeletePath) {
                 fileBrowser.selectedFile.clear();
             }
+            removeFileSelection(pendingDeletePath);
+            if (fileBrowser.selectedFile.empty() && !fileBrowser.selectedFiles.empty()) {
+                fileBrowser.selectedFile = fileBrowser.selectedFiles.back();
+            }
             fileBrowser.needsRefresh = true;
             if (ec) {
                 addConsoleMessage("Delete failed: " + pendingDeletePath.string() + " (" + ec.message() + ")",
@@ -2654,6 +2747,13 @@ void Engine::renderFileBrowserPanel() {
                 } else {
                     if (fileBrowser.selectedFile == pendingRenamePath) {
                         fileBrowser.selectedFile = newPath;
+                    }
+                    const bool wasSelected =
+                        fileBrowser.selectedFileKeys.find(fileSelectionKey(pendingRenamePath)) !=
+                        fileBrowser.selectedFileKeys.end();
+                    if (wasSelected) {
+                        removeFileSelection(pendingRenamePath);
+                        addFileSelection(newPath);
                     }
                     fileBrowser.needsRefresh = true;
                     addConsoleMessage("Renamed to: " + newPath.string(), ConsoleMessageType::Success);

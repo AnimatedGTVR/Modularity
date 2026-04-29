@@ -1082,6 +1082,8 @@ private:
     void setParent(int childId, int parentId, int beforeSiblingId = -1);
     void loadMaterialFromFile(SceneObject& obj);
     void saveMaterialToFile(const SceneObject& obj);
+    SceneSnapshot captureSceneSnapshot() const;
+    void pushUndoSnapshot(SceneSnapshot snap, const char* reason = "");
     void recordState(const char* reason = "");
     void capturePlayModeSnapshot();
     void restorePlayModeSnapshot();

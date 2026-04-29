@@ -3932,6 +3932,9 @@ void Engine::renderInspectorPanel() {
     int scriptToRemove = -1;
     bool inspectorOrderChanged = false;
     EnsureInspectorComponentMetadata(obj);
+    SceneSnapshot inspectorFrameBefore = captureSceneSnapshot();
+    static bool inspectorHistoryPending = false;
+    static SceneSnapshot inspectorHistoryBefore;
 
     auto drawComponentHeader = [&](const char* label,
                                    const char* id,
@@ -9777,6 +9780,28 @@ void Engine::renderInspectorPanel() {
     }
     if (componentChanged) {
         projectManager.currentProject.hasUnsavedChanges = true;
+    }
+
+    const bool inspectorChanged =
+        objectNameChanged || objectEnabledChanged || objectLayerChanged || objectTagChanged ||
+        objectTransformChanged || uiSectionChanged || colliderSectionChanged ||
+        playerControllerSectionChanged || rigidbodySectionChanged || rigidbody2DSectionChanged ||
+        collider2DSectionChanged || parallax2DSectionChanged || audioSourceSectionChanged ||
+        videoPlayerSectionChanged || groundBakedSectionChanged || obstacleSectionChanged ||
+        agentSectionChanged || animationSectionChanged || skeletalSectionChanged ||
+        reverbSectionChanged || cameraSectionChanged || cameraFollowSectionChanged ||
+        postFxSectionChanged || rendererSectionChanged || lightSectionChanged ||
+        light2DSectionChanged || shadowCaster2DSectionChanged || scriptsChanged ||
+        inspectorOrderChanged || componentChanged;
+
+    if (inspectorChanged && !inspectorHistoryPending) {
+        inspectorHistoryBefore = std::move(inspectorFrameBefore);
+        inspectorHistoryPending = true;
+    }
+    if (inspectorHistoryPending && !ImGui::IsAnyItemActive()) {
+        pushUndoSnapshot(std::move(inspectorHistoryBefore), "inspectorEdit");
+        inspectorHistoryBefore = {};
+        inspectorHistoryPending = false;
     }
 
     if (browserHasAudio) {

@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <assimp/material.h>
 #include "ThirdParty/glm/gtc/quaternion.hpp"
+#include <system_error>
 
 ModelLoader& ModelLoader::getInstance() {
     static ModelLoader instance;
@@ -707,9 +708,8 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
     unsigned int importFlags = 
         aiProcess_Triangulate |           // Convert all faces to triangles
         aiProcess_GenSmoothNormals |      // Generate smooth normals if missing
-        aiProcess_FlipUVs |               // Flip UV coordinates for OpenGL
+        //aiProcess_FlipUVs |               // Flip UV coordinates for OpenGL
         aiProcess_CalcTangentSpace |      // Calculate tangents and bitangents
-        aiProcess_JoinIdenticalVertices | // Optimize vertex count
         aiProcess_SortByPType |           // Sort by primitive type
         aiProcess_OptimizeMeshes |        // Reduce number of meshes
         aiProcess_ValidateDataStructure;  // Validate the imported data
@@ -865,9 +865,8 @@ bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& ou
     unsigned int importFlags =
         aiProcess_Triangulate |
         aiProcess_GenSmoothNormals |
-        aiProcess_FlipUVs |
+        //aiProcess_FlipUVs |
         aiProcess_CalcTangentSpace |
-        aiProcess_JoinIdenticalVertices |
         aiProcess_LimitBoneWeights |
         aiProcess_PopulateArmatureData |
         aiProcess_SortByPType |
@@ -957,9 +956,8 @@ bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string&
     Assimp::Importer localImporter;
     unsigned int importFlags =
         aiProcess_Triangulate |
-        aiProcess_JoinIdenticalVertices |
-        aiProcess_GenSmoothNormals |
-        aiProcess_FlipUVs;
+        aiProcess_GenSmoothNormals;
+        //aiProcess_FlipUVs;
 
     ScopedImportedTempFile tempFile;
     std::string importError;
@@ -1772,9 +1770,8 @@ bool ModelLoader::buildRawMeshFromScene(const std::string& filepath, RawMeshAsse
     Assimp::Importer localImporter;
     unsigned int importFlags =
         aiProcess_Triangulate |
-        aiProcess_JoinIdenticalVertices |
-        aiProcess_GenSmoothNormals |
-        aiProcess_FlipUVs;
+        aiProcess_GenSmoothNormals;
+        //aiProcess_FlipUVs;
 
     ScopedImportedTempFile tempFile;
     std::string importError;

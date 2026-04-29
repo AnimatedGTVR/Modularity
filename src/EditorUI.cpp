@@ -288,6 +288,10 @@ void FileBrowser::navigateTo(const fs::path& path) {
         }
         
         currentPath = path;
+        selectedFile.clear();
+        selectedFiles.clear();
+        selectedFileKeys.clear();
+        selectionAnchorIndex = -1;
         needsRefresh = true;
     }
 }
@@ -296,6 +300,10 @@ void FileBrowser::navigateBack() {
     if (historyIndex > 0) {
         historyIndex--;
         currentPath = pathHistory[historyIndex];
+        selectedFile.clear();
+        selectedFiles.clear();
+        selectedFileKeys.clear();
+        selectionAnchorIndex = -1;
         needsRefresh = true;
     }
 }
@@ -304,6 +312,10 @@ void FileBrowser::navigateForward() {
     if (historyIndex < (int)pathHistory.size() - 1) {
         historyIndex++;
         currentPath = pathHistory[historyIndex];
+        selectedFile.clear();
+        selectedFiles.clear();
+        selectedFileKeys.clear();
+        selectionAnchorIndex = -1;
         needsRefresh = true;
     }
 }
@@ -311,6 +323,10 @@ void FileBrowser::navigateForward() {
 void FileBrowser::setProjectRoot(const fs::path& root) {
     projectRoot = root;
     currentPath = root;
+    selectedFile.clear();
+    selectedFiles.clear();
+    selectedFileKeys.clear();
+    selectionAnchorIndex = -1;
     pathHistory.clear();
     historyIndex = -1;
     needsRefresh = true;

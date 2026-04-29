@@ -1,6 +1,7 @@
 #pragma once
 
 #include <future>
+#include <unordered_set>
 #include "Common.h"
 
 #pragma region File Browser Enums
@@ -38,6 +39,9 @@ public:
 
     fs::path currentPath;
     fs::path selectedFile;
+    std::vector<fs::path> selectedFiles;
+    std::unordered_set<std::string> selectedFileKeys;
+    int selectionAnchorIndex = -1;
     fs::path projectRoot;  // Root of current project
     std::vector<fs::directory_entry> entries;
     bool needsRefresh = true;
