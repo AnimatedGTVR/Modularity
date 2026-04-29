@@ -3784,28 +3784,27 @@ void Engine::run() {
 
         bool hasRuntime3DPhysics = false;
         bool hasRuntimeAIAgent = false;
-        bool hasRuntimeSkeletal = false;
+        bool hasActiveSkeletal = false;
         const bool runtimeSystemsActive = (isPlaying || specMode || testMode);
-        if (runtimeSystemsActive) {
-            for (const SceneObject& obj : sceneObjects) {
-                if (!IsObjectEnabledInHierarchy(obj)) continue;
-                if (!hasRuntime3DPhysics &&
-                    ((obj.hasRigidbody && obj.rigidbody.enabled) ||
-                     (obj.hasCollider && obj.collider.enabled))) {
-                    hasRuntime3DPhysics = true;
-                }
-                if (!hasRuntimeAIAgent && obj.hasAIAgent) {
-                    hasRuntimeAIAgent = true;
-                }
-                if (!hasRuntimeSkeletal &&
-                    obj.hasSkeletalAnimation &&
-                    obj.skeletal.enabled &&
-                    !obj.skeletal.finalMatrices.empty()) {
-                    hasRuntimeSkeletal = true;
-                }
-                if (hasRuntime3DPhysics && hasRuntimeAIAgent && hasRuntimeSkeletal) {
-                    break;
-                }
+        for (const SceneObject& obj : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(obj)) continue;
+            if (runtimeSystemsActive &&
+                !hasRuntime3DPhysics &&
+                ((obj.hasRigidbody && obj.rigidbody.enabled) ||
+                 (obj.hasCollider && obj.collider.enabled))) {
+                hasRuntime3DPhysics = true;
+            }
+            if (runtimeSystemsActive && !hasRuntimeAIAgent && obj.hasAIAgent) {
+                hasRuntimeAIAgent = true;
+            }
+            if (!hasActiveSkeletal &&
+                obj.hasSkeletalAnimation &&
+                obj.skeletal.enabled &&
+                !obj.skeletal.finalMatrices.empty()) {
+                hasActiveSkeletal = true;
+            }
+            if ((!runtimeSystemsActive || (hasRuntime3DPhysics && hasRuntimeAIAgent)) && hasActiveSkeletal) {
+                break;
             }
         }
 
@@ -3822,7 +3821,7 @@ void Engine::run() {
             updateAIAgents(deltaTime);
         }
 
-        if (hasRuntimeSkeletal) {
+        if (hasActiveSkeletal) {
             MODU_PROFILE_SCOPE("Skinning", ProfilerSampleCategory::Animation);
             updateSkinningMatrices();
         }
