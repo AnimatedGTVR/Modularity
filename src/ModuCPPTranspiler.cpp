@@ -2136,11 +2136,32 @@ std::string convertPublicEnumsToCpp(const std::string& sourceText) {
     return out;
 }
 
+bool subScriptLineNeedsSemicolon(const std::string& line) {
+    const std::string trimmed = trimCopy(line);
+    if (trimmed.empty()) {
+        return false;
+    }
+    if (trimmed.rfind("//", 0) == 0 ||
+        trimmed.rfind("/*", 0) == 0 ||
+        trimmed.rfind("*", 0) == 0 ||
+        trimmed.rfind("#", 0) == 0) {
+        return false;
+    }
+    if (trimmed == "public:" || trimmed == "private:") {
+        return false;
+    }
+
+    const char last = trimmed.back();
+    return last != ';' && last != '{' && last != '}' && last != ':';
+}
+
 // Strip leading "public " / "private " from each line of a SubScript struct
-// body so the emitted C++ struct has plain member declarations.
-static std::string stripStructBodyAccessSpecifiers(const std::string& body) {
+// body so the emitted C++ struct has plain member declarations. ModuCPP
+// SubScript fields commonly omit semicolons, but the passthrough C++ struct
+// still needs them.
+static std::string normalizeSubScriptStructBody(const std::string& body) {
     std::string result;
-    result.reserve(body.size());
+    result.reserve(body.size() + 16);
     size_t i = 0;
     while (i < body.size()) {
         const size_t lineStart = i;
@@ -2158,9 +2179,14 @@ static std::string stripStructBodyAccessSpecifiers(const std::string& body) {
         } else {
             result.append(body, lineStart, wsLen);
         }
-        // Copy the rest of the line up to and including the newline.
+        const size_t contentStart = result.size();
+        // Copy the rest of the line up to, but not including, the newline.
         while (i < body.size() && body[i] != '\n') {
             result += body[i++];
+        }
+        const std::string normalizedLine = result.substr(contentStart);
+        if (subScriptLineNeedsSemicolon(normalizedLine)) {
+            result += ";";
         }
         if (i < body.size()) {
             result += body[i++]; // the '\n'
@@ -2192,10 +2218,10 @@ std::string convertSubScriptsToCpp(const std::string& sourceText) {
         out += "struct " + match[1].str();
         // Spacing / anything between the name and the opening brace.
         out += sourceText.substr(matchPos + matchLen, openBrace - (matchPos + matchLen) + 1);
-        // Struct body with "public "/"private " prefixes stripped so that
-        // each member becomes a plain C++ field declaration.
+        // Struct body with "public "/"private " prefixes stripped and
+        // ModuCPP-style implicit semicolons made explicit.
         const std::string bodyRaw = sourceText.substr(openBrace + 1, closeBrace - openBrace - 1);
-        out += stripStructBodyAccessSpecifiers(bodyRaw);
+        out += normalizeSubScriptStructBody(bodyRaw);
         // Closing brace with a mandatory semicolon (C++ structs require it).
         out += "}";
         size_t next = closeBrace + 1;
