@@ -44,7 +44,7 @@ inline bool EditFloat(const char* label, float& value, float speed = 0.1f,
     ScriptContext& scriptCtx = ctx();
     const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
     scriptCtx.AutoSetting(key, value);
-    const bool changed = ImGui::DragFloat(label, &value, speed, minValue, maxValue, format);
+    const bool changed = ModuGUI::DragFloat(label, &value, speed, minValue, maxValue, format);
     if (changed) {
         scriptCtx.SaveAutoSettings();
     }
@@ -57,7 +57,7 @@ inline bool EditVec3(const char* label, vec3& value, float speed = 0.1f,
     ScriptContext& scriptCtx = ctx();
     const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
     scriptCtx.AutoSetting(key, value);
-    const bool changed = ImGui::DragFloat3(label, &value.x, speed, minValue, maxValue, format);
+    const bool changed = ModuGUI::DragFloat3(label, &value.x, speed, minValue, maxValue, format);
     if (changed) {
         scriptCtx.SaveAutoSettings();
     }
@@ -68,7 +68,7 @@ inline bool EditBool(const char* label, bool& value, const char* keyOverride = n
     ScriptContext& scriptCtx = ctx();
     const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
     scriptCtx.AutoSetting(key, value);
-    const bool changed = ImGui::Checkbox(label, &value);
+    const bool changed = ModuGUI::Checkbox(label, &value);
     if (changed) {
         scriptCtx.SaveAutoSettings();
     }
@@ -80,7 +80,7 @@ inline bool EditInt(const char* label, int& value, int step = 1,
     ScriptContext& scriptCtx = ctx();
     const std::string key = keyOverride ? keyOverride : detail::settingKeyFromLabel(label);
     scriptCtx.AutoSetting(key, value);
-    const bool changed = ImGui::InputInt(label, &value, step, stepFast);
+    const bool changed = ModuGUI::InputInt(label, &value, step, stepFast);
     if (changed) {
         scriptCtx.SaveAutoSettings();
     }
@@ -101,10 +101,10 @@ inline bool EditString(const char* label, std::string& value,
 
     bool changed = false;
     if (multiline) {
-        changed = ImGui::InputTextMultiline(label, buffer.data(), buffer.size(),
+        changed = ModuGUI::InputTextMultiline(label, buffer.data(), buffer.size(),
                                             ImVec2(-FLT_MIN, multilineHeight), flags);
     } else {
-        changed = ImGui::InputText(label, buffer.data(), buffer.size(), flags);
+        changed = ModuGUI::InputText(label, buffer.data(), buffer.size(), flags);
     }
 
     if (changed) {
@@ -363,25 +363,25 @@ inline bool EditClipSelector(const char* label, int& clipIndex) {
         : std::string("<None>");
 
     bool changed = false;
-    if (ImGui::BeginCombo(label, preview.c_str())) {
+    if (ModuGUI::BeginCombo(label, preview.c_str())) {
         const bool noneSelected = (clipIndex < 0 || clipIndex >= clipCount);
-        if (ImGui::Selectable("<None>", noneSelected)) {
+        if (ModuGUI::Selectable("<None>", noneSelected)) {
             clipIndex = -1;
             changed = true;
         }
-        if (noneSelected) ImGui::SetItemDefaultFocus();
+        if (noneSelected) ModuGUI::SetItemDefaultFocus();
 
         for (int i = 0; i < clipCount; ++i) {
             const std::string clipName = scriptCtx->GetSpriteClipNameAt(i);
             const bool selected = (clipIndex == i);
-            if (ImGui::Selectable(clipName.c_str(), selected)) {
+            if (ModuGUI::Selectable(clipName.c_str(), selected)) {
                 clipIndex = i;
                 changed = true;
             }
-            if (selected) ImGui::SetItemDefaultFocus();
+            if (selected) ModuGUI::SetItemDefaultFocus();
         }
 
-        ImGui::EndCombo();
+        ModuGUI::EndCombo();
     }
 
     return changed;
@@ -394,21 +394,22 @@ inline bool EditDirectionalClipGrid(std::array<int, 4>& idleClips,
 
     const int clipCount = scriptCtx->GetSpriteClipCount();
     if (clipCount <= 0) {
-        ImGui::TextDisabled("Enable Sprite Sheet clips on this object to assign animation frames.");
+        ModuGUI::TextDisabled("Enable Sprite Sheet clips on this object to assign animation frames.");
         return false;
     }
 
     static constexpr const char* kDirectionLabels[4] = { "Down", "Up", "Right", "Left" };
     bool changed = false;
-    ImGui::TextDisabled("%d sprite clips available.", clipCount);
+    ModuGUI::TextDisabled("%d sprite clips available.", clipCount);
     for (int dir = 0; dir < 4; ++dir) {
-        if (ImGui::CollapsingHeader(kDirectionLabels[dir], ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ModuGUI::SubsectionFoldout(kDirectionLabels[dir], ImGuiTreeNodeFlags_DefaultOpen)) {
             changed |= EditClipSelector(("Idle##" + std::string(kDirectionLabels[dir])).c_str(), idleClips[dir]);
             for (int frame = 0; frame < 4; ++frame) {
                 changed |= EditClipSelector(
                     ("Walk " + std::to_string(frame + 1) + "##" + std::string(kDirectionLabels[dir])).c_str(),
                     walkClips[dir][frame]);
             }
+            ModuGUI::TreePop();
         }
     }
     return changed;
@@ -417,22 +418,22 @@ inline bool EditDirectionalClipGrid(std::array<int, 4>& idleClips,
 template <size_t N>
 inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds,
                          const char* itemPrefix = "Sound") {
-    ImGui::TextUnformatted(heading);
+    ModuGUI::TextUnformatted(heading);
     bool changed = false;
 
     for (size_t i = 0; i < N; ++i) {
-        ImGui::PushID(static_cast<int>(i));
+        ModuGUI::PushID(static_cast<int>(i));
 
         std::vector<char> buffer(512, '\0');
         std::snprintf(buffer.data(), buffer.size(), "%s", sounds[i].c_str());
-        ImGui::SetNextItemWidth(-84.0f);
-        if (ImGui::InputText("##clip", buffer.data(), buffer.size())) {
+        ModuGUI::SetNextItemWidth(-84.0f);
+        if (ModuGUI::InputText("##clip", buffer.data(), buffer.size())) {
             sounds[i] = buffer.data();
             changed = true;
         }
 
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+        if (ModuGUI::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("FILE_PATH")) {
                 if (payload->Data && payload->DataSize > 0) {
                     const char* droppedPath = static_cast<const char*>(payload->Data);
                     if (droppedPath) {
@@ -444,19 +445,19 @@ inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds
                     }
                 }
             }
-            ImGui::EndDragDropTarget();
+            ModuGUI::EndDragDropTarget();
         }
 
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear")) {
+        ModuGUI::SameLine();
+        if (ModuGUI::SmallButton("Clear")) {
             sounds[i].clear();
             changed = true;
         }
 
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s %zu", itemPrefix, i + 1);
+        ModuGUI::SameLine();
+        ModuGUI::TextDisabled("%s %zu", itemPrefix, i + 1);
 
-        ImGui::PopID();
+        ModuGUI::PopID();
     }
 
     return changed;

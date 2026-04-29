@@ -2955,11 +2955,11 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         const std::string label = inspectorLabelFromFieldName(field.name);
 
         if (field.inspectorHeader.has_value()) {
-            out << indent << "ImGui::TextUnformatted(" << *field.inspectorHeader << ");\n";
-            out << indent << "ImGui::Separator();\n";
+            out << indent << "ModuGUI::TextUnformatted(" << *field.inspectorHeader << ");\n";
+            out << indent << "ModuGUI::Separator();\n";
         }
         if (field.hasSeparatorAttribute) {
-            out << indent << "ImGui::Separator();\n";
+            out << indent << "ModuGUI::Separator();\n";
         }
 
         if (field.hasClipGridPairAttribute) {
@@ -2999,11 +2999,11 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
         if (field.kind == FieldKind::Float) {
             if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
-                out << indent << "changed |= ImGui::SliderFloat(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::SliderFloat(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ", " << *field.sliderMinExpr
                     << ", " << *field.sliderMaxExpr << ");\n";
             } else {
-                out << indent << "changed |= ImGui::DragFloat(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::DragFloat(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ", " << field.stepExpr.value_or("0.01f")
                     << ", " << field.rangeMinExpr.value_or("0.0f")
                     << ", " << field.rangeMaxExpr.value_or("0.0f") << ");\n";
@@ -3012,31 +3012,31 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         }
         if (field.kind == FieldKind::Int) {
             if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
-                out << indent << "changed |= ImGui::SliderInt(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::SliderInt(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ", static_cast<int>(" << *field.sliderMinExpr
                     << "), static_cast<int>(" << *field.sliderMaxExpr << "));\n";
             } else if (field.rangeMinExpr.has_value() && field.rangeMaxExpr.has_value()) {
-                out << indent << "changed |= ImGui::SliderInt(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::SliderInt(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ", static_cast<int>(" << field.rangeMinExpr.value()
                     << "), static_cast<int>(" << field.rangeMaxExpr.value() << "));\n";
             } else {
-                out << indent << "changed |= ImGui::InputInt(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::InputInt(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ");\n";
             }
             return true;
         }
         if (field.kind == FieldKind::Bool) {
-            out << indent << "changed |= ImGui::Checkbox(\"" << escapeCStringLiteral(label)
+            out << indent << "changed |= ModuGUI::Checkbox(\"" << escapeCStringLiteral(label)
                 << "\", &" << fieldAccess << ");\n";
             return true;
         }
         if (field.kind == FieldKind::Vec3) {
             if (field.hasSliderAttribute && field.sliderMinExpr.has_value() && field.sliderMaxExpr.has_value()) {
-                out << indent << "changed |= ImGui::SliderFloat3(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::SliderFloat3(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ".x, " << *field.sliderMinExpr
                     << ", " << *field.sliderMaxExpr << ", \"%.3f\");\n";
             } else {
-                out << indent << "changed |= ImGui::DragFloat3(\"" << escapeCStringLiteral(label)
+                out << indent << "changed |= ModuGUI::DragFloat3(\"" << escapeCStringLiteral(label)
                     << "\", &" << fieldAccess << ".x, " << field.stepExpr.value_or("0.01f")
                     << ", " << field.rangeMinExpr.value_or("-1000.0f")
                     << ", " << field.rangeMaxExpr.value_or("1000.0f")
@@ -3052,7 +3052,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << indent << "{\n";
                 out << indent << "    std::vector<char> buffer(512, '\\0');\n";
                 out << indent << "    std::snprintf(buffer.data(), buffer.size(), \"%s\", " << fieldAccess << ".c_str());\n";
-                out << indent << "    if (ImGui::InputText(\"" << escapeCStringLiteral(label)
+                out << indent << "    if (ModuGUI::InputText(\"" << escapeCStringLiteral(label)
                     << "\", buffer.data(), buffer.size())) {\n";
                 out << indent << "        " << fieldAccess << " = buffer.data();\n";
                 out << indent << "        changed = true;\n";
@@ -3242,16 +3242,16 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                                       const std::string& labelLiteral,
                                       const std::string& valueExpr) -> bool {
         if (field.kind == FieldKind::Float) {
-            out << "        changed |= ImGui::DragFloat(" << labelLiteral << ", &" << valueExpr
+            out << "        changed |= ModuGUI::DragFloat(" << labelLiteral << ", &" << valueExpr
                 << ", 0.01f, 0.0f, 0.0f);\n";
             return true;
         }
         if (field.kind == FieldKind::Int) {
-            out << "        changed |= ImGui::InputInt(" << labelLiteral << ", &" << valueExpr << ");\n";
+            out << "        changed |= ModuGUI::InputInt(" << labelLiteral << ", &" << valueExpr << ");\n";
             return true;
         }
         if (field.kind == FieldKind::Bool) {
-            out << "        changed |= ImGui::Checkbox(" << labelLiteral << ", &" << valueExpr << ");\n";
+            out << "        changed |= ModuGUI::Checkbox(" << labelLiteral << ", &" << valueExpr << ");\n";
             return true;
         }
         if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
@@ -3264,7 +3264,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             return true;
         }
         if (field.kind == FieldKind::Vec3) {
-            out << "        changed |= ImGui::DragFloat3(" << labelLiteral << ", &" << valueExpr
+            out << "        changed |= ModuGUI::DragFloat3(" << labelLiteral << ", &" << valueExpr
                 << ".x, 0.01f, -1000.0f, 1000.0f, \"%.3f\");\n";
             return true;
         }
@@ -3290,7 +3290,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.arrayDimensions.empty()) {
             out << "        {\n";
             out << "            int enumValue = static_cast<int>(" << valueExpr << ");\n";
-            out << "            if (ImGui::InputInt(" << labelLiteral << ", &enumValue)) {\n";
+            out << "            if (ModuGUI::InputInt(" << labelLiteral << ", &enumValue)) {\n";
                 out << "                " << valueExpr << " = static_cast<" << cachedMapScriptTypeToCpp(field.rawType)
                 << ">(enumValue);\n";
             out << "                changed = true;\n";
@@ -3639,64 +3639,64 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label,\n";
         out << "                                   std::vector<std::string>& refs) {\n";
         out << "    bool changed = false;\n";
-        out << "    if (!ImGui::TreeNode(label)) {\n";
+        out << "    if (!ModuGUI::TreeNode(label)) {\n";
         out << "        return false;\n";
         out << "    }\n";
         out << "    for (size_t i = 0; i < refs.size(); ++i) {\n";
-        out << "        ImGui::PushID(static_cast<int>(i));\n";
+        out << "        ModuGUI::PushID(static_cast<int>(i));\n";
         out << "        std::vector<char> buffer(256, '\\0');\n";
         out << "        std::snprintf(buffer.data(), buffer.size(), \"%s\", refs[i].c_str());\n";
-        out << "        ImGui::SetNextItemWidth(-80.0f);\n";
-        out << "        if (ImGui::InputText(\"##ref\", buffer.data(), buffer.size())) {\n";
+        out << "        ModuGUI::SetNextItemWidth(-80.0f);\n";
+        out << "        if (ModuGUI::InputText(\"##ref\", buffer.data(), buffer.size())) {\n";
         out << "            refs[i] = buffer.data();\n";
         out << "            changed = true;\n";
         out << "        }\n";
-        out << "        ImGui::SameLine();\n";
-        out << "        if (ImGui::SmallButton(\"X\")) {\n";
+        out << "        ModuGUI::SameLine();\n";
+        out << "        if (ModuGUI::SmallButton(\"X\")) {\n";
         out << "            refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(i));\n";
         out << "            changed = true;\n";
-        out << "            ImGui::PopID();\n";
+        out << "            ModuGUI::PopID();\n";
         out << "            --i;\n";
         out << "            continue;\n";
         out << "        }\n";
         out << "        if (SceneObject* resolved = ResolveSceneObjectRef(ctx, refs[i])) {\n";
-        out << "            ImGui::TextDisabled(\"%s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
+        out << "            ModuGUI::TextDisabled(\"%s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
         out << "        }\n";
-        out << "        if (ImGui::BeginDragDropTarget()) {\n";
-        out << "            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        out << "        if (ModuGUI::BeginDragDropTarget()) {\n";
+        out << "            if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
         out << "                if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
         out << "                    int droppedId = *static_cast<const int*>(payload->Data);\n";
         out << "                    refs[i] = std::string(\"Object.ID-\") + std::to_string(droppedId);\n";
         out << "                    changed = true;\n";
         out << "                }\n";
         out << "            }\n";
-        out << "            ImGui::EndDragDropTarget();\n";
+        out << "            ModuGUI::EndDragDropTarget();\n";
         out << "        }\n";
-        out << "        ImGui::PopID();\n";
+        out << "        ModuGUI::PopID();\n";
         out << "    }\n";
-        out << "    if (ImGui::Button(\"Add Reference\")) {\n";
+        out << "    if (ModuGUI::Button(\"Add Reference\")) {\n";
         out << "        refs.emplace_back();\n";
         out << "        changed = true;\n";
         out << "    }\n";
-        out << "    ImGui::SameLine();\n";
-        out << "    if (ImGui::Button(\"Add Selected\")) {\n";
+        out << "    ModuGUI::SameLine();\n";
+        out << "    if (ModuGUI::Button(\"Add Selected\")) {\n";
         out << "        int selectedId = ctx.GetSelectedObjectId();\n";
         out << "        if (selectedId >= 0) {\n";
         out << "            refs.push_back(std::string(\"Object.ID-\") + std::to_string(selectedId));\n";
         out << "            changed = true;\n";
         out << "        }\n";
         out << "    }\n";
-        out << "    if (ImGui::BeginDragDropTarget()) {\n";
-        out << "        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        out << "    if (ModuGUI::BeginDragDropTarget()) {\n";
+        out << "        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
         out << "            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
         out << "                int droppedId = *static_cast<const int*>(payload->Data);\n";
         out << "                refs.push_back(std::string(\"Object.ID-\") + std::to_string(droppedId));\n";
         out << "                changed = true;\n";
         out << "            }\n";
         out << "        }\n";
-        out << "        ImGui::EndDragDropTarget();\n";
+        out << "        ModuGUI::EndDragDropTarget();\n";
         out << "    }\n";
-        out << "    ImGui::TreePop();\n";
+        out << "    ModuGUI::TreePop();\n";
         out << "    return changed;\n";
         out << "}\n\n";
     }
@@ -3788,7 +3788,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "        if (!scriptCtx) return false;\n";
             out << "        ScriptContext& ctx = *scriptCtx;\n";
         }
-        out << "        if (hasLabel && !ImGui::TreeNode(label)) {\n";
+        out << "        if (hasLabel && !ModuGUI::TreeNode(label)) {\n";
         out << "            return false;\n";
         out << "        }\n";
         for (const FieldSpec& field : subScript.fields) {
@@ -3798,34 +3798,34 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 return {};
             }
         }
-        out << "        if (hasLabel) ImGui::TreePop();\n";
+        out << "        if (hasLabel) ModuGUI::TreePop();\n";
         out << "        return changed;\n";
         out << "    }\n";
         out << "    static bool EditArray(const char* label, std::vector<" << mapScriptBaseTypeToCpp(subScript.name)
             << ">& values) {\n";
         out << "        bool changed = false;\n";
-        out << "        if (!ImGui::TreeNode(label)) {\n";
+        out << "        if (!ModuGUI::TreeNode(label)) {\n";
         out << "            return false;\n";
         out << "        }\n";
         out << "        for (size_t i = 0; i < values.size(); ++i) {\n";
-        out << "            ImGui::PushID(static_cast<int>(i));\n";
+        out << "            ModuGUI::PushID(static_cast<int>(i));\n";
         out << "            const std::string itemLabel = std::string(\"Item \") + std::to_string(i + 1);\n";
         out << "            changed |= Edit(itemLabel.c_str(), values[i]);\n";
-        out << "            if (ImGui::SmallButton(\"Remove\")) {\n";
+        out << "            if (ModuGUI::SmallButton(\"Remove\")) {\n";
         out << "                values.erase(values.begin() + static_cast<std::ptrdiff_t>(i));\n";
         out << "                changed = true;\n";
-        out << "                ImGui::PopID();\n";
+        out << "                ModuGUI::PopID();\n";
         out << "                --i;\n";
         out << "                continue;\n";
         out << "            }\n";
-        out << "            ImGui::Separator();\n";
-        out << "            ImGui::PopID();\n";
+        out << "            ModuGUI::Separator();\n";
+        out << "            ModuGUI::PopID();\n";
         out << "        }\n";
-        out << "        if (ImGui::Button(\"Add Item\")) {\n";
+        out << "        if (ModuGUI::Button(\"Add Item\")) {\n";
         out << "            values.emplace_back();\n";
         out << "            changed = true;\n";
         out << "        }\n";
-        out << "        ImGui::TreePop();\n";
+        out << "        ModuGUI::TreePop();\n";
         out << "        return changed;\n";
         out << "    }\n";
         out << "};\n";
@@ -4000,8 +4000,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
             if (callName == "Header") {
                 if (!requireArgs(1, "Header(title) requires exactly one argument.")) return false;
-                out << indent << "ImGui::TextUnformatted(" << trimCopy(args[0]) << ");\n";
-                out << indent << "ImGui::Separator();\n";
+                out << indent << "ModuGUI::TextUnformatted(" << trimCopy(args[0]) << ");\n";
+                out << indent << "ModuGUI::Separator();\n";
                 return true;
             }
             if (callName == "Run") {
@@ -4014,7 +4014,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                     error = "inspector Separator() does not take arguments.";
                     return false;
                 }
-                out << indent << "ImGui::Separator();\n";
+                out << indent << "ModuGUI::Separator();\n";
                 return true;
             }
             if (callName == "Toggle") {
@@ -4022,7 +4022,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "Toggle(value) or Toggle(label, value) expected.",
                                      labelExpr, expr)) return false;
-                out << indent << "changed |= ImGui::Checkbox(" << labelExpr
+                out << indent << "changed |= ModuGUI::Checkbox(" << labelExpr
                     << ", &" << expr << ");\n";
                 return true;
             }
@@ -4049,13 +4049,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 const FieldSpec* field = findPersistedFieldByName(expr);
                 if (field && field->kind == FieldKind::Float) {
                     const std::string stepExpr = field->stepExpr.value_or("0.01f");
-                    out << indent << "changed |= ImGui::DragFloat(" << labelExpr
+                    out << indent << "changed |= ModuGUI::DragFloat(" << labelExpr
                         << ", &" << expr << ", " << stepExpr << ", "
                         << minExpr << ", " << maxExpr << ");\n";
                     return true;
                 }
                 if (field && field->kind == FieldKind::Int) {
-                    out << indent << "changed |= ImGui::SliderInt(" << labelExpr
+                    out << indent << "changed |= ModuGUI::SliderInt(" << labelExpr
                         << ", &" << expr << ", static_cast<int>(" << minExpr
                         << "), static_cast<int>(" << maxExpr << "));\n";
                     return true;
@@ -4064,11 +4064,11 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << indent << "    auto& _moduSliderValue = " << expr << ";\n";
                 out << indent << "    using _ModuSliderType = std::remove_reference_t<decltype(_moduSliderValue)>;\n";
                 out << indent << "    if constexpr (std::is_floating_point_v<_ModuSliderType>) {\n";
-                out << indent << "        changed |= ImGui::DragFloat(" << labelExpr
+                out << indent << "        changed |= ModuGUI::DragFloat(" << labelExpr
                     << ", &_moduSliderValue, 0.01f, " << minExpr << ", " << maxExpr << ");\n";
                 out << indent << "    } else if constexpr (std::is_integral_v<_ModuSliderType>) {\n";
                 out << indent << "        int _moduSliderInt = static_cast<int>(_moduSliderValue);\n";
-                out << indent << "        if (ImGui::SliderInt(" << labelExpr
+                out << indent << "        if (ModuGUI::SliderInt(" << labelExpr
                     << ", &_moduSliderInt, static_cast<int>(" << minExpr
                     << "), static_cast<int>(" << maxExpr << "))) {\n";
                 out << indent << "            _moduSliderValue = static_cast<_ModuSliderType>(_moduSliderInt);\n";
@@ -4087,11 +4087,11 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << indent << "    auto& _moduNumberValue = " << expr << ";\n";
                 out << indent << "    using _ModuNumberType = std::remove_reference_t<decltype(_moduNumberValue)>;\n";
                 out << indent << "    if constexpr (std::is_floating_point_v<_ModuNumberType>) {\n";
-                out << indent << "        changed |= ImGui::DragFloat(" << labelExpr
+                out << indent << "        changed |= ModuGUI::DragFloat(" << labelExpr
                     << ", &_moduNumberValue, 0.01f);\n";
                 out << indent << "    } else if constexpr (std::is_integral_v<_ModuNumberType>) {\n";
                 out << indent << "        int _moduNumberInt = static_cast<int>(_moduNumberValue);\n";
-                out << indent << "        if (ImGui::InputInt(" << labelExpr
+                out << indent << "        if (ModuGUI::InputInt(" << labelExpr
                     << ", &_moduNumberInt)) {\n";
                 out << indent << "            _moduNumberValue = static_cast<_ModuNumberType>(_moduNumberInt);\n";
                 out << indent << "            changed = true;\n";
@@ -4163,7 +4163,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 out << indent << "{\n";
                 const std::string tempVar = nextInspectorTemp("Enum");
                 out << indent << "    int " << tempVar << " = static_cast<int>(" << expr << ");\n";
-                out << indent << "    if (ImGui::InputInt(" << labelExpr
+                out << indent << "    if (ModuGUI::InputInt(" << labelExpr
                     << ", &" << tempVar << ")) {\n";
                 out << indent << "        using _ModuEnumType = std::remove_reference_t<decltype(" << expr << ")>;\n";
                 out << indent << "        " << expr << " = static_cast<_ModuEnumType>(" << tempVar << ");\n";
@@ -4238,7 +4238,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 const std::string optVar = nextInspectorTemp("SelectedOption");
                 const std::string lineVar = nextInspectorTemp("SelectedLine");
                 out << indent << "{\n";
-                out << indent << "    ImGui::TextUnformatted(" << labelExpr << ");\n";
+                out << indent << "    ModuGUI::TextUnformatted(" << labelExpr << ");\n";
                 out << indent << "    const int " << idVar << " = ctx.object ? ctx.object->id : -1;\n";
                 out << indent << "    int& " << optVar << " = g_selectedOptionEditorIndex[" << idVar << "];\n";
                 out << indent << "    int& " << lineVar << " = g_selectedDialogueLineEditorIndex[" << idVar << "];\n";
@@ -4266,7 +4266,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 const std::string idVar = nextInspectorTemp("ObjId");
                 const std::string selVar = nextInspectorTemp("SelectedAction");
                 out << indent << "{\n";
-                out << indent << "    ImGui::TextUnformatted(" << labelExpr << ");\n";
+                out << indent << "    ModuGUI::TextUnformatted(" << labelExpr << ");\n";
                 out << indent << "    const int " << idVar << " = ctx.object ? ctx.object->id : -1;\n";
                 out << indent << "    int& " << selVar << " = g_selectedActionByObject[" << idVar << "];\n";
                 out << indent << "    changed |= drawMenuActionsEditor(ctx, " << menuRefsExpr
@@ -4326,7 +4326,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                                      labelExpr, expr)) return false;
                 const std::string beforeVar = nextInspectorTemp("BeforeEffect");
                 out << indent << "{\n";
-                out << indent << "    ImGui::TextUnformatted(" << labelExpr << ");\n";
+                out << indent << "    ModuGUI::TextUnformatted(" << labelExpr << ");\n";
                 out << indent << "    auto " << beforeVar << " = " << expr << ";\n";
                 out << indent << "    drawTextEffectEditor(" << expr << ");\n";
                 out << indent << "    changed |= (" << expr << " != " << beforeVar << ");\n";
@@ -4412,12 +4412,12 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                             error = "inspector Tabs does not take arguments.";
                             return false;
                         }
-                        out << indent << "if (ImGui::BeginTabBar(\"##ModuCPPInspectorTabs"
+                        out << indent << "if (ModuGUI::BeginTabBar(\"##ModuCPPInspectorTabs"
                             << ++inspectorTempCounter << "\")) {\n";
                         if (!emitInspectorScope(inner, indent + "    ", true)) {
                             return false;
                         }
-                        out << indent << "    ImGui::EndTabBar();\n";
+                        out << indent << "    ModuGUI::EndTabBar();\n";
                         out << indent << "}\n";
                     } else if (callName == "Tab") {
                         if (args.size() != 1) {
@@ -4428,40 +4428,41 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                             error = "inspector Tab(...) must be inside Tabs { ... }.";
                             return false;
                         }
-                        out << indent << "if (ImGui::BeginTabItem(" << trimCopy(args[0]) << ")) {\n";
+                        out << indent << "if (ModuGUI::BeginTabItem(" << trimCopy(args[0]) << ")) {\n";
                         if (!emitInspectorScope(inner, indent + "    ", false)) {
                             return false;
                         }
-                        out << indent << "    ImGui::EndTabItem();\n";
+                        out << indent << "    ModuGUI::EndTabItem();\n";
                         out << indent << "}\n";
                     } else if (callName == "Section") {
                         if (args.size() != 1) {
                             error = "inspector Section(title) requires exactly one argument.";
                             return false;
                         }
-                        out << indent << "ImGui::TextUnformatted(" << trimCopy(args[0]) << ");\n";
-                        out << indent << "ImGui::Separator();\n";
+                        out << indent << "ModuGUI::TextUnformatted(" << trimCopy(args[0]) << ");\n";
+                        out << indent << "ModuGUI::Separator();\n";
                         if (!emitInspectorScope(inner, indent, insideTabs)) {
                             return false;
                         }
                     } else if (callName == "Group") {
                         if (!args.empty()) {
-                            out << indent << "ImGui::TextUnformatted(" << trimCopy(args[0]) << ");\n";
+                            out << indent << "ModuGUI::TextUnformatted(" << trimCopy(args[0]) << ");\n";
                         }
-                        out << indent << "ImGui::BeginGroup();\n";
+                        out << indent << "ModuGUI::BeginGroup();\n";
                         if (!emitInspectorScope(inner, indent + "    ", insideTabs)) {
                             return false;
                         }
-                        out << indent << "ImGui::EndGroup();\n";
+                        out << indent << "ModuGUI::EndGroup();\n";
                     } else if (callName == "Foldout") {
                         if (args.size() != 1) {
                             error = "inspector Foldout(title) requires exactly one argument.";
                             return false;
                         }
-                        out << indent << "if (ImGui::CollapsingHeader(" << trimCopy(args[0]) << ")) {\n";
+                        out << indent << "if (ModuGUI::SubsectionFoldout(" << trimCopy(args[0]) << ")) {\n";
                         if (!emitInspectorScope(inner, indent + "    ", insideTabs)) {
                             return false;
                         }
+                        out << indent << "    ModuGUI::TreePop();\n";
                         out << indent << "}\n";
                     } else {
                         error = "Unsupported inspector container: " + callName;

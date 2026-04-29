@@ -207,6 +207,7 @@ if(PkgConfig_FOUND AND NOT WIN32)
         libavformat
         libavcodec
         libavutil
+        libswresample
         libswscale
     )
 endif()
@@ -220,12 +221,14 @@ else()
     find_library(FFMPEG_AVFORMAT_LIBRARY avformat)
     find_library(FFMPEG_AVCODEC_LIBRARY avcodec)
     find_library(FFMPEG_AVUTIL_LIBRARY avutil)
+    find_library(FFMPEG_SWRESAMPLE_LIBRARY swresample)
     find_library(FFMPEG_SWSCALE_LIBRARY swscale)
 
     if(FFMPEG_INCLUDE_DIR AND
        FFMPEG_AVFORMAT_LIBRARY AND
        FFMPEG_AVCODEC_LIBRARY AND
        FFMPEG_AVUTIL_LIBRARY AND
+       FFMPEG_SWRESAMPLE_LIBRARY AND
        FFMPEG_SWSCALE_LIBRARY)
         add_library(modularity_ffmpeg INTERFACE)
         target_include_directories(modularity_ffmpeg INTERFACE ${FFMPEG_INCLUDE_DIR})
@@ -233,17 +236,20 @@ else()
             ${FFMPEG_AVFORMAT_LIBRARY}
             ${FFMPEG_AVCODEC_LIBRARY}
             ${FFMPEG_AVUTIL_LIBRARY}
+            ${FFMPEG_SWRESAMPLE_LIBRARY}
             ${FFMPEG_SWSCALE_LIBRARY}
         )
         if(WIN32)
             modularity_find_windows_imported_runtime_dll(FFMPEG_AVFORMAT_DLL "${FFMPEG_AVFORMAT_LIBRARY}" "avformat")
             modularity_find_windows_imported_runtime_dll(FFMPEG_AVCODEC_DLL "${FFMPEG_AVCODEC_LIBRARY}" "avcodec")
             modularity_find_windows_imported_runtime_dll(FFMPEG_AVUTIL_DLL "${FFMPEG_AVUTIL_LIBRARY}" "avutil")
+            modularity_find_windows_imported_runtime_dll(FFMPEG_SWRESAMPLE_DLL "${FFMPEG_SWRESAMPLE_LIBRARY}" "swresample")
             modularity_find_windows_imported_runtime_dll(FFMPEG_SWSCALE_DLL "${FFMPEG_SWSCALE_LIBRARY}" "swscale")
             foreach(ffmpeg_runtime_dll IN ITEMS
                 "${FFMPEG_AVFORMAT_DLL}"
                 "${FFMPEG_AVCODEC_DLL}"
                 "${FFMPEG_AVUTIL_DLL}"
+                "${FFMPEG_SWRESAMPLE_DLL}"
                 "${FFMPEG_SWSCALE_DLL}"
             )
                 if(ffmpeg_runtime_dll)
@@ -258,7 +264,7 @@ else()
                 message(STATUS "Windows FFmpeg runtime DLLs: ${MODULARITY_FFMPEG_RUNTIME_DLLS}")
                 message(STATUS "Windows FFmpeg runtime DLL directories: ${MODULARITY_FFMPEG_RUNTIME_DLL_DIRS}")
             else()
-                message(WARNING "FFmpeg import libraries were found, but matching Windows runtime DLLs were not detected. The executables will rely on PATH to locate avformat/avcodec/avutil/swscale.")
+                message(WARNING "FFmpeg import libraries were found, but matching Windows runtime DLLs were not detected. The executables will rely on PATH to locate avformat/avcodec/avutil/swresample/swscale.")
             endif()
         endif()
         set(MODULARITY_HAS_FFMPEG ON)

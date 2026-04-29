@@ -10,6 +10,8 @@
 
 #include <glad/glad.h>
 
+class AudioSystem;
+
 class VideoPlayer {
 public:
     VideoPlayer();
@@ -22,6 +24,10 @@ public:
     void SetLoop(bool loop);
     void SetPlaybackSpeed(float speed);
     void SetPointFiltering(bool enabled);
+    void SetAudioSystem(AudioSystem* audioSystem, int streamId);
+    void SetPlayAudioFromVideo(bool enabled);
+    void SetSyncAudioToVideo(bool enabled);
+    void SetAudioSyncTolerance(float toleranceSeconds);
     void Update(float deltaSeconds);
 
     GLuint GetTextureId() const { return m_textureId; }
@@ -36,6 +42,7 @@ public:
 
 private:
     struct DecoderState;
+    struct AudioBufferSource;
     struct FrameSlot {
         std::vector<unsigned char> pixels;
         double ptsSeconds = 0.0;
@@ -53,18 +60,25 @@ private:
     void StopWorker();
     void DestroyTexture();
     void ShutdownDecoder();
+    void DetachFromAudioSystem();
+    void ShutdownAudioOutput();
     void ClearQueuedFramesLocked();
     bool OpenDecoder(const std::string& path);
     bool EnsureTextureAllocated();
     bool EnsureConversionContextForFrame();
     void ApplyTextureFilter();
     bool SeekToStart();
+    bool SeekAudioToTime(double seconds);
     DecodeResult DecodeIntoSlot(FrameSlot& slot, double& outPtsSeconds);
+    bool FillAudioBuffer();
     double ResolveFramePtsSeconds() const;
+    void RefreshAudioBinding();
+    void SyncAudioToPlayback();
     void WorkerMain();
     void SetLastError(std::string error);
 
     std::unique_ptr<DecoderState> m_decoder;
+    std::unique_ptr<AudioBufferSource> m_audioBufferSource;
     std::thread m_workerThread;
     std::mutex m_queueMutex;
     mutable std::mutex m_stateMutex;
@@ -75,7 +89,10 @@ private:
     size_t m_queueCount = 0;
     bool m_workerExitRequested = false;
     bool m_requestSeekToStart = false;
+    bool m_requestAudioSeek = false;
+    double m_requestedAudioSeekSeconds = 0.0;
     bool m_decoderReachedEnd = false;
+    bool m_audioDecoderReachedEnd = false;
 
     std::string m_loadedPath;
     std::string m_lastError;
@@ -90,5 +107,13 @@ private:
     bool m_loaded = false;
     bool m_pointFiltering = false;
     bool m_hasPresentedFrame = false;
+    bool m_playAudioFromVideo = true;
+    bool m_syncAudioToVideo = true;
+    float m_audioSyncToleranceSeconds = 0.05f;
+    double m_lastAudioSyncSeekPlaybackSeconds = -1.0;
+    bool m_audioWarningLogged = false;
+    bool m_audioStreamAttached = false;
+    AudioSystem* m_audioSystem = nullptr;
+    int m_audioStreamId = -1;
     GLuint m_textureId = 0;
 };

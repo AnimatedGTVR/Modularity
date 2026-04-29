@@ -72,6 +72,10 @@ uniform float vhsOverlayTapeNoise = 0.0;
 uniform float vhsOverlayChromaBleed = 0.0;
 uniform float vhsOverlayBottomNoiseBandHeight = 0.0;
 uniform float vhsOverlayBottomNoiseBandIntensity = 0.0;
+uniform float vhsOverlayDistortionStrength = 0.0;
+uniform float vhsOverlayAnimationSpeed = 0.0;
+uniform float vhsOverlayColorBleed = 0.0;
+uniform float vhsOverlayBanding = 0.0;
 uniform bool enableWavyEffect = false;
 uniform float wavyAmplitude = 0.0;
 uniform float wavyFrequency = 16.0;
@@ -82,6 +86,7 @@ uniform vec2 texelSize = vec2(1.0 / 1280.0, 1.0 / 720.0);
 uniform float u_time = 0.0;
 
 float interleavedNoise(vec2 p);
+vec3 toneMap(vec3 color);
 
 vec3 applyColorAdjust(vec3 color) {
     if (enableColorAdjust) {
@@ -179,17 +184,63 @@ vec3 applyStaticEffect(vec3 color) {
     return clamp(color + noise * staticIntensity * darkFactor, 0.0, 1.0);
 }
 
-vec3 applyVhsChromaBleed(vec2 uv, vec3 color) {
-    if (!enableVHSOverlay || vhsOverlayChromaBleed <= 0.000001) {
-        return color;
+vec3 rgbToYiq(vec3 color) {
+    return vec3(
+        dot(color, vec3(0.299, 0.587, 0.114)),
+        dot(color, vec3(0.596, -0.274, -0.322)),
+        dot(color, vec3(0.211, -0.523, 0.312))
+    );
+}
+
+vec3 yiqToRgb(vec3 yiq) {
+    return vec3(
+        yiq.x + 0.956 * yiq.y + 0.621 * yiq.z,
+        yiq.x - 0.272 * yiq.y - 0.647 * yiq.z,
+        yiq.x - 1.106 * yiq.y + 1.703 * yiq.z
+    );
+}
+
+vec3 sampleDisplayBase(vec2 uv) {
+    return toneMap(sampleBase(clamp(uv, vec2(0.0), vec2(1.0))));
+}
+
+vec2 applyVhsSignalWarp(vec2 uv, out float trackingMask, out float burstMask, out float headSwitchMask) {
+    trackingMask = 0.0;
+    burstMask = 0.0;
+    headSwitchMask = 0.0;
+    if (!enableVHSOverlay || vhsOverlayOpacity <= 0.000001) {
+        return uv;
     }
 
-    float bleedStrength = clamp(vhsOverlayChromaBleed * 40.0, 0.0, 1.0);
-    vec2 offset = vec2(vhsOverlayChromaBleed * 10.0, 0.0) * texelSize;
-    vec3 left = sampleBase(uv - offset);
-    vec3 right = sampleBase(uv + offset);
-    vec3 bleed = vec3(left.r, color.g, right.b);
-    return mix(color, bleed, bleedStrength);
+    float speed = max(vhsOverlayAnimationSpeed, 0.0);
+    float t = u_time * speed;
+    float distortion = clamp(vhsOverlayDistortionStrength, 0.0, 2.0);
+    float trackAmount = clamp(vhsOverlayBottomNoiseBandHeight, 0.0, 1.0);
+    float burstAmount = clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0);
+    float line = floor(uv.y / max(texelSize.y, 1e-6));
+
+    float jitterA = interleavedNoise(vec2(line * 0.071, floor(t * 22.0) + 13.0)) - 0.5;
+    float jitterB = interleavedNoise(vec2(line * 0.193 + 7.0, floor(t * 12.0) + 3.0)) - 0.5;
+    uv.x += (jitterA * 10.0 + jitterB * 6.0) * texelSize.x * distortion;
+    uv.x += sin(uv.y * 170.0 + t * 11.0 + jitterB * 6.28318) * texelSize.x * 2.5 * distortion;
+
+    float trackingSeed = floor(t * 1.7);
+    float bandCenter = fract(interleavedNoise(vec2(trackingSeed, 0.37)) + t * 0.035);
+    float bandWidth = mix(0.015, 0.16, trackAmount);
+    trackingMask = (1.0 - smoothstep(bandWidth, bandWidth * 2.6, abs(uv.y - bandCenter))) * trackAmount;
+    uv.x += trackingMask * (jitterB * 38.0 + sin(uv.y * 60.0 - t * 8.0) * 18.0) * texelSize.x * (0.35 + distortion);
+    uv.y += trackingMask * sin(uv.y * 32.0 - t * 7.5 + jitterA * 4.0) * texelSize.y * 8.0 * distortion;
+
+    headSwitchMask = (1.0 - smoothstep(0.0, 0.08 + trackAmount * 0.1, uv.y));
+    uv.x += headSwitchMask * sin(uv.y * 980.0 + t * 30.0) * texelSize.x * (6.0 + burstAmount * 14.0);
+
+    float burstGate = step(0.68, interleavedNoise(vec2(floor(t * 1.5) + 41.0, 7.3)));
+    float burstCenter = fract(interleavedNoise(vec2(floor(t * 0.9) + 3.0, 17.0)) + t * 0.02);
+    float burstBand = 1.0 - smoothstep(0.015, 0.09, abs(uv.y - burstCenter));
+    burstMask = burstGate * burstBand * clamp(burstAmount * 0.6, 0.0, 1.0);
+    uv.x += burstMask * (jitterA * 60.0 + 12.0) * texelSize.x * distortion;
+
+    return clamp(uv, vec2(0.0), vec2(1.0));
 }
 
 vec3 applyVhsOverlay(vec3 color, vec2 uv) {
@@ -197,30 +248,74 @@ vec3 applyVhsOverlay(vec3 color, vec2 uv) {
         return color;
     }
 
-    float scanlinePhase = gl_FragCoord.y * 0.5 + u_time * 24.0;
-    float scanline = 0.88 + 0.12 * sin(scanlinePhase);
-    float scanlineMask = mix(1.0, scanline, clamp(vhsOverlayScanlineStrength, 0.0, 1.0));
+    float trackingMask;
+    float burstMask;
+    float headSwitchMask;
+    vec2 warpedUv = applyVhsSignalWarp(uv, trackingMask, burstMask, headSwitchMask);
 
-    float tapeSeed = u_time * 53.0;
-    float tapeNoise = interleavedNoise(gl_FragCoord.xy * 0.85 + vec2(tapeSeed, tapeSeed * 0.37)) - 0.5;
-    vec3 noiseColor = vec3(
-        tapeNoise,
-        interleavedNoise(gl_FragCoord.xy * 0.91 + vec2(13.0, 47.0) + vec2(tapeSeed * 0.71, tapeSeed * 0.29)) - 0.5,
-        interleavedNoise(gl_FragCoord.xy * 1.07 + vec2(29.0, 11.0) - vec2(tapeSeed * 0.43, tapeSeed * 0.17)) - 0.5);
-    noiseColor *= clamp(vhsOverlayTapeNoise, 0.0, 1.0) * 0.35;
+    float chromaOffsetPx = mix(0.25, 6.0, clamp(vhsOverlayChromaBleed, 0.0, 1.0));
+    float colorBleedPx = mix(0.0, 10.0, clamp(vhsOverlayColorBleed, 0.0, 1.0));
+    vec2 dx = vec2(texelSize.x, 0.0);
 
-    float bandHeight = clamp(vhsOverlayBottomNoiseBandHeight, 0.0, 1.0);
-    float bandMask = 1.0 - smoothstep(0.0, max(0.0001, bandHeight), uv.y);
-    float bandNoise = interleavedNoise(vec2(gl_FragCoord.x * 0.72, gl_FragCoord.y * 8.0 + u_time * 120.0));
-    vec3 bandColor = vec3(bandNoise) * clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0) * bandMask;
-    bandColor += vec3(0.25, 0.25, 0.25) * bandMask * clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0) * 0.25;
+    vec3 yiqM3 = rgbToYiq(sampleDisplayBase(warpedUv - dx * (chromaOffsetPx + colorBleedPx * 0.85)));
+    vec3 yiqM2 = rgbToYiq(sampleDisplayBase(warpedUv - dx * (chromaOffsetPx * 0.65 + colorBleedPx * 0.35)));
+    vec3 yiqM1 = rgbToYiq(sampleDisplayBase(warpedUv - dx * chromaOffsetPx));
+    vec3 yiqC = rgbToYiq(sampleDisplayBase(warpedUv));
+    vec3 yiqP1 = rgbToYiq(sampleDisplayBase(warpedUv + dx * chromaOffsetPx));
+    vec3 yiqP2 = rgbToYiq(sampleDisplayBase(warpedUv + dx * (chromaOffsetPx * 0.65 + colorBleedPx * 0.35)));
+    vec3 yiqP3 = rgbToYiq(sampleDisplayBase(warpedUv + dx * (chromaOffsetPx + colorBleedPx * 0.85)));
 
-    vec3 overlay = color;
-    overlay *= scanlineMask;
-    overlay += noiseColor;
-    overlay += bandColor;
-    overlay = clamp(overlay, 0.0, 1.0);
-    return mix(color, overlay, clamp(vhsOverlayOpacity, 0.0, 1.0));
+    vec3 signal;
+    signal.x = dot(vec4(yiqM1.x, yiqC.x, yiqP1.x, yiqP2.x), vec4(0.12, 0.58, 0.2, 0.1));
+    signal.x += (yiqM2.x + yiqP3.x) * 0.04;
+    signal.y = dot(vec4(yiqM2.y, yiqM1.y, yiqC.y, yiqP1.y), vec4(0.18, 0.27, 0.32, 0.23));
+    signal.y += (yiqP2.y + yiqM3.y) * 0.08;
+    signal.z = dot(vec4(yiqM3.z, yiqM1.z, yiqP1.z, yiqP3.z), vec4(0.2, 0.28, 0.28, 0.2));
+    signal.z += (yiqC.z + yiqP2.z + yiqM2.z) * 0.013;
+
+    float crossColor = (yiqM1.x - yiqP1.x) * (0.03 + clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.08);
+    signal.y += crossColor;
+    signal.z -= crossColor * 0.65;
+    signal.yz *= vec2(1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.2,
+                      1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.3);
+
+    vec3 ntscColor = clamp(yiqToRgb(signal), 0.0, 1.0);
+
+    float speed = max(vhsOverlayAnimationSpeed, 0.0);
+    float t = u_time * speed;
+    float scanlinePhase = gl_FragCoord.y * 3.14159265 + t * 6.0;
+    float scanline = 1.0 - clamp(vhsOverlayScanlineStrength, 0.0, 1.0) *
+        (0.18 + 0.22 * (0.5 + 0.5 * sin(scanlinePhase)));
+    ntscColor *= scanline;
+
+    float noiseAmount = clamp(vhsOverlayTapeNoise, 0.0, 1.0);
+    float grain0 = interleavedNoise(gl_FragCoord.xy * vec2(1.0, 0.85) + vec2(t * 31.0, t * 7.0)) - 0.5;
+    float grain1 = interleavedNoise(gl_FragCoord.xy * vec2(0.75, 1.2) + vec2(19.0, t * 17.0)) - 0.5;
+    float chromaNoise = interleavedNoise(gl_FragCoord.xy * vec2(0.5, 1.8) + vec2(t * 11.0, 53.0)) - 0.5;
+    ntscColor += vec3(grain0, grain1, chromaNoise) * (0.08 + noiseAmount * 0.22);
+
+    float banding = clamp(vhsOverlayBanding, 0.0, 1.0);
+    if (banding > 0.0001) {
+        float levels = mix(64.0, 10.0, banding);
+        vec3 degraded = floor(clamp(ntscColor, 0.0, 1.0) * levels) / levels;
+        ntscColor = mix(ntscColor, degraded, banding * 0.7);
+    }
+
+    float luma = luminance(ntscColor);
+    ntscColor = mix(vec3(luma), ntscColor, 1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.12);
+
+    vec3 burstNoise = vec3(
+        interleavedNoise(gl_FragCoord.xy * 1.8 + vec2(t * 53.0, 11.0)),
+        interleavedNoise(gl_FragCoord.xy * 2.1 + vec2(17.0, t * 47.0)),
+        interleavedNoise(gl_FragCoord.xy * 1.4 + vec2(t * 39.0, 29.0))) - 0.5;
+    ntscColor += burstNoise * burstMask * 0.65;
+
+    float headNoise = interleavedNoise(vec2(gl_FragCoord.x * 0.9, gl_FragCoord.y * 8.0 + t * 90.0)) - 0.5;
+    ntscColor += vec3(headNoise) * headSwitchMask * clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0) * 0.35;
+
+    ntscColor = mix(ntscColor, ntscColor * 0.75 + vec3(0.07), trackingMask * 0.35);
+    ntscColor = clamp(ntscColor, 0.0, 1.0);
+    return mix(color, ntscColor, clamp(vhsOverlayOpacity, 0.0, 1.0));
 }
 
 float computeAOFactor(vec2 uv) {
@@ -445,10 +540,9 @@ void main() {
     }
 
     color = applySharpening(sampleUv, color);
-    color = applyVhsChromaBleed(sampleUv, color);
     vec3 outputColor = toneMap(color);
     outputColor = applyStaticEffect(outputColor);
-    outputColor = applyVhsOverlay(outputColor, TexCoord);
+    outputColor = applyVhsOverlay(outputColor, sampleUv);
 
     if (enableDither) {
         float levels = max(1.0, exp2(float(clamp(ditherColorBits, 1, 8))) - 1.0);

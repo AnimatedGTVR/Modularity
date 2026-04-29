@@ -3052,12 +3052,26 @@ void Engine::renderInspectorPanel() {
         ImGui::PushID(idSuffix);
         ImGuiStyle& style = ImGui::GetStyle();
         ImGui::SetNextItemAllowOverlap();
+
+        // Match the flat component-header styling: subtle separator + transparent header bg.
+        {
+            ImDrawList* sepDl = ImGui::GetWindowDrawList();
+            const ImVec2 sepP = ImGui::GetCursorScreenPos();
+            const float sepW = ImGui::GetContentRegionAvail().x;
+            const ImU32 sepCol = ImGui::GetColorU32(ImGuiCol_Separator, 0.35f);
+            sepDl->AddLine(ImVec2(sepP.x, sepP.y), ImVec2(sepP.x + sepW, sepP.y), sepCol, 1.0f);
+        }
+
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                             ImVec2(style.FramePadding.x, std::max(style.FramePadding.y, 11.0f)));
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
         const bool open = ImGui::CollapsingHeader("##MaterialHeader",
                                                   ImGuiTreeNodeFlags_DefaultOpen |
                                                   ImGuiTreeNodeFlags_AllowOverlap |
                                                   ImGuiTreeNodeFlags_SpanAvailWidth);
+        ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
 
         const ImVec2 headerMin = ImGui::GetItemRectMin();
@@ -3134,6 +3148,29 @@ void Engine::renderInspectorPanel() {
 
         ImGui::PopID();
         return std::pair<bool, bool>{open, changed};
+    };
+
+    auto drawInspectorSubsectionFoldout = [](const char* label,
+                                             bool* open = nullptr,
+                                             bool defaultOpen = false) -> bool {
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (defaultOpen) {
+            flags |= ImGuiTreeNodeFlags_DefaultOpen;
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
+        const bool isOpen = ImGui::TreeNodeEx(label, flags);
+        ImGui::PopStyleColor(3);
+
+        if (isOpen) {
+            ImGui::TreePop();
+        }
+        if (open) {
+            *open = isOpen;
+        }
+        return isOpen;
     };
 
     auto renderMaterialEditorBody = [&](const char* idPrefix,
@@ -3216,60 +3253,62 @@ void Engine::renderInspectorPanel() {
         }
 
         ImGui::Spacing();
-        ImGui::SeparatorText("Texture Maps");
-        changed |= drawMaterialTextureField("Base Map", (std::string(idPrefix) + "Albedo").c_str(), albedoPath);
-        changed |= drawMaterialTextureField("Normal Map", (std::string(idPrefix) + "Normal").c_str(), normalPath);
-        const char* texFilterOptions[] = { "Bilinear", "Point" };
-        int texFilterIndex =
-            (materialValue.textureFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
-        drawMaterialInlineLabel("Filter");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::Combo("##TextureFilter", &texFilterIndex, texFilterOptions, IM_ARRAYSIZE(texFilterOptions))) {
-            materialValue.textureFilter =
-                (texFilterIndex == 1) ? MaterialProperties::TextureFilter::Point
-                                      : MaterialProperties::TextureFilter::Bilinear;
-            changed = true;
+        if (drawInspectorSubsectionFoldout("Texture Maps", nullptr, true)) {
+            changed |= drawMaterialTextureField("Base Map", (std::string(idPrefix) + "Albedo").c_str(), albedoPath);
+            changed |= drawMaterialTextureField("Normal Map", (std::string(idPrefix) + "Normal").c_str(), normalPath);
+            const char* texFilterOptions[] = { "Bilinear", "Point" };
+            int texFilterIndex =
+                (materialValue.textureFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
+            drawMaterialInlineLabel("Filter");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::Combo("##TextureFilter", &texFilterIndex, texFilterOptions, IM_ARRAYSIZE(texFilterOptions))) {
+                materialValue.textureFilter =
+                    (texFilterIndex == 1) ? MaterialProperties::TextureFilter::Point
+                                          : MaterialProperties::TextureFilter::Bilinear;
+                changed = true;
+            }
+            drawMaterialInlineLabel("UV Tiling");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::DragFloat2("##UVTiling",
+                                  &materialValue.uvTiling.x,
+                                  0.01f,
+                                  0.0f,
+                                  0.0f,
+                                  "%.2f"))
+            {
+                auto sanitizeUvTiling = [](float value) {
+                    if (std::abs(value) >= 0.0001f) {
+                        return value;
+                    }
+                    return (value < 0.0f) ? -0.0001f : 0.0001f;
+                };
+                materialValue.uvTiling.x = sanitizeUvTiling(materialValue.uvTiling.x);
+                materialValue.uvTiling.y = sanitizeUvTiling(materialValue.uvTiling.y);
+                changed = true;
+            }
+            drawMaterialInlineLabel("UV Offset");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::DragFloat2("##UVOffset",
+                                  &materialValue.uvOffset.x,
+                                  0.01f,
+                                  0.0f,
+                                  0.0f,
+                                  "%.2f"))
+            {
+                changed = true;
+            }
         }
-        drawMaterialInlineLabel("UV Tiling");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::DragFloat2("##UVTiling",
-                              &materialValue.uvTiling.x,
-                              0.01f,
-                              0.0f,
-                              0.0f,
-                              "%.2f"))
-        {
-            auto sanitizeUvTiling = [](float value) {
-                if (std::abs(value) >= 0.0001f) {
-                    return value;
-                }
-                return (value < 0.0f) ? -0.0001f : 0.0001f;
-            };
-            materialValue.uvTiling.x = sanitizeUvTiling(materialValue.uvTiling.x);
-            materialValue.uvTiling.y = sanitizeUvTiling(materialValue.uvTiling.y);
-            changed = true;
-        }
-        drawMaterialInlineLabel("UV Offset");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::DragFloat2("##UVOffset",
-                              &materialValue.uvOffset.x,
-                              0.01f,
-                              0.0f,
-                              0.0f,
-                              "%.2f"))
-        {
-            changed = true;
-        }
-        ImGui::SeparatorText("Detail Maps");
-        changed |= drawMaterialTextureField("Detail Map", (std::string(idPrefix) + "Overlay").c_str(), overlayPath);
-        drawMaterialInlineLabel("Detail Mix");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::SliderFloat("##DetailMix", &materialValue.textureMix, 0.0f, 1.0f)) {
-            changed = true;
+        if (drawInspectorSubsectionFoldout("Detail Maps", nullptr, true)) {
+            changed |= drawMaterialTextureField("Detail Map", (std::string(idPrefix) + "Overlay").c_str(), overlayPath);
+            drawMaterialInlineLabel("Detail Mix");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderFloat("##DetailMix", &materialValue.textureMix, 0.0f, 1.0f)) {
+                changed = true;
+            }
         }
         useOverlayValue = !overlayPath.empty();
 
@@ -3308,8 +3347,7 @@ void Engine::renderInspectorPanel() {
             }
 
             if (hasSpritesheetPackage() &&
-                ImGui::CollapsingHeader((std::string("Sprite Sheet##") + idPrefix).c_str(),
-                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+                drawInspectorSubsectionFoldout((std::string("Sprite Sheet##") + idPrefix).c_str(), nullptr, true)) {
                 if (ImGui::Checkbox("Enable Sprite Sheet", &spriteTarget->ui.spriteSheetEnabled)) {
                     changed = true;
                 }
@@ -3372,19 +3410,20 @@ void Engine::renderInspectorPanel() {
         }
 
         ImGui::Spacing();
-        ImGui::SeparatorText("Preview");
-        drawMaterialPreview(
-            (std::string(idPrefix) + "Preview").c_str(),
-            materialValue,
-            albedoPath,
-            overlayPath,
-            normalPath,
-            useOverlayValue,
-            vertShaderPath,
-            fragShaderPath,
-            previewScale,
-            previewSlot
-        );
+        if (drawInspectorSubsectionFoldout("Preview", nullptr, true)) {
+            drawMaterialPreview(
+                (std::string(idPrefix) + "Preview").c_str(),
+                materialValue,
+                albedoPath,
+                overlayPath,
+                normalPath,
+                useOverlayValue,
+                vertShaderPath,
+                fragShaderPath,
+                previewScale,
+                previewSlot
+            );
+        }
 
         ImGui::Spacing();
         ImGui::BeginDisabled(vertShaderPath.empty() && fragShaderPath.empty());
@@ -3910,7 +3949,23 @@ void Engine::renderInspectorPanel() {
         std::string headerId = std::string(label) + "##" + id;
         ImGui::SetNextItemAllowOverlap();
         ImGuiStyle& style = ImGui::GetStyle();
+
+        // Thin separator above each component for subtle inter-component division.
+        {
+            ImDrawList* sepDl = ImGui::GetWindowDrawList();
+            const ImVec2 sepP = ImGui::GetCursorScreenPos();
+            const float sepW = ImGui::GetContentRegionAvail().x;
+            const ImU32 sepCol = ImGui::GetColorU32(ImGuiCol_Separator, 0.35f);
+            sepDl->AddLine(ImVec2(sepP.x, sepP.y), ImVec2(sepP.x + sepW, sepP.y), sepCol, 1.0f);
+        }
+
+        // Flat, Unity-style header: transparent background, only subtle hover/active highlight.
+        // These pushes shadow any per-component colored ImGuiCol_Header pushes from callers.
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1.0f, 1.0f, 1.0f, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.10f));
         state.open = ImGui::CollapsingHeader(headerId.c_str(), flags);
+        ImGui::PopStyleColor(3);
 
         const ImVec2 headerMin = ImGui::GetItemRectMin();
         const ImVec2 headerMax = ImGui::GetItemRectMax();
@@ -3991,6 +4046,19 @@ void Engine::renderInspectorPanel() {
 
         ImGui::SetCursorScreenPos(cursorAfter);
         return state;
+    };
+
+    // RAII scope used inside every opened component body. Subsection foldouts push their own
+    // lightweight TreeNodeEx style so component headers and nested rows stay visually separate.
+    struct InspectorBodyScope {
+        InspectorBodyScope() {
+            ImGui::Indent(8.0f);
+        }
+        ~InspectorBodyScope() {
+            ImGui::Unindent(8.0f);
+        }
+        InspectorBodyScope(const InspectorBodyScope&) = delete;
+        InspectorBodyScope& operator=(const InspectorBodyScope&) = delete;
     };
 
     enum class InspectorClipboardKind {
@@ -4622,6 +4690,7 @@ void Engine::renderInspectorPanel() {
                 removeUi);
         });
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("UI");
 
             if (obj.type != ObjectType::Sprite25D) {
@@ -4994,7 +5063,7 @@ void Engine::renderInspectorPanel() {
                 }
 
                 if (hasSpritesheetPackage() &&
-                    ImGui::CollapsingHeader("Sprite Sheet", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    drawInspectorSubsectionFoldout("Sprite Sheet", nullptr, true)) {
                     if (ImGui::Checkbox("Enable Sprite Sheet", &obj.ui.spriteSheetEnabled)) {
                         changed = true;
                     }
@@ -5047,7 +5116,7 @@ void Engine::renderInspectorPanel() {
                     ImGui::EndDisabled();
                 }
 
-                if (ImGui::CollapsingHeader("9-Slice")) {
+                if (drawInspectorSubsectionFoldout("9-Slice")) {
                     if (ImGui::Checkbox("Enable 9-Slice", &obj.ui.nineSliceEnabled)) {
                         changed = true;
                     }
@@ -5075,7 +5144,7 @@ void Engine::renderInspectorPanel() {
                     ImGui::EndDisabled();
                 }
 
-                if (ImGui::CollapsingHeader("2D Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (drawInspectorSubsectionFoldout("2D Lighting", nullptr, true)) {
                     if (ImGui::Checkbox("Receive Lighting", &obj.ui.receiveLighting2D)) {
                         changed = true;
                     }
@@ -5173,6 +5242,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Collider");
 
             if (beginCompFields("##Fields_Collider")) {
@@ -5281,6 +5351,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("PlayerController");
             if (beginCompFields("##Fields_PlayerController")) {
                 fieldRow("Move Speed");
@@ -5396,6 +5467,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Rigidbody3D");
             if (beginCompFields("##Fields_Rigidbody3D")) {
                 noteRow("Collider required for physics.");
@@ -5433,7 +5505,7 @@ void Engine::renderInspectorPanel() {
                 }
                 endCompFields();
             }
-            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Rotation Constraints", nullptr, true)) {
                 if (beginCompFields("##Fields_Rb3DConstraints")) {
                     if (boolRow("Lock X", &obj.rigidbody.lockRotationX)) { changed = true; }
                     if (boolRow("Lock Y", &obj.rigidbody.lockRotationY)) { changed = true; }
@@ -5476,6 +5548,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Rigidbody2D");
             if (beginCompFields("##Fields_Rigidbody2D")) {
                 if (!UsesUIOnly2DPhysics(obj)) {
@@ -5498,7 +5571,7 @@ void Engine::renderInspectorPanel() {
                 }
                 endCompFields();
             }
-            if (ImGui::CollapsingHeader("Rotation Constraints", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Rotation Constraints", nullptr, true)) {
                 if (beginCompFields("##Fields_Rb2DConstraints")) {
                     noteRow("Locks the object's Z-axis rotation.");
                     if (boolRow("Lock Rotation", &obj.rigidbody2D.lockRotation)) { changed = true; }
@@ -5540,6 +5613,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Collider2D");
 
             auto ensureHexagon = [&](Collider2DComponent& col, const glm::vec2& size) {
@@ -5692,6 +5766,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("ParallaxLayer2D");
             if (beginCompFields("##Fields_Parallax2D")) {
                 if (!isUIObject(obj)) {
@@ -5794,6 +5869,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("AudioSource");
             auto& src = obj.audioSource;
             const std::string previousClipPath = src.clipPath;
@@ -5990,41 +6066,121 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("VideoPlayer");
             auto& player = obj.videoPlayer;
 
-            if (beginCompFields("##Fields_VideoPlayer")) {
-                fieldRow("Video Path");
-                char pathBuf[512] = {};
-                std::snprintf(pathBuf, sizeof(pathBuf), "%s", player.videoPath.c_str());
-                if (ImGui::InputText("##VideoPath", pathBuf, sizeof(pathBuf))) {
-                    player.videoPath = pathBuf;
-                    changed = true;
-                }
-                ImGui::SameLine();
-                const bool canUseSelectedVideo = !fileBrowser.selectedFile.empty() &&
-                                                 fs::exists(fileBrowser.selectedFile) &&
-                                                 browserHasVideo;
-                ImGui::BeginDisabled(!canUseSelectedVideo);
-                if (ImGui::SmallButton("Use Selection")) {
-                    player.videoPath = selectedVideoPath.string();
-                    changed = true;
-                }
-                ImGui::EndDisabled();
-                if (boolRow("Play On Awake", &player.playOnAwake)) { changed = true; }
-                if (boolRow("Loop", &player.loop)) { changed = true; }
-                fieldRow("Playback Speed");
-                if (ImGui::DragFloat("##VideoPlaybackSpeed", &player.playbackSpeed, 0.01f, 0.0f, 8.0f, "%.2f")) {
-                    player.playbackSpeed = std::clamp(player.playbackSpeed, 0.0f, 8.0f);
-                    changed = true;
-                }
-                noteRow("Paste a project-relative or absolute video path. Runtime playback updates the renderer albedo texture.");
-                endCompFields();
-            }
+            // Derive audio mode from the two internal bools for the dropdown.
+            // 0 = Disabled, 1 = Direct, 2 = Audio Source
+            int audioMode = !player.playAudioFromVideo ? 0
+                          : player.routeAudioToSource  ? 2
+                                                       : 1;
 
-            if (!player.videoPath.empty()) {
-                drawTrimmedPathText(player.videoPath, ImVec4(0.78f, 0.88f, 1.0f, 1.0f));
+            ImGui::Dummy(ImVec2(0.0f, 1.0f));
+            if (ImGui::BeginTabBar("##VideoPlayerTabs")) {
+
+                // ── Playback tab ─────────────────────────────────────────
+                if (ImGui::BeginTabItem("Playback")) {
+                    ImGui::Dummy(ImVec2(0.0f, 1.0f));
+                    if (beginCompFields("##VP_Playback")) {
+                        fieldRow("Video");
+                        char pathBuf[512] = {};
+                        std::snprintf(pathBuf, sizeof(pathBuf), "%s", player.videoPath.c_str());
+                        if (ImGui::InputText("##VideoPath", pathBuf, sizeof(pathBuf))) {
+                            player.videoPath = pathBuf;
+                            changed = true;
+                        }
+                        ImGui::SameLine();
+                        const bool canUseSelectedVideo = !fileBrowser.selectedFile.empty() &&
+                                                         fs::exists(fileBrowser.selectedFile) &&
+                                                         browserHasVideo;
+                        ImGui::BeginDisabled(!canUseSelectedVideo);
+                        if (ImGui::SmallButton("Use")) {
+                            player.videoPath = selectedVideoPath.string();
+                            changed = true;
+                        }
+                        ImGui::EndDisabled();
+                        if (boolRow("Play On Awake", &player.playOnAwake)) { changed = true; }
+                        if (boolRow("Loop", &player.loop))                  { changed = true; }
+                        fieldRow("Speed");
+                        if (ImGui::DragFloat("##VideoPlaybackSpeed", &player.playbackSpeed, 0.01f, 0.0f, 8.0f, "%.2fx")) {
+                            player.playbackSpeed = std::clamp(player.playbackSpeed, 0.0f, 8.0f);
+                            changed = true;
+                        }
+                        endCompFields();
+                    }
+                    ImGui::EndTabItem();
+                }
+
+                // ── Output tab ───────────────────────────────────────────
+                if (ImGui::BeginTabItem("Output")) {
+                    ImGui::Dummy(ImVec2(0.0f, 1.0f));
+                    ImGui::TextDisabled("Audio");
+                    ImGui::Spacing();
+                    if (beginCompFields("##VP_Audio")) {
+                        fieldRow("Audio Mode");
+                        const char* audioModeNames[] = { "Disabled", "Direct", "Audio Source" };
+                        ImGui::PushID("AudioMode");
+                        if (ImGui::BeginCombo("##AudioModeCombo", audioModeNames[audioMode])) {
+                            for (int i = 0; i < 3; ++i) {
+                                const bool sel = (audioMode == i);
+                                if (ImGui::Selectable(audioModeNames[i], sel)) {
+                                    audioMode = i;
+                                    player.playAudioFromVideo  = (i != 0);
+                                    player.routeAudioToSource  = (i == 2);
+                                    changed = true;
+                                }
+                                if (sel) ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        ImGui::PopID();
+
+                        if (audioMode == 2) {
+                            fieldRow("Audio Source");
+                            if (drawSceneObjectReferenceSlot("##VideoOutputAudioSource",
+                                                             "##VideoOutputAudioSourceRef",
+                                                             player.outputAudioSourceObjectId,
+                                                             -1,
+                                                             "Self")) {
+                                changed = true;
+                            }
+                        }
+
+                        if (audioMode != 0) {
+                            fieldRow("Volume");
+                            if (ImGui::DragFloat("##VideoAudioVolume", &player.videoAudioVolume, 0.01f, 0.0f, 2.0f, "%.2f")) {
+                                player.videoAudioVolume = std::clamp(player.videoAudioVolume, 0.0f, 2.0f);
+                                changed = true;
+                            }
+                            if (boolRow("Mute", &player.videoAudioMuted)) { changed = true; }
+                        }
+                        endCompFields();
+                    }
+
+                    ImGui::Spacing();
+                    if (drawInspectorSubsectionFoldout("Advanced")) {
+                        ImGui::Spacing();
+                        if (beginCompFields("##VP_Advanced")) {
+                            if (boolRow("Keep Audio Synced", &player.syncAudioToVideo)) { changed = true; }
+                            if (player.syncAudioToVideo) {
+                                fieldRow("Sync Tolerance");
+                                if (ImGui::DragFloat("##VideoAudioSyncTolerance", &player.audioSyncTolerance, 0.005f, 0.0f, 0.5f, "%.3f s")) {
+                                    player.audioSyncTolerance = std::clamp(player.audioSyncTolerance, 0.0f, 0.5f);
+                                    changed = true;
+                                }
+                            }
+                            endCompFields();
+                        }
+                        ImGui::Spacing();
+                    }
+
+                    ImGui::EndTabItem();
+                }
+
+                ImGui::EndTabBar();
             }
+            ImGui::Dummy(ImVec2(0.0f, 1.0f));
 
             ImGui::PopID();
         }
@@ -6062,6 +6218,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("GroundBakedType");
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
@@ -6112,6 +6269,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("ObsticleObject");
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
@@ -6162,6 +6320,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("AIAgent");
             if (ImGui::Button("Open AI Pathfinding")) {
                 showAIPathfindingWindow = true;
@@ -6262,6 +6421,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Animation");
             NormalizeAnimationClipSlots(obj.animation);
             if (ImGui::Button("Open Animator")) {
@@ -6403,6 +6563,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Skeletal");
             if (beginCompFields("##Fields_Skeletal")) {
                 ModelSceneData sceneData;
@@ -6477,6 +6638,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("ReverbZone");
             auto& zone = obj.reverbZone;
 
@@ -6588,6 +6750,7 @@ void Engine::renderInspectorPanel() {
                 removeCamera);
         });
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Camera");
             if (beginCompFields("##Fields_Camera")) {
                 const char* cameraTypes[] = { "Scene", "Player" };
@@ -6667,6 +6830,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("CameraFollow2D");
             if (!obj.hasCamera) {
                 ImGui::TextDisabled("Requires a Camera component.");
@@ -6719,8 +6883,9 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("PostFX");
-            if (ImGui::CollapsingHeader("Volume", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Volume", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXVolume")) {
                     if (boolRow("Global Volume", &obj.postFx.isGlobal)) { changed = true; }
                     fieldRow("Priority");
@@ -6739,7 +6904,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("HDR & Tone Mapping", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("HDR & Tone Mapping", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXHDR")) {
                     if (boolRow("HDR Enabled", &obj.postFx.hdrEnabled)) { changed = true; }
                     const char* toneMapperNames[] = { "None", "Reinhard", "ACES" };
@@ -6757,7 +6922,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Bloom", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXBloom")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledBloom", &obj.postFx.bloomEnabled)) { changed = true; }
@@ -6776,7 +6941,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Color", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Color", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXColor")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledColor", &obj.postFx.colorAdjustEnabled)) { changed = true; }
@@ -6795,7 +6960,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Motion Blur", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXMotionBlur")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledMotionBlur", &obj.postFx.motionBlurEnabled)) { changed = true; }
@@ -6812,7 +6977,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Lens", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Lens", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXLens")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledVignette", &obj.postFx.vignetteEnabled)) { changed = true; }
@@ -6841,7 +7006,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Ambient Occlusion", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Ambient Occlusion", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXAO")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledAO", &obj.postFx.ambientOcclusionEnabled)) { changed = true; }
@@ -6856,7 +7021,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Dither", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Dither", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXDither")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledDither", &obj.postFx.ditherEnabled)) { changed = true; }
@@ -6895,7 +7060,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Static", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Static", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXStatic")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledStatic", &obj.postFx.staticEnabled)) { changed = true; }
@@ -6914,7 +7079,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Static Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Static Distortion", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXStaticDist")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledStaticDist", &obj.postFx.staticDistortionEnabled)) { changed = true; }
@@ -6933,7 +7098,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Lens Distortion", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Lens Distortion", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXLensDist")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledLensDist", &obj.postFx.lensDistortionEnabled)) { changed = true; }
@@ -6950,30 +7115,38 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("VHS Overlay", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("NTSC VHS", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXVHS")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledVHS", &obj.postFx.vhsOverlayEnabled)) { changed = true; }
                     ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
                     ImGui::BeginDisabled(!obj.postFx.vhsOverlayEnabled);
-                    fieldRow("Opacity");
+                    fieldRow("Intensity");
                     if (ImGui::SliderFloat("##VHSOpacity", &obj.postFx.vhsOverlayOpacity, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Noise Amount");
+                    if (ImGui::SliderFloat("##VHSTapeNoise", &obj.postFx.vhsOverlayTapeNoise, 0.0f, 1.0f, "%.2f")) { changed = true; }
                     fieldRow("Scanline Str.");
                     if (ImGui::SliderFloat("##VHSScanline", &obj.postFx.vhsOverlayScanlineStrength, 0.0f, 1.0f, "%.2f")) { changed = true; }
-                    fieldRow("Tape Noise");
-                    if (ImGui::SliderFloat("##VHSTapeNoise", &obj.postFx.vhsOverlayTapeNoise, 0.0f, 1.0f, "%.2f")) { changed = true; }
-                    fieldRow("Chroma Bleed");
-                    if (ImGui::SliderFloat("##VHSChromaBleed", &obj.postFx.vhsOverlayChromaBleed, 0.0f, 0.02f, "%.4f")) { changed = true; }
-                    fieldRow("Band Height");
-                    if (ImGui::SliderFloat("##VHSBandHeight", &obj.postFx.vhsOverlayBottomNoiseBandHeight, 0.0f, 0.5f, "%.2f")) { changed = true; }
-                    fieldRow("Band Intensity");
+                    fieldRow("Chroma Offset");
+                    if (ImGui::SliderFloat("##VHSChromaBleed", &obj.postFx.vhsOverlayChromaBleed, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Distortion Str.");
+                    if (ImGui::SliderFloat("##VHSDistortionStrength", &obj.postFx.vhsOverlayDistortionStrength, 0.0f, 2.0f, "%.2f")) { changed = true; }
+                    fieldRow("Anim Speed");
+                    if (ImGui::SliderFloat("##VHSAnimationSpeed", &obj.postFx.vhsOverlayAnimationSpeed, 0.0f, 4.0f, "%.2f")) { changed = true; }
+                    fieldRow("Tracking Err.");
+                    if (ImGui::SliderFloat("##VHSBandHeight", &obj.postFx.vhsOverlayBottomNoiseBandHeight, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Color Bleed");
+                    if (ImGui::SliderFloat("##VHSColorBleed", &obj.postFx.vhsOverlayColorBleed, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Color Banding");
+                    if (ImGui::SliderFloat("##VHSBanding", &obj.postFx.vhsOverlayBanding, 0.0f, 1.0f, "%.2f")) { changed = true; }
+                    fieldRow("Static Bursts");
                     if (ImGui::SliderFloat("##VHSBandIntensity", &obj.postFx.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f, "%.2f")) { changed = true; }
                     ImGui::EndDisabled();
                     endCompFields();
                 }
             }
 
-            if (ImGui::CollapsingHeader("Wavy Effect", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Wavy Effect", nullptr, true)) {
                 if (beginCompFields("##Fields_PFXWavy")) {
                     ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0);
                     if (ImGui::Checkbox("##EnabledWavy", &obj.postFx.wavyEnabled)) { changed = true; }
@@ -6991,7 +7164,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            /*if (ImGui::CollapsingHeader("Profiling", ImGuiTreeNodeFlags_DefaultOpen)) {
+            /*if (drawInspectorSubsectionFoldout("Profiling", nullptr, true)) {
                 static const Renderer::PostProcessStats zeroPostStats{};
                 const Renderer::PostProcessStats& postStats = rendererInitialized
                     ? renderer.getLastViewportPostStats()
@@ -7075,6 +7248,7 @@ void Engine::renderInspectorPanel() {
                 removeRenderer);
         });
         if (rendererHeader.open) {
+            InspectorBodyScope _ibs;
             const char* renderLabel = "None";
             switch (obj.renderType) {
                 case RenderType::Cube: renderLabel = "Cube"; break;
@@ -7486,6 +7660,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Light");
             if (beginCompFields("##Fields_Light")) {
                 int currentType = static_cast<int>(obj.light.type);
@@ -7626,6 +7801,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("Light2D");
 
             auto drawLayerMaskEditor = [&](const char* label, bool& targetAllLayers, uint32_t& targetLayerMask) {
@@ -7736,7 +7912,7 @@ void Engine::renderInspectorPanel() {
 
             drawLayerMaskEditor("Target All Layers", obj.light2D.targetAllLayers, obj.light2D.targetLayerMask);
 
-            if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (drawInspectorSubsectionFoldout("Shadows", nullptr, true)) {
                 if (beginCompFields("##Fields_L2DShadows")) {
                     if (boolRow("Cast Shadows", &obj.light2D.castsShadows)) { changed = true; }
                     fieldRow("Shadow Strength");
@@ -7745,7 +7921,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Volumetric")) {
+            if (drawInspectorSubsectionFoldout("Volumetric")) {
                 if (beginCompFields("##Fields_L2DVolumetric")) {
                     if (boolRow("Enabled", &obj.light2D.volumetricEnabled)) { changed = true; }
                     noteRow("Volumetric accumulation is scaffolded for a later pass.");
@@ -7753,7 +7929,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Normal Maps")) {
+            if (drawInspectorSubsectionFoldout("Normal Maps")) {
                 if (beginCompFields("##Fields_L2DNormalMaps")) {
                     const char* normalQualityLabels[] = { "Disabled", "Fast", "Accurate" };
                     int quality = static_cast<int>(obj.light2D.normalMapQuality);
@@ -7771,7 +7947,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Distance Attenuation")) {
+            if (drawInspectorSubsectionFoldout("Distance Attenuation")) {
                 if (beginCompFields("##Fields_L2DDistAtten")) {
                     if (boolRow("Use Dist Exponent", &obj.light2D.useDistanceExponent)) { changed = true; }
                     fieldRow("Dist Exponent");
@@ -7780,7 +7956,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Cookie")) {
+            if (drawInspectorSubsectionFoldout("Cookie")) {
                 if (beginCompFields("##Fields_L2DCookie")) {
                     fieldRow("Texture");
                     {
@@ -7803,7 +7979,7 @@ void Engine::renderInspectorPanel() {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Flicker")) {
+            if (drawInspectorSubsectionFoldout("Flicker")) {
                 if (beginCompFields("##Fields_L2DFlicker")) {
                     if (boolRow("Enabled", &obj.light2D.flicker.enabled)) { changed = true; }
                     fieldRow("Speed");
@@ -7817,7 +7993,7 @@ void Engine::renderInspectorPanel() {
             }
 
             if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
-                if (ImGui::CollapsingHeader("Shape", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (drawInspectorSubsectionFoldout("Shape", nullptr, true)) {
                     if (ImGui::Button(light2DShapeEditMode && light2DShapeEditingObjectId == obj.id
                             ? "Stop Shape Edit"
                             : "Edit Shape")) {
@@ -7941,6 +8117,7 @@ void Engine::renderInspectorPanel() {
             changed = true;
         }
         if (header.open) {
+            InspectorBodyScope _ibs;
             ImGui::PushID("ShadowCaster2D");
 
             if (beginCompFields("##Fields_ShadowCaster2D")) {
@@ -8141,6 +8318,7 @@ void Engine::renderInspectorPanel() {
         }
 
         if (header.open) {
+            InspectorBodyScope _ibs;
             /*
             ImGui::SeparatorText("Binding");
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
@@ -9214,6 +9392,7 @@ void Engine::renderInspectorPanel() {
         }
 
         if (materialHeaderState.first) {
+            InspectorBodyScope _ibs;
             if (selectedMaterialSlot == 0) {
                 const bool primaryMaterialChanged = renderMaterialEditorBody(
                     "ObjectMaterial",

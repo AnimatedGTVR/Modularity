@@ -191,6 +191,10 @@ PostFXSettings MakeNeutralPostFXSettings() {
     settings.vhsOverlayChromaBleed = 0.0f;
     settings.vhsOverlayBottomNoiseBandHeight = 0.0f;
     settings.vhsOverlayBottomNoiseBandIntensity = 0.0f;
+    settings.vhsOverlayDistortionStrength = 0.0f;
+    settings.vhsOverlayAnimationSpeed = 0.0f;
+    settings.vhsOverlayColorBleed = 0.0f;
+    settings.vhsOverlayBanding = 0.0f;
     settings.wavyEnabled = false;
     settings.wavyAmplitude = 0.0f;
     settings.wavyFrequency = 16.0f;
@@ -2097,6 +2101,9 @@ void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) 
 
     const char* route = allowHistory ? "viewport" : "preview";
     if (!stats.executionBegan) {
+        if (!allowHistory && stats.skipReason == "no_visible_effects") {
+            return;
+        }
         std::cerr << "[PostFX][" << route << "] skipped"
                   << " reason=" << (stats.skipReason.empty() ? "unknown" : stats.skipReason)
                   << " srcTex=" << stats.sourceTextureId
@@ -3499,6 +3506,14 @@ Renderer::ResolvedPostFX Renderer::gatherPostFX(const Camera& camera, const std:
             glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBottomNoiseBandHeight, weight);
         settings.vhsOverlayBottomNoiseBandIntensity =
             glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBottomNoiseBandIntensity, weight);
+        settings.vhsOverlayDistortionStrength =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayDistortionStrength, weight);
+        settings.vhsOverlayAnimationSpeed =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayAnimationSpeed, weight);
+        settings.vhsOverlayColorBleed =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayColorBleed, weight);
+        settings.vhsOverlayBanding =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBanding, weight);
     }
     if (resolvedVolume->postFx.wavyEnabled) {
         settings.wavyEnabled = true;
@@ -3753,6 +3768,14 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
                              std::clamp(settings.vhsOverlayBottomNoiseBandHeight, 0.0f, 1.0f));
         postShader->setFloat("vhsOverlayBottomNoiseBandIntensity",
                              std::clamp(settings.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f));
+        postShader->setFloat("vhsOverlayDistortionStrength",
+                             std::clamp(settings.vhsOverlayDistortionStrength, 0.0f, 2.0f));
+        postShader->setFloat("vhsOverlayAnimationSpeed",
+                             std::max(0.0f, settings.vhsOverlayAnimationSpeed));
+        postShader->setFloat("vhsOverlayColorBleed",
+                             std::clamp(settings.vhsOverlayColorBleed, 0.0f, 1.0f));
+        postShader->setFloat("vhsOverlayBanding",
+                             std::clamp(settings.vhsOverlayBanding, 0.0f, 1.0f));
         postShader->setBool("enableWavyEffect", settings.wavyEnabled);
         postShader->setFloat("wavyAmplitude", std::max(0.0f, settings.wavyAmplitude));
         postShader->setFloat("wavyFrequency", std::max(0.0f, settings.wavyFrequency));

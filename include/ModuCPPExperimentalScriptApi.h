@@ -374,10 +374,10 @@ inline bool DrawStdStringInput(const char* label, std::string& value,
     std::snprintf(buffer.data(), buffer.size(), "%s", value.c_str());
     bool edited = false;
     if (multiline) {
-        edited = ImGui::InputTextMultiline(label, buffer.data(), buffer.size(),
+        edited = ModuGUI::InputTextMultiline(label, buffer.data(), buffer.size(),
                                            ImVec2(-FLT_MIN, multilineHeight), flags);
     } else {
-        edited = ImGui::InputText(label, buffer.data(), buffer.size(), flags);
+        edited = ModuGUI::InputText(label, buffer.data(), buffer.size(), flags);
     }
     if (edited) {
         value = buffer.data();
@@ -388,8 +388,8 @@ inline bool DrawStdStringInput(const char* label, std::string& value,
 inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::string& objectRef) {
     bool changed = DrawStdStringInput(label, objectRef, 256);
 
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
+    if (ModuGUI::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("SCENE_OBJECT")) {
             if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {
                 const int droppedId = *static_cast<const int*>(payload->Data);
                 const std::string newRef = MakeObjectRef(droppedId);
@@ -399,14 +399,14 @@ inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::strin
                 }
             }
         }
-        ImGui::EndDragDropTarget();
+        ModuGUI::EndDragDropTarget();
     }
 
     SceneObject* resolved = ResolveSceneObjectRef(ctx, objectRef);
     if (resolved) {
-        ImGui::TextDisabled("-> %s (id=%d)", resolved->name.c_str(), resolved->id);
+        ModuGUI::TextDisabled("-> %s (id=%d)", resolved->name.c_str(), resolved->id);
     } else if (!Trim(objectRef).empty()) {
-        ImGui::TextDisabled("-> unresolved");
+        ModuGUI::TextDisabled("-> unresolved");
     }
 
     return changed;
@@ -425,8 +425,8 @@ inline bool IsAudioClipPath(const std::string& path) {
 
 inline bool DrawAudioClipInput(const char* label, std::string& clipPath, size_t capacity = 512) {
     bool changed = DrawStdStringInput(label, clipPath, capacity);
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+    if (ModuGUI::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("FILE_PATH")) {
             if (payload->Data && payload->DataSize > 0) {
                 const char* droppedPath = static_cast<const char*>(payload->Data);
                 if (droppedPath) {
@@ -438,55 +438,55 @@ inline bool DrawAudioClipInput(const char* label, std::string& clipPath, size_t 
                 }
             }
         }
-        ImGui::EndDragDropTarget();
+        ModuGUI::EndDragDropTarget();
     }
     return changed;
 }
 
 inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label, std::vector<std::string>& refs) {
     bool changed = false;
-    if (!ImGui::TreeNode(label)) {
+    if (!ModuGUI::TreeNode(label)) {
         return false;
     }
 
     for (size_t i = 0; i < refs.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::SetNextItemWidth(-80.0f);
+        ModuGUI::PushID(static_cast<int>(i));
+        ModuGUI::SetNextItemWidth(-80.0f);
         changed |= DrawStdStringInput("##ref", refs[i], 256);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("X")) {
+        ModuGUI::SameLine();
+        if (ModuGUI::SmallButton("X")) {
             refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(i));
             changed = true;
-            ImGui::PopID();
+            ModuGUI::PopID();
             --i;
             continue;
         }
 
         SceneObject* resolved = ResolveSceneObjectRef(ctx, refs[i]);
         if (resolved) {
-            ImGui::TextDisabled("%s (id=%d)", resolved->name.c_str(), resolved->id);
+            ModuGUI::TextDisabled("%s (id=%d)", resolved->name.c_str(), resolved->id);
         }
 
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
+        if (ModuGUI::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("SCENE_OBJECT")) {
                 if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {
                     const int droppedId = *static_cast<const int*>(payload->Data);
                     refs[i] = MakeObjectRef(droppedId);
                     changed = true;
                 }
             }
-            ImGui::EndDragDropTarget();
+            ModuGUI::EndDragDropTarget();
         }
 
-        ImGui::PopID();
+        ModuGUI::PopID();
     }
 
-    if (ImGui::Button("Add Reference")) {
+    if (ModuGUI::Button("Add Reference")) {
         refs.emplace_back();
         changed = true;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Add Selected")) {
+    ModuGUI::SameLine();
+    if (ModuGUI::Button("Add Selected")) {
         const int selectedId = ctx.GetSelectedObjectId();
         if (selectedId >= 0) {
             refs.push_back(MakeObjectRef(selectedId));
@@ -494,18 +494,18 @@ inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label, std::
         }
     }
 
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_OBJECT")) {
+    if (ModuGUI::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("SCENE_OBJECT")) {
             if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {
                 const int droppedId = *static_cast<const int*>(payload->Data);
                 refs.push_back(MakeObjectRef(droppedId));
                 changed = true;
             }
         }
-        ImGui::EndDragDropTarget();
+        ModuGUI::EndDragDropTarget();
     }
 
-    ImGui::TreePop();
+    ModuGUI::TreePop();
     return changed;
 }
 

@@ -56,6 +56,13 @@ public:
     bool setObjectLoop(const SceneObject& obj, bool loop);
     bool setObjectVolume(const SceneObject& obj, float volume);
 
+    bool attachVideoStream(int streamId, ma_data_source* dataSource);
+    void detachVideoStream(int streamId);
+    bool configureVideoStream(int streamId, const SceneObject* routeObject, float volume, bool muted, bool loop, float pitch);
+    bool setVideoStreamPlaying(int streamId, bool playing);
+    bool seekVideoStreamToSeconds(int streamId, double seconds);
+    bool getVideoStreamCursorSeconds(int streamId, double& cursorSeconds) const;
+
     struct SimpleReverbNode {
         ma_node_base baseNode;
         int channels = 0;
@@ -114,10 +121,16 @@ private:
         std::shared_ptr<DecodedAudioData> decodedData;
     };
 
+    struct VideoStreamSound {
+        ma_sound sound{};
+        ma_data_source* dataSource = nullptr;
+    };
+
     ma_engine engine{};
     bool initialized = false;
     std::unordered_map<int, std::unique_ptr<ActiveSound>> activeSounds;
     std::vector<std::unique_ptr<OneShotSound>> oneShotSounds;
+    std::unordered_map<int, std::unique_ptr<VideoStreamSound>> videoStreams;
     std::unordered_map<std::string, AudioClipPreview> previewCache;
     std::unordered_set<std::string> missingClips;
 
@@ -136,9 +149,11 @@ private:
 
     void destroyActiveSounds();
     void destroyOneShotSounds();
+    void destroyVideoStreams();
     void cleanupFinishedOneShots();
     bool ensureSoundFor(const SceneObject& obj);
     void refreshSoundParams(const SceneObject& obj, ActiveSound& snd);
+    void applyAudioSourceParams(const SceneObject& obj, ma_sound& sound, float baseGain, bool loop);
     bool shouldUsePlanar2DAudio(const SceneObject& obj) const;
     float computePlanarPan(const SceneObject& obj, const glm::vec3& listenerPos, float spatialBlend) const;
     float computeDistanceAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const;

@@ -604,6 +604,13 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "videoPlayOnAwake=" << (obj.videoPlayer.playOnAwake ? 1 : 0) << "\n";
                 file << "videoLoop=" << (obj.videoPlayer.loop ? 1 : 0) << "\n";
                 file << "videoPlaybackSpeed=" << obj.videoPlayer.playbackSpeed << "\n";
+                file << "videoPlayAudioFromVideo=" << (obj.videoPlayer.playAudioFromVideo ? 1 : 0) << "\n";
+                file << "videoRouteAudioToSource=" << (obj.videoPlayer.routeAudioToSource ? 1 : 0) << "\n";
+                file << "videoOutputAudioSourceObjectId=" << obj.videoPlayer.outputAudioSourceObjectId << "\n";
+                file << "videoAudioVolume=" << obj.videoPlayer.videoAudioVolume << "\n";
+                file << "videoAudioMuted=" << (obj.videoPlayer.videoAudioMuted ? 1 : 0) << "\n";
+                file << "videoSyncAudioToVideo=" << (obj.videoPlayer.syncAudioToVideo ? 1 : 0) << "\n";
+                file << "videoAudioSyncTolerance=" << obj.videoPlayer.audioSyncTolerance << "\n";
             }
             file << "hasReverbZone=" << (obj.hasReverbZone ? 1 : 0) << "\n";
             if (obj.hasReverbZone) {
@@ -1010,6 +1017,10 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "postVHSOverlayChromaBleed=" << obj.postFx.vhsOverlayChromaBleed << "\n";
                 file << "postVHSOverlayBottomNoiseBandHeight=" << obj.postFx.vhsOverlayBottomNoiseBandHeight << "\n";
                 file << "postVHSOverlayBottomNoiseBandIntensity=" << obj.postFx.vhsOverlayBottomNoiseBandIntensity << "\n";
+                file << "postVHSOverlayDistortionStrength=" << obj.postFx.vhsOverlayDistortionStrength << "\n";
+                file << "postVHSOverlayAnimationSpeed=" << obj.postFx.vhsOverlayAnimationSpeed << "\n";
+                file << "postVHSOverlayColorBleed=" << obj.postFx.vhsOverlayColorBleed << "\n";
+                file << "postVHSOverlayBanding=" << obj.postFx.vhsOverlayBanding << "\n";
                 file << "postWavyEnabled=" << (obj.postFx.wavyEnabled ? 1 : 0) << "\n";
                 file << "postWavyAmplitude=" << obj.postFx.wavyAmplitude << "\n";
                 file << "postWavyFrequency=" << obj.postFx.wavyFrequency << "\n";
@@ -1286,6 +1297,13 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"videoPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playOnAwake = std::stoi(value) != 0; }},
         {"videoLoop", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.loop = std::stoi(value) != 0; }},
         {"videoPlaybackSpeed", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playbackSpeed = std::stof(value); }},
+        {"videoPlayAudioFromVideo", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playAudioFromVideo = std::stoi(value) != 0; }},
+        {"videoRouteAudioToSource", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.routeAudioToSource = std::stoi(value) != 0; }},
+        {"videoOutputAudioSourceObjectId", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.outputAudioSourceObjectId = std::stoi(value); }},
+        {"videoAudioVolume", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.videoAudioVolume = std::stof(value); }},
+        {"videoAudioMuted", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.videoAudioMuted = std::stoi(value) != 0; }},
+        {"videoSyncAudioToVideo", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.syncAudioToVideo = std::stoi(value) != 0; }},
+        {"videoAudioSyncTolerance", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.audioSyncTolerance = std::stof(value); }},
         {"hasReverbZone", +[](SceneObject& obj, const std::string& value) { obj.hasReverbZone = std::stoi(value) != 0; }},
         {"reverbEnabled", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.enabled = std::stoi(value) != 0; }},
         {"reverbPreset", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.preset = static_cast<ReverbPreset>(std::stoi(value)); }},
@@ -1674,6 +1692,10 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"postVHSOverlayChromaBleed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayChromaBleed = std::stof(value); }},
         {"postVHSOverlayBottomNoiseBandHeight", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBottomNoiseBandHeight = std::stof(value); }},
         {"postVHSOverlayBottomNoiseBandIntensity", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBottomNoiseBandIntensity = std::stof(value); }},
+        {"postVHSOverlayDistortionStrength", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayDistortionStrength = std::stof(value); }},
+        {"postVHSOverlayAnimationSpeed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayAnimationSpeed = std::stof(value); }},
+        {"postVHSOverlayColorBleed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayColorBleed = std::stof(value); }},
+        {"postVHSOverlayBanding", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBanding = std::stof(value); }},
         {"postWavyEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyEnabled = (std::stoi(value) != 0); }},
         {"postWavyAmplitude", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyAmplitude = std::stof(value); }},
         {"postWavyFrequency", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyFrequency = std::stof(value); }},

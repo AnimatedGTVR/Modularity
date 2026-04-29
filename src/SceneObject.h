@@ -438,6 +438,10 @@ struct PostFXSettings {
     float vhsOverlayChromaBleed = 0.15f;
     float vhsOverlayBottomNoiseBandHeight = 0.18f;
     float vhsOverlayBottomNoiseBandIntensity = 0.85f;
+    float vhsOverlayDistortionStrength = 0.35f;
+    float vhsOverlayAnimationSpeed = 1.0f;
+    float vhsOverlayColorBleed = 0.4f;
+    float vhsOverlayBanding = 0.25f;
     bool wavyEnabled = false;
     float wavyAmplitude = 0.006f;
     float wavyFrequency = 16.0f;
@@ -658,6 +662,13 @@ struct VideoPlayerComponent {
     bool playOnAwake = true;
     bool loop = true;
     float playbackSpeed = 1.0f;
+    bool playAudioFromVideo = true;
+    bool routeAudioToSource = false;
+    int outputAudioSourceObjectId = -1;
+    float videoAudioVolume = 1.0f;
+    bool videoAudioMuted = false;
+    bool syncAudioToVideo = true;
+    float audioSyncTolerance = 0.05f;
 };
 
 struct ReverbZoneComponent {

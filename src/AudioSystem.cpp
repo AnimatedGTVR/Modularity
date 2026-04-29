@@ -211,7 +211,8 @@ bool AudioSystem::init() {
     if (initialized) return true;
     ma_result res = ma_engine_init(nullptr, &engine);
     if (res != MA_SUCCESS) {
-        std::cerr << "AudioSystem: failed to init miniaudio (" << res << ")\n";
+        std::cerr << "AudioSystem: failed to init miniaudio ("
+                  << ma_result_description(res) << ")\n";
         return false;
     }
     ma_uint32 channels = ma_engine_get_channels(&engine);
@@ -279,6 +280,7 @@ bool AudioSystem::init() {
 
 void AudioSystem::shutdown() {
     stopPreview();
+    destroyVideoStreams();
     destroyActiveSounds();
     destroyOneShotSounds();
     shutdownReverbGraph();
@@ -306,6 +308,15 @@ void AudioSystem::destroyOneShotSounds() {
         }
     }
     oneShotSounds.clear();
+}
+
+void AudioSystem::destroyVideoStreams() {
+    for (auto& kv : videoStreams) {
+        if (kv.second) {
+            ma_sound_uninit(&kv.second->sound);
+        }
+    }
+    videoStreams.clear();
 }
 
 void AudioSystem::cleanupFinishedOneShots() {
@@ -337,6 +348,7 @@ void AudioSystem::onPlayStart(const std::vector<SceneObject>& objects) {
 }
 
 void AudioSystem::onPlayStop() {
+    destroyVideoStreams();
     destroyActiveSounds();
     destroyOneShotSounds();
 }
@@ -379,65 +391,69 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
 }
 
 void AudioSystem::refreshSoundParams(const SceneObject& obj, ActiveSound& snd) {
+    applyAudioSourceParams(obj, snd.sound, obj.audioSource.volume, obj.audioSource.loop);
+
+    if (!ma_sound_is_playing(&snd.sound) && !snd.started && obj.audioSource.playOnStart && obj.audioSource.enabled) {
+        ma_sound_start(&snd.sound);
+        snd.started = true;
+    }
+}
+
+void AudioSystem::applyAudioSourceParams(const SceneObject& obj, ma_sound& sound, float baseGain, bool loop) {
     const float spatialBlend = GetAudioSpatialBlend(obj.audioSource);
     const bool spatialEnabled = spatialBlend > 0.001f;
     const bool planar2D = shouldUsePlanar2DAudio(obj);
     float minDist = std::max(0.1f, obj.audioSource.minDistance);
     float maxDist = std::max(obj.audioSource.maxDistance, minDist + 0.5f);
-    float gain = obj.audioSource.volume;
-    ma_sound_set_looping(&snd.sound, obj.audioSource.loop ? MA_TRUE : MA_FALSE);
+    float gain = std::max(0.0f, baseGain);
+    ma_sound_set_looping(&sound, loop ? MA_TRUE : MA_FALSE);
 
     if (planar2D) {
         const glm::vec3 planarSourcePos = computeSpatializedPosition(obj, spatialBlend, lastListenerPosition);
         const float attenuation = computeDistanceAttenuation(obj, lastListenerPosition, planarSourcePos);
         gain *= std::clamp(1.0f + (attenuation - 1.0f) * spatialBlend, 0.0f, 1.0f);
-        ma_sound_set_pan_mode(&snd.sound, ma_pan_mode_pan);
-        ma_sound_set_pan(&snd.sound, computePlanarPan(obj, lastListenerPosition, spatialBlend));
-        ma_sound_set_spatialization_enabled(&snd.sound, MA_FALSE);
-        ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_none);
-        ma_sound_set_position(&snd.sound, 0.0f, 0.0f, 0.0f);
+        ma_sound_set_pan_mode(&sound, ma_pan_mode_pan);
+        ma_sound_set_pan(&sound, computePlanarPan(obj, lastListenerPosition, spatialBlend));
+        ma_sound_set_spatialization_enabled(&sound, MA_FALSE);
+        ma_sound_set_attenuation_model(&sound, ma_attenuation_model_none);
+        ma_sound_set_position(&sound, 0.0f, 0.0f, 0.0f);
     } else {
-        ma_sound_set_pan_mode(&snd.sound, ma_pan_mode_balance);
-        ma_sound_set_pan(&snd.sound, 0.0f);
-        ma_sound_set_spatialization_enabled(&snd.sound, spatialEnabled ? MA_TRUE : MA_FALSE);
+        ma_sound_set_pan_mode(&sound, ma_pan_mode_balance);
+        ma_sound_set_pan(&sound, 0.0f);
+        ma_sound_set_spatialization_enabled(&sound, spatialEnabled ? MA_TRUE : MA_FALSE);
     }
     if (spatialEnabled && !planar2D) {
         switch (obj.audioSource.rolloffMode) {
             case AudioRolloffMode::Linear:
-                ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_linear);
+                ma_sound_set_attenuation_model(&sound, ma_attenuation_model_linear);
                 break;
             case AudioRolloffMode::Exponential:
-                ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_exponential);
+                ma_sound_set_attenuation_model(&sound, ma_attenuation_model_exponential);
                 break;
             case AudioRolloffMode::Custom:
-                ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_none);
+                ma_sound_set_attenuation_model(&sound, ma_attenuation_model_none);
                 break;
             case AudioRolloffMode::Logarithmic:
             default:
-                ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_inverse);
+                ma_sound_set_attenuation_model(&sound, ma_attenuation_model_inverse);
                 break;
         }
-        ma_sound_set_rolloff(&snd.sound, std::max(0.01f, obj.audioSource.rolloff));
+        ma_sound_set_rolloff(&sound, std::max(0.01f, obj.audioSource.rolloff));
     } else {
-        ma_sound_set_attenuation_model(&snd.sound, ma_attenuation_model_none);
+        ma_sound_set_attenuation_model(&sound, ma_attenuation_model_none);
     }
-    ma_sound_set_min_distance(&snd.sound, minDist);
-    ma_sound_set_max_distance(&snd.sound, maxDist);
+    ma_sound_set_min_distance(&sound, minDist);
+    ma_sound_set_max_distance(&sound, maxDist);
     if (!planar2D) {
         const glm::vec3 spatialPos = computeSpatializedPosition(obj, spatialBlend, lastListenerPosition);
-        ma_sound_set_position(&snd.sound, spatialPos.x, spatialPos.y, spatialPos.z);
+        ma_sound_set_position(&sound, spatialPos.x, spatialPos.y, spatialPos.z);
 
         if (spatialEnabled && obj.audioSource.rolloffMode == AudioRolloffMode::Custom) {
             float attenuation = computeCustomAttenuation(obj, lastListenerPosition, spatialPos);
             gain *= attenuation;
         }
     }
-    ma_sound_set_volume(&snd.sound, gain);
-
-    if (!ma_sound_is_playing(&snd.sound) && !snd.started && obj.audioSource.playOnStart && obj.audioSource.enabled) {
-        ma_sound_start(&snd.sound);
-        snd.started = true;
-    }
+    ma_sound_set_volume(&sound, gain);
 }
 
 void AudioSystem::update(const std::vector<SceneObject>& objects, const Camera& listenerCamera, bool playing) {
@@ -757,6 +773,108 @@ bool AudioSystem::setObjectVolume(const SceneObject& obj, float volume) {
     (void)volume;
     ActiveSound& snd = *activeSounds[obj.id];
     refreshSoundParams(obj, snd);
+    return true;
+}
+
+bool AudioSystem::attachVideoStream(int streamId, ma_data_source* dataSource) {
+    if (streamId < 0 || dataSource == nullptr) return false;
+    if (!initialized && !init()) return false;
+
+    auto it = videoStreams.find(streamId);
+    if (it != videoStreams.end() && it->second && it->second->dataSource == dataSource) {
+        return true;
+    }
+
+    detachVideoStream(streamId);
+
+    auto stream = std::make_unique<VideoStreamSound>();
+    ma_result res = ma_sound_init_from_data_source(&engine, dataSource, 0,
+                                                   reverbReady ? &reverbGroup : nullptr, &stream->sound);
+    if (res != MA_SUCCESS) {
+        std::cerr << "AudioSystem: failed to attach video audio stream " << streamId
+                  << " (" << ma_result_description(res) << ")\n";
+        return false;
+    }
+
+    stream->dataSource = dataSource;
+    videoStreams.emplace(streamId, std::move(stream));
+    return true;
+}
+
+void AudioSystem::detachVideoStream(int streamId) {
+    auto it = videoStreams.find(streamId);
+    if (it == videoStreams.end()) return;
+    if (it->second) {
+        ma_sound_stop(&it->second->sound);
+        ma_sound_uninit(&it->second->sound);
+    }
+    videoStreams.erase(it);
+}
+
+bool AudioSystem::configureVideoStream(int streamId, const SceneObject* routeObject, float volume, bool muted, bool loop, float pitch) {
+    auto it = videoStreams.find(streamId);
+    if (it == videoStreams.end() || !it->second) return false;
+
+    ma_sound& sound = it->second->sound;
+    const float gain = muted ? 0.0f : std::max(0.0f, volume);
+    ma_sound_set_pitch(&sound, std::max(0.01f, pitch));
+
+    if (routeObject && routeObject->hasAudioSource) {
+        applyAudioSourceParams(*routeObject, sound, routeObject->audioSource.volume * gain, loop);
+        return true;
+    }
+
+    ma_sound_set_looping(&sound, loop ? MA_TRUE : MA_FALSE);
+    ma_sound_set_pan_mode(&sound, ma_pan_mode_balance);
+    ma_sound_set_pan(&sound, 0.0f);
+    ma_sound_set_spatialization_enabled(&sound, MA_FALSE);
+    ma_sound_set_attenuation_model(&sound, ma_attenuation_model_none);
+    ma_sound_set_position(&sound, 0.0f, 0.0f, 0.0f);
+    ma_sound_set_volume(&sound, gain);
+    return true;
+}
+
+bool AudioSystem::setVideoStreamPlaying(int streamId, bool playing) {
+    auto it = videoStreams.find(streamId);
+    if (it == videoStreams.end() || !it->second) return false;
+    const ma_result result = playing ? ma_sound_start(&it->second->sound)
+                                     : ma_sound_stop(&it->second->sound);
+    if (result != MA_SUCCESS) {
+        std::cerr << "AudioSystem: " << (playing ? "ma_sound_start" : "ma_sound_stop")
+                  << " failed for video streamId=" << streamId
+                  << " (" << ma_result_description(result) << ").\n";
+    }
+    return result == MA_SUCCESS;
+}
+
+bool AudioSystem::seekVideoStreamToSeconds(int streamId, double seconds) {
+    auto it = videoStreams.find(streamId);
+    if (it == videoStreams.end() || !it->second) return false;
+
+    ma_uint32 sampleRate = 0;
+    if (ma_sound_get_data_format(&it->second->sound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS ||
+        sampleRate == 0) {
+        return false;
+    }
+
+    const ma_uint64 targetFrame = static_cast<ma_uint64>(std::max(0.0, seconds) * static_cast<double>(sampleRate));
+    return ma_sound_seek_to_pcm_frame(&it->second->sound, targetFrame) == MA_SUCCESS;
+}
+
+bool AudioSystem::getVideoStreamCursorSeconds(int streamId, double& cursorSeconds) const {
+    cursorSeconds = 0.0;
+    auto it = videoStreams.find(streamId);
+    if (it == videoStreams.end() || !it->second) return false;
+
+    ma_uint32 sampleRate = 0;
+    ma_uint64 cursorFrames = 0;
+    if (ma_sound_get_data_format(&it->second->sound, nullptr, nullptr, &sampleRate, nullptr, 0) != MA_SUCCESS ||
+        sampleRate == 0 ||
+        ma_sound_get_cursor_in_pcm_frames(&it->second->sound, &cursorFrames) != MA_SUCCESS) {
+        return false;
+    }
+
+    cursorSeconds = static_cast<double>(cursorFrames) / static_cast<double>(sampleRate);
     return true;
 }
 

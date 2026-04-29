@@ -6477,8 +6477,17 @@ void Engine::syncVideoPlayers(float delta) {
         }
 
         VideoPlayer& player = *entry;
+
+        // Ensure audio configuration flags are set BEFORE LoadVideo so the decoder
+        // initializes the correct audio path (test-tone vs. FFmpeg-decoded).
+        player.SetPlayAudioFromVideo(obj.videoPlayer.playAudioFromVideo);
+        player.SetSyncAudioToVideo(obj.videoPlayer.syncAudioToVideo);
+        player.SetAudioSyncTolerance(obj.videoPlayer.audioSyncTolerance);
+        player.SetAudioSystem(&audio, obj.id);
+
         const fs::path resolvedVideoPath = resolveProjectAssetPath(obj.videoPlayer.videoPath);
-        if (!player.IsLoaded() || player.GetLoadedPath() != resolvedVideoPath.string()) {
+        const bool wasLoaded = player.IsLoaded() && player.GetLoadedPath() == resolvedVideoPath.string();
+        if (!wasLoaded) {
             if (!player.LoadVideo(resolvedVideoPath.string())) {
                 std::cerr << "Failed to load video for object '" << obj.name << "'";
                 if (!obj.videoPlayer.videoPath.empty()) {
@@ -6491,17 +6500,37 @@ void Engine::syncVideoPlayers(float delta) {
                 videoPlayers.erase(obj.id);
                 continue;
             }
-
-            if (obj.videoPlayer.playOnAwake) {
-                player.Play();
-            } else {
-                player.Pause();
-            }
+            // Re-apply audio system binding after LoadVideo (LoadVideo recreates the
+            // buffer source, RefreshAudioBinding inside LoadVideo runs before we know
+            // the audio system pointer for the freshly-loaded buffer).
+            player.SetAudioSystem(&audio, obj.id);
         }
 
         player.SetLoop(obj.videoPlayer.loop);
         player.SetPlaybackSpeed(obj.videoPlayer.playbackSpeed);
         player.SetPointFiltering(obj.material.textureFilter == MaterialProperties::TextureFilter::Point);
+
+        const SceneObject* audioRouteObject = nullptr;
+        if (obj.videoPlayer.routeAudioToSource) {
+            int routeId = obj.videoPlayer.outputAudioSourceObjectId;
+            if (routeId < 0 && obj.hasAudioSource) {
+                routeId = obj.id;
+            }
+            if (routeId >= 0) {
+                for (const SceneObject& candidate : sceneObjects) {
+                    if (candidate.id == routeId && candidate.hasAudioSource) {
+                        audioRouteObject = &candidate;
+                        break;
+                    }
+                }
+            }
+        }
+        audio.configureVideoStream(obj.id,
+                                   audioRouteObject,
+                                   obj.videoPlayer.videoAudioVolume,
+                                   obj.videoPlayer.videoAudioMuted,
+                                   obj.videoPlayer.loop,
+                                   obj.videoPlayer.playbackSpeed);
 
         if (!IsObjectEnabledInHierarchy(obj)) {
             player.Pause();
