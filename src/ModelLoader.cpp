@@ -1362,6 +1362,30 @@ static glm::vec3 quatToEulerDegrees(const aiQuaternion& q) {
     return extractEulerXYZDegrees(gq);
 }
 
+static std::string buildNodePathFromRoot(const aiNode* node, const aiNode* root) {
+    if (!node || node == root) return {};
+
+    std::vector<std::string> segments;
+    const aiNode* current = node;
+    while (current && current != root) {
+        std::string name = current->mName.C_Str();
+        if (!name.empty()) {
+            segments.push_back(std::move(name));
+        }
+        current = current->mParent;
+    }
+    if (current != root) {
+        return {};
+    }
+
+    std::string path;
+    for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+        if (!path.empty()) path += '/';
+        path += *it;
+    }
+    return path;
+}
+
 static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
                              std::vector<OBJLoader::LoadedMesh>& loadedMeshes,
                              ModelSceneData& out, std::string& errorMsg) {
@@ -1438,14 +1462,21 @@ static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
         glm::vec3 boundsMax(-FLT_MAX);
 
         std::vector<std::string> boneNames;
+        std::vector<std::string> boneNodePaths;
         std::vector<glm::mat4> inverseBindMatrices;
         if (mesh->mNumBones > 0) {
             boneNames.reserve(mesh->mNumBones);
+            boneNodePaths.reserve(mesh->mNumBones);
             inverseBindMatrices.reserve(mesh->mNumBones);
             for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
                 aiBone* bone = mesh->mBones[b];
                 int boneIndex = static_cast<int>(boneNames.size());
                 boneNames.push_back(bone->mName.C_Str());
+#ifndef ASSIMP_BUILD_NO_ARMATUREPOPULATE_PROCESS
+                boneNodePaths.push_back(buildNodePathFromRoot(bone->mNode, scene->mRootNode));
+#else
+                boneNodePaths.emplace_back();
+#endif
                 inverseBindMatrices.push_back(aiToGlm(bone->mOffsetMatrix));
 
                 for (unsigned int w = 0; w < bone->mNumWeights; ++w) {
@@ -1572,6 +1603,7 @@ static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
         loaded.triangleIndices = std::move(triangleIndices);
         loaded.isSkinned = isSkinned;
         loaded.boneNames = std::move(boneNames);
+        loaded.boneNodePaths = std::move(boneNodePaths);
         loaded.inverseBindMatrices = std::move(inverseBindMatrices);
         loaded.baseVertices = vertices;
         if (isSkinned) {

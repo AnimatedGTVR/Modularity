@@ -65,6 +65,7 @@ public:
         std::vector<uint32_t> triangleIndices; // triangle indices into positions
         bool isSkinned = false;
         std::vector<std::string> boneNames;
+        std::vector<std::string> boneNodePaths;
         std::vector<glm::mat4> inverseBindMatrices;
         std::vector<glm::ivec4> boneIds;
         std::vector<glm::vec4> boneWeights;

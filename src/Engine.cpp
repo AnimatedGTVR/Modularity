@@ -4543,6 +4543,29 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
         parentObj->childIds.push_back(childId);
     }
 
+    std::vector<std::string> sceneNodePaths(sceneData.nodes.size());
+    std::unordered_map<std::string, int> nodeIdByPath;
+    nodeIdByPath.reserve(sceneData.nodes.size());
+    for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
+        std::vector<std::string> segments;
+        int cursor = static_cast<int>(i);
+        while (cursor >= 0 && cursor < static_cast<int>(sceneData.nodes.size())) {
+            if (cursor != 0) {
+                segments.push_back(sceneData.nodes[static_cast<size_t>(cursor)].name);
+            }
+            cursor = sceneData.nodes[static_cast<size_t>(cursor)].parentIndex;
+        }
+        std::string path;
+        for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+            if (!path.empty()) path += '/';
+            path += *it;
+        }
+        sceneNodePaths[i] = path;
+        if (nodeObjectIds[i] >= 0) {
+            nodeIdByPath[path] = nodeObjectIds[i];
+        }
+    }
+
     for (size_t nodeIndex = 0; nodeIndex < sceneData.nodes.size(); ++nodeIndex) {
         const auto& node = sceneData.nodes[nodeIndex];
         int parentId = nodeObjectIds[nodeIndex];
@@ -4583,6 +4606,13 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
                 meshObj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
                 meshObj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
                 for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
+                    if (b < meshInfo->boneNodePaths.size() && !meshInfo->boneNodePaths[b].empty()) {
+                        auto itPath = nodeIdByPath.find(meshInfo->boneNodePaths[b]);
+                        if (itPath != nodeIdByPath.end()) {
+                            meshObj.skeletal.boneNodeIds[b] = itPath->second;
+                            continue;
+                        }
+                    }
                     for (size_t n = 0; n < sceneData.nodes.size(); ++n) {
                         if (sceneData.nodes[n].name == meshInfo->boneNames[b]) {
                             int nodeId = nodeObjectIds[n];
@@ -4617,28 +4647,10 @@ void Engine::importModelToScene(const std::string& filepath, const std::string& 
 
     int exportedClipCount = 0;
     if (projectManager.currentProject.isLoaded && rootSelectionId != -1 && !sceneData.animations.empty()) {
-        std::vector<std::string> nodePaths(sceneData.nodes.size());
-        for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
-            std::vector<std::string> segments;
-            int cursor = static_cast<int>(i);
-            while (cursor >= 0 && cursor < static_cast<int>(sceneData.nodes.size())) {
-                if (cursor != 0) {
-                    segments.push_back(sceneData.nodes[static_cast<size_t>(cursor)].name);
-                }
-                cursor = sceneData.nodes[static_cast<size_t>(cursor)].parentIndex;
-            }
-            std::string path;
-            for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
-                if (!path.empty()) path += '/';
-                path += *it;
-            }
-            nodePaths[i] = path;
-        }
-
         std::unordered_map<std::string, std::string> pathByNodeName;
         pathByNodeName.reserve(sceneData.nodes.size());
         for (size_t i = 0; i < sceneData.nodes.size(); ++i) {
-            pathByNodeName[sceneData.nodes[i].name] = nodePaths[i];
+            pathByNodeName[sceneData.nodes[i].name] = sceneNodePaths[i];
         }
 
         fs::path animationDir = projectManager.currentProject.assetsPath / "Animations" / "Imported" / baseName;
@@ -7107,6 +7119,38 @@ void Engine::rebuildSkeletalBindings() {
         }
     }
 
+    auto resolveChildPath = [&](int rootId, const std::string& path) -> int {
+        if (rootId < 0) return -1;
+        if (path.empty()) return rootId;
+        SceneObject* current = findObjectById(rootId);
+        if (!current) return -1;
+
+        size_t start = 0;
+        while (start <= path.size()) {
+            size_t slash = path.find('/', start);
+            std::string segment = path.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+            if (segment.empty()) {
+                if (slash == std::string::npos) break;
+                start = slash + 1;
+                continue;
+            }
+
+            SceneObject* next = nullptr;
+            for (int childId : current->childIds) {
+                SceneObject* child = findObjectById(childId);
+                if (child && child->name == segment) {
+                    next = child;
+                    break;
+                }
+            }
+            if (!next) return -1;
+            current = next;
+            if (slash == std::string::npos) break;
+            start = slash + 1;
+        }
+        return current ? current->id : -1;
+    };
+
     for (auto& obj : sceneObjects) {
         if (!obj.hasRenderer || obj.renderType != RenderType::Model || obj.meshId < 0) continue;
         const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
@@ -7123,6 +7167,13 @@ void Engine::rebuildSkeletalBindings() {
         obj.skeletal.finalMatrices.assign(meshInfo->boneNames.size(), glm::mat4(1.0f));
         obj.skeletal.boneNodeIds.assign(meshInfo->boneNames.size(), -1);
         for (size_t b = 0; b < meshInfo->boneNames.size(); ++b) {
+            if (b < meshInfo->boneNodePaths.size() && !meshInfo->boneNodePaths[b].empty()) {
+                int resolvedId = resolveChildPath(obj.skeletal.skeletonRootId, meshInfo->boneNodePaths[b]);
+                if (resolvedId >= 0) {
+                    obj.skeletal.boneNodeIds[b] = resolvedId;
+                    continue;
+                }
+            }
             auto it = nameToId.find(meshInfo->boneNames[b]);
             if (it != nameToId.end()) {
                 obj.skeletal.boneNodeIds[b] = it->second;
