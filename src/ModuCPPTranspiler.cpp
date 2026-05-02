@@ -1755,10 +1755,19 @@ std::string rewriteIncludeDirective(const std::string& directive, const fs::path
 
     if (bracket == "\"") {
         std::error_code ec;
-        fs::path candidate = sourcePath.parent_path() / includeTarget;
-        fs::path absolute = fs::absolute(candidate, ec);
-        if (!ec && fs::exists(absolute, ec) && !ec) {
-            return "#include \"" + absolute.lexically_normal().generic_string() + "\"";
+        fs::path dir = sourcePath.parent_path();
+        while (!dir.empty()) {
+            fs::path candidate = dir / includeTarget;
+            fs::path absolute = fs::absolute(candidate, ec);
+            if (!ec && fs::exists(absolute, ec) && !ec) {
+                return "#include \"" + absolute.lexically_normal().generic_string() + "\"";
+            }
+            fs::path parent = dir.parent_path();
+            if (parent == dir) {
+                break;
+            }
+            dir = std::move(parent);
+            ec.clear();
         }
     }
 
@@ -2888,8 +2897,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     std::unordered_set<std::string> listFields;
     std::vector<std::string> customPublicFieldNames;
     bool hasAutoInspectorFields = false;
-    bool needsDialoguePortSupport = false;
     bool needsDialogueLinesSupport = strippedInspector.find("DialogueLines") != std::string::npos;
+    bool needsDialoguePortSupport = needsDialogueLinesSupport;
     bool needsObjectRefSupport = false;
     bool hasTransientFields = false;
     auto fieldNeedsDialogueLinesSupport = [&](const FieldSpec& field) {
@@ -2914,16 +2923,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             field.hasObjectListAttribute) {
             needsObjectRefSupport = true;
         }
-        if (field.kind == FieldKind::ObjectRef ||
-            field.kind == FieldKind::ObjectList ||
-            field.kind == FieldKind::DialogueLines ||
-            field.hasObjectRefAttribute ||
-            field.hasObjectListAttribute ||
+        if (field.kind == FieldKind::DialogueLines ||
             field.hasDialogueLinesAttribute) {
             needsDialoguePortSupport = true;
         }
         if (fieldNeedsDialogueLinesSupport(field)) {
             needsDialogueLinesSupport = true;
+            needsDialoguePortSupport = true;
         }
         if (field.visibility == FieldVisibility::Public || field.hasInspectorMetadata) {
             hasAutoInspectorFields = true;
@@ -2945,16 +2951,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 field.hasObjectListAttribute) {
                 needsObjectRefSupport = true;
             }
-            if (field.kind == FieldKind::ObjectRef ||
-                field.kind == FieldKind::ObjectList ||
-                field.kind == FieldKind::DialogueLines ||
-                field.hasObjectRefAttribute ||
-                field.hasObjectListAttribute ||
+            if (field.kind == FieldKind::DialogueLines ||
                 field.hasDialogueLinesAttribute) {
                 needsDialoguePortSupport = true;
             }
             if (fieldNeedsDialogueLinesSupport(field)) {
                 needsDialogueLinesSupport = true;
+                needsDialoguePortSupport = true;
             }
         }
     }
@@ -3124,7 +3127,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         }
         if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef) {
             if (field.kind == FieldKind::ObjectRef || field.hasObjectRefAttribute) {
-                out << indent << "changed |= DialoguePort::DrawObjectRefInput(ctx, \""
+                out << indent << "changed |= " << supportNs << "::DrawObjectRefInput(ctx, \""
                     << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
             } else {
                 out << indent << "{\n";
@@ -3337,7 +3340,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef ||
             fieldLooksLikeObjectRefString(field)) {
             if (field.kind == FieldKind::ObjectRef || fieldLooksLikeObjectRefString(field)) {
-                out << "        changed |= DialoguePort::DrawObjectRefInput(ctx, " << labelLiteral
+                out << "        changed |= " << supportNs << "::DrawObjectRefInput(ctx, " << labelLiteral
                     << ", " << valueExpr << ");\n";
             } else {
                 out << "        changed |= ::ModuCPP::EditString(" << labelLiteral << ", " << valueExpr << ");\n";
@@ -3727,6 +3730,35 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "    if (changed) {\n";
         out << "        ctx.MarkDirty();\n";
         out << "    }\n";
+        out << "}\n\n";
+
+        out << "inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::string& objectRef) {\n";
+        out << "    bool changed = false;\n";
+        out << "    std::vector<char> buffer(256, '\\0');\n";
+        out << "    std::snprintf(buffer.data(), buffer.size(), \"%s\", objectRef.c_str());\n";
+        out << "    if (ModuGUI::InputText(label, buffer.data(), buffer.size())) {\n";
+        out << "        objectRef = buffer.data();\n";
+        out << "        changed = true;\n";
+        out << "    }\n";
+        out << "    if (ModuGUI::BeginDragDropTarget()) {\n";
+        out << "        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
+        out << "            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
+        out << "                const int droppedId = *static_cast<const int*>(payload->Data);\n";
+        out << "                const std::string newRef = std::string(\"Object.ID-\") + std::to_string(droppedId);\n";
+        out << "                if (objectRef != newRef) {\n";
+        out << "                    objectRef = newRef;\n";
+        out << "                    changed = true;\n";
+        out << "                }\n";
+        out << "            }\n";
+        out << "        }\n";
+        out << "        ModuGUI::EndDragDropTarget();\n";
+        out << "    }\n";
+        out << "    if (SceneObject* resolved = ResolveSceneObjectRef(ctx, objectRef)) {\n";
+        out << "        ModuGUI::TextDisabled(\"-> %s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
+        out << "    } else if (!Trim(objectRef).empty()) {\n";
+        out << "        ModuGUI::TextDisabled(\"-> unresolved\");\n";
+        out << "    }\n";
+        out << "    return changed;\n";
         out << "}\n\n";
 
         out << "inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label,\n";
@@ -4211,7 +4243,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "ObjectRef(value) or ObjectRef(label, value) expected.",
                                      labelExpr, expr)) return false;
-                out << indent << "changed |= DialoguePort::DrawObjectRefInput(ctx, " << labelExpr
+                out << indent << "changed |= " << supportNs << "::DrawObjectRefInput(ctx, " << labelExpr
                     << ", " << expr << ");\n";
                 return true;
             }
