@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <functional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <optional>
 #include <future>
@@ -45,12 +46,15 @@ namespace FileIcons {
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Material.png";
                     break;
                 case FileCategory::Video:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png";
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Video File.png";
                     break;
                 case FileCategory::Audio:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Audio File.png";
                     break;
                 case FileCategory::Text:
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
+                    break;
+                case FileCategory::Shader:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
                     break;
                 case FileCategory::Model:
@@ -527,7 +531,7 @@ namespace FileIcons {
             case FileCategory::Material:DrawShaderIcon(drawList, pos, size, color); break;
             case FileCategory::Texture: DrawTextureIcon(drawList, pos, size, color); break;
             case FileCategory::Video:   DrawTextureIcon(drawList, pos, size, color); break;
-            case FileCategory::Shader:  DrawShaderIcon(drawList, pos, size, color); break;
+            case FileCategory::Shader:  DrawTextIcon(drawList, pos, size, color); break;
             case FileCategory::Script:  DrawScriptIcon(drawList, pos, size, color); break;
             case FileCategory::Audio:   DrawAudioIcon(drawList, pos, size, color); break;
             case FileCategory::Text:    DrawTextIcon(drawList, pos, size, color); break;
@@ -564,6 +568,39 @@ namespace {
     Texture* GetSceneIconTexture(Renderer& renderer) {
         static const fs::path kSceneIconPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/File Explorer/File Icon Scenes.png");
         return GetTexturePreview(renderer, kSceneIconPath);
+    }
+
+    Texture* GetVideoIconTexture(Renderer& renderer) {
+        static const fs::path kVideoIconPath("Resources/Engine-Root/File Explorer/File Icon Video File.png");
+        return GetTexturePreview(renderer, kVideoIconPath);
+    }
+
+    struct CachedVideoPreview {
+        bool attempted = false;
+        bool loaded = false;
+        std::unique_ptr<VideoPlayer> player;
+    };
+
+    CachedVideoPreview& GetVideoPreviewData(const fs::path& path) {
+        static std::unordered_map<std::string, CachedVideoPreview> cache;
+        CachedVideoPreview& preview = cache[path.string()];
+        if (preview.attempted) {
+            return preview;
+        }
+
+        preview.attempted = true;
+        preview.player = std::make_unique<VideoPlayer>();
+        preview.player->SetPlayAudioFromVideo(false);
+        preview.player->SetLoop(false);
+        preview.loaded = preview.player->LoadVideo(path.string(), false) &&
+                         preview.player->HasTextureOverride() &&
+                         preview.player->GetTextureId() != 0 &&
+                         preview.player->GetWidth() > 0 &&
+                         preview.player->GetHeight() > 0;
+        if (!preview.loaded) {
+            preview.player.reset();
+        }
+        return preview;
     }
 
     CachedModelPreview& GetModelPreviewData(const fs::path& path) {
@@ -655,6 +692,63 @@ namespace {
         return true;
     }
 
+    bool DrawVideoPreview(Renderer& renderer, ImDrawList* drawList, const fs::path& path,
+                          ImVec2 min, ImVec2 max, float rounding) {
+        Texture* icon = GetVideoIconTexture(renderer);
+        if (!icon || icon->GetID() == 0 || icon->GetWidth() <= 0 || icon->GetHeight() <= 0) {
+            return false;
+        }
+
+        const float availW = max.x - min.x;
+        const float availH = max.y - min.y;
+        const float iconScale = std::min(availW / static_cast<float>(icon->GetWidth()),
+                                         availH / static_cast<float>(icon->GetHeight()));
+        const float iconW = static_cast<float>(icon->GetWidth()) * iconScale;
+        const float iconH = static_cast<float>(icon->GetHeight()) * iconScale;
+        const ImVec2 iconMin(min.x + (availW - iconW) * 0.5f, min.y + (availH - iconH) * 0.5f);
+        const ImVec2 iconMax(iconMin.x + iconW, iconMin.y + iconH);
+
+        drawList->AddRectFilled(min, max, IM_COL32(24, 27, 34, 255), rounding);
+        drawList->PushClipRect(min, max, true);
+
+        CachedVideoPreview& preview = GetVideoPreviewData(path);
+        if (preview.loaded && preview.player) {
+            constexpr float kFrameLayerWidth = 614.0f;
+            constexpr float kFrameLayerHeight = 426.0f;
+            constexpr float kIconDesignSize = 700.0f;
+            const ImVec2 frameMin(
+                iconMin.x + ((kIconDesignSize - kFrameLayerWidth) * 0.5f) * iconScale,
+                iconMin.y + ((kIconDesignSize - kFrameLayerHeight) * 0.5f) * iconScale);
+            const ImVec2 frameMax(frameMin.x + kFrameLayerWidth * iconScale,
+                                  frameMin.y + kFrameLayerHeight * iconScale);
+            const float frameW = frameMax.x - frameMin.x;
+            const float frameH = frameMax.y - frameMin.y;
+            const float sourceAspect = static_cast<float>(preview.player->GetWidth()) /
+                                       static_cast<float>(std::max(1, preview.player->GetHeight()));
+            const float targetAspect = frameW / std::max(1.0f, frameH);
+            ImVec2 uvMin(0.0f, 0.0f);
+            ImVec2 uvMax(1.0f, 1.0f);
+            if (sourceAspect > targetAspect) {
+                const float visibleU = targetAspect / std::max(0.001f, sourceAspect);
+                const float crop = (1.0f - visibleU) * 0.5f;
+                uvMin.x = crop;
+                uvMax.x = 1.0f - crop;
+            } else if (sourceAspect < targetAspect) {
+                const float visibleV = sourceAspect / std::max(0.001f, targetAspect);
+                const float crop = (1.0f - visibleV) * 0.5f;
+                uvMin.y = crop;
+                uvMax.y = 1.0f - crop;
+            }
+            drawList->AddImage((ImTextureID)(intptr_t)preview.player->GetTextureId(),
+                               frameMin, frameMax, uvMin, uvMax);
+        }
+
+        drawList->AddImage((ImTextureID)(intptr_t)icon->GetID(), iconMin, iconMax, ImVec2(0, 1), ImVec2(1, 0));
+        drawList->PopClipRect();
+        drawList->AddRect(min, max, IM_COL32(96, 108, 126, 210), rounding, 0, 1.0f);
+        return true;
+    }
+
     bool DrawModelPreview(Renderer& renderer, ImDrawList* drawList, const fs::path& path,
                           ImVec2 min, ImVec2 max, int previewSlot, float rounding) {
         CachedModelPreview& preview = GetModelPreviewData(path);
@@ -737,7 +831,8 @@ namespace {
         Header,
         Text,
         Json,
-        Shader
+        Shader,
+        CombinedShader
     };
 
     bool FolderHasVisibleItems(const fs::path& path, bool showHiddenFiles) {
@@ -1226,6 +1321,7 @@ void Engine::renderFileBrowserPanel() {
                 case CreateKind::Text: target += ".txt"; break;
                 case CreateKind::Json: target += ".json"; break;
                 case CreateKind::Shader: target += ".glsl"; break;
+                case CreateKind::CombinedShader: target += ".shader"; break;
                 default: break;
             }
         }
@@ -1282,6 +1378,40 @@ void Engine::renderFileBrowserPanel() {
                         contents =
                             "// Shader entry point\n"
                             "void main() {\n"
+                            "}\n";
+                        break;
+                    case CreateKind::CombinedShader:
+                        contents =
+                            "#shader vertex\n"
+                            "#version 330 core\n"
+                            "layout (location = 0) in vec3 aPos;\n"
+                            "layout (location = 1) in vec3 aNormal;\n"
+                            "layout (location = 2) in vec2 aTexCoord;\n"
+                            "\n"
+                            "uniform mat4 model;\n"
+                            "uniform mat4 view;\n"
+                            "uniform mat4 projection;\n"
+                            "\n"
+                            "out vec2 TexCoord;\n"
+                            "\n"
+                            "void main()\n"
+                            "{\n"
+                            "    TexCoord = aTexCoord;\n"
+                            "    gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
+                            "}\n"
+                            "\n"
+                            "#shader fragment\n"
+                            "#version 330 core\n"
+                            "out vec4 FragColor;\n"
+                            "\n"
+                            "in vec2 TexCoord;\n"
+                            "\n"
+                            "uniform sampler2D texture1;\n"
+                            "uniform vec3 materialColor = vec3(1.0);\n"
+                            "\n"
+                            "void main()\n"
+                            "{\n"
+                            "    FragColor = texture(texture1, TexCoord) * vec4(materialColor, 1.0);\n"
                             "}\n";
                         break;
                     case CreateKind::Text:
@@ -1354,6 +1484,9 @@ void Engine::renderFileBrowserPanel() {
         if (ImGui::BeginMenu("Graphics")) {
             if (ImGui::MenuItem("Shader")) {
                 createEntry(dir, CreateKind::Shader, "NewShader.glsl");
+            }
+            if (ImGui::MenuItem("Combined Shader")) {
+                createEntry(dir, CreateKind::CombinedShader, "NewShader.shader");
             }
             if (ImGui::MenuItem("Scrolling Shader Pair")) {
                 fs::path vertPath;
@@ -2146,6 +2279,8 @@ void Engine::renderFileBrowserPanel() {
                     drewPreview = true;
                 } else if (category == FileCategory::Model) {
                     drewPreview = DrawModelPreview(renderer, drawList, entry.path(), previewMin, previewMax, 1000 + i, 9.0f);
+                } else if (category == FileCategory::Video) {
+                    drewPreview = DrawVideoPreview(renderer, drawList, entry.path(), previewMin, previewMax, 9.0f);
                 }
                 if (!drewPreview) {
                     FileIcons::DrawIcon(renderer, drawList, category, iconPos, iconSize, getCategoryColor(category), folderHasItems);
@@ -2409,6 +2544,8 @@ void Engine::renderFileBrowserPanel() {
                 } else if (category == FileCategory::Texture) {
                     DrawTexturePreview(renderer, drawList, entry.path(), previewMin, previewMax, 4.0f);
                     drewPreview = true;
+                } else if (category == FileCategory::Video) {
+                    drewPreview = DrawVideoPreview(renderer, drawList, entry.path(), previewMin, previewMax, 4.0f);
                 } else {
                     drewPreview = DrawModelPreview(renderer, drawList, entry.path(), previewMin, previewMax, 3000 + i, 4.0f);
                 }

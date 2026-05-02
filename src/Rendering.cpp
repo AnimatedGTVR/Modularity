@@ -75,13 +75,19 @@ glm::vec4 BuildSurfaceUvTransform(const SceneObject* obj, const MaterialProperti
     glm::vec2 tiling = material.uvTiling;
     glm::vec2 offset = material.uvOffset;
 
-    const bool hasRuntimeVideoOverride =
-        obj != nullptr &&
+    if (obj != nullptr &&
         obj->runtimeHasAlbedoTextureOverride &&
-        obj->runtimeAlbedoTextureOverrideId != 0;
-    if (hasRuntimeVideoOverride) {
+        obj->runtimeAlbedoTextureOverrideId != 0 &&
+        obj->runtimeAlbedoTextureFlipX) {
         offset.x += tiling.x;
         tiling.x = -tiling.x;
+    }
+    if (obj != nullptr &&
+        obj->runtimeHasAlbedoTextureOverride &&
+        obj->runtimeAlbedoTextureOverrideId != 0 &&
+        obj->runtimeAlbedoTextureFlipY) {
+        offset.y += tiling.y;
+        tiling.y = -tiling.y;
     }
 
     return glm::vec4(tiling, offset);

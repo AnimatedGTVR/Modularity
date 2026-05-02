@@ -294,6 +294,7 @@ public:
 
     void initialize();
     Texture* getTexture(const std::string& path, MaterialProperties::TextureFilter filter = MaterialProperties::TextureFilter::Bilinear);
+    unsigned int getDebugWhiteTextureId() const { return debugWhiteTexture; }
     void invalidateTexture(const std::string& path);
     Shader* getShader(const std::string& vert, const std::string& frag);
     bool forceReloadShader(const std::string& vert, const std::string& frag);

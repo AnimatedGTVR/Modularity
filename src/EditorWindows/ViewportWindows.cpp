@@ -27,6 +27,346 @@ void ModuRuntime2DProfiler_RecordUiRuntime(double uiRuntimeMs,
                                            uint32_t visibleObjectCount);
 
 namespace {
+bool ProjectWorldToOverlayPoint(const glm::vec3 &worldPos,
+                                const glm::mat4 &view,
+                                const glm::mat4 &proj,
+                                const ImVec2 &overlayPos,
+                                const ImVec2 &overlaySize,
+                                ImVec2 &outScreen);
+
+uint32_t ParticleHash(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
+
+float ParticleUnit(uint32_t &state) {
+  state = ParticleHash(state + 0x9e3779b9u);
+  return static_cast<float>(state & 0x00ffffffu) / static_cast<float>(0x01000000u);
+}
+
+float ParticleRange(ParticleSystem2DComponent::MinMaxFloat range, uint32_t &state) {
+  if (!range.random) return range.min;
+  return glm::mix(range.min, range.max, ParticleUnit(state));
+}
+
+void RestartParticleSystem2D(ParticleSystem2DComponent &ps, double now) {
+  ps.particles.clear();
+  ps.runtimeAccumulator = 0.0f;
+  ps.runtimeTime = 0.0f;
+  ps.runtimeLastUpdateTime = now;
+  ps.runtimeInitialized = true;
+  ps.playing = ps.playOnAwake;
+  ps.paused = false;
+}
+
+void EmitParticle2D(SceneObject &obj, uint32_t emissionIndex) {
+  ParticleSystem2DComponent &ps = obj.particleSystem2D;
+  if (static_cast<int>(ps.particles.size()) >= std::max(1, ps.maxParticles)) return;
+  uint32_t seed = ps.autoRandomSeed
+                      ? ParticleHash(static_cast<uint32_t>(obj.id) * 747796405u + emissionIndex + static_cast<uint32_t>(ps.runtimeTime * 1000.0f))
+                      : ParticleHash(ps.randomSeed + emissionIndex);
+  ParticleSystem2DComponent::Particle particle;
+  particle.alive = true;
+  particle.seed = seed;
+  particle.lifetime = std::max(0.01f, ParticleRange(ps.startLifetime, seed));
+  particle.size = std::max(0.0f, ParticleRange(ps.startSize, seed));
+  particle.rotation = ParticleRange(ps.startRotation, seed);
+  particle.startColor = ps.startColor;
+
+  const float angle = ParticleUnit(seed) * 6.28318530718f;
+  glm::vec2 direction(std::cos(angle), std::sin(angle));
+  if (ps.shape == 1) {
+    const float radius = ps.shapeRadius * std::sqrt(ParticleUnit(seed));
+    particle.position = direction * radius;
+  } else if (ps.shape == 2) {
+    particle.position = glm::vec2((ParticleUnit(seed) - 0.5f) * ps.shapeBox.x,
+                                  (ParticleUnit(seed) - 0.5f) * ps.shapeBox.y);
+    direction = glm::length(particle.position) > 0.0001f ? glm::normalize(particle.position) : direction;
+  }
+  particle.velocity = direction * ParticleRange(ps.startSpeed, seed);
+  particle.angularVelocity = ps.rotationOverLifetimeEnabled ? ps.rotationOverLifetime : 0.0f;
+  ps.particles.push_back(particle);
+}
+
+void SimulateParticleSystem2D(SceneObject &obj, double now) {
+  if (!obj.hasParticleSystem2D) return;
+  ParticleSystem2DComponent &ps = obj.particleSystem2D;
+  if (!ps.enabled) return;
+  if (!ps.runtimeInitialized) {
+    RestartParticleSystem2D(ps, now);
+    if (ps.prewarm) {
+      const float prewarmStep = 1.0f / 30.0f;
+      const float prewarmTime = std::max(0.0f, ps.startLifetime.max);
+      for (float t = 0.0f; t < prewarmTime; t += prewarmStep) {
+        ps.runtimeLastUpdateTime -= prewarmStep;
+        SimulateParticleSystem2D(obj, now - prewarmTime + t);
+      }
+      ps.runtimeLastUpdateTime = now;
+    }
+  }
+  float dt = static_cast<float>(now - ps.runtimeLastUpdateTime);
+  ps.runtimeLastUpdateTime = now;
+  if (dt <= 0.0f || dt > 0.25f) dt = 1.0f / 60.0f;
+  if (!ps.playing || ps.paused) return;
+  dt *= std::max(0.0f, ps.simulationSpeed);
+  ps.runtimeTime += dt;
+  if (ps.runtimeTime < ps.startDelay) return;
+
+  ps.runtimeAccumulator += std::max(0.0f, ps.emissionRate) * dt;
+  int emitCount = static_cast<int>(ps.runtimeAccumulator);
+  ps.runtimeAccumulator -= static_cast<float>(emitCount);
+  if (ps.burstCount > 0) {
+    if (ps.burstLoop && ps.burstTime > 0.0f) {
+      const int previousBurst =
+          static_cast<int>(std::floor((ps.runtimeTime - dt) / ps.burstTime));
+      const int currentBurst =
+          static_cast<int>(std::floor(ps.runtimeTime / ps.burstTime));
+      if (currentBurst > previousBurst) {
+        emitCount += (currentBurst - previousBurst) * ps.burstCount;
+      }
+    } else if (ps.runtimeTime - dt <= ps.burstTime &&
+               ps.runtimeTime >= ps.burstTime) {
+      emitCount += ps.burstCount;
+    }
+  }
+  for (int i = 0; i < emitCount; ++i) {
+    EmitParticle2D(obj, static_cast<uint32_t>(ps.particles.size() + i));
+  }
+
+  for (auto &particle : ps.particles) {
+    if (!particle.alive) continue;
+    particle.age += dt;
+    if (particle.age >= particle.lifetime) {
+      particle.alive = false;
+      continue;
+    }
+    glm::vec2 velocity = particle.velocity;
+    if (ps.velocityOverLifetimeEnabled) velocity += ps.velocityOverLifetime;
+    velocity.y -= ps.gravityModifier * dt;
+    if (ps.noiseEnabled && ps.noiseStrength > 0.0f) {
+      const float n = std::sin((ps.runtimeTime + static_cast<float>(particle.seed % 997u)) * std::max(0.01f, ps.noiseFrequency));
+      velocity += glm::vec2(std::cos(n * 6.28318f), std::sin(n * 6.28318f)) * ps.noiseStrength;
+    }
+    particle.velocity = velocity;
+    particle.position += velocity * dt;
+    particle.rotation += particle.angularVelocity * dt;
+  }
+  ps.particles.erase(std::remove_if(ps.particles.begin(), ps.particles.end(),
+                                    [](const auto &p) { return !p.alive; }),
+                     ps.particles.end());
+  if (!ps.looping && ps.runtimeTime > ps.startDelay + ps.startLifetime.max) {
+    ps.playing = false;
+  }
+}
+
+template <typename WorldToScreenFn, typename WorldToRenderLocalFn,
+          typename ParentOffsetFn, typename RectOutsideFn>
+void AppendParticleSystem2DSprites(std::vector<SceneObject> &sceneObjects,
+                                   Renderer &renderer, double now,
+                                   WorldToScreenFn worldToScreen,
+                                   WorldToRenderLocalFn worldToRenderLocal,
+                                   ParentOffsetFn getParentOffset,
+                                   RectOutsideFn rectOutsideOverlay,
+                                   Light2DRenderRequest &lightRequest,
+                                   int &drawOrder) {
+  const unsigned int fallbackTextureId = renderer.getDebugWhiteTextureId();
+  for (SceneObject &obj : sceneObjects) {
+    if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) continue;
+
+    SimulateParticleSystem2D(obj, now);
+
+    ParticleSystem2DComponent &ps = obj.particleSystem2D;
+    if (!ps.enabled || ps.particles.empty()) continue;
+
+    unsigned int textureId = 0;
+    const std::string texturePath =
+        !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
+    if (!texturePath.empty()) {
+      if (Texture *particleTex =
+              renderer.getTexture(texturePath, obj.material.textureFilter)) {
+        textureId = particleTex->GetID();
+      }
+    }
+    if (textureId == 0) {
+      textureId = fallbackTextureId;
+    }
+    if (textureId == 0) continue;
+
+    const glm::vec2 emitterWorld =
+        getParentOffset(obj) + glm::vec2(obj.position.x, obj.position.y);
+    for (const auto &particle : ps.particles) {
+      if (!particle.alive) continue;
+      const float t = std::clamp(
+          particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
+      const glm::vec2 worldCenter = emitterWorld + particle.position;
+      const float size = ps.sizeOverLifetimeEnabled
+                             ? glm::mix(particle.size, ps.sizeOverLifetime, t)
+                             : particle.size;
+      const glm::vec2 half(std::max(0.001f, size) * 0.5f);
+      const glm::vec2 worldMin = worldCenter - half;
+      const glm::vec2 worldMax = worldCenter + half;
+      ImVec2 s0 = worldToScreen(worldMin);
+      ImVec2 s1 = worldToScreen(worldMax);
+      ImVec2 rectMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
+      ImVec2 rectMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
+      if (rectOutsideOverlay(rectMin, rectMax)) continue;
+
+      glm::vec2 r0 = worldToRenderLocal(worldMin);
+      glm::vec2 r1 = worldToRenderLocal(worldMax);
+      glm::vec2 center = worldToRenderLocal(worldCenter);
+      const glm::vec2 renderHalf(std::abs(r1.x - r0.x) * 0.5f,
+                                 std::abs(r1.y - r0.y) * 0.5f);
+      const float angle = glm::radians(particle.rotation);
+      const float c = std::cos(angle);
+      const float s = std::sin(angle);
+      auto rotatePoint = [&](float x, float y) {
+        return glm::vec2(center.x + x * c - y * s,
+                         center.y + x * s + y * c);
+      };
+
+      Light2DScreenSprite sprite;
+      sprite.objectId = obj.id;
+      sprite.layer = obj.layer;
+      sprite.drawOrder = drawOrder++;
+      sprite.textureId = textureId;
+      sprite.tint = ps.colorOverLifetimeEnabled
+                        ? glm::mix(particle.startColor, ps.colorOverLifetime, t)
+                        : particle.startColor;
+      sprite.receiveLighting = ps.receiveLighting2D;
+      sprite.unlit = ps.unlitLighting2D;
+      sprite.emissiveIntensity = ps.emissiveLighting2D;
+      sprite.positions[0] = rotatePoint(-renderHalf.x, -renderHalf.y);
+      sprite.positions[1] = rotatePoint(renderHalf.x, -renderHalf.y);
+      sprite.positions[2] = rotatePoint(renderHalf.x, renderHalf.y);
+      sprite.positions[3] = rotatePoint(-renderHalf.x, renderHalf.y);
+      sprite.uvs[0] = glm::vec2(0.0f, 0.0f);
+      sprite.uvs[1] = glm::vec2(1.0f, 0.0f);
+      sprite.uvs[2] = glm::vec2(1.0f, 1.0f);
+      sprite.uvs[3] = glm::vec2(0.0f, 1.0f);
+      lightRequest.sprites.push_back(sprite);
+    }
+  }
+}
+
+template <typename RectOutsideFn>
+void AppendProjectedParticleSystem2DSprites(
+    std::vector<SceneObject> &sceneObjects, Renderer &renderer, double now,
+    const glm::mat4 &view, const glm::mat4 &proj, const ImVec2 &overlayPos,
+    const ImVec2 &overlaySize, const ImVec2 &renderLocalOrigin,
+    RectOutsideFn rectOutsideRenderLocal, Light2DRenderRequest &lightRequest,
+    int &drawOrder) {
+  const unsigned int fallbackTextureId = renderer.getDebugWhiteTextureId();
+  const glm::mat4 invView = glm::inverse(view);
+  const glm::vec3 cameraRight = glm::normalize(glm::vec3(invView[0]));
+  const glm::vec3 cameraUp = glm::normalize(glm::vec3(invView[1]));
+
+  for (SceneObject &obj : sceneObjects) {
+    if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) continue;
+
+    SimulateParticleSystem2D(obj, now);
+
+    ParticleSystem2DComponent &ps = obj.particleSystem2D;
+    if (!ps.enabled || ps.particles.empty()) continue;
+
+    unsigned int textureId = 0;
+    const std::string texturePath =
+        !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
+    if (!texturePath.empty()) {
+      if (Texture *particleTex =
+              renderer.getTexture(texturePath, obj.material.textureFilter)) {
+        textureId = particleTex->GetID();
+      }
+    }
+    if (textureId == 0) textureId = fallbackTextureId;
+    if (textureId == 0) continue;
+
+    glm::mat4 objectRotation(1.0f);
+    objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.x),
+                                 glm::vec3(1.0f, 0.0f, 0.0f));
+    objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.y),
+                                 glm::vec3(0.0f, 1.0f, 0.0f));
+    objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.z),
+                                 glm::vec3(0.0f, 0.0f, 1.0f));
+
+    for (const auto &particle : ps.particles) {
+      if (!particle.alive) continue;
+      const float t = std::clamp(
+          particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
+      const float size = ps.sizeOverLifetimeEnabled
+                             ? glm::mix(particle.size, ps.sizeOverLifetime, t)
+                             : particle.size;
+      const float halfSize = std::max(0.001f, size) * 0.5f;
+      const float angle = glm::radians(particle.rotation);
+      const float c = std::cos(angle);
+      const float s = std::sin(angle);
+      const glm::vec3 particleWorldCenter =
+          obj.position + glm::vec3(objectRotation *
+                                   glm::vec4(particle.position.x * obj.scale.x,
+                                             particle.position.y * obj.scale.y,
+                                             0.0f, 0.0f));
+      auto localToWorld = [&](float x, float y) {
+        const float rx = x * c - y * s;
+        const float ry = x * s + y * c;
+        return particleWorldCenter + cameraRight * rx + cameraUp * ry;
+      };
+
+      std::array<ImVec2, 4> projected;
+      const std::array<glm::vec3, 4> corners = {
+          localToWorld(-halfSize, -halfSize),
+          localToWorld(halfSize, -halfSize),
+          localToWorld(halfSize, halfSize),
+          localToWorld(-halfSize, halfSize),
+      };
+      bool valid = true;
+      for (size_t i = 0; i < corners.size(); ++i) {
+        if (!ProjectWorldToOverlayPoint(corners[i], view, proj, overlayPos,
+                                        overlaySize, projected[i])) {
+          valid = false;
+          break;
+        }
+        projected[i].x -= renderLocalOrigin.x;
+        projected[i].y -= renderLocalOrigin.y;
+      }
+      if (!valid) continue;
+
+      ImVec2 rectMin(projected[0].x, projected[0].y);
+      ImVec2 rectMax(projected[0].x, projected[0].y);
+      for (const ImVec2 &point : projected) {
+        rectMin.x = std::min(rectMin.x, point.x);
+        rectMin.y = std::min(rectMin.y, point.y);
+        rectMax.x = std::max(rectMax.x, point.x);
+        rectMax.y = std::max(rectMax.y, point.y);
+      }
+      if (rectOutsideRenderLocal(rectMin, rectMax)) continue;
+
+      Light2DScreenSprite sprite;
+      sprite.objectId = obj.id;
+      sprite.layer = obj.layer;
+      sprite.drawOrder = drawOrder++;
+      sprite.textureId = textureId;
+      sprite.tint = ps.colorOverLifetimeEnabled
+                        ? glm::mix(particle.startColor, ps.colorOverLifetime, t)
+                        : particle.startColor;
+      sprite.receiveLighting = ps.receiveLighting2D;
+      sprite.unlit = ps.unlitLighting2D;
+      sprite.emissiveIntensity = ps.emissiveLighting2D;
+      sprite.positions[0] = glm::vec2(projected[0].x, projected[0].y);
+      sprite.positions[1] = glm::vec2(projected[1].x, projected[1].y);
+      sprite.positions[2] = glm::vec2(projected[2].x, projected[2].y);
+      sprite.positions[3] = glm::vec2(projected[3].x, projected[3].y);
+      sprite.uvs[0] = glm::vec2(0.0f, 0.0f);
+      sprite.uvs[1] = glm::vec2(1.0f, 0.0f);
+      sprite.uvs[2] = glm::vec2(1.0f, 1.0f);
+      sprite.uvs[3] = glm::vec2(0.0f, 1.0f);
+      lightRequest.sprites.push_back(sprite);
+    }
+  }
+}
+
 bool layoutFileNeedsUtilityDockMigration(const fs::path &layoutPath,
                                          bool projectSettingsVisible,
                                          bool modupakVisible) {
@@ -2393,7 +2733,8 @@ void Engine::renderGameViewportWindow() {
 
   SceneObject *playerCam = nullptr;
   for (auto &obj : sceneObjects) {
-    if (obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
+    if (IsObjectEnabledInHierarchy(obj) && obj.hasCamera &&
+        obj.camera.type == SceneCameraType::Player) {
       playerCam = &obj;
       break;
     }
@@ -2984,6 +3325,127 @@ void Engine::renderGameViewportWindow() {
           playerCam->camera.nearClip, playerCam->camera.farClip);
       hasProjectedUiCamera = true;
     }
+    if (!useWorldUi && hasProjectedUiCamera) {
+      BatchedSpriteEmitter particleBatch(drawList);
+      const unsigned int fallbackParticleTextureId =
+          rendererInitialized ? renderer.getDebugWhiteTextureId() : 0;
+      const glm::mat4 invView = glm::inverse(projectedUiView);
+      const glm::vec3 cameraRight = glm::normalize(glm::vec3(invView[0]));
+      const glm::vec3 cameraUp = glm::normalize(glm::vec3(invView[1]));
+      for (auto &obj : sceneObjects) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) {
+          continue;
+        }
+        SimulateParticleSystem2D(obj, glfwGetTime());
+        ParticleSystem2DComponent &ps = obj.particleSystem2D;
+        if (!ps.enabled || ps.particles.empty()) continue;
+
+        unsigned int texId = 0;
+        const std::string texturePath =
+            !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
+        if (rendererInitialized && !texturePath.empty()) {
+          if (Texture *particleTex =
+                  renderer.getTexture(texturePath, obj.material.textureFilter)) {
+            texId = particleTex->GetID();
+          }
+        }
+        if (texId == 0) texId = fallbackParticleTextureId;
+
+        glm::mat4 objectRotation(1.0f);
+        objectRotation =
+            glm::rotate(objectRotation, glm::radians(obj.rotation.x),
+                        glm::vec3(1.0f, 0.0f, 0.0f));
+        objectRotation =
+            glm::rotate(objectRotation, glm::radians(obj.rotation.y),
+                        glm::vec3(0.0f, 1.0f, 0.0f));
+        objectRotation =
+            glm::rotate(objectRotation, glm::radians(obj.rotation.z),
+                        glm::vec3(0.0f, 0.0f, 1.0f));
+
+        for (const auto &particle : ps.particles) {
+          if (!particle.alive) continue;
+          const float t = std::clamp(
+              particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
+          const float size = ps.sizeOverLifetimeEnabled
+                                 ? glm::mix(particle.size,
+                                            ps.sizeOverLifetime, t)
+                                 : particle.size;
+          const float halfSize = std::max(0.001f, size) * 0.5f;
+          const float angle = glm::radians(particle.rotation);
+          const float c = std::cos(angle);
+          const float s = std::sin(angle);
+          const glm::vec3 particleWorldCenter =
+              obj.position +
+              glm::vec3(objectRotation *
+                        glm::vec4(particle.position.x * obj.scale.x,
+                                  particle.position.y * obj.scale.y, 0.0f,
+                                  0.0f));
+          auto localToWorld = [&](float x, float y) {
+            const float rx = x * c - y * s;
+            const float ry = x * s + y * c;
+            return particleWorldCenter + cameraRight * rx + cameraUp * ry;
+          };
+
+          std::array<ImVec2, 4> quad;
+          const std::array<glm::vec3, 4> corners = {
+              localToWorld(-halfSize, -halfSize),
+              localToWorld(halfSize, -halfSize),
+              localToWorld(halfSize, halfSize),
+              localToWorld(-halfSize, halfSize),
+          };
+          bool valid = true;
+          for (size_t i = 0; i < corners.size(); ++i) {
+            ImVec2 renderPoint;
+            if (!ProjectWorldToOverlayPoint(
+                    corners[i], projectedUiView, projectedUiProj,
+                    ImVec2(0.0f, 0.0f),
+                    ImVec2(static_cast<float>(renderWidth),
+                           static_cast<float>(renderHeight)),
+                    renderPoint)) {
+              valid = false;
+              break;
+            }
+            quad[i] = MapRenderPixelToScreenPoint(
+                outputLayout, renderWidth, renderHeight,
+                glm::vec2(renderPoint.x, renderPoint.y));
+          }
+          if (!valid) continue;
+
+          ImVec2 rectMin(quad[0].x, quad[0].y);
+          ImVec2 rectMax(quad[0].x, quad[0].y);
+          for (const ImVec2 &point : quad) {
+            rectMin.x = std::min(rectMin.x, point.x);
+            rectMin.y = std::min(rectMin.y, point.y);
+            rectMax.x = std::max(rectMax.x, point.x);
+            rectMax.y = std::max(rectMax.y, point.y);
+          }
+          if (rectMax.x < outputLayout.panelMin.x ||
+              rectMin.x > outputLayout.panelMax.x ||
+              rectMax.y < outputLayout.panelMin.y ||
+              rectMin.y > outputLayout.panelMax.y) {
+            continue;
+          }
+
+          const glm::vec4 tint =
+              ps.colorOverLifetimeEnabled
+                  ? glm::mix(particle.startColor, ps.colorOverLifetime, t)
+                  : particle.startColor;
+          const ImU32 tintColor = ImGui::GetColorU32(
+              ImVec4(tint.r, tint.g, tint.b, tint.a));
+          if (texId != 0) {
+            particleBatch.push((ImTextureID)(intptr_t)texId, quad[0], quad[1],
+                               quad[2], quad[3], ImVec2(0.0f, 0.0f),
+                               ImVec2(1.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                               ImVec2(0.0f, 1.0f), tintColor);
+          } else {
+            particleBatch.flush();
+            drawList->AddQuadFilled(quad[0], quad[1], quad[2], quad[3],
+                                    tintColor);
+          }
+        }
+      }
+      particleBatch.flush();
+    }
     auto worldToScreen = [&](const glm::vec2 &world) {
       glm::vec2 renderLocal = uiWorldCamera.WorldToScreen(world);
       return MapRenderPixelToScreenPoint(outputLayout, renderWidth,
@@ -3567,6 +4029,13 @@ void Engine::renderGameViewportWindow() {
                                   "Lit compositor path: object is routed, but "
                                   "Receive Lighting is disabled.");
         }
+      }
+
+      if (useWorldUi || !hasProjectedUiCamera) {
+        AppendParticleSystem2DSprites(sceneObjects, renderer, glfwGetTime(),
+                                      worldToScreen, worldToRenderLocal,
+                                      getWorldParentOffset, rectOutsideOverlay,
+                                      lightRequest, spriteDrawOrder);
       }
 
       for (const SceneObject &obj : sceneObjects) {
@@ -7589,6 +8058,115 @@ void Engine::renderViewport() {
           viewportDrawList->AddRect(rectMin, rectMax, border, 4.0f, 0, 1.5f);
         }
       }
+
+      const unsigned int fallbackParticleTextureId =
+          rendererInitialized ? renderer.getDebugWhiteTextureId() : 0;
+      const glm::mat4 invView = glm::inverse(view);
+      const glm::vec3 cameraRight = glm::normalize(glm::vec3(invView[0]));
+      const glm::vec3 cameraUp = glm::normalize(glm::vec3(invView[1]));
+      for (auto &obj : sceneObjects) {
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) {
+          continue;
+        }
+        SimulateParticleSystem2D(obj, glfwGetTime());
+        ParticleSystem2DComponent &ps = obj.particleSystem2D;
+        if (!ps.enabled || ps.particles.empty()) continue;
+
+        unsigned int texId = 0;
+        const std::string texturePath =
+            !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
+        if (rendererInitialized && !texturePath.empty()) {
+          if (Texture *particleTex =
+                  renderer.getTexture(texturePath, obj.material.textureFilter)) {
+            texId = particleTex->GetID();
+          }
+        }
+        if (texId == 0) texId = fallbackParticleTextureId;
+
+        for (const auto &particle : ps.particles) {
+          if (!particle.alive) continue;
+          const float t = std::clamp(
+              particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
+          const float size = ps.sizeOverLifetimeEnabled
+                                 ? glm::mix(particle.size,
+                                            ps.sizeOverLifetime, t)
+                                 : particle.size;
+          const float halfSize = std::max(0.001f, size) * 0.5f;
+          const float angle = glm::radians(particle.rotation);
+          const float c = std::cos(angle);
+          const float s = std::sin(angle);
+          glm::mat4 objectRotation(1.0f);
+          objectRotation =
+              glm::rotate(objectRotation, glm::radians(obj.rotation.x),
+                          glm::vec3(1.0f, 0.0f, 0.0f));
+          objectRotation =
+              glm::rotate(objectRotation, glm::radians(obj.rotation.y),
+                          glm::vec3(0.0f, 1.0f, 0.0f));
+          objectRotation =
+              glm::rotate(objectRotation, glm::radians(obj.rotation.z),
+                          glm::vec3(0.0f, 0.0f, 1.0f));
+          const glm::vec3 particleWorldCenter =
+              obj.position +
+              glm::vec3(objectRotation *
+                        glm::vec4(particle.position.x * obj.scale.x,
+                                  particle.position.y * obj.scale.y, 0.0f,
+                                  0.0f));
+          auto localToWorld = [&](float x, float y) {
+            const float rx = x * c - y * s;
+            const float ry = x * s + y * c;
+            return particleWorldCenter + cameraRight * rx + cameraUp * ry;
+          };
+
+          std::array<ImVec2, 4> quad;
+          const std::array<glm::vec3, 4> corners = {
+              localToWorld(-halfSize, -halfSize),
+              localToWorld(halfSize, -halfSize),
+              localToWorld(halfSize, halfSize),
+              localToWorld(-halfSize, halfSize),
+          };
+          bool valid = true;
+          for (size_t i = 0; i < corners.size(); ++i) {
+            if (!ProjectWorldToOverlayPoint(
+                    corners[i], view, proj, imageMin,
+                    ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y),
+                    quad[i])) {
+              valid = false;
+              break;
+            }
+          }
+          if (!valid) continue;
+
+          ImVec2 rectMin(quad[0].x, quad[0].y);
+          ImVec2 rectMax(quad[0].x, quad[0].y);
+          for (const ImVec2 &point : quad) {
+            rectMin.x = std::min(rectMin.x, point.x);
+            rectMin.y = std::min(rectMin.y, point.y);
+            rectMax.x = std::max(rectMax.x, point.x);
+            rectMax.y = std::max(rectMax.y, point.y);
+          }
+          if (rectMax.x < imageMin.x || rectMin.x > imageMax.x ||
+              rectMax.y < imageMin.y || rectMin.y > imageMax.y) {
+            continue;
+          }
+
+          const glm::vec4 tint =
+              ps.colorOverLifetimeEnabled
+                  ? glm::mix(particle.startColor, ps.colorOverLifetime, t)
+                  : particle.startColor;
+          const ImU32 tintColor = ImGui::GetColorU32(
+              ImVec4(tint.r, tint.g, tint.b, tint.a));
+          if (texId != 0) {
+            spriteBatch.push((ImTextureID)(intptr_t)texId, quad[0], quad[1],
+                             quad[2], quad[3], ImVec2(0.0f, 0.0f),
+                             ImVec2(1.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                             ImVec2(0.0f, 1.0f), tintColor);
+          } else {
+            spriteBatch.flush();
+            viewportDrawList->AddQuadFilled(quad[0], quad[1], quad[2],
+                                            quad[3], tintColor);
+          }
+        }
+      }
       spriteBatch.flush();
     };
     if (!worldUiEditing) {
@@ -8279,6 +8857,16 @@ void Engine::renderViewport() {
                                     "but Receive Lighting is disabled.");
           }
         }
+
+        auto projectedParticleOutside = [&](const ImVec2 &min,
+                                            const ImVec2 &max) {
+          return max.x < 0.0f || min.x > overlaySize.x || max.y < 0.0f ||
+                 min.y > overlaySize.y;
+        };
+        AppendProjectedParticleSystem2DSprites(
+            sceneObjects, renderer, glfwGetTime(), view, proj, overlayPos,
+            overlaySize, overlayPos, projectedParticleOutside, lightRequest,
+            spriteDrawOrder);
 
         for (const SceneObject &obj : sceneObjects) {
           if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D ||
@@ -12539,6 +13127,7 @@ void Engine::renderViewport() {
         case ObjectType::Mirror:
         case ObjectType::Sprite:
         case ObjectType::Sprite25D:
+        case ObjectType::ParticleSystem2D:
           gizmoBoundsMin = glm::vec3(-0.5f, -0.5f, -0.02f);
           gizmoBoundsMax = glm::vec3(0.5f, 0.5f, 0.02f);
           break;
@@ -14547,6 +15136,7 @@ void Engine::renderViewport() {
           break;
         case ObjectType::Sprite:
         case ObjectType::Sprite25D:
+        case ObjectType::ParticleSystem2D:
           hit = rayAabb(localOrigin, localDir, glm::vec3(-0.5f, -0.5f, -0.02f),
                         glm::vec3(0.5f, 0.5f, 0.02f), hitT);
           break;
@@ -14867,7 +15457,8 @@ void Engine::renderViewport() {
 
       std::vector<const SceneObject *> playerCams;
       for (const auto &obj : sceneObjects) {
-        if (obj.hasCamera && obj.camera.type == SceneCameraType::Player) {
+        if (IsObjectEnabledInHierarchy(obj) && obj.hasCamera &&
+            obj.camera.type == SceneCameraType::Player) {
           playerCams.push_back(&obj);
         }
       }
@@ -16389,6 +16980,38 @@ void Engine::renderPlayerViewport() {
                                   "Lit compositor path: object is routed, but "
                                   "Receive Lighting is disabled.");
         }
+      }
+
+      auto particleWorldToRenderLocal = [&](const glm::vec2 &world) {
+        ImVec2 screen = worldToScreen(world);
+        return glm::vec2(screen.x - overlayPos.x, screen.y - overlayPos.y);
+      };
+      auto particleParentOffset = [&](const SceneObject &obj) {
+        return uiSceneLookup.getWorldParentOffset(obj);
+      };
+      auto particleRectOutsideOverlay = [&](const ImVec2 &rectMin,
+                                            const ImVec2 &rectMax) {
+        return rectMax.x < overlayPos.x ||
+               rectMin.x > overlayPos.x + overlaySize.x ||
+               rectMax.y < overlayPos.y ||
+               rectMin.y > overlayPos.y + overlaySize.y;
+      };
+      if (useWorldUi) {
+        AppendParticleSystem2DSprites(sceneObjects, renderer, glfwGetTime(),
+                                      worldToScreen, particleWorldToRenderLocal,
+                                      particleParentOffset,
+                                      particleRectOutsideOverlay, lightRequest,
+                                      drawOrder);
+      } else {
+        auto projectedParticleOutside = [&](const ImVec2 &min,
+                                            const ImVec2 &max) {
+          return max.x < 0.0f || min.x > overlaySize.x || max.y < 0.0f ||
+                 min.y > overlaySize.y;
+        };
+        AppendProjectedParticleSystem2DSprites(
+            sceneObjects, renderer, glfwGetTime(), projectedUiView,
+            projectedUiProj, overlayPos, overlaySize, overlayPos,
+            projectedParticleOutside, lightRequest, drawOrder);
       }
 
       for (const SceneObject &obj : sceneObjects) {

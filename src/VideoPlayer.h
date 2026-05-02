@@ -17,7 +17,7 @@ public:
     VideoPlayer();
     ~VideoPlayer();
 
-    bool LoadVideo(const std::string& path);
+    bool LoadVideo(const std::string& path, bool startWorker = true);
     void Play();
     void Pause();
     void Stop();
@@ -54,7 +54,8 @@ private:
         Error
     };
 
-    static constexpr size_t kFrameQueueCapacity = 3;
+    static constexpr size_t kFrameQueueCapacity = 12;
+    static constexpr size_t kFrameQueuePrerollCount = 4;
 
     void StartWorker();
     void StopWorker();
@@ -66,6 +67,7 @@ private:
     bool OpenDecoder(const std::string& path);
     bool EnsureTextureAllocated();
     bool EnsureConversionContextForFrame();
+    void UploadPixelsToTexture(const unsigned char* pixels, int width, int height);
     void ApplyTextureFilter();
     bool SeekToStart();
     bool SeekAudioToTime(double seconds);
@@ -93,6 +95,7 @@ private:
     double m_requestedAudioSeekSeconds = 0.0;
     bool m_decoderReachedEnd = false;
     bool m_audioDecoderReachedEnd = false;
+    bool m_waitingForBuffer = false;
 
     std::string m_loadedPath;
     std::string m_lastError;

@@ -22,6 +22,7 @@ enum class FieldKind {
     Bool,
     Vec3,
     String,
+    ObjectRef,
     ObjectList,
     DialogueLines,
     Custom
@@ -646,6 +647,46 @@ std::string escapeCStringLiteral(const std::string& value) {
     return out;
 }
 
+// Converts $"..." raw multi-line string literals to escaped C++ string literals.
+// Inside a $"..." literal, actual newlines become \n, bare backslashes become \\,
+// and bare double-quotes are treated as the closing delimiter.
+// Already-escaped sequences (e.g. \n, \") are passed through unchanged.
+static std::string preprocessDollarStrings(const std::string& source) {
+    std::string out;
+    out.reserve(source.size());
+    size_t i = 0;
+    while (i < source.size()) {
+        if (source[i] == '$' && i + 1 < source.size() && source[i + 1] == '"') {
+            out.push_back('"');
+            i += 2;
+            while (i < source.size()) {
+                const char c = source[i];
+                if (c == '\\' && i + 1 < source.size()) {
+                    out.push_back(c);
+                    out.push_back(source[i + 1]);
+                    i += 2;
+                } else if (c == '"') {
+                    out.push_back('"');
+                    ++i;
+                    break;
+                } else if (c == '\r') {
+                    ++i;
+                } else if (c == '\n') {
+                    out += "\\n";
+                    ++i;
+                } else {
+                    out.push_back(c);
+                    ++i;
+                }
+            }
+        } else {
+            out.push_back(source[i]);
+            ++i;
+        }
+    }
+    return out;
+}
+
 std::string inspectorLabelFromFieldName(const std::string& name) {
     std::string out;
     out.reserve(name.size() + 8);
@@ -738,6 +779,12 @@ std::string extractParamName(const std::string& parameter) {
 bool isListType(const std::string& rawType) {
     const std::string normalized = toLowerCopy(removeWhitespaceCopy(rawType));
     return normalized == "list<sceneobj*>" || normalized == "list<sceneobject*>";
+}
+
+bool isSceneObjectRefType(const std::string& rawType) {
+    const std::string normalized = toLowerCopy(removeWhitespaceCopy(rawType));
+    return normalized == "sceneobj*" || normalized == "sceneobject*" ||
+           normalized == "sceneobj" || normalized == "sceneobject";
 }
 
 bool isLifecycleMethodName(const std::string& name) {
@@ -854,6 +901,7 @@ FieldKind publicFieldKindForType(const std::string& rawType) {
     if (normalized == "vec3" || normalized == "glm::vec3" ||
         normalized == "vector3") return FieldKind::Vec3;
     if (normalized == "string" || normalized == "std::string") return FieldKind::String;
+    if (isSceneObjectRefType(baseType)) return FieldKind::ObjectRef;
     if (isListType(baseType)) return FieldKind::ObjectList;
     return FieldKind::Custom;
 }
@@ -2860,12 +2908,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (fieldPersists(field) && field.kind == FieldKind::ObjectList) {
             listFields.insert(field.name);
         }
-        if (field.kind == FieldKind::ObjectList ||
+        if (field.kind == FieldKind::ObjectRef ||
+            field.kind == FieldKind::ObjectList ||
             field.hasObjectRefAttribute ||
             field.hasObjectListAttribute) {
             needsObjectRefSupport = true;
         }
-        if (field.kind == FieldKind::ObjectList ||
+        if (field.kind == FieldKind::ObjectRef ||
+            field.kind == FieldKind::ObjectList ||
             field.kind == FieldKind::DialogueLines ||
             field.hasObjectRefAttribute ||
             field.hasObjectListAttribute ||
@@ -2889,12 +2939,14 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     }
     for (const SubScriptSpec& subScript : spec.subScripts) {
         for (const FieldSpec& field : subScript.fields) {
-            if (field.kind == FieldKind::ObjectList ||
+            if (field.kind == FieldKind::ObjectRef ||
+                field.kind == FieldKind::ObjectList ||
                 field.hasObjectRefAttribute ||
                 field.hasObjectListAttribute) {
                 needsObjectRefSupport = true;
             }
-            if (field.kind == FieldKind::ObjectList ||
+            if (field.kind == FieldKind::ObjectRef ||
+                field.kind == FieldKind::ObjectList ||
                 field.kind == FieldKind::DialogueLines ||
                 field.hasObjectRefAttribute ||
                 field.hasObjectListAttribute ||
@@ -3070,8 +3122,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             }
             return true;
         }
-        if (field.kind == FieldKind::String) {
-            if (field.hasObjectRefAttribute) {
+        if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef) {
+            if (field.kind == FieldKind::ObjectRef || field.hasObjectRefAttribute) {
                 out << indent << "changed |= DialoguePort::DrawObjectRefInput(ctx, \""
                     << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
             } else {
@@ -3174,7 +3226,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.kind == FieldKind::Bool) {
             return "(" + valueExpr + " ? \"1\" : \"0\")";
         }
-        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
+        if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef ||
+            fieldLooksLikeObjectRefString(field)) {
             return valueExpr;
         }
         if (field.kind == FieldKind::Vec3) {
@@ -3220,7 +3273,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 << " = (Trim(" << encodedExpr << ") == \"1\" || Trim(" << encodedExpr << ") == \"true\");\n";
             return true;
         }
-        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
+        if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef ||
+            fieldLooksLikeObjectRefString(field)) {
             out << "        if (fields.size() > " << fieldIndex << ") " << valueExpr << " = " << encodedExpr << ";\n";
             return true;
         }
@@ -3280,8 +3334,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             out << "        changed |= ModuGUI::Checkbox(" << labelLiteral << ", &" << valueExpr << ");\n";
             return true;
         }
-        if (field.kind == FieldKind::String || fieldLooksLikeObjectRefString(field)) {
-            if (fieldLooksLikeObjectRefString(field)) {
+        if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef ||
+            fieldLooksLikeObjectRefString(field)) {
+            if (field.kind == FieldKind::ObjectRef || fieldLooksLikeObjectRefString(field)) {
                 out << "        changed |= DialoguePort::DrawObjectRefInput(ctx, " << labelLiteral
                     << ", " << valueExpr << ");\n";
             } else {
@@ -3423,7 +3478,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
 
         out << "struct " << mapScriptBaseTypeToCpp(subScript.name) << " {\n";
         for (const FieldSpec& field : subScript.fields) {
-            if (field.kind == FieldKind::ObjectList) {
+            if (field.kind == FieldKind::ObjectRef) {
+                out << "    std::string " << field.name;
+                if (!field.initializer.empty()) {
+                    out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
+                }
+                out << ";\n";
+            } else if (field.kind == FieldKind::ObjectList) {
                 out << "    std::vector<std::string> " << field.name;
                 if (!field.initializer.empty()) {
                     out << " = " << supportNs << "::DeserializeObjectRefs("
@@ -3462,7 +3523,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "struct " << configType << " {\n";
     for (const FieldSpec& field : spec.fields) {
         if (!fieldPersists(field)) continue;
-        if (field.kind == FieldKind::ObjectList) {
+        if (field.kind == FieldKind::ObjectRef) {
+            out << "    std::string " << field.name;
+            if (!field.initializer.empty()) {
+                out << " = " << cachedRewriteSurfaceSyntax(field.initializer);
+            }
+            out << ";\n";
+        } else if (field.kind == FieldKind::ObjectList) {
             out << "    std::vector<std::string> " << field.name;
             if (!field.initializer.empty()) {
                 out << " = " << supportNs << "::DeserializeObjectRefs("
@@ -3804,7 +3871,8 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "        ScriptContext* scriptCtx = ::ModuCPP::ctxPtr();\n";
         const bool subScriptNeedsContext = std::any_of(subScript.fields.begin(), subScript.fields.end(),
                                                        [&](const FieldSpec& field) {
-                                                           return field.kind == FieldKind::ObjectList ||
+                                                           return field.kind == FieldKind::ObjectRef ||
+                                                                  field.kind == FieldKind::ObjectList ||
                                                                   field.kind == FieldKind::DialogueLines ||
                                                                   fieldLooksLikeStringArray(field) ||
                                                                   fieldLooksLikeDialogueLineArray(field) ||
@@ -3904,6 +3972,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.kind == FieldKind::ObjectList) {
             out << "    config." << field.name << " = DeserializeObjectRefs(ctx.GetSetting(\""
                 << field.name << "\", SerializeObjectRefs(config." << field.name << ")));\n";
+        } else if (field.kind == FieldKind::ObjectRef) {
+            out << "    config." << field.name << " = ctx.GetSetting(\""
+                << field.name << "\", config." << field.name << ");\n";
         } else if (field.kind == FieldKind::DialogueLines) {
             out << "    config." << field.name << " = DialoguePort::DeserializeDialogueLines(ctx.GetSetting(\""
                 << field.name << "\", DialoguePort::SerializeDialogueLines(config." << field.name
@@ -4706,7 +4777,7 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     outResult = ModuCPPTranspileResult{};
 
     const std::string ext = toLowerCopy(sourcePath.extension().string());
-    const std::string normalizedSource = normalizeModuSource(sourceText);
+    const std::string normalizedSource = normalizeModuSource(preprocessDollarStrings(sourceText));
     const std::string stripped = stripCommentsPreserveLayout(normalizedSource);
     const std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*Modu(?:Behaviour|Node)\b)");
     const bool hasHighLevelClass = std::regex_search(stripped, classPattern);

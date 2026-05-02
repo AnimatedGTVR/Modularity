@@ -616,6 +616,11 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             obj.ui.size = glm::vec2(128.0f, 128.0f);
             obj.scale = glm::vec3(1.0f);
             break;
+        case ObjectType::ParticleSystem2D:
+            obj.hasParticleSystem2D = true;
+            obj.particleSystem2D = ParticleSystem2DComponent{};
+            obj.scale = glm::vec3(1.0f);
+            break;
         case ObjectType::Light2D:
             obj.hasLight2D = true;
             obj.light2D.type = Light2DType::Point;
@@ -3160,12 +3165,35 @@ void Engine::capturePlayModeSnapshot() {
     playModeSnapshot.valid = true;
 }
 
+namespace {
+void ResetParticleSystem2DRuntime(SceneObject& obj) {
+    if (!obj.hasParticleSystem2D) {
+        return;
+    }
+    ParticleSystem2DComponent& ps = obj.particleSystem2D;
+    ps.particles.clear();
+    ps.runtimeAccumulator = 0.0f;
+    ps.runtimeTime = 0.0f;
+    ps.runtimeLastUpdateTime = 0.0;
+    ps.runtimeInitialized = false;
+    ps.playing = ps.playOnAwake;
+    ps.paused = false;
+}
+
+void ResetParticleSystem2DRuntimes(std::vector<SceneObject>& objects) {
+    for (SceneObject& obj : objects) {
+        ResetParticleSystem2DRuntime(obj);
+    }
+}
+} // namespace
+
 void Engine::restorePlayModeSnapshot() {
     if (!playModeSnapshot.valid) {
         return;
     }
 
     sceneObjects = playModeSnapshot.scene.objects;
+    ResetParticleSystem2DRuntimes(sceneObjects);
     selectedObjectIds = playModeSnapshot.scene.selectedIds;
     selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
     nextObjectId = playModeSnapshot.scene.nextId;
@@ -6650,6 +6678,8 @@ void Engine::syncVideoPlayers(float delta) {
     for (SceneObject& obj : sceneObjects) {
         obj.runtimeHasAlbedoTextureOverride = false;
         obj.runtimeAlbedoTextureOverrideId = 0;
+        obj.runtimeAlbedoTextureFlipX = false;
+        obj.runtimeAlbedoTextureFlipY = false;
     }
 
     const bool runtimeVideoActive = isPlaying || specMode || testMode || playerMode;
@@ -6745,6 +6775,8 @@ void Engine::syncVideoPlayers(float delta) {
         if (player.HasTextureOverride()) {
             obj.runtimeHasAlbedoTextureOverride = true;
             obj.runtimeAlbedoTextureOverrideId = player.GetTextureId();
+            obj.runtimeAlbedoTextureFlipX = obj.videoPlayer.flipX;
+            obj.runtimeAlbedoTextureFlipY = obj.videoPlayer.flipY;
         }
     }
 
@@ -6761,6 +6793,8 @@ void Engine::clearVideoPlayers() {
     for (SceneObject& obj : sceneObjects) {
         obj.runtimeHasAlbedoTextureOverride = false;
         obj.runtimeAlbedoTextureOverrideId = 0;
+        obj.runtimeAlbedoTextureFlipX = false;
+        obj.runtimeAlbedoTextureFlipY = false;
     }
     videoPlayers.clear();
 }
@@ -7336,7 +7370,31 @@ void Engine::refreshSceneObjectIndexCache() {
     if (sceneObjectIndexData == currentData &&
         sceneObjectIndexCount == sceneObjects.size() &&
         sceneObjectIndexById.size() == sceneObjects.size()) {
-        return;
+        bool cacheMatchesCurrentObjects = true;
+        for (size_t i = 0; i < sceneObjects.size(); ++i) {
+            auto it = sceneObjectIndexById.find(sceneObjects[i].id);
+            if (it == sceneObjectIndexById.end() || it->second != i) {
+                cacheMatchesCurrentObjects = false;
+                break;
+            }
+        }
+        if (cacheMatchesCurrentObjects) {
+            std::vector<int> validSelectedIds;
+            validSelectedIds.reserve(selectedObjectIds.size());
+            for (int id : selectedObjectIds) {
+                if (sceneObjectIndexById.find(id) == sceneObjectIndexById.end()) continue;
+                if (std::find(validSelectedIds.begin(), validSelectedIds.end(), id) != validSelectedIds.end()) continue;
+                validSelectedIds.push_back(id);
+            }
+            selectedObjectIds = std::move(validSelectedIds);
+            if (selectedObjectId >= 0 && sceneObjectIndexById.find(selectedObjectId) == sceneObjectIndexById.end()) {
+                selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+            }
+            if (hierarchyRangeAnchorId >= 0 && sceneObjectIndexById.find(hierarchyRangeAnchorId) == sceneObjectIndexById.end()) {
+                hierarchyRangeAnchorId = selectedObjectId;
+            }
+            return;
+        }
     }
 
     sceneObjectIndexById.clear();
@@ -7346,6 +7404,21 @@ void Engine::refreshSceneObjectIndexCache() {
     }
     sceneObjectIndexData = currentData;
     sceneObjectIndexCount = sceneObjects.size();
+
+    std::vector<int> validSelectedIds;
+    validSelectedIds.reserve(selectedObjectIds.size());
+    for (int id : selectedObjectIds) {
+        if (sceneObjectIndexById.find(id) == sceneObjectIndexById.end()) continue;
+        if (std::find(validSelectedIds.begin(), validSelectedIds.end(), id) != validSelectedIds.end()) continue;
+        validSelectedIds.push_back(id);
+    }
+    selectedObjectIds = std::move(validSelectedIds);
+    if (selectedObjectId >= 0 && sceneObjectIndexById.find(selectedObjectId) == sceneObjectIndexById.end()) {
+        selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+    }
+    if (hierarchyRangeAnchorId >= 0 && sceneObjectIndexById.find(hierarchyRangeAnchorId) == sceneObjectIndexById.end()) {
+        hierarchyRangeAnchorId = selectedObjectId;
+    }
 }
 
 void Engine::rebuildRuntimeScriptBindings() {
@@ -7674,6 +7747,7 @@ void Engine::finalizeDeferredSceneLoad() {
     if (!sceneLoadInProgress) return;
 
     sceneObjects = std::move(sceneLoadObjects);
+    ResetParticleSystem2DRuntimes(sceneObjects);
     nextObjectId = sceneLoadNextId;
 
     initializeLocalTransformsFromWorld(sceneLoadVersion);
@@ -9431,6 +9505,7 @@ void Engine::performLoadScene(const std::string& sceneName) {
                                    &loadedMetadata)) {
         markRuntimeScriptBindingsDirty();
         initializeLocalTransformsFromWorld(sceneVersion);
+        ResetParticleSystem2DRuntimes(sceneObjects);
         rebuildSkeletalBindings();
         undoStack.clear();
         redoStack.clear();
@@ -11056,6 +11131,19 @@ bool Engine::setAnimationPlayOnAwakeFromScript(int id, bool playOnAwake) {
 
 #pragma region Script Compilation + Editor Tabs
 void Engine::resetScriptRuntimeStateForReload(bool clearBinaryPaths) {
+    if (!scriptEditorWindows.empty()) {
+        ScriptContext editorCtx;
+        editorCtx.engine = this;
+        editorCtx.object = getSelectedObject();
+        editorCtx.script = nullptr;
+
+        for (const auto& entry : scriptEditorWindows) {
+            if (entry.open && !entry.binaryPath.empty()) {
+                scriptRuntime.callExitEditorWindow(entry.binaryPath, editorCtx);
+            }
+        }
+    }
+
     scriptRuntime.unloadAll();
     managedRuntime.unloadAll();
 

@@ -21,6 +21,7 @@
 #include <future>
 #include <chrono>
 #include <future>
+#include <type_traits>
 
 #ifdef _WIN32
 #include <shlobj.h>
@@ -202,6 +203,13 @@ namespace {
     }
 
     void UpdateLegacyTypeFromComponents(SceneObject& target) {
+        if (target.type == ObjectType::Sprite25D) {
+            return;
+        }
+        if (target.hasParticleSystem2D || target.type == ObjectType::ParticleSystem2D) {
+            target.type = ObjectType::ParticleSystem2D;
+            return;
+        }
         if (target.hasRenderer) {
             switch (target.renderType) {
                 case RenderType::Cube: target.type = ObjectType::Cube; break;
@@ -855,6 +863,7 @@ void Engine::renderHierarchyPanel() {
             if (ImGui::MenuItem("Torus")) addObject(ObjectType::Torus, "Torus");
             if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
             if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
+            if (ImGui::MenuItem("Particle System 2D")) addObject(ObjectType::ParticleSystem2D, "Particle System 2D");
             if (ImGui::MenuItem("Mirror")) addObject(ObjectType::Mirror, "Mirror");
             ImGui::EndMenu();
         }
@@ -1003,6 +1012,7 @@ void Engine::renderHierarchyPanel() {
                 if (ImGui::MenuItem("Torus"))   addObject(ObjectType::Torus, "Torus");
                 if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
                 if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
+                if (ImGui::MenuItem("Particle System 2D")) addObject(ObjectType::ParticleSystem2D, "Particle System 2D");
                 if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
                 ImGui::EndMenu();
             }
@@ -3816,6 +3826,7 @@ void Engine::renderInspectorPanel() {
     const bool sharedParallax2D = allSelected([](const SceneObject& candidate) { return candidate.hasParallaxLayer2D; });
     const bool sharedAudioSource = allSelected([](const SceneObject& candidate) { return candidate.hasAudioSource; });
     const bool sharedVideoPlayer = allSelected([](const SceneObject& candidate) { return candidate.hasVideoPlayer; });
+    const bool sharedParticleSystem2D = allSelected([](const SceneObject& candidate) { return candidate.hasParticleSystem2D; });
     const bool sharedGroundBaked = allSelected([](const SceneObject& candidate) { return candidate.hasGroundBakedType; });
     const bool sharedObstacle = allSelected([](const SceneObject& candidate) { return candidate.hasObsticleObject; });
     const bool sharedAgent = allSelected([](const SceneObject& candidate) { return candidate.hasAIAgent; });
@@ -3901,8 +3912,269 @@ void Engine::renderInspectorPanel() {
         ImGui::Separator();
     }
 
+    auto formatInspectorMixedValue = [&](const auto& value, const char* floatFormat = "%.3f") -> std::string {
+        using ValueT = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<ValueT, std::string>) {
+            return value.empty() ? "<empty>" : value;
+        } else if constexpr (std::is_same_v<ValueT, const char*>) {
+            return (value && value[0] != '\0') ? std::string(value) : std::string("<empty>");
+        } else if constexpr (std::is_same_v<ValueT, bool>) {
+            return value ? "true" : "false";
+        } else if constexpr (std::is_floating_point_v<ValueT>) {
+            char buf[64] = {};
+            std::snprintf(buf, sizeof(buf), floatFormat ? floatFormat : "%.3f", static_cast<double>(value));
+            return buf;
+        } else if constexpr (std::is_integral_v<ValueT>) {
+            return std::to_string(value);
+        } else if constexpr (std::is_enum_v<ValueT>) {
+            return std::to_string(static_cast<int>(value));
+        } else {
+            return "<value>";
+        }
+    };
+
+    auto drawMixedValuePopup = [&](const char* id,
+                                   const auto& currentValue,
+                                   auto&& getter,
+                                   auto&& assignValue,
+                                   auto&& clearValue,
+                                   const char* floatFormat = "%.3f") -> bool {
+        if (!multiSelection) {
+            return false;
+        }
+
+        std::string buttonId = std::string("--##MixedValue_") + id;
+        bool changed = false;
+        if (ImGui::Button(buttonId.c_str(), ImVec2(-FLT_MIN, 0.0f))) {
+            ImGui::OpenPopup((std::string("##MixedValuePopup_") + id).c_str());
+        }
+        if (ImGui::BeginPopup((std::string("##MixedValuePopup_") + id).c_str())) {
+            ImGui::TextUnformatted("Which value would you like to change it to?");
+            ImGui::Separator();
+            for (SceneObject* selectedObj : selectedObjects) {
+                if (!selectedObj) continue;
+                const auto value = getter(*selectedObj);
+                std::string label = selectedObj->name + " (" + formatInspectorMixedValue(value, floatFormat) + ")##" +
+                    std::to_string(selectedObj->id);
+                if (ImGui::Selectable(label.c_str())) {
+                    assignValue(value);
+                    changed = true;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::Selectable("Clear Value")) {
+                clearValue();
+                changed = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Mixed values");
+        }
+        (void)currentValue;
+        return changed;
+    };
+
+    auto selectedValuesMixed = [&](auto&& getter) {
+        if (!multiSelection || selectedObjects.empty()) return false;
+        bool haveFirst = false;
+        using ValueT = std::decay_t<decltype(getter(*selectedObjects.front()))>;
+        ValueT first{};
+        for (SceneObject* selectedObj : selectedObjects) {
+            if (!selectedObj) continue;
+            const ValueT value = getter(*selectedObj);
+            if (!haveFirst) {
+                first = value;
+                haveFirst = true;
+                continue;
+            }
+            if (value != first) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto mixedInputText = [&](const char* id,
+                              char* buffer,
+                              size_t bufferSize,
+                              auto&& getter,
+                              auto&& setter,
+                              const char* clearValue = "") -> bool {
+        if (selectedValuesMixed(getter)) {
+            return drawMixedValuePopup(id,
+                std::string(buffer),
+                getter,
+                [&](const std::string& value) {
+                    std::snprintf(buffer, bufferSize, "%s", value.c_str());
+                    setter(value);
+                },
+                [&]() {
+                    std::snprintf(buffer, bufferSize, "%s", clearValue);
+                    setter(std::string(clearValue));
+                });
+        }
+        if (ImGui::InputText(id, buffer, bufferSize)) {
+            setter(std::string(buffer));
+            return true;
+        }
+        return false;
+    };
+
+    auto mixedCheckbox = [&](const char* id,
+                             bool* value,
+                             auto&& getter,
+                             auto&& setter) -> bool {
+        if (selectedValuesMixed(getter)) {
+            return drawMixedValuePopup(id,
+                *value,
+                getter,
+                [&](bool selectedValue) {
+                    *value = selectedValue;
+                    setter(selectedValue);
+                },
+                [&]() {
+                    *value = false;
+                    setter(false);
+                });
+        }
+        if (ImGui::Checkbox(id, value)) {
+            setter(*value);
+            return true;
+        }
+        return false;
+    };
+
+    auto mixedSliderInt = [&](const char* id,
+                              int* value,
+                              int minValue,
+                              int maxValue,
+                              const char* format,
+                              auto&& getter,
+                              auto&& setter) -> bool {
+        if (selectedValuesMixed(getter)) {
+            return drawMixedValuePopup(id,
+                *value,
+                getter,
+                [&](int selectedValue) {
+                    *value = std::clamp(selectedValue, minValue, maxValue);
+                    setter(*value);
+                },
+                [&]() {
+                    *value = minValue;
+                    setter(*value);
+                });
+        }
+        if (ImGui::SliderInt(id, value, minValue, maxValue, format)) {
+            setter(*value);
+            return true;
+        }
+        return false;
+    };
+
+    auto mixedCombo = [&](const char* id,
+                          int* value,
+                          const char* const labels[],
+                          int labelCount,
+                          auto&& getter,
+                          auto&& setter) -> bool {
+        if (selectedValuesMixed(getter)) {
+            auto labelGetter = [&](const SceneObject& selectedObj) -> std::string {
+                const int index = static_cast<int>(getter(selectedObj));
+                if (index >= 0 && index < labelCount) return labels[index];
+                return std::to_string(index);
+            };
+            return drawMixedValuePopup(id,
+                std::string("--"),
+                labelGetter,
+                [&](const std::string& selectedLabel) {
+                    for (int i = 0; i < labelCount; ++i) {
+                        if (selectedLabel == labels[i]) {
+                            *value = i;
+                            setter(i);
+                            break;
+                        }
+                    }
+                },
+                [&]() {
+                    *value = 0;
+                    setter(0);
+                });
+        }
+        if (ImGui::Combo(id, value, labels, labelCount)) {
+            setter(*value);
+            return true;
+        }
+        return false;
+    };
+
+    auto mixedDragFloat = [&](const char* id,
+                              float* value,
+                              float speed,
+                              float minValue,
+                              float maxValue,
+                              const char* format,
+                              auto&& getter,
+                              auto&& setter,
+                              float clearValue = 0.0f) -> bool {
+        if (selectedValuesMixed(getter)) {
+            return drawMixedValuePopup(id,
+                *value,
+                getter,
+                [&](float selectedValue) {
+                    *value = selectedValue;
+                    setter(selectedValue);
+                },
+                [&]() {
+                    *value = clearValue;
+                    setter(clearValue);
+                },
+                format);
+        }
+        if (ImGui::DragFloat(id, value, speed, minValue, maxValue, format)) {
+            setter(*value);
+            return true;
+        }
+        return false;
+    };
+
+    auto mixedDragFloatN = [&](const char* id,
+                               float* values,
+                               int count,
+                               float speed,
+                               float minValue,
+                               float maxValue,
+                               const char* format,
+                               auto&& getter,
+                               auto&& setter,
+                               float clearValue = 0.0f) -> bool {
+        bool changed = false;
+        ImGui::PushID(id);
+        ImGui::PushMultiItemsWidths(count, ImGui::CalcItemWidth());
+        for (int component = 0; component < count; ++component) {
+            if (component > 0) ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::PushID(component);
+            auto componentGetter = [&](const SceneObject& selectedObj) {
+                return getter(selectedObj, component);
+            };
+            auto componentSetter = [&](float selectedValue) {
+                values[component] = selectedValue;
+                setter(component, selectedValue);
+            };
+            changed |= mixedDragFloat("##v", &values[component], speed, minValue, maxValue, format,
+                                      componentGetter, componentSetter, clearValue);
+            ImGui::PopID();
+            ImGui::PopItemWidth();
+        }
+        ImGui::PopID();
+        return changed;
+    };
+
     bool objectNameChanged = false;
     bool objectEnabledChanged = false;
+    bool objectInvariableChanged = false;
     bool objectLayerChanged = false;
     bool objectTagChanged = false;
     bool objectTransformChanged = false;
@@ -3915,6 +4187,7 @@ void Engine::renderInspectorPanel() {
     bool parallax2DSectionChanged = false;
     bool audioSourceSectionChanged = false;
     bool videoPlayerSectionChanged = false;
+    bool particleSystem2DSectionChanged = false;
     bool groundBakedSectionChanged = false;
     bool obstacleSectionChanged = false;
     bool agentSectionChanged = false;
@@ -4438,7 +4711,9 @@ void Engine::renderInspectorPanel() {
         }
 
         ImGui::TableSetColumnIndex(1);
-        if (ImGui::Checkbox("##Enabled", &obj.enabled))
+        if (mixedCheckbox("##Enabled", &obj.enabled,
+                          [](const SceneObject& selectedObj) { return selectedObj.enabled; },
+                          [&](bool value) { obj.enabled = value; }))
         {
             objectEnabledChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
@@ -4447,15 +4722,16 @@ void Engine::renderInspectorPanel() {
         ImGui::TableSetColumnIndex(2);
         ImGui::BeginDisabled(runtimeSceneEditingLocked);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputText("##Name", nameBuffer, sizeof(nameBuffer)))
+        const std::string oldNameBeforeEdit = obj.name;
+        if (mixedInputText("##Name", nameBuffer, sizeof(nameBuffer),
+                           [](const SceneObject& selectedObj) { return selectedObj.name; },
+                           [&](const std::string& value) { obj.name = value; }))
         {
-            const std::string oldName = obj.name;
             const std::string newName = nameBuffer;
-            if (oldName != newName)
+            if (oldNameBeforeEdit != newName)
             {
-                obj.name = newName;
                 objectNameChanged = true;
-                propagateObjectRenameReferences(oldName, newName, obj.id);
+                propagateObjectRenameReferences(oldNameBeforeEdit, newName, obj.id);
                 projectManager.currentProject.hasUnsavedChanges = true;
             }
         }
@@ -4463,8 +4739,11 @@ void Engine::renderInspectorPanel() {
         ImGui::EndDisabled();
 
         ImGui::TableSetColumnIndex(3);
-        if (ImGui::Checkbox("Invariable", &obj.IsInvariable))
+        if (mixedCheckbox("Invariable", &obj.IsInvariable,
+                          [](const SceneObject& selectedObj) { return selectedObj.IsInvariable; },
+                          [&](bool value) { obj.IsInvariable = value; }))
         {
+            objectInvariableChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
 
@@ -4499,9 +4778,11 @@ void Engine::renderInspectorPanel() {
         ImGui::TextDisabled("Tag");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputText("##Tag", tagBuf, sizeof(tagBuf)))
+        if (mixedInputText("##Tag", tagBuf, sizeof(tagBuf),
+                           [](const SceneObject& selectedObj) { return selectedObj.tag; },
+                           [&](const std::string& value) { obj.tag = value; },
+                           "Untagged"))
         {
-            obj.tag = tagBuf;
             objectTagChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
@@ -4511,9 +4792,10 @@ void Engine::renderInspectorPanel() {
         ImGui::SameLine();
         int layer = obj.layer;
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::SliderInt("##Layer", &layer, 0, 31, "%d"))
+        if (mixedSliderInt("##Layer", &layer, 0, 31, "%d",
+                           [](const SceneObject& selectedObj) { return selectedObj.layer; },
+                           [&](int value) { obj.layer = value; }))
         {
-            obj.layer = layer;
             objectLayerChanged = true;
             projectManager.currentProject.hasUnsavedChanges = true;
         }
@@ -4542,7 +4824,13 @@ void Engine::renderInspectorPanel() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::DragFloat3("##Position", &obj.position.x, 0.1f))
+            if (mixedDragFloatN("##Position", &obj.position.x, 3, 0.1f, 0.0f, 0.0f, "%.3f",
+                                [](const SceneObject& selectedObj, int component) {
+                                    return (&selectedObj.position.x)[component];
+                                },
+                                [&](int component, float value) {
+                                    (&obj.position.x)[component] = value;
+                                }))
             {
                 syncLocalTransform(obj);
                 objectTransformChanged = true;
@@ -4556,7 +4844,13 @@ void Engine::renderInspectorPanel() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::DragFloat3("##Rotation", &obj.rotation.x, 1.0f, -360.0f, 360.0f))
+            if (mixedDragFloatN("##Rotation", &obj.rotation.x, 3, 1.0f, -360.0f, 360.0f, "%.3f",
+                                [](const SceneObject& selectedObj, int component) {
+                                    return (&selectedObj.rotation.x)[component];
+                                },
+                                [&](int component, float value) {
+                                    (&obj.rotation.x)[component] = value;
+                                }))
             {
                 obj.rotation = NormalizeEulerDegrees(obj.rotation);
                 syncLocalTransform(obj);
@@ -4571,7 +4865,14 @@ void Engine::renderInspectorPanel() {
 
             ImGui::TableSetColumnIndex(1);
             ImGui::SetNextItemWidth(-1);
-            if (ImGui::DragFloat3("##Scale", &obj.scale.x, 0.05f, 0.01f, 100.0f))
+            if (mixedDragFloatN("##Scale", &obj.scale.x, 3, 0.05f, 0.01f, 100.0f, "%.3f",
+                                [](const SceneObject& selectedObj, int component) {
+                                    return (&selectedObj.scale.x)[component];
+                                },
+                                [&](int component, float value) {
+                                    (&obj.scale.x)[component] = value;
+                                },
+                                1.0f))
             {
                 syncLocalTransform(obj);
                 objectTransformChanged = true;
@@ -4699,19 +5000,29 @@ void Engine::renderInspectorPanel() {
             if (obj.type != ObjectType::Sprite25D) {
                 const char* anchors[] = { "Center", "Top Left", "Top Right", "Bottom Left", "Bottom Right" };
                 int anchor = static_cast<int>(obj.ui.anchor);
-                if (ImGui::Combo("Anchor", &anchor, anchors, IM_ARRAYSIZE(anchors))) {
+                if (mixedCombo("Anchor", &anchor, anchors, IM_ARRAYSIZE(anchors),
+                               [](const SceneObject& selectedObj) { return static_cast<int>(selectedObj.ui.anchor); },
+                               [&](int value) { obj.ui.anchor = static_cast<UIAnchor>(value); })) {
                     obj.ui.anchor = static_cast<UIAnchor>(anchor);
                     changed = true;
                 }
 
-                if (ImGui::DragFloat2("Position (px)", &obj.ui.position.x, 1.0f)) {
+                if (mixedDragFloatN("Position (px)", &obj.ui.position.x, 2, 1.0f, 0.0f, 0.0f, "%.3f",
+                                    [](const SceneObject& selectedObj, int component) {
+                                        return (&selectedObj.ui.position.x)[component];
+                                    },
+                                    [&](int component, float value) {
+                                        (&obj.ui.position.x)[component] = value;
+                                    })) {
                     changed = true;
                 }
             } else {
                 ImGui::TextDisabled("Anchor and UI position are ignored for projected 2.5D sprites.");
             }
 
-            if (ImGui::DragFloat("Rotation (deg)", &obj.ui.rotation, 0.5f, -360.0f, 360.0f)) {
+            if (mixedDragFloat("Rotation (deg)", &obj.ui.rotation, 0.5f, -360.0f, 360.0f, "%.3f",
+                               [](const SceneObject& selectedObj) { return selectedObj.ui.rotation; },
+                               [&](float value) { obj.ui.rotation = value; })) {
                 glm::vec3 rot(0.0f, 0.0f, obj.ui.rotation);
                 rot = NormalizeEulerDegrees(rot);
                 obj.ui.rotation = rot.z;
@@ -4722,7 +5033,14 @@ void Engine::renderInspectorPanel() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 minSize = glm::vec2(0.01f, 0.01f);
             }
-            if (ImGui::DragFloat2("Size (px)", &obj.ui.size.x, 1.0f, minSize.x, 4096.0f)) {
+            if (mixedDragFloatN("Size (px)", &obj.ui.size.x, 2, 1.0f, minSize.x, 4096.0f, "%.3f",
+                                [](const SceneObject& selectedObj, int component) {
+                                    return (&selectedObj.ui.size.x)[component];
+                                },
+                                [&](int component, float value) {
+                                    (&obj.ui.size.x)[component] = value;
+                                },
+                                minSize.x)) {
                 obj.ui.size.x = std::max(minSize.x, obj.ui.size.x);
                 obj.ui.size.y = std::max(minSize.y, obj.ui.size.y);
                 changed = true;
@@ -4831,7 +5149,9 @@ void Engine::renderInspectorPanel() {
             }
 
             if (obj.ui.type == UIElementType::Button || obj.ui.type == UIElementType::Slider) {
-                if (ImGui::Checkbox("Interactable", &obj.ui.interactable)) {
+                if (mixedCheckbox("Interactable", &obj.ui.interactable,
+                                  [](const SceneObject& selectedObj) { return selectedObj.ui.interactable; },
+                                  [&](bool value) { obj.ui.interactable = value; })) {
                     changed = true;
                 }
 
@@ -4860,15 +5180,23 @@ void Engine::renderInspectorPanel() {
                 if (obj.ui.type == UIElementType::Text) {
                     char labelBuf[4096] = {};
                     std::snprintf(labelBuf, sizeof(labelBuf), "%s", obj.ui.label.c_str());
-                    if (ImGui::InputTextMultiline("Text", labelBuf, sizeof(labelBuf), ImVec2(-FLT_MIN, 96.0f))) {
+                    if (selectedValuesMixed([](const SceneObject& selectedObj) { return selectedObj.ui.label; })) {
+                        if (drawMixedValuePopup("Text", obj.ui.label,
+                                                [](const SceneObject& selectedObj) { return selectedObj.ui.label; },
+                                                [&](const std::string& value) { obj.ui.label = value; },
+                                                [&]() { obj.ui.label.clear(); })) {
+                            changed = true;
+                        }
+                    } else if (ImGui::InputTextMultiline("Text", labelBuf, sizeof(labelBuf), ImVec2(-FLT_MIN, 96.0f))) {
                         obj.ui.label = labelBuf;
                         changed = true;
                     }
                 } else {
                     char labelBuf[128] = {};
                     std::snprintf(labelBuf, sizeof(labelBuf), "%s", obj.ui.label.c_str());
-                    if (ImGui::InputText("Label", labelBuf, sizeof(labelBuf))) {
-                        obj.ui.label = labelBuf;
+                    if (mixedInputText("Label", labelBuf, sizeof(labelBuf),
+                                       [](const SceneObject& selectedObj) { return selectedObj.ui.label; },
+                                       [&](const std::string& value) { obj.ui.label = value; })) {
                         changed = true;
                     }
                 }
@@ -5193,7 +5521,39 @@ void Engine::renderInspectorPanel() {
             }
 
             ImVec4 uiColor(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
-            if (ImGui::ColorEdit4("Tint", &uiColor.x)) {
+            if (selectedValuesMixed([](const SceneObject& selectedObj) { return selectedObj.ui.color; })) {
+                if (ImGui::Button("--##MixedTint", ImVec2(-FLT_MIN, 0.0f))) {
+                    ImGui::OpenPopup("##MixedValuePopup_Tint");
+                }
+                if (ImGui::BeginPopup("##MixedValuePopup_Tint")) {
+                    ImGui::TextUnformatted("Which value would you like to change it to?");
+                    ImGui::Separator();
+                    for (SceneObject* selectedObj : selectedObjects) {
+                        if (!selectedObj) continue;
+                        const glm::vec4 color = selectedObj->ui.color;
+                        char colorLabel[256] = {};
+                        std::snprintf(colorLabel, sizeof(colorLabel), "%s (R:%d G:%d B:%d A:%d)##%d",
+                                      selectedObj->name.c_str(),
+                                      static_cast<int>(std::clamp(color.r, 0.0f, 1.0f) * 255.0f),
+                                      static_cast<int>(std::clamp(color.g, 0.0f, 1.0f) * 255.0f),
+                                      static_cast<int>(std::clamp(color.b, 0.0f, 1.0f) * 255.0f),
+                                      static_cast<int>(std::clamp(color.a, 0.0f, 1.0f) * 255.0f),
+                                      selectedObj->id);
+                        if (ImGui::Selectable(colorLabel)) {
+                            obj.ui.color = color;
+                            changed = true;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::Separator();
+                    if (ImGui::Selectable("Clear Value")) {
+                        obj.ui.color = glm::vec4(1.0f);
+                        changed = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
+            } else if (ImGui::ColorEdit4("Tint", &uiColor.x)) {
                 obj.ui.color = glm::vec4(uiColor.x, uiColor.y, uiColor.z, uiColor.w);
                 changed = true;
             }
@@ -5474,9 +5834,9 @@ void Engine::renderInspectorPanel() {
             ImGui::PushID("Rigidbody3D");
             if (beginCompFields("##Fields_Rigidbody3D")) {
                 noteRow("Collider required for physics.");
-                if (UsesUIOnly2DPhysics(obj)) {
+                /*if (UsesUIOnly2DPhysics(obj)) {
                     noteRow("Rigidbody3D is for 3D objects (use Rigidbody2D for UI/canvas).");
-                }
+                }*/
                 const float massUnitScale = std::max(0.000001f,
                     ProjectMassUnitToKilograms(projectManager.currentProject.physicsSettings.massUnit));
                 const float minDisplayMass = std::max(0.0001f, 0.01f / massUnitScale);
@@ -6093,6 +6453,21 @@ void Engine::renderInspectorPanel() {
                             player.videoPath = pathBuf;
                             changed = true;
                         }
+                        if (ImGui::BeginDragDropTarget()) {
+                            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                                const char* droppedPath = static_cast<const char*>(payload->Data);
+                                if (droppedPath != nullptr) {
+                                    std::error_code ec;
+                                    fs::directory_entry droppedEntry{fs::path(droppedPath), ec};
+                                    if (!ec && !droppedEntry.is_directory() &&
+                                        fileBrowser.getFileCategory(droppedEntry) == FileCategory::Video) {
+                                        player.videoPath = droppedEntry.path().string();
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
                         ImGui::SameLine();
                         const bool canUseSelectedVideo = !fileBrowser.selectedFile.empty() &&
                                                          fs::exists(fileBrowser.selectedFile) &&
@@ -6105,6 +6480,8 @@ void Engine::renderInspectorPanel() {
                         ImGui::EndDisabled();
                         if (boolRow("Play On Awake", &player.playOnAwake)) { changed = true; }
                         if (boolRow("Loop", &player.loop))                  { changed = true; }
+                        if (boolRow("Flip X", &player.flipX))               { changed = true; }
+                        if (boolRow("Flip Y", &player.flipY))               { changed = true; }
                         fieldRow("Speed");
                         if (ImGui::DragFloat("##VideoPlaybackSpeed", &player.playbackSpeed, 0.01f, 0.0f, 8.0f, "%.2fx")) {
                             player.playbackSpeed = std::clamp(player.playbackSpeed, 0.0f, 8.0f);
@@ -6197,6 +6574,129 @@ void Engine::renderInspectorPanel() {
             projectManager.currentProject.hasUnsavedChanges = true;
         }
         ImGui::PopStyleColor();
+    }
+
+    if (inspectorComponentKey == "particle_system2d" && obj.hasParticleSystem2D && sharedParticleSystem2D) {
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
+        bool changed = false;
+        auto header = drawComponentHeader("Particle System 2D", "ParticleSystem2D", "particle_system2d", &obj.particleSystem2D.enabled, true, [&]() {
+            if (ImGui::MenuItem("Reset")) {
+                obj.particleSystem2D = ParticleSystem2DComponent{};
+                changed = true;
+            }
+        });
+        if (header.open) {
+            InspectorBodyScope _ibs;
+            ParticleSystem2DComponent& ps = obj.particleSystem2D;
+            auto minMaxRow = [&](const char* label, ParticleSystem2DComponent::MinMaxFloat& range) {
+                ImGui::PushID(label);
+                changed |= ImGui::Checkbox("Random", &range.random);
+                changed |= ImGui::DragFloat("Min", &range.min, 0.01f, 0.0f, 100000.0f, "%.3f");
+                if (range.random) {
+                    changed |= ImGui::DragFloat("Max", &range.max, 0.01f, 0.0f, 100000.0f, "%.3f");
+                    if (range.max < range.min) range.max = range.min;
+                } else {
+                    range.max = range.min;
+                }
+                ImGui::PopID();
+            };
+            if (drawInspectorSubsectionFoldout("Preview", nullptr, true)) {
+                if (ImGui::SmallButton(ps.playing && !ps.paused ? "Pause" : "Play")) {
+                    if (ps.playing && !ps.paused) {
+                        ps.paused = true;
+                    } else {
+                        ps.playing = true;
+                        ps.paused = false;
+                    }
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Restart")) {
+                    ps.particles.clear();
+                    ps.runtimeAccumulator = 0.0f;
+                    ps.runtimeTime = 0.0f;
+                    ps.runtimeLastUpdateTime = glfwGetTime();
+                    ps.runtimeInitialized = true;
+                    ps.playing = true;
+                    ps.paused = false;
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Stop")) {
+                    ps.playing = false;
+                    ps.paused = false;
+                    ps.particles.clear();
+                    ps.runtimeAccumulator = 0.0f;
+                    ps.runtimeTime = 0.0f;
+                    ps.runtimeInitialized = true;
+                    ps.runtimeLastUpdateTime = glfwGetTime();
+                    changed = true;
+                }
+                ImGui::TextDisabled("Live Particles: %d", static_cast<int>(ps.particles.size()));
+            }
+            if (drawInspectorSubsectionFoldout("Main", nullptr, true)) {
+                changed |= ImGui::Checkbox("Looping", &ps.looping);
+                changed |= ImGui::Checkbox("Prewarm", &ps.prewarm);
+                changed |= ImGui::Checkbox("Play On Awake", &ps.playOnAwake);
+                changed |= ImGui::DragFloat("Start Delay", &ps.startDelay, 0.01f, 0.0f, 1000.0f, "%.2f");
+                changed |= ImGui::DragFloat("Gravity", &ps.gravityModifier, 0.01f, -100.0f, 100.0f, "%.2f");
+                changed |= ImGui::DragFloat("Simulation Speed", &ps.simulationSpeed, 0.01f, 0.0f, 20.0f, "%.2f");
+                changed |= ImGui::DragInt("Max Particles", &ps.maxParticles, 1.0f, 1, 100000);
+                changed |= ImGui::ColorEdit4("Start Color", &ps.startColor.x);
+                if (drawInspectorSubsectionFoldout("Start Lifetime", nullptr, true)) minMaxRow("StartLifetime", ps.startLifetime);
+                if (drawInspectorSubsectionFoldout("Start Speed", nullptr, true)) minMaxRow("StartSpeed", ps.startSpeed);
+                if (drawInspectorSubsectionFoldout("Start Size", nullptr, true)) minMaxRow("StartSize", ps.startSize);
+                if (drawInspectorSubsectionFoldout("Start Rotation", nullptr, true)) minMaxRow("StartRotation", ps.startRotation);
+            }
+            if (drawInspectorSubsectionFoldout("Emission", nullptr, true)) {
+                changed |= ImGui::DragFloat("Rate", &ps.emissionRate, 0.1f, 0.0f, 10000.0f, "%.1f");
+                changed |= ImGui::DragInt("Burst Count", &ps.burstCount, 1.0f, 0, 100000);
+                changed |= ImGui::DragFloat("Burst Time", &ps.burstTime, 0.01f, 0.0f, 1000.0f, "%.2f");
+                changed |= ImGui::Checkbox("Burst Loop", &ps.burstLoop);
+            }
+            if (drawInspectorSubsectionFoldout("Shape", nullptr, true)) {
+                const char* shapes[] = { "Point", "Circle", "Box" };
+                changed |= ImGui::Combo("Emitter Shape", &ps.shape, shapes, IM_ARRAYSIZE(shapes));
+                changed |= ImGui::DragFloat("Radius", &ps.shapeRadius, 0.01f, 0.0f, 10000.0f, "%.2f");
+                changed |= ImGui::DragFloat2("Box", &ps.shapeBox.x, 0.01f, 0.0f, 10000.0f, "%.2f");
+            }
+            if (drawInspectorSubsectionFoldout("Velocity over Lifetime")) {
+                changed |= ImGui::Checkbox("Enabled##VelLife", &ps.velocityOverLifetimeEnabled);
+                changed |= ImGui::DragFloat2("Velocity", &ps.velocityOverLifetime.x, 0.01f, -1000.0f, 1000.0f, "%.2f");
+            }
+            if (drawInspectorSubsectionFoldout("Color over Lifetime")) {
+                changed |= ImGui::Checkbox("Enabled##ColorLife", &ps.colorOverLifetimeEnabled);
+                changed |= ImGui::ColorEdit4("End Color", &ps.colorOverLifetime.x);
+            }
+            if (drawInspectorSubsectionFoldout("Size over Lifetime")) {
+                changed |= ImGui::Checkbox("Enabled##SizeLife", &ps.sizeOverLifetimeEnabled);
+                changed |= ImGui::DragFloat("End Size", &ps.sizeOverLifetime, 0.01f, 0.0f, 1000.0f, "%.2f");
+            }
+            if (drawInspectorSubsectionFoldout("Rotation over Lifetime")) {
+                changed |= ImGui::Checkbox("Enabled##RotLife", &ps.rotationOverLifetimeEnabled);
+                changed |= ImGui::DragFloat("Angular Velocity", &ps.rotationOverLifetime, 0.1f, -10000.0f, 10000.0f, "%.1f");
+            }
+            if (drawInspectorSubsectionFoldout("Noise")) {
+                changed |= ImGui::Checkbox("Enabled##Noise", &ps.noiseEnabled);
+                changed |= ImGui::DragFloat("Strength", &ps.noiseStrength, 0.01f, 0.0f, 1000.0f, "%.2f");
+                changed |= ImGui::DragFloat("Frequency", &ps.noiseFrequency, 0.01f, 0.01f, 1000.0f, "%.2f");
+            }
+            if (drawInspectorSubsectionFoldout("Renderer", nullptr, true)) {
+                char texBuf[512] = {};
+                std::snprintf(texBuf, sizeof(texBuf), "%s", ps.texturePath.c_str());
+                if (ImGui::InputText("Texture", texBuf, sizeof(texBuf))) { ps.texturePath = texBuf; changed = true; }
+                char matBuf[512] = {};
+                std::snprintf(matBuf, sizeof(matBuf), "%s", ps.materialPath.c_str());
+                if (ImGui::InputText("Material", matBuf, sizeof(matBuf))) { ps.materialPath = matBuf; changed = true; }
+                changed |= ImGui::Checkbox("Receive Lighting", &ps.receiveLighting2D);
+                changed |= ImGui::Checkbox("Force Unlit", &ps.unlitLighting2D);
+                changed |= ImGui::SliderFloat("Emissive", &ps.emissiveLighting2D, 0.0f, 8.0f, "%.2f");
+            }
+        }
+        if (changed) {
+            particleSystem2DSectionChanged = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
     }
 
     if (inspectorComponentKey == "ground_baked" && obj.hasGroundBakedType && sharedGroundBaked) {
@@ -7355,16 +7855,16 @@ void Engine::renderInspectorPanel() {
                         slotChanged = true;
                     }
                 }
-                if (primarySlot && pathRef.empty()) {
+                /*if (primarySlot && pathRef.empty()) {
                     ImGui::TextDisabled("Slot 0 uses embedded material data until a material asset is assigned.");
-                }
+                }*/
                 ImGui::PopID();
                 return slotChanged;
             };
 
             ImGui::Spacing();
             ImGui::Separator();
-            ImGui::TextDisabled("Mesh");
+            /*ImGui::TextDisabled("Mesh");*/
             const bool usesMeshAsset =
                 obj.renderType == RenderType::OBJMesh || obj.renderType == RenderType::Model;
             bool browserHasModel = false;
@@ -7449,7 +7949,7 @@ void Engine::renderInspectorPanel() {
                 selectedMaterialSlot = static_cast<int>(obj.additionalMaterialPaths.size());
                 rendererChanged = true;
             }
-            std::string selectedSlotName = "Slot " + std::to_string(selectedMaterialSlot);
+            /*std::string selectedSlotName = "Slot " + std::to_string(selectedMaterialSlot);
             if (selectedMaterialSlot == 0 && obj.materialPath.empty()) {
                 selectedSlotName += " (Embedded)";
             } else if (selectedMaterialSlot == 0 && !obj.materialPath.empty()) {
@@ -8630,8 +9130,9 @@ void Engine::renderInspectorPanel() {
             0,
             std::max(0, static_cast<int>(obj.additionalMaterialPaths.size()))
         );
+        
         std::string matLine = "Material: Slot " + std::to_string(selectedMaterialSlot);
-        if (selectedMaterialSlot == 0) {
+        /*if (selectedMaterialSlot == 0) {
             matLine += obj.materialPath.empty()
                 ? " (Embedded)"
                 : " - " + fs::path(obj.materialPath).filename().string();
@@ -8641,7 +9142,8 @@ void Engine::renderInspectorPanel() {
                 !obj.additionalMaterialPaths[slotIndex].empty()) {
                 matLine += " - " + fs::path(obj.additionalMaterialPaths[slotIndex]).filename().string();
             }
-        }
+        }*/
+        
         float textWidth = ImGui::CalcTextSize(matLine.c_str()).x;
         float availWidth = ImGui::GetContentRegionAvail().x;
         float x = ImGui::GetCursorPosX() + std::max(0.0f, availWidth - textWidth);
@@ -8777,6 +9279,11 @@ void Engine::renderInspectorPanel() {
         addEntry("Rendering/Video Player", !obj.hasVideoPlayer && HasRendererComponent(obj), [&]() {
             obj.hasVideoPlayer = true;
             obj.videoPlayer = VideoPlayerComponent{};
+            componentChanged = true;
+        });
+        addEntry("Effects/Particle System 2D", !obj.hasParticleSystem2D, [&]() {
+            obj.hasParticleSystem2D = true;
+            obj.particleSystem2D = ParticleSystem2DComponent{};
             componentChanged = true;
         });
         addEntry("Audio/Reverb Zone", !obj.hasReverbZone && supports3DWorldComponents, [&]() {
@@ -9507,55 +10014,657 @@ void Engine::renderInspectorPanel() {
         }
     };
 
+    const SceneObject* inspectorPrimaryBefore = nullptr;
+    for (const SceneObject& beforeObj : inspectorFrameBefore.objects) {
+        if (beforeObj.id == obj.id) {
+            inspectorPrimaryBefore = &beforeObj;
+            break;
+        }
+    }
+
+    auto applyInspectorFrameDeltaTo = [&](SceneObject& target) {
+        if (inspectorPrimaryBefore == nullptr) {
+            return;
+        }
+
+        const SceneObject& before = *inspectorPrimaryBefore;
+
+        auto animationClipSlotsEqual = [](const std::vector<AnimationClipSlot>& a,
+                                          const std::vector<AnimationClipSlot>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].name != b[i].name || a[i].assetPath != b[i].assetPath) return false;
+            }
+            return true;
+        };
+        auto animationKeyframesEqual = [](const std::vector<AnimationKeyframe>& a,
+                                          const std::vector<AnimationKeyframe>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].time != b[i].time ||
+                    a[i].position != b[i].position ||
+                    a[i].rotation != b[i].rotation ||
+                    a[i].scale != b[i].scale ||
+                    a[i].interpolation != b[i].interpolation ||
+                    a[i].curveMode != b[i].curveMode ||
+                    a[i].bezierIn != b[i].bezierIn ||
+                    a[i].bezierOut != b[i].bezierOut) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto animationEventsEqual = [](const std::vector<AnimationEvent>& a,
+                                       const std::vector<AnimationEvent>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].time != b[i].time ||
+                    a[i].eventId != b[i].eventId ||
+                    a[i].payload != b[i].payload) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto animationPropertyKeyframesEqual = [](const std::vector<AnimationPropertyKeyframe>& a,
+                                                 const std::vector<AnimationPropertyKeyframe>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].time != b[i].time ||
+                    a[i].value != b[i].value ||
+                    a[i].interpolation != b[i].interpolation ||
+                    a[i].curveMode != b[i].curveMode ||
+                    a[i].bezierIn != b[i].bezierIn ||
+                    a[i].bezierOut != b[i].bezierOut) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto animationTracksEqual = [&](const std::vector<AnimationPropertyTrack>& a,
+                                        const std::vector<AnimationPropertyTrack>& b) {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].enabled != b[i].enabled ||
+                    a[i].path != b[i].path ||
+                    a[i].label != b[i].label ||
+                    a[i].defaultValue != b[i].defaultValue ||
+                    !animationPropertyKeyframesEqual(a[i].keyframes, b[i].keyframes)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        #define APPLY_CHANGED_FIELD(FIELD) \
+            do { if (before.FIELD != obj.FIELD) target.FIELD = obj.FIELD; } while (false)
+        #define APPLY_CHANGED_COMPONENT_FIELD(COMPONENT, FIELD) \
+            do { if (before.COMPONENT.FIELD != obj.COMPONENT.FIELD) target.COMPONENT.FIELD = obj.COMPONENT.FIELD; } while (false)
+        #define APPLY_CHANGED_MATERIAL_FIELD(FIELD) \
+            do { if (before.material.FIELD != obj.material.FIELD) target.material.FIELD = obj.material.FIELD; } while (false)
+        #define APPLY_CHANGED_UI_FIELD(FIELD) \
+            do { if (before.ui.FIELD != obj.ui.FIELD) target.ui.FIELD = obj.ui.FIELD; } while (false)
+
+        APPLY_CHANGED_FIELD(name);
+        APPLY_CHANGED_FIELD(enabled);
+        APPLY_CHANGED_FIELD(IsInvariable);
+        APPLY_CHANGED_FIELD(layer);
+        APPLY_CHANGED_FIELD(tag);
+        APPLY_CHANGED_FIELD(position);
+        APPLY_CHANGED_FIELD(rotation);
+        APPLY_CHANGED_FIELD(scale);
+        APPLY_CHANGED_FIELD(localPosition);
+        APPLY_CHANGED_FIELD(localRotation);
+        APPLY_CHANGED_FIELD(localScale);
+        APPLY_CHANGED_FIELD(localInitialized);
+        APPLY_CHANGED_FIELD(parentId);
+        APPLY_CHANGED_FIELD(childIds);
+        APPLY_CHANGED_FIELD(isExpanded);
+
+        if (sharedUIObject) {
+            APPLY_CHANGED_FIELD(hasUI);
+            APPLY_CHANGED_UI_FIELD(type);
+            APPLY_CHANGED_UI_FIELD(anchor);
+            APPLY_CHANGED_UI_FIELD(position);
+            APPLY_CHANGED_UI_FIELD(size);
+            APPLY_CHANGED_UI_FIELD(maskChildren);
+            APPLY_CHANGED_UI_FIELD(rotation);
+            APPLY_CHANGED_UI_FIELD(sliderValue);
+            APPLY_CHANGED_UI_FIELD(sliderMin);
+            APPLY_CHANGED_UI_FIELD(sliderMax);
+            APPLY_CHANGED_UI_FIELD(label);
+            APPLY_CHANGED_UI_FIELD(buttonPressed);
+            APPLY_CHANGED_UI_FIELD(color);
+            APPLY_CHANGED_UI_FIELD(interactable);
+            APPLY_CHANGED_UI_FIELD(sliderStyle);
+            APPLY_CHANGED_UI_FIELD(buttonStyle);
+            APPLY_CHANGED_UI_FIELD(stylePreset);
+            APPLY_CHANGED_UI_FIELD(textScale);
+            APPLY_CHANGED_UI_FIELD(textFont);
+            APPLY_CHANGED_UI_FIELD(textAutoWrap);
+            APPLY_CHANGED_UI_FIELD(textHAlign);
+            APPLY_CHANGED_UI_FIELD(textVAlign);
+            APPLY_CHANGED_UI_FIELD(textEffectFlags);
+            APPLY_CHANGED_UI_FIELD(textEffectSpeed);
+            APPLY_CHANGED_UI_FIELD(textEffectIntensity);
+            APPLY_CHANGED_UI_FIELD(renderIn3D);
+            APPLY_CHANGED_UI_FIELD(renderTargetSize);
+            APPLY_CHANGED_UI_FIELD(pseudo3DEnabled);
+            APPLY_CHANGED_UI_FIELD(pseudo3DUseOffscreenSurface);
+            APPLY_CHANGED_UI_FIELD(pseudo3DPanelSize);
+            APPLY_CHANGED_UI_FIELD(pseudo3DTopLeftOffset);
+            APPLY_CHANGED_UI_FIELD(pseudo3DTopRightOffset);
+            APPLY_CHANGED_UI_FIELD(pseudo3DBottomRightOffset);
+            APPLY_CHANGED_UI_FIELD(pseudo3DBottomLeftOffset);
+            APPLY_CHANGED_UI_FIELD(pseudo3DPivot);
+            APPLY_CHANGED_UI_FIELD(pseudo3DPerspectiveIntensity);
+            APPLY_CHANGED_UI_FIELD(pseudo3DSkewAmount);
+            APPLY_CHANGED_UI_FIELD(pseudo3DCurvatureAmount);
+            APPLY_CHANGED_UI_FIELD(pseudo3DAnchorTargetId);
+            APPLY_CHANGED_UI_FIELD(pseudo3DDistanceScalingEnabled);
+            APPLY_CHANGED_UI_FIELD(pseudo3DAdjustPerspectiveWithDistance);
+            APPLY_CHANGED_UI_FIELD(pseudo3DMinDistance);
+            APPLY_CHANGED_UI_FIELD(pseudo3DMaxDistance);
+            APPLY_CHANGED_UI_FIELD(pseudo3DInteractionDistance);
+            APPLY_CHANGED_UI_FIELD(pseudo3DDepthSort);
+            APPLY_CHANGED_UI_FIELD(pseudo3DAllowInteraction);
+            APPLY_CHANGED_UI_FIELD(spriteSheetEnabled);
+            APPLY_CHANGED_UI_FIELD(spriteSheetColumns);
+            APPLY_CHANGED_UI_FIELD(spriteSheetRows);
+            APPLY_CHANGED_UI_FIELD(spriteSheetFrame);
+            APPLY_CHANGED_UI_FIELD(spriteSheetFps);
+            APPLY_CHANGED_UI_FIELD(spriteSheetLoop);
+            APPLY_CHANGED_UI_FIELD(spriteCustomFramesEnabled);
+            APPLY_CHANGED_UI_FIELD(spriteSourceWidth);
+            APPLY_CHANGED_UI_FIELD(spriteSourceHeight);
+            APPLY_CHANGED_UI_FIELD(spriteCustomFrames);
+            APPLY_CHANGED_UI_FIELD(spriteCustomFrameNames);
+            APPLY_CHANGED_UI_FIELD(spriteCustomFrameScales);
+            APPLY_CHANGED_UI_FIELD(nineSliceEnabled);
+            APPLY_CHANGED_UI_FIELD(nineSliceBorder);
+            APPLY_CHANGED_UI_FIELD(nineSliceTileEdges);
+            APPLY_CHANGED_UI_FIELD(nineSliceTileCenter);
+            APPLY_CHANGED_UI_FIELD(receiveLighting2D);
+            APPLY_CHANGED_UI_FIELD(unlitLighting2D);
+            APPLY_CHANGED_UI_FIELD(emissiveLighting2D);
+            APPLY_CHANGED_FIELD(albedoTexturePath);
+            APPLY_CHANGED_MATERIAL_FIELD(textureFilter);
+        }
+
+        if (sharedCollider) {
+            APPLY_CHANGED_FIELD(hasCollider);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, type);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, boxSize);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, offset);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, convex);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, staticFriction);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, dynamicFriction);
+            APPLY_CHANGED_COMPONENT_FIELD(collider, restitution);
+        }
+
+        if (sharedPlayerController) {
+            APPLY_CHANGED_FIELD(hasPlayerController);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, moveSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, runSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, lookSensitivity);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, groundAcceleration);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, airAcceleration);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, braking);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, minSurfaceControl);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, slideGravity);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, platformCarry);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, height);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, radius);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, jumpStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, verticalVelocity);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, pitch);
+            APPLY_CHANGED_COMPONENT_FIELD(playerController, yaw);
+        }
+
+        if (sharedRigidbody) {
+            APPLY_CHANGED_FIELD(hasRigidbody);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, mass);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, useCustomCenterOfMass);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, centerOfMass);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, useGravity);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, isKinematic);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, linearDamping);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, angularDamping);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, lockRotationX);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, lockRotationY);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody, lockRotationZ);
+        }
+
+        if (sharedRigidbody2D) {
+            APPLY_CHANGED_FIELD(hasRigidbody2D);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, useGravity);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, lockRotation);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, gravityScale);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, linearDamping);
+            APPLY_CHANGED_COMPONENT_FIELD(rigidbody2D, velocity);
+        }
+
+        if (sharedCollider2D) {
+            APPLY_CHANGED_FIELD(hasCollider2D);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, type);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, boxSize);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, offset);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, points);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, closed);
+            APPLY_CHANGED_COMPONENT_FIELD(collider2D, edgeThickness);
+        }
+
+        if (sharedParallax2D) {
+            APPLY_CHANGED_FIELD(hasParallaxLayer2D);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, order);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, factor);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, repeatX);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, repeatY);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, disableCulling);
+            APPLY_CHANGED_COMPONENT_FIELD(parallaxLayer2D, repeatSpacing);
+        }
+
+        if (sharedAudioSource) {
+            APPLY_CHANGED_FIELD(hasAudioSource);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, clipPath);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, volume);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, loop);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, playOnStart);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, spatial);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, spatialBlend);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, minDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, maxDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, rolloffMode);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, rolloff);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, customMidDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, customMidGain);
+            APPLY_CHANGED_COMPONENT_FIELD(audioSource, customEndGain);
+        }
+
+        if (sharedVideoPlayer) {
+            APPLY_CHANGED_FIELD(hasVideoPlayer);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, videoPath);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, playOnAwake);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, loop);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, flipX);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, flipY);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, playbackSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, playAudioFromVideo);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, routeAudioToSource);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, outputAudioSourceObjectId);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, videoAudioVolume);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, videoAudioMuted);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, syncAudioToVideo);
+            APPLY_CHANGED_COMPONENT_FIELD(videoPlayer, audioSyncTolerance);
+        }
+
+        if (sharedParticleSystem2D) {
+            APPLY_CHANGED_FIELD(hasParticleSystem2D);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, looping);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, prewarm);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, playOnAwake);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, autoRandomSeed);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, randomSeed);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startDelay);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startLifetime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startSize);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startRotation);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, startColor);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, gravityModifier);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, simulationSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, maxParticles);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, emissionRate);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, burstCount);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, burstTime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, burstLoop);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, shape);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, shapeRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, shapeBox);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, velocityOverLifetimeEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, velocityOverLifetime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, colorOverLifetimeEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, colorOverLifetime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, sizeOverLifetimeEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, sizeOverLifetime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, rotationOverLifetimeEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, rotationOverLifetime);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, noiseEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, noiseStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, noiseFrequency);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, texturePath);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, materialPath);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, receiveLighting2D);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, unlitLighting2D);
+            APPLY_CHANGED_COMPONENT_FIELD(particleSystem2D, emissiveLighting2D);
+        }
+
+        if (sharedGroundBaked) {
+            APPLY_CHANGED_FIELD(hasGroundBakedType);
+            APPLY_CHANGED_COMPONENT_FIELD(groundBakedType, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(groundBakedType, includeInBake);
+            APPLY_CHANGED_COMPONENT_FIELD(groundBakedType, areaCost);
+        }
+
+        if (sharedObstacle) {
+            APPLY_CHANGED_FIELD(hasObsticleObject);
+            APPLY_CHANGED_COMPONENT_FIELD(obsticleObject, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(obsticleObject, carve);
+            APPLY_CHANGED_COMPONENT_FIELD(obsticleObject, padding);
+        }
+
+        if (sharedAgent) {
+            APPLY_CHANGED_FIELD(hasAIAgent);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, useTargetObject);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, targetId);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, destination);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, speed);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, stoppingDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, repathInterval);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, autoRepath);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, alignToPath);
+            APPLY_CHANGED_COMPONENT_FIELD(aiAgent, debugDrawPath);
+        }
+
+        if (sharedAnimation) {
+            APPLY_CHANGED_FIELD(hasAnimation);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, clipAssetPath);
+            if (!animationClipSlotsEqual(before.animation.clips, obj.animation.clips)) {
+                target.animation.clips = obj.animation.clips;
+            }
+            APPLY_CHANGED_COMPONENT_FIELD(animation, activeClipIndex);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, clipLength);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, playSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, loop);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, playOnAwake);
+            APPLY_CHANGED_COMPONENT_FIELD(animation, applyOnScrub);
+            if (!animationKeyframesEqual(before.animation.keyframes, obj.animation.keyframes)) {
+                target.animation.keyframes = obj.animation.keyframes;
+            }
+            if (!animationEventsEqual(before.animation.events, obj.animation.events)) {
+                target.animation.events = obj.animation.events;
+            }
+            if (!animationTracksEqual(before.animation.tracks, obj.animation.tracks)) {
+                target.animation.tracks = obj.animation.tracks;
+            }
+        }
+
+        if (sharedSkeletal) {
+            APPLY_CHANGED_FIELD(hasSkeletalAnimation);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, useGpuSkinning);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, allowCpuFallback);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, useAnimation);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, clipIndex);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, time);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, playSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, loop);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, skeletonRootId);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, maxBones);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, boneNames);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, boneNodeIds);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, armatureNodeIds);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, inverseBindMatrices);
+            APPLY_CHANGED_COMPONENT_FIELD(skeletal, finalMatrices);
+        }
+
+        if (sharedReverb) {
+            APPLY_CHANGED_FIELD(hasReverbZone);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, preset);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, shape);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, boxSize);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, radius);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, blendDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, minDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, maxDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, room);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, roomHF);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, roomLF);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, decayTime);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, decayHFRatio);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, reflections);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, reflectionsDelay);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, reverb);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, reverbDelay);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, hfReference);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, lfReference);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, roomRolloffFactor);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, diffusion);
+            APPLY_CHANGED_COMPONENT_FIELD(reverbZone, density);
+        }
+
+        if (sharedCamera) {
+            APPLY_CHANGED_FIELD(hasCamera);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, type);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, fov);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, nearClip);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, farClip);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, applyPostFX);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, use2D);
+            APPLY_CHANGED_COMPONENT_FIELD(camera, pixelsPerUnit);
+        }
+
+        if (sharedCameraFollow2D) {
+            APPLY_CHANGED_FIELD(hasCameraFollow2D);
+            APPLY_CHANGED_COMPONENT_FIELD(cameraFollow2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(cameraFollow2D, targetId);
+            APPLY_CHANGED_COMPONENT_FIELD(cameraFollow2D, offset);
+            APPLY_CHANGED_COMPONENT_FIELD(cameraFollow2D, smoothTime);
+        }
+
+        if (sharedPostFX) {
+            APPLY_CHANGED_FIELD(hasPostFX);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, isGlobal);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, priority);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, blendWeight);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, blendRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, hdrEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, toneMapper);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, whitePoint);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, gamma);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, bloomEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, bloomThreshold);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, bloomSoftKnee);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, bloomIntensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, bloomRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, colorAdjustEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, exposure);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, contrast);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, saturation);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, colorFilter);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, motionBlurEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, motionBlurStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, motionBlurThreshold);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, motionBlurClamp);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vignetteEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vignetteIntensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vignetteSmoothness);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, chromaticAberrationEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, chromaticAmount);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, sharpenEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, sharpenStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ambientOcclusionEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, aoRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, aoStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherIntensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherColorBits);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherDarkAdjustment);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherPixelation);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherSize);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherContrast);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherOffset);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherPalette);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, ditherPattern);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticIntensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticGrainScale);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDarkAreaInfluence);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDistortionEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDistortionHorizontalJitterAmount);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDistortionLineDensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDistortionGlitchFrequency);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, staticDistortionStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, lensDistortionEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, lensDistortionAmount);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, lensDistortionEdgeFalloff);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, lensDistortionCenterOffset);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayOpacity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayScanlineStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayTapeNoise);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayChromaBleed);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayBottomNoiseBandHeight);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayBottomNoiseBandIntensity);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayDistortionStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayAnimationSpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayColorBleed);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayBanding);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyAmplitude);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyFrequency);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, wavySpeed);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyVertical);
+        }
+
+        if (sharedRenderer) {
+            APPLY_CHANGED_FIELD(hasRenderer);
+            APPLY_CHANGED_FIELD(renderType);
+            APPLY_CHANGED_FIELD(faceCamera);
+            APPLY_CHANGED_FIELD(meshPath);
+            APPLY_CHANGED_FIELD(meshId);
+            APPLY_CHANGED_FIELD(meshSourceIndex);
+            APPLY_CHANGED_MATERIAL_FIELD(color);
+            APPLY_CHANGED_MATERIAL_FIELD(alpha);
+            APPLY_CHANGED_MATERIAL_FIELD(ambientStrength);
+            APPLY_CHANGED_MATERIAL_FIELD(specularStrength);
+            APPLY_CHANGED_MATERIAL_FIELD(shininess);
+            APPLY_CHANGED_MATERIAL_FIELD(textureMix);
+            APPLY_CHANGED_MATERIAL_FIELD(uvTiling);
+            APPLY_CHANGED_MATERIAL_FIELD(uvOffset);
+            APPLY_CHANGED_MATERIAL_FIELD(textureFilter);
+            APPLY_CHANGED_FIELD(materialPath);
+            APPLY_CHANGED_FIELD(albedoTexturePath);
+            APPLY_CHANGED_FIELD(overlayTexturePath);
+            APPLY_CHANGED_FIELD(normalMapPath);
+            APPLY_CHANGED_FIELD(shaderPackPath);
+            APPLY_CHANGED_FIELD(vertexShaderPath);
+            APPLY_CHANGED_FIELD(fragmentShaderPath);
+            APPLY_CHANGED_FIELD(useOverlay);
+            APPLY_CHANGED_FIELD(additionalMaterialPaths);
+        }
+
+        if (sharedLight) {
+            APPLY_CHANGED_FIELD(hasLight);
+            APPLY_CHANGED_COMPONENT_FIELD(light, type);
+            APPLY_CHANGED_COMPONENT_FIELD(light, color);
+            APPLY_CHANGED_COMPONENT_FIELD(light, intensity);
+            APPLY_CHANGED_COMPONENT_FIELD(light, range);
+            APPLY_CHANGED_COMPONENT_FIELD(light, edgeFade);
+            APPLY_CHANGED_COMPONENT_FIELD(light, innerAngle);
+            APPLY_CHANGED_COMPONENT_FIELD(light, outerAngle);
+            APPLY_CHANGED_COMPONENT_FIELD(light, size);
+            APPLY_CHANGED_COMPONENT_FIELD(light, castShadows);
+            APPLY_CHANGED_COMPONENT_FIELD(light, softShadows);
+            APPLY_CHANGED_COMPONENT_FIELD(light, shadowBias);
+            APPLY_CHANGED_COMPONENT_FIELD(light, shadowSoftness);
+            APPLY_CHANGED_COMPONENT_FIELD(light, shadowResolution);
+            APPLY_CHANGED_COMPONENT_FIELD(light, enabled);
+        }
+
+        if (sharedLight2D) {
+            APPLY_CHANGED_FIELD(hasLight2D);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, type);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, color);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, intensity);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, radius);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, innerRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, outerRadius);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, falloffStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, innerSpotAngle);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, outerSpotAngle);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, blendStyle);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, lightOrder);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, overlapOperation);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, shadowStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, volumetricEnabled);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, castsShadows);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, targetAllLayers);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, targetLayerMask);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, normalMapQuality);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, normalMapDistance);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, useDistanceExponent);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, distanceExponent);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, cookieTexturePath);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, cookieScale);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, cookieRotation);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, freeformFeather);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, freeformEdgeFalloff);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, shapePoints);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, flicker.enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, flicker.speed);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, flicker.amount);
+            APPLY_CHANGED_COMPONENT_FIELD(light2D, flicker.seed);
+        }
+
+        if (sharedShadowCaster2D) {
+            APPLY_CHANGED_FIELD(hasShadowCaster2D);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, enabled);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, castsSelfShadow);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, targetAllLayers);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, targetLayerMask);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, shadowStrength);
+            APPLY_CHANGED_COMPONENT_FIELD(shadowCaster2D, points);
+        }
+
+        #undef APPLY_CHANGED_UI_FIELD
+        #undef APPLY_CHANGED_MATERIAL_FIELD
+        #undef APPLY_CHANGED_COMPONENT_FIELD
+        #undef APPLY_CHANGED_FIELD
+    };
+
     if (multiSelection) {
         bool propagated = false;
 
-        if (objectNameChanged || objectEnabledChanged || objectLayerChanged || objectTagChanged || objectTransformChanged) {
+        if (objectNameChanged || objectEnabledChanged || objectInvariableChanged ||
+            objectLayerChanged || objectTagChanged || objectTransformChanged) {
             forEachSecondarySelected([&](SceneObject& target) {
-                if (objectNameChanged) {
-                    const std::string oldTargetName = target.name;
-                    target.name = obj.name;
+                const std::string oldTargetName = target.name;
+                applyInspectorFrameDeltaTo(target);
+                if (objectNameChanged && oldTargetName != target.name) {
                     propagateObjectRenameReferences(oldTargetName, target.name, target.id);
                 }
-                if (objectEnabledChanged) {
-                    target.enabled = obj.enabled;
-                }
-                if (objectLayerChanged) {
-                    target.layer = obj.layer;
-                }
-                if (objectTagChanged) {
-                    target.tag = obj.tag;
-                }
-                if (objectTransformChanged) {
-                    target.position = obj.position;
-                    target.rotation = obj.rotation;
-                    target.scale = obj.scale;
-                    syncLocalTransform(target);
-                }
+                if (objectTransformChanged) syncLocalTransform(target);
             });
             propagated = true;
         }
 
         if (uiSectionChanged && sharedUIObject) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasUI = obj.hasUI;
-                target.ui = obj.ui;
-                target.albedoTexturePath = obj.albedoTexturePath;
-                target.material.textureFilter = obj.material.textureFilter;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (colliderSectionChanged && sharedCollider) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasCollider = obj.hasCollider;
-                target.collider = obj.collider;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (playerControllerSectionChanged && sharedPlayerController) {
             forEachSecondarySelected([&](SceneObject& target) {
-                target.hasPlayerController = obj.hasPlayerController;
-                target.playerController = obj.playerController;
+                applyInspectorFrameDeltaTo(target);
                 if (target.hasPlayerController) {
                     target.hasCollider = true;
                     target.collider.type = ColliderType::Capsule;
@@ -9571,167 +10680,86 @@ void Engine::renderInspectorPanel() {
             propagated = true;
         }
         if (rigidbodySectionChanged && sharedRigidbody) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasRigidbody = obj.hasRigidbody;
-                target.rigidbody = obj.rigidbody;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (rigidbody2DSectionChanged && sharedRigidbody2D) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasRigidbody2D = obj.hasRigidbody2D;
-                target.rigidbody2D = obj.rigidbody2D;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (collider2DSectionChanged && sharedCollider2D) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasCollider2D = obj.hasCollider2D;
-                target.collider2D = obj.collider2D;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (parallax2DSectionChanged && sharedParallax2D) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasParallaxLayer2D = obj.hasParallaxLayer2D;
-                target.parallaxLayer2D = obj.parallaxLayer2D;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (audioSourceSectionChanged && sharedAudioSource) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasAudioSource = obj.hasAudioSource;
-                target.audioSource = obj.audioSource;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (videoPlayerSectionChanged && sharedVideoPlayer) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasVideoPlayer = obj.hasVideoPlayer;
-                target.videoPlayer = obj.videoPlayer;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
+            propagated = true;
+        }
+        if (particleSystem2DSectionChanged && sharedParticleSystem2D) {
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (groundBakedSectionChanged && sharedGroundBaked) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasGroundBakedType = obj.hasGroundBakedType;
-                target.groundBakedType = obj.groundBakedType;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (obstacleSectionChanged && sharedObstacle) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasObsticleObject = obj.hasObsticleObject;
-                target.obsticleObject = obj.obsticleObject;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (agentSectionChanged && sharedAgent) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasAIAgent = obj.hasAIAgent;
-                target.aiAgent = obj.aiAgent;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (animationSectionChanged && sharedAnimation) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasAnimation = obj.hasAnimation;
-                target.animation = obj.animation;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (skeletalSectionChanged && sharedSkeletal) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasSkeletalAnimation = obj.hasSkeletalAnimation;
-                target.skeletal = obj.skeletal;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (reverbSectionChanged && sharedReverb) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasReverbZone = obj.hasReverbZone;
-                target.reverbZone = obj.reverbZone;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (cameraSectionChanged && sharedCamera) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasCamera = obj.hasCamera;
-                target.camera = obj.camera;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (cameraFollowSectionChanged && sharedCameraFollow2D) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasCameraFollow2D = obj.hasCameraFollow2D;
-                target.cameraFollow2D = obj.cameraFollow2D;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (postFxSectionChanged && sharedPostFX) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasPostFX = obj.hasPostFX;
-                target.postFx = obj.postFx;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (rendererSectionChanged && sharedRenderer) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasRenderer = obj.hasRenderer;
-                target.renderType = obj.renderType;
-                target.faceCamera = obj.faceCamera;
-                target.meshPath = obj.meshPath;
-                target.meshId = obj.meshId;
-                target.meshSourceIndex = obj.meshSourceIndex;
-                target.material = obj.material;
-                target.materialPath = obj.materialPath;
-                target.albedoTexturePath = obj.albedoTexturePath;
-                target.overlayTexturePath = obj.overlayTexturePath;
-                target.normalMapPath = obj.normalMapPath;
-                target.shaderPackPath = obj.shaderPackPath;
-                target.vertexShaderPath = obj.vertexShaderPath;
-                target.fragmentShaderPath = obj.fragmentShaderPath;
-                target.useOverlay = obj.useOverlay;
-                target.additionalMaterialPaths = obj.additionalMaterialPaths;
-                target.ui.spriteSheetEnabled = obj.ui.spriteSheetEnabled;
-                target.ui.spriteSheetColumns = obj.ui.spriteSheetColumns;
-                target.ui.spriteSheetRows = obj.ui.spriteSheetRows;
-                target.ui.spriteSheetFrame = obj.ui.spriteSheetFrame;
-                target.ui.spriteSheetFps = obj.ui.spriteSheetFps;
-                target.ui.spriteSheetLoop = obj.ui.spriteSheetLoop;
-                target.ui.spriteCustomFramesEnabled = obj.ui.spriteCustomFramesEnabled;
-                target.ui.spriteCustomFrames = obj.ui.spriteCustomFrames;
-                target.ui.spriteCustomFrameNames = obj.ui.spriteCustomFrameNames;
-                target.ui.spriteCustomFrameScales = obj.ui.spriteCustomFrameScales;
-                target.ui.spriteSourceWidth = obj.ui.spriteSourceWidth;
-                target.ui.spriteSourceHeight = obj.ui.spriteSourceHeight;
-                target.ui.nineSliceEnabled = obj.ui.nineSliceEnabled;
-                target.ui.nineSliceBorder = obj.ui.nineSliceBorder;
-                target.ui.nineSliceTileEdges = obj.ui.nineSliceTileEdges;
-                target.ui.nineSliceTileCenter = obj.ui.nineSliceTileCenter;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (lightSectionChanged && sharedLight) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasLight = obj.hasLight;
-                target.light = obj.light;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (light2DSectionChanged && sharedLight2D) {
             forEachSecondarySelected([&](SceneObject& target) {
-                target.hasLight2D = obj.hasLight2D;
-                target.light2D = obj.light2D;
+                applyInspectorFrameDeltaTo(target);
                 lighting2DRenderer.clearPolygonCache(target.id);
             });
             propagated = true;
         }
         if (shadowCaster2DSectionChanged && sharedShadowCaster2D) {
-            forEachSecondarySelected([&](SceneObject& target) {
-                target.hasShadowCaster2D = obj.hasShadowCaster2D;
-                target.shadowCaster2D = obj.shadowCaster2D;
-            });
+            forEachSecondarySelected(applyInspectorFrameDeltaTo);
             propagated = true;
         }
         if (scriptsChanged) {
@@ -9783,11 +10811,11 @@ void Engine::renderInspectorPanel() {
     }
 
     const bool inspectorChanged =
-        objectNameChanged || objectEnabledChanged || objectLayerChanged || objectTagChanged ||
-        objectTransformChanged || uiSectionChanged || colliderSectionChanged ||
+        objectNameChanged || objectEnabledChanged || objectInvariableChanged ||
+        objectLayerChanged || objectTagChanged || objectTransformChanged || uiSectionChanged || colliderSectionChanged ||
         playerControllerSectionChanged || rigidbodySectionChanged || rigidbody2DSectionChanged ||
         collider2DSectionChanged || parallax2DSectionChanged || audioSourceSectionChanged ||
-        videoPlayerSectionChanged || groundBakedSectionChanged || obstacleSectionChanged ||
+        videoPlayerSectionChanged || particleSystem2DSectionChanged || groundBakedSectionChanged || obstacleSectionChanged ||
         agentSectionChanged || animationSectionChanged || skeletalSectionChanged ||
         reverbSectionChanged || cameraSectionChanged || cameraFollowSectionChanged ||
         postFxSectionChanged || rendererSectionChanged || lightSectionChanged ||

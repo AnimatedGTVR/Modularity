@@ -283,7 +283,7 @@ void VideoPlayer::SetLastError(std::string error) {
     m_lastError = std::move(error);
 }
 
-bool VideoPlayer::LoadVideo(const std::string& path) {
+bool VideoPlayer::LoadVideo(const std::string& path, bool startWorker) {
     StopWorker();
     ShutdownAudioOutput();
     ShutdownDecoder();
@@ -295,6 +295,7 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
         m_requestAudioSeek = false;
         m_decoderReachedEnd = false;
         m_audioDecoderReachedEnd = false;
+        m_waitingForBuffer = false;
     }
 
     m_loaded = false;
@@ -307,6 +308,7 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
     m_playing = false;
     m_paused = false;
     m_hasPresentedFrame = false;
+    m_waitingForBuffer = false;
     m_audioWarningLogged = false;
     m_lastAudioSyncSeekPlaybackSeconds = -1.0;
 
@@ -338,6 +340,8 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
         m_frameQueue[0].ptsSeconds = firstFramePtsSeconds;
         m_queueReadIndex = 0;
         m_queueCount = 1;
+        UploadPixelsToTexture(m_frameQueue[0].pixels.data(), m_width, m_height);
+        m_hasPresentedFrame = true;
     } else if (firstDecodeResult == DecodeResult::Error) {
         ShutdownDecoder();
         SetLastError(GetLastError().empty() ? "Failed to decode the first video frame." : GetLastError());
@@ -356,7 +360,12 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
     m_loaded = true;
     m_loadedPath = path;
     RefreshAudioBinding();
-    StartWorker();
+    if (startWorker) {
+        StartWorker();
+    } else {
+        ShutdownAudioOutput();
+        ShutdownDecoder();
+    }
     return true;
 }
 
@@ -372,12 +381,13 @@ void VideoPlayer::Play() {
             m_playbackTimeSeconds = 0.0;
             m_hasPresentedFrame = false;
         }
+        m_waitingForBuffer = !m_decoderReachedEnd && m_queueCount < kFrameQueuePrerollCount;
     }
 
     m_playing = true;
     m_paused = false;
     RefreshAudioBinding();
-    if (m_audioStreamAttached && m_audioSystem) {
+    if (m_audioStreamAttached && m_audioSystem && !m_waitingForBuffer) {
         m_audioSystem->setVideoStreamPlaying(m_audioStreamId, true);
     }
     m_queueCv.notify_all();
@@ -402,6 +412,7 @@ void VideoPlayer::Stop() {
         m_requestAudioSeek = false;
         m_decoderReachedEnd = false;
         m_audioDecoderReachedEnd = false;
+        m_waitingForBuffer = true;
     }
 
     if (m_audioBufferSource) {
@@ -469,7 +480,25 @@ void VideoPlayer::Update(float deltaSeconds) {
 
     RefreshAudioBinding();
 
-    if (m_playing && !m_paused) {
+    bool bufferReadyToPlay = true;
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        if (m_waitingForBuffer) {
+            bufferReadyToPlay = m_decoderReachedEnd || m_queueCount >= kFrameQueuePrerollCount;
+            if (bufferReadyToPlay) {
+                m_waitingForBuffer = false;
+            }
+        } else if (!m_decoderReachedEnd && m_queueCount == 0) {
+            m_waitingForBuffer = true;
+            bufferReadyToPlay = false;
+        }
+    }
+
+    if (m_audioStreamAttached && m_audioSystem && m_playing && !m_paused) {
+        m_audioSystem->setVideoStreamPlaying(m_audioStreamId, bufferReadyToPlay);
+    }
+
+    if (m_playing && !m_paused && bufferReadyToPlay) {
         const float clampedDelta = std::max(0.0f, deltaSeconds);
         m_playbackTimeSeconds += static_cast<double>(clampedDelta) * static_cast<double>(m_playbackSpeed);
         if (!m_loop && m_durationSeconds > 0.0) {
@@ -515,20 +544,7 @@ void VideoPlayer::Update(float deltaSeconds) {
     }
 
     if (shouldUpload) {
-        glBindTexture(GL_TEXTURE_2D, m_textureId);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-#ifdef GL_UNPACK_ROW_LENGTH
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-#endif
-#ifdef GL_UNPACK_SKIP_PIXELS
-        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-#endif
-#ifdef GL_UNPACK_SKIP_ROWS
-        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-#endif
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uploadWidth, uploadHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_uploadBuffer.data());
-        glBindTexture(GL_TEXTURE_2D, 0);
-
+        UploadPixelsToTexture(m_uploadBuffer.data(), uploadWidth, uploadHeight);
         m_hasPresentedFrame = true;
         m_queueCv.notify_all();
     }
@@ -549,6 +565,26 @@ void VideoPlayer::Update(float deltaSeconds) {
             m_audioSystem->setVideoStreamPlaying(m_audioStreamId, false);
         }
     }
+}
+
+void VideoPlayer::UploadPixelsToTexture(const unsigned char* pixels, int width, int height) {
+    if (m_textureId == 0 || pixels == nullptr || width <= 0 || height <= 0) {
+        return;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, m_textureId);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+#ifdef GL_UNPACK_ROW_LENGTH
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_PIXELS
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+#endif
+#ifdef GL_UNPACK_SKIP_ROWS
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+#endif
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void VideoPlayer::StartWorker() {
@@ -583,6 +619,7 @@ void VideoPlayer::StopWorker() {
         m_requestAudioSeek = false;
         m_decoderReachedEnd = false;
         m_audioDecoderReachedEnd = false;
+        m_waitingForBuffer = false;
     }
 }
 
@@ -1288,6 +1325,7 @@ void VideoPlayer::WorkerMain() {
                 needFullRestart = true;
                 m_requestSeekToStart = false;
                 ClearQueuedFramesLocked();
+                m_waitingForBuffer = m_playing && !m_paused;
                 if (m_audioBufferSource) {
                     m_audioBufferSource->Reset(0);
                 }
@@ -1298,6 +1336,7 @@ void VideoPlayer::WorkerMain() {
             } else if (m_loop && m_decoderReachedEnd && m_queueCount == 0) {
                 needFullRestart = true;
                 ClearQueuedFramesLocked();
+                m_waitingForBuffer = m_playing && !m_paused;
                 if (m_audioBufferSource) {
                     m_audioBufferSource->Reset(0);
                 }

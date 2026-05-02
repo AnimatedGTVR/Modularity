@@ -413,7 +413,7 @@ const char* FileBrowser::getFileIcon(const fs::directory_entry& entry) const {
         case FileCategory::Material: return "material";
         case FileCategory::Texture: return "image";
         case FileCategory::Video:   return "video";
-        case FileCategory::Shader:  return "shader";
+        case FileCategory::Shader:  return "text";
         case FileCategory::Script:  return "code";
         case FileCategory::Audio:   return "audio";
         case FileCategory::Text:    return "text";

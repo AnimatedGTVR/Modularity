@@ -603,6 +603,8 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "videoPath=" << obj.videoPlayer.videoPath << "\n";
                 file << "videoPlayOnAwake=" << (obj.videoPlayer.playOnAwake ? 1 : 0) << "\n";
                 file << "videoLoop=" << (obj.videoPlayer.loop ? 1 : 0) << "\n";
+                file << "videoFlipX=" << (obj.videoPlayer.flipX ? 1 : 0) << "\n";
+                file << "videoFlipY=" << (obj.videoPlayer.flipY ? 1 : 0) << "\n";
                 file << "videoPlaybackSpeed=" << obj.videoPlayer.playbackSpeed << "\n";
                 file << "videoPlayAudioFromVideo=" << (obj.videoPlayer.playAudioFromVideo ? 1 : 0) << "\n";
                 file << "videoRouteAudioToSource=" << (obj.videoPlayer.routeAudioToSource ? 1 : 0) << "\n";
@@ -611,6 +613,48 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "videoAudioMuted=" << (obj.videoPlayer.videoAudioMuted ? 1 : 0) << "\n";
                 file << "videoSyncAudioToVideo=" << (obj.videoPlayer.syncAudioToVideo ? 1 : 0) << "\n";
                 file << "videoAudioSyncTolerance=" << obj.videoPlayer.audioSyncTolerance << "\n";
+            }
+            file << "hasParticleSystem2D=" << (obj.hasParticleSystem2D ? 1 : 0) << "\n";
+            if (obj.hasParticleSystem2D) {
+                const auto& ps = obj.particleSystem2D;
+                file << "ps2dEnabled=" << (ps.enabled ? 1 : 0) << "\n";
+                file << "ps2dLooping=" << (ps.looping ? 1 : 0) << "\n";
+                file << "ps2dPrewarm=" << (ps.prewarm ? 1 : 0) << "\n";
+                file << "ps2dPlayOnAwake=" << (ps.playOnAwake ? 1 : 0) << "\n";
+                file << "ps2dAutoRandomSeed=" << (ps.autoRandomSeed ? 1 : 0) << "\n";
+                file << "ps2dRandomSeed=" << ps.randomSeed << "\n";
+                file << "ps2dStartDelay=" << ps.startDelay << "\n";
+                file << "ps2dStartLifetime=" << ps.startLifetime.min << "," << ps.startLifetime.max << "," << (ps.startLifetime.random ? 1 : 0) << "\n";
+                file << "ps2dStartSpeed=" << ps.startSpeed.min << "," << ps.startSpeed.max << "," << (ps.startSpeed.random ? 1 : 0) << "\n";
+                file << "ps2dStartSize=" << ps.startSize.min << "," << ps.startSize.max << "," << (ps.startSize.random ? 1 : 0) << "\n";
+                file << "ps2dStartRotation=" << ps.startRotation.min << "," << ps.startRotation.max << "," << (ps.startRotation.random ? 1 : 0) << "\n";
+                file << "ps2dStartColor=" << ps.startColor.r << "," << ps.startColor.g << "," << ps.startColor.b << "," << ps.startColor.a << "\n";
+                file << "ps2dGravity=" << ps.gravityModifier << "\n";
+                file << "ps2dSimulationSpeed=" << ps.simulationSpeed << "\n";
+                file << "ps2dMaxParticles=" << ps.maxParticles << "\n";
+                file << "ps2dEmissionRate=" << ps.emissionRate << "\n";
+                file << "ps2dBurstCount=" << ps.burstCount << "\n";
+                file << "ps2dBurstTime=" << ps.burstTime << "\n";
+                file << "ps2dBurstLoop=" << (ps.burstLoop ? 1 : 0) << "\n";
+                file << "ps2dShape=" << ps.shape << "\n";
+                file << "ps2dShapeRadius=" << ps.shapeRadius << "\n";
+                file << "ps2dShapeBox=" << ps.shapeBox.x << "," << ps.shapeBox.y << "\n";
+                file << "ps2dVelocityOverLifetimeEnabled=" << (ps.velocityOverLifetimeEnabled ? 1 : 0) << "\n";
+                file << "ps2dVelocityOverLifetime=" << ps.velocityOverLifetime.x << "," << ps.velocityOverLifetime.y << "\n";
+                file << "ps2dColorOverLifetimeEnabled=" << (ps.colorOverLifetimeEnabled ? 1 : 0) << "\n";
+                file << "ps2dColorOverLifetime=" << ps.colorOverLifetime.r << "," << ps.colorOverLifetime.g << "," << ps.colorOverLifetime.b << "," << ps.colorOverLifetime.a << "\n";
+                file << "ps2dSizeOverLifetimeEnabled=" << (ps.sizeOverLifetimeEnabled ? 1 : 0) << "\n";
+                file << "ps2dSizeOverLifetime=" << ps.sizeOverLifetime << "\n";
+                file << "ps2dRotationOverLifetimeEnabled=" << (ps.rotationOverLifetimeEnabled ? 1 : 0) << "\n";
+                file << "ps2dRotationOverLifetime=" << ps.rotationOverLifetime << "\n";
+                file << "ps2dNoiseEnabled=" << (ps.noiseEnabled ? 1 : 0) << "\n";
+                file << "ps2dNoiseStrength=" << ps.noiseStrength << "\n";
+                file << "ps2dNoiseFrequency=" << ps.noiseFrequency << "\n";
+                file << "ps2dTexture=" << ps.texturePath << "\n";
+                file << "ps2dMaterial=" << ps.materialPath << "\n";
+                file << "ps2dReceiveLighting2D=" << (ps.receiveLighting2D ? 1 : 0) << "\n";
+                file << "ps2dUnlitLighting2D=" << (ps.unlitLighting2D ? 1 : 0) << "\n";
+                file << "ps2dEmissiveLighting2D=" << ps.emissiveLighting2D << "\n";
             }
             file << "hasReverbZone=" << (obj.hasReverbZone ? 1 : 0) << "\n";
             if (obj.hasReverbZone) {
@@ -1128,6 +1172,14 @@ void ParseVec4(const std::string& value, Vec4T& out) {
     sscanf(value.c_str(), "%f,%f,%f,%f", &out.x, &out.y, &out.z, &out.w);
 }
 
+void ParseMinMaxFloat(const std::string& value, ParticleSystem2DComponent::MinMaxFloat& out) {
+    int random = out.random ? 1 : 0;
+    if (sscanf(value.c_str(), "%f,%f,%d", &out.min, &out.max, &random) >= 2) {
+        out.random = random != 0;
+        if (out.max < out.min) std::swap(out.min, out.max);
+    }
+}
+
 bool g_deferSceneAssetLoading = false;
 
 bool IsDefaultTransform(const SceneObject& obj) {
@@ -1296,6 +1348,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"videoPath", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.videoPath = value; }},
         {"videoPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playOnAwake = std::stoi(value) != 0; }},
         {"videoLoop", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.loop = std::stoi(value) != 0; }},
+        {"videoFlipX", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.flipX = std::stoi(value) != 0; }},
+        {"videoFlipY", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.flipY = std::stoi(value) != 0; }},
         {"videoPlaybackSpeed", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playbackSpeed = std::stof(value); }},
         {"videoPlayAudioFromVideo", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.playAudioFromVideo = std::stoi(value) != 0; }},
         {"videoRouteAudioToSource", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.routeAudioToSource = std::stoi(value) != 0; }},
@@ -1304,6 +1358,45 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"videoAudioMuted", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.videoAudioMuted = std::stoi(value) != 0; }},
         {"videoSyncAudioToVideo", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.syncAudioToVideo = std::stoi(value) != 0; }},
         {"videoAudioSyncTolerance", +[](SceneObject& obj, const std::string& value) { obj.hasVideoPlayer = true; obj.videoPlayer.audioSyncTolerance = std::stof(value); }},
+        {"hasParticleSystem2D", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = std::stoi(value) != 0; }},
+        {"ps2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.enabled = std::stoi(value) != 0; }},
+        {"ps2dLooping", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.looping = std::stoi(value) != 0; }},
+        {"ps2dPrewarm", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.prewarm = std::stoi(value) != 0; }},
+        {"ps2dPlayOnAwake", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.playOnAwake = std::stoi(value) != 0; obj.particleSystem2D.playing = obj.particleSystem2D.playOnAwake; }},
+        {"ps2dAutoRandomSeed", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.autoRandomSeed = std::stoi(value) != 0; }},
+        {"ps2dRandomSeed", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.randomSeed = static_cast<uint32_t>(std::stoul(value)); }},
+        {"ps2dStartDelay", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.startDelay = std::stof(value); }},
+        {"ps2dStartLifetime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseMinMaxFloat(value, obj.particleSystem2D.startLifetime); }},
+        {"ps2dStartSpeed", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseMinMaxFloat(value, obj.particleSystem2D.startSpeed); }},
+        {"ps2dStartSize", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseMinMaxFloat(value, obj.particleSystem2D.startSize); }},
+        {"ps2dStartRotation", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseMinMaxFloat(value, obj.particleSystem2D.startRotation); }},
+        {"ps2dStartColor", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseVec4(value, obj.particleSystem2D.startColor); }},
+        {"ps2dGravity", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.gravityModifier = std::stof(value); }},
+        {"ps2dSimulationSpeed", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.simulationSpeed = std::stof(value); }},
+        {"ps2dMaxParticles", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.maxParticles = std::max(1, std::stoi(value)); }},
+        {"ps2dEmissionRate", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.emissionRate = std::max(0.0f, std::stof(value)); }},
+        {"ps2dBurstCount", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.burstCount = std::max(0, std::stoi(value)); }},
+        {"ps2dBurstTime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.burstTime = std::max(0.0f, std::stof(value)); }},
+        {"ps2dBurstLoop", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.burstLoop = std::stoi(value) != 0; }},
+        {"ps2dShape", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.shape = std::clamp(std::stoi(value), 0, 2); }},
+        {"ps2dShapeRadius", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.shapeRadius = std::max(0.0f, std::stof(value)); }},
+        {"ps2dShapeBox", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseVec2(value, obj.particleSystem2D.shapeBox); }},
+        {"ps2dVelocityOverLifetimeEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.velocityOverLifetimeEnabled = std::stoi(value) != 0; }},
+        {"ps2dVelocityOverLifetime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseVec2(value, obj.particleSystem2D.velocityOverLifetime); }},
+        {"ps2dColorOverLifetimeEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.colorOverLifetimeEnabled = std::stoi(value) != 0; }},
+        {"ps2dColorOverLifetime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; ParseVec4(value, obj.particleSystem2D.colorOverLifetime); }},
+        {"ps2dSizeOverLifetimeEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.sizeOverLifetimeEnabled = std::stoi(value) != 0; }},
+        {"ps2dSizeOverLifetime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.sizeOverLifetime = std::stof(value); }},
+        {"ps2dRotationOverLifetimeEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.rotationOverLifetimeEnabled = std::stoi(value) != 0; }},
+        {"ps2dRotationOverLifetime", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.rotationOverLifetime = std::stof(value); }},
+        {"ps2dNoiseEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.noiseEnabled = std::stoi(value) != 0; }},
+        {"ps2dNoiseStrength", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.noiseStrength = std::stof(value); }},
+        {"ps2dNoiseFrequency", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.noiseFrequency = std::stof(value); }},
+        {"ps2dTexture", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.texturePath = value; }},
+        {"ps2dMaterial", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.materialPath = value; }},
+        {"ps2dReceiveLighting2D", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.receiveLighting2D = std::stoi(value) != 0; }},
+        {"ps2dUnlitLighting2D", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.unlitLighting2D = std::stoi(value) != 0; }},
+        {"ps2dEmissiveLighting2D", +[](SceneObject& obj, const std::string& value) { obj.hasParticleSystem2D = true; obj.particleSystem2D.emissiveLighting2D = std::stof(value); }},
         {"hasReverbZone", +[](SceneObject& obj, const std::string& value) { obj.hasReverbZone = std::stoi(value) != 0; }},
         {"reverbEnabled", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.enabled = std::stoi(value) != 0; }},
         {"reverbPreset", +[](SceneObject& obj, const std::string& value) { obj.reverbZone.preset = static_cast<ReverbPreset>(std::stoi(value)); }},
@@ -1777,6 +1870,9 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
     if (obj.type == ObjectType::ShadowCaster2D && obj.hasShadowCaster2D) {
         return ObjectType::ShadowCaster2D;
     }
+    if (obj.type == ObjectType::ParticleSystem2D || obj.hasParticleSystem2D) {
+        return ObjectType::ParticleSystem2D;
+    }
     if (obj.hasRenderer) {
         switch (obj.renderType) {
             case RenderType::Cube: return ObjectType::Cube;
@@ -1798,7 +1894,10 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
             case UIElementType::Slider: return ObjectType::UISlider;
             case UIElementType::Button: return ObjectType::UIButton;
             case UIElementType::Text: return ObjectType::UIText;
-            case UIElementType::Sprite2D: return obj.type == ObjectType::Sprite25D ? ObjectType::Sprite25D : ObjectType::Sprite2D;
+            case UIElementType::Sprite2D:
+                return (obj.type == ObjectType::Sprite25D || obj.ui.label == "2.5D Sprite")
+                    ? ObjectType::Sprite25D
+                    : ObjectType::Sprite2D;
             case UIElementType::None: break;
         }
     }

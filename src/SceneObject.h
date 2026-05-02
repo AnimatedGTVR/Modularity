@@ -29,7 +29,8 @@ enum class ObjectType {
     Empty = 21,
     Sprite25D = 22,
     Light2D = 23,
-    ShadowCaster2D = 24
+    ShadowCaster2D = 24,
+    ParticleSystem2D = 25
 };
 
 enum class RenderType {
@@ -662,6 +663,8 @@ struct VideoPlayerComponent {
     std::string videoPath;
     bool playOnAwake = true;
     bool loop = true;
+    bool flipX = false;
+    bool flipY = false;
     float playbackSpeed = 1.0f;
     bool playAudioFromVideo = true;
     bool routeAudioToSource = false;
@@ -670,6 +673,81 @@ struct VideoPlayerComponent {
     bool videoAudioMuted = false;
     bool syncAudioToVideo = true;
     float audioSyncTolerance = 0.05f;
+};
+
+struct ParticleSystem2DComponent {
+    struct MinMaxFloat {
+        float min = 1.0f;
+        float max = 1.0f;
+        bool random = false;
+
+        bool operator==(const MinMaxFloat& other) const {
+            return min == other.min && max == other.max && random == other.random;
+        }
+
+        bool operator!=(const MinMaxFloat& other) const {
+            return !(*this == other);
+        }
+    };
+
+    struct Particle {
+        bool alive = false;
+        float age = 0.0f;
+        float lifetime = 1.0f;
+        glm::vec2 position = glm::vec2(0.0f);
+        glm::vec2 velocity = glm::vec2(0.0f);
+        float size = 1.0f;
+        float rotation = 0.0f;
+        float angularVelocity = 0.0f;
+        glm::vec4 startColor = glm::vec4(1.0f);
+        uint32_t seed = 1u;
+    };
+
+    bool enabled = true;
+    bool looping = true;
+    bool prewarm = false;
+    bool playOnAwake = true;
+    bool playing = true;
+    bool paused = false;
+    bool autoRandomSeed = true;
+    uint32_t randomSeed = 1u;
+    float startDelay = 0.0f;
+    MinMaxFloat startLifetime{5.0f, 5.0f, false};
+    MinMaxFloat startSpeed{2.0f, 5.0f, true};
+    MinMaxFloat startSize{0.18f, 0.35f, true};
+    MinMaxFloat startRotation{0.0f, 360.0f, true};
+    glm::vec4 startColor = glm::vec4(1.0f);
+    float gravityModifier = 0.0f;
+    float simulationSpeed = 1.0f;
+    int maxParticles = 1000;
+    float emissionRate = 20.0f;
+    int burstCount = 0;
+    float burstTime = 0.0f;
+    bool burstLoop = false;
+    int shape = 0; // 0 point, 1 circle, 2 box
+    float shapeRadius = 0.5f;
+    glm::vec2 shapeBox = glm::vec2(1.0f);
+    bool velocityOverLifetimeEnabled = false;
+    glm::vec2 velocityOverLifetime = glm::vec2(0.0f);
+    bool colorOverLifetimeEnabled = true;
+    glm::vec4 colorOverLifetime = glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+    bool sizeOverLifetimeEnabled = true;
+    float sizeOverLifetime = 0.0f;
+    bool rotationOverLifetimeEnabled = false;
+    float rotationOverLifetime = 0.0f;
+    bool noiseEnabled = false;
+    float noiseStrength = 0.0f;
+    float noiseFrequency = 1.0f;
+    std::string texturePath;
+    std::string materialPath;
+    bool receiveLighting2D = true;
+    bool unlitLighting2D = false;
+    float emissiveLighting2D = 0.0f;
+    float runtimeAccumulator = 0.0f;
+    float runtimeTime = 0.0f;
+    double runtimeLastUpdateTime = 0.0;
+    bool runtimeInitialized = false;
+    std::vector<Particle> particles;
 };
 
 struct ReverbZoneComponent {
@@ -799,6 +877,8 @@ public:
     AudioSourceComponent audioSource;
     bool hasVideoPlayer = false;
     VideoPlayerComponent videoPlayer;
+    bool hasParticleSystem2D = false;
+    ParticleSystem2DComponent particleSystem2D;
     bool hasReverbZone = false;
     ReverbZoneComponent reverbZone;
     bool hasGroundBakedType = false;
@@ -818,6 +898,8 @@ public:
     UIElementComponent ui;
     bool runtimeHasAlbedoTextureOverride = false;
     unsigned int runtimeAlbedoTextureOverrideId = 0;
+    bool runtimeAlbedoTextureFlipX = false;
+    bool runtimeAlbedoTextureFlipY = false;
     std::vector<std::string> inspectorComponentOrder;
     int nextInspectorScriptId = 1;
 
@@ -929,6 +1011,7 @@ inline const std::vector<std::string>& GetDefaultInspectorComponentOrderTemplate
         "parallax2d",
         "audio_source",
         "video_player",
+        "particle_system2d",
         "ground_baked",
         "obstacle",
         "ai_agent",
@@ -966,7 +1049,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     obj.nextInspectorScriptId = nextScriptId;
 
     std::vector<std::string> presentKeys;
-    presentKeys.reserve(24 + obj.scripts.size());
+    presentKeys.reserve(25 + obj.scripts.size());
     if (HasUIComponent(obj)) presentKeys.push_back("ui");
     if (obj.hasCollider) presentKeys.push_back("collider");
     if (obj.hasPlayerController) presentKeys.push_back("player_controller");
@@ -976,6 +1059,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     if (obj.hasParallaxLayer2D) presentKeys.push_back("parallax2d");
     if (obj.hasAudioSource) presentKeys.push_back("audio_source");
     if (obj.hasVideoPlayer) presentKeys.push_back("video_player");
+    if (obj.hasParticleSystem2D) presentKeys.push_back("particle_system2d");
     if (obj.hasGroundBakedType) presentKeys.push_back("ground_baked");
     if (obj.hasObsticleObject) presentKeys.push_back("obstacle");
     if (obj.hasAIAgent) presentKeys.push_back("ai_agent");

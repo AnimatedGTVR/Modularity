@@ -601,13 +601,15 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             "videoEnabled",
             {"videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed", "videoPlayAudioFromVideo",
              "videoRouteAudioToSource", "videoOutputAudioSourceObjectId", "videoAudioVolume", "videoAudioMuted",
-             "videoSyncAudioToVideo", "videoAudioSyncTolerance"},
+             "videoSyncAudioToVideo", "videoAudioSyncTolerance", "videoFlipX", "videoFlipY"},
             {},
             {},
             {
                 {"videoPath", "path"},
                 {"videoPlayOnAwake", "playOnAwake"},
                 {"videoLoop", "loop"},
+                {"videoFlipX", "flipX"},
+                {"videoFlipY", "flipY"},
                 {"videoPlaybackSpeed", "playbackSpeed"},
                 {"videoPlayAudioFromVideo", "playAudioFromVideo"},
                 {"videoRouteAudioToSource", "routeAudioToSource"},
@@ -621,6 +623,8 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"path", "videoPath"},
                 {"playOnAwake", "videoPlayOnAwake"},
                 {"loop", "videoLoop"},
+                {"flipX", "videoFlipX"},
+                {"flipY", "videoFlipY"},
                 {"playbackSpeed", "videoPlaybackSpeed"},
                 {"playAudioFromVideo", "videoPlayAudioFromVideo"},
                 {"routeAudioToSource", "videoRouteAudioToSource"},
@@ -630,6 +634,16 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"syncAudioToVideo", "videoSyncAudioToVideo"},
                 {"audioSyncTolerance", "videoAudioSyncTolerance"},
             }
+        },
+        {
+            "ParticleSystem2D",
+            "hasParticleSystem2D",
+            "ps2dEnabled",
+            {},
+            {"ps2d"},
+            {},
+            {},
+            {}
         },
         {
             "ReverbZone",
@@ -961,6 +975,7 @@ bool WriteModularScene(std::ostream& out,
 
         out << "MODU_GAMEOBJECT = (id=" << findOr("id", "0")
             << ", parentId=" << findOr("parentId", "-1")
+            << ", type=" << findOr("type", "21")
             << ", name=" << QuoteString(findOr("name", "GameObject"))
             << ", enabled=" << findOr("enabled", "1")
             << ") {\n";
@@ -1242,8 +1257,17 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "audioSpatialBlend", "audioMinDistance", "audioMaxDistance", "audioRolloffMode", "audioRolloff", "audioCustomMidDistance",
             "audioCustomMidGain", "audioCustomEndGain",
             "hasVideoPlayer", "videoEnabled", "videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed",
-            "videoPlayAudioFromVideo", "videoRouteAudioToSource", "videoOutputAudioSourceObjectId", "videoAudioVolume",
+            "videoFlipX", "videoFlipY", "videoPlayAudioFromVideo", "videoRouteAudioToSource", "videoOutputAudioSourceObjectId", "videoAudioVolume",
             "videoAudioMuted", "videoSyncAudioToVideo", "videoAudioSyncTolerance",
+            "hasParticleSystem2D", "ps2dEnabled", "ps2dLooping", "ps2dPrewarm", "ps2dPlayOnAwake", "ps2dAutoRandomSeed",
+            "ps2dRandomSeed", "ps2dStartDelay", "ps2dStartLifetime", "ps2dStartSpeed", "ps2dStartSize", "ps2dStartRotation",
+            "ps2dStartColor", "ps2dGravity", "ps2dSimulationSpeed", "ps2dMaxParticles", "ps2dEmissionRate",
+            "ps2dBurstCount", "ps2dBurstTime", "ps2dBurstLoop", "ps2dShape", "ps2dShapeRadius", "ps2dShapeBox",
+            "ps2dVelocityOverLifetimeEnabled", "ps2dVelocityOverLifetime", "ps2dColorOverLifetimeEnabled",
+            "ps2dColorOverLifetime", "ps2dSizeOverLifetimeEnabled", "ps2dSizeOverLifetime",
+            "ps2dRotationOverLifetimeEnabled", "ps2dRotationOverLifetime", "ps2dNoiseEnabled", "ps2dNoiseStrength",
+            "ps2dNoiseFrequency", "ps2dTexture", "ps2dMaterial", "ps2dReceiveLighting2D", "ps2dUnlitLighting2D",
+            "ps2dEmissiveLighting2D",
             "hasReverbZone", "reverbEnabled", "reverbPreset", "reverbShape", "reverbBox", "reverbRadius", "reverbBlend",
             "reverbMinDistance", "reverbMaxDistance", "reverbRoom", "reverbRoomHF", "reverbRoomLF", "reverbDecayTime", "reverbDecayHFRatio",
             "reverbReflections", "reverbReflectionsDelay", "reverbReverb", "reverbReverbDelay", "reverbHFReference", "reverbLFReference",
@@ -1256,7 +1280,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "hasRig25DNode", "rig25dNodeEnabled", "rig25dNodeId", "rig25dNodeName",
             "hasAnimation", "animEnabled", "animClipAsset",
             "hasVideoPlayer", "videoEnabled", "videoPath", "videoPlayOnAwake", "videoLoop", "videoPlaybackSpeed",
-            "videoPlayAudioFromVideo", "videoRouteAudioToSource", "videoOutputAudioSourceObjectId", "videoAudioVolume",
+            "videoFlipX", "videoFlipY", "videoPlayAudioFromVideo", "videoRouteAudioToSource", "videoOutputAudioSourceObjectId", "videoAudioVolume",
             "videoAudioMuted", "videoSyncAudioToVideo", "videoAudioSyncTolerance",
             "animClipCount",
         };
