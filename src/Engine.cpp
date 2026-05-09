@@ -3339,6 +3339,12 @@ bool Engine::hasScriptingWindowPackage() const {
     return hasInstalledPackage("moduengine.scripting-window");
 }
 
+#if MODULARITY_RUNTIME_ONLY
+void Engine::openScriptInEditor(const fs::path& path) {
+    (void)path;
+}
+#endif
+
 bool Engine::hasVulkanPipelinePackage() const {
     return hasInstalledPackage("moduengine.vulkan-pipeline");
 }
