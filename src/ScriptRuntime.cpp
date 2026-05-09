@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <iterator>
 #include <unordered_map>
 
@@ -289,6 +291,25 @@ SceneObject* ScriptContext::ResolveObjectRef(const std::string& ref) {
         return FindObjectByName(name);
     }
     return nullptr;
+}
+
+int ScriptContext::GetSceneObjectCount() const {
+    if (!engine) return 0;
+    return static_cast<int>(engine->getSceneObjects().size());
+}
+
+int ScriptContext::GetSceneObjectIdAt(int index) const {
+    if (!engine || index < 0) return -1;
+    const auto& objects = engine->getSceneObjects();
+    if (index >= static_cast<int>(objects.size())) return -1;
+    return objects[static_cast<size_t>(index)].id;
+}
+
+const SceneObject* ScriptContext::GetSceneObjectAt(int index) const {
+    if (!engine || index < 0) return nullptr;
+    const auto& objects = engine->getSceneObjects();
+    if (index >= static_cast<int>(objects.size())) return nullptr;
+    return &objects[static_cast<size_t>(index)];
 }
 
 bool ScriptContext::IsObjectEnabled() const {
@@ -695,6 +716,14 @@ void ScriptContext::TickStandaloneMovement(StandaloneMovementState& state, Stand
 
 bool ScriptContext::IsUIButtonPressed() const {
     return object && object->hasUI && object->ui.type == UIElementType::Button && object->ui.buttonPressed;
+}
+
+bool ScriptContext::IsUIHovered() const {
+    return object && object->hasUI && object->ui.uiHovered;
+}
+
+bool ScriptContext::IsUIActive() const {
+    return object && object->hasUI && object->ui.uiActive;
 }
 
 bool ScriptContext::IsUIInteractable() const {
@@ -1139,6 +1168,26 @@ bool ScriptContext::AddRigidbodyTorque(const glm::vec3& torque) {
 bool ScriptContext::AddRigidbodyAngularImpulse(const glm::vec3& impulse) {
     if (!engine || !object || !HasRigidbody()) return false;
     return engine->addRigidbodyAngularImpulseFromScript(object->id, impulse);
+}
+
+bool ScriptContext::SetObjectRigidbodyVelocity(int objectId, const glm::vec3& velocity) {
+    if (!engine || objectId < 0) return false;
+    return engine->setRigidbodyVelocityFromScript(objectId, velocity);
+}
+
+bool ScriptContext::GetObjectRigidbodyVelocity(int objectId, glm::vec3& outVelocity) const {
+    if (!engine || objectId < 0) return false;
+    return engine->getRigidbodyVelocityFromScript(objectId, outVelocity);
+}
+
+bool ScriptContext::AddObjectRigidbodyImpulse(int objectId, const glm::vec3& impulse) {
+    if (!engine || objectId < 0) return false;
+    return engine->addRigidbodyImpulseFromScript(objectId, impulse);
+}
+
+bool ScriptContext::TeleportObjectRigidbody(int objectId, const glm::vec3& pos, const glm::vec3& rotDeg) {
+    if (!engine || objectId < 0) return false;
+    return engine->teleportPhysicsActorFromScript(objectId, pos, NormalizeEulerDegrees(rotDeg));
 }
 
 bool ScriptContext::SetRigidbodyYaw(float yawDegrees) {
@@ -1724,6 +1773,7 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
         dlclose(handle);
 #endif
     };
+    const auto __moduLoadStart = std::chrono::steady_clock::now();
 #if defined(_WIN32)
     fs::path loadPath = binaryPath;
     std::string shadowError;
@@ -1755,7 +1805,7 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     mod.editorExit = reinterpret_cast<EditorExitFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "ExitRenderEditorWindow"));
 #else
     mod.loadedPath = binaryPath;
-    mod.handle = dlopen(binaryPath.string().c_str(), RTLD_NOW);
+    mod.handle = dlopen(binaryPath.string().c_str(), RTLD_LAZY);
     if (!mod.handle) {
         const char* err = dlerror();
         if (err) lastError = err;
@@ -1816,6 +1866,9 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
         return nullptr;
     }
 
+    const auto __moduLoadEnd = std::chrono::steady_clock::now();
+    const double __moduLoadMs = std::chrono::duration<double, std::milli>(__moduLoadEnd - __moduLoadStart).count();
+    std::fprintf(stderr, "[ModuTimer] dlopen+symbols %.2f ms  %s\n", __moduLoadMs, binaryPath.string().c_str());
     loaded[key] = mod;
     return &loaded[key];
 }

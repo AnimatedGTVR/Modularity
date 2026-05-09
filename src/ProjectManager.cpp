@@ -363,6 +363,7 @@ void ProjectManager::saveRecentProjects() {
 void ProjectManager::loadLauncherSettings() {
     defaultProjectLocation[0] = '\0';
     acceptedTermsVersion.clear();
+    windowsDisclaimerAcknowledgedV68 = false;
     fs::path settingsFile = appDataPath / "launcher_settings.modu";
 
     if (fs::exists(settingsFile)) {
@@ -381,6 +382,8 @@ void ProjectManager::loadLauncherSettings() {
                 std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", value.c_str());
             } else if (key == "acceptedTermsVersion") {
                 acceptedTermsVersion = value;
+            } else if (key == "WindowsDisclaimerAcknowledged_V6_8") {
+                windowsDisclaimerAcknowledgedV68 = (value == "1" || value == "true" || value == "yes");
             }
         }
     }
@@ -402,6 +405,7 @@ void ProjectManager::saveLauncherSettings() const {
     if (!acceptedTermsVersion.empty()) {
         file << "acceptedTermsVersion=" << acceptedTermsVersion << "\n";
     }
+    file << "WindowsDisclaimerAcknowledged_V6_8=" << (windowsDisclaimerAcknowledgedV68 ? "1" : "0") << "\n";
     file << "defaultProjectLocation=" << defaultProjectLocation << "\n";
 }
 
@@ -469,6 +473,18 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
         file << "skyboxScrollRepeat=" << skyboxSettings.scrollingRepeatX << "," << skyboxSettings.scrollingRepeatY << "\n";
         file << "skyboxScrollLookSensitivity=" << skyboxSettings.scrollingLookSensitivity << "\n";
         file << "skyboxScrollVerticalInfluence=" << skyboxSettings.scrollingVerticalInfluence << "\n";
+        file << "skyboxEnvironmentReflections=" << (skyboxSettings.environmentReflections ? 1 : 0) << "\n";
+        file << "skyboxEnvironmentReflectionIntensity=" << skyboxSettings.environmentReflectionIntensity << "\n";
+        file << "skyboxReflectionDistanceFadeStart=" << skyboxSettings.reflectionDistanceFadeStart << "\n";
+        file << "skyboxReflectionDistanceFadeEnd=" << skyboxSettings.reflectionDistanceFadeEnd << "\n";
+        file << "fogEnabled=" << (skyboxSettings.fogEnabled ? 1 : 0) << "\n";
+        file << "fogMode=" << skyboxSettings.fogMode << "\n";
+        file << "fogColor=" << skyboxSettings.fogColor.r << "," << skyboxSettings.fogColor.g << "," << skyboxSettings.fogColor.b << "\n";
+        file << "fogStart=" << skyboxSettings.fogStart << "\n";
+        file << "fogEnd=" << skyboxSettings.fogEnd << "\n";
+        file << "fogDensity=" << skyboxSettings.fogDensity << "\n";
+        file << "fogHeight=" << skyboxSettings.fogHeight << "\n";
+        file << "fogHeightFalloff=" << skyboxSettings.fogHeightFalloff << "\n";
         file << "objectCount=" << objects.size() << "\n";
         file << "\n";
 
@@ -489,6 +505,7 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "faceCamera=" << (obj.faceCamera ? 1 : 0) << "\n";
             file << "hasLight=" << (obj.hasLight ? 1 : 0) << "\n";
             file << "hasLight2D=" << (obj.hasLight2D ? 1 : 0) << "\n";
+            file << "hasReflectionCast=" << (obj.hasReflectionCast ? 1 : 0) << "\n";
             file << "hasCamera=" << (obj.hasCamera ? 1 : 0) << "\n";
             file << "hasPostFX=" << (obj.hasPostFX ? 1 : 0) << "\n";
             file << "hasUI=" << (obj.hasUI ? 1 : 0) << "\n";
@@ -788,6 +805,7 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "materialAmbient=" << obj.material.ambientStrength << "\n";
             file << "materialSpecular=" << obj.material.specularStrength << "\n";
             file << "materialShininess=" << obj.material.shininess << "\n";
+            file << "materialNormalMapIntensity=" << obj.material.normalMapIntensity << "\n";
             file << "materialTextureMix=" << obj.material.textureMix << "\n";
             file << "materialUvTiling=" << obj.material.uvTiling.x << "," << obj.material.uvTiling.y << "\n";
             file << "materialUvOffset=" << obj.material.uvOffset.x << "," << obj.material.uvOffset.y << "\n";
@@ -840,6 +858,14 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "lightShadowSoftness=" << obj.light.shadowSoftness << "\n";
             file << "lightShadowResolution=" << obj.light.shadowResolution << "\n";
             file << "lightEnabled=" << (obj.light.enabled ? 1 : 0) << "\n";
+            if (obj.hasReflectionCast) {
+                file << "reflectionCastEnabled=" << (obj.reflectionCast.enabled ? 1 : 0) << "\n";
+                file << "reflectionCastUpdateMode=" << static_cast<int>(obj.reflectionCast.updateMode) << "\n";
+                file << "reflectionCastBox=" << obj.reflectionCast.boxSize.x << "," << obj.reflectionCast.boxSize.y << "," << obj.reflectionCast.boxSize.z << "\n";
+                file << "reflectionCastBlend=" << obj.reflectionCast.blendDistance << "\n";
+                file << "reflectionCastIntensity=" << obj.reflectionCast.intensity << "\n";
+                file << "reflectionCastResolution=" << obj.reflectionCast.resolution << "\n";
+            }
             if (obj.hasLight2D) {
                 file << "light2dEnabled=" << (obj.light2D.enabled ? 1 : 0) << "\n";
                 file << "light2dType=" << static_cast<int>(obj.light2D.type) << "\n";
@@ -968,6 +994,12 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "uiReceiveLighting2D=" << (obj.ui.receiveLighting2D ? 1 : 0) << "\n";
             file << "uiUnlitLighting2D=" << (obj.ui.unlitLighting2D ? 1 : 0) << "\n";
             file << "uiEmissiveLighting2D=" << obj.ui.emissiveLighting2D << "\n";
+            file << "uiFillColor=" << obj.ui.fillColor.r << "," << obj.ui.fillColor.g << "," << obj.ui.fillColor.b << "," << obj.ui.fillColor.a << "\n";
+            file << "uiBackgroundColor=" << obj.ui.backgroundColor.r << "," << obj.ui.backgroundColor.g << "," << obj.ui.backgroundColor.b << "," << obj.ui.backgroundColor.a << "\n";
+            file << "uiBorderColor=" << obj.ui.borderColor.r << "," << obj.ui.borderColor.g << "," << obj.ui.borderColor.b << "," << obj.ui.borderColor.a << "\n";
+            file << "uiTextColor=" << obj.ui.textColor.r << "," << obj.ui.textColor.g << "," << obj.ui.textColor.b << "," << obj.ui.textColor.a << "\n";
+            file << "uiFontSize=" << obj.ui.fontSize << "\n";
+            file << "uiSortingOrder=" << obj.ui.sortingOrder << "\n";
             if (!obj.ui.spriteCustomFrames.empty()) {
                 file << "uiSpriteCustomFrames=";
                 for (size_t i = 0; i < obj.ui.spriteCustomFrames.size(); ++i) {
@@ -1232,6 +1264,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"faceCamera", +[](SceneObject& obj, const std::string& value) { obj.faceCamera = std::stoi(value) != 0; }},
         {"hasLight", +[](SceneObject& obj, const std::string& value) { obj.hasLight = std::stoi(value) != 0; }},
         {"hasLight2D", +[](SceneObject& obj, const std::string& value) { obj.hasLight2D = std::stoi(value) != 0; }},
+        {"hasReflectionCast", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = std::stoi(value) != 0; }},
         {"hasCamera", +[](SceneObject& obj, const std::string& value) { obj.hasCamera = std::stoi(value) != 0; }},
         {"hasPostFX", +[](SceneObject& obj, const std::string& value) { obj.hasPostFX = std::stoi(value) != 0; }},
         {"hasUI", +[](SceneObject& obj, const std::string& value) { obj.hasUI = std::stoi(value) != 0; }},
@@ -1491,6 +1524,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"materialAmbient", +[](SceneObject& obj, const std::string& value) { obj.material.ambientStrength = std::stof(value); }},
         {"materialSpecular", +[](SceneObject& obj, const std::string& value) { obj.material.specularStrength = std::stof(value); }},
         {"materialShininess", +[](SceneObject& obj, const std::string& value) { obj.material.shininess = std::stof(value); }},
+        {"materialNormalMapIntensity", +[](SceneObject& obj, const std::string& value) { obj.material.normalMapIntensity = std::clamp(std::stof(value), 0.0f, 2.0f); }},
         {"materialTextureMix", +[](SceneObject& obj, const std::string& value) { obj.material.textureMix = std::stof(value); }},
         {"materialUvTiling", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvTiling); }},
         {"materialUvOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvOffset); }},
@@ -1549,6 +1583,17 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"lightShadowSoftness", +[](SceneObject& obj, const std::string& value) { obj.light.shadowSoftness = std::stof(value); }},
         {"lightShadowResolution", +[](SceneObject& obj, const std::string& value) { obj.light.shadowResolution = std::clamp(std::stoi(value), 0, 8192); }},
         {"lightEnabled", +[](SceneObject& obj, const std::string& value) { obj.light.enabled = (std::stoi(value) != 0); }},
+        {"reflectionCastEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = true; obj.reflectionCast.enabled = std::stoi(value) != 0; }},
+        {"reflectionCastUpdateMode", +[](SceneObject& obj, const std::string& value) {
+             obj.hasReflectionCast = true;
+             obj.reflectionCast.updateMode = std::stoi(value) == 0
+                 ? ReflectionCastUpdateMode::EveryFrame
+                 : ReflectionCastUpdateMode::FirstFrame;
+         }},
+        {"reflectionCastBox", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = true; ParseVec3(value, obj.reflectionCast.boxSize); }},
+        {"reflectionCastBlend", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = true; obj.reflectionCast.blendDistance = std::max(0.0f, std::stof(value)); }},
+        {"reflectionCastIntensity", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = true; obj.reflectionCast.intensity = std::clamp(std::stof(value), 0.0f, 2.0f); }},
+        {"reflectionCastResolution", +[](SceneObject& obj, const std::string& value) { obj.hasReflectionCast = true; obj.reflectionCast.resolution = std::clamp(std::stoi(value), 32, 1024); }},
         {"light2dEnabled", +[](SceneObject& obj, const std::string& value) { obj.light2D.enabled = (std::stoi(value) != 0); obj.hasLight2D = true; }},
         {"light2dType", +[](SceneObject& obj, const std::string& value) { obj.light2D.type = static_cast<Light2DType>(std::stoi(value)); obj.hasLight2D = true; }},
         {"light2dColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.light2D.color); obj.hasLight2D = true; }},
@@ -1687,6 +1732,12 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiEmissiveLighting2D", +[](SceneObject& obj, const std::string& value) {
              obj.ui.emissiveLighting2D = std::max(0.0f, std::stof(value));
          }},
+        {"uiFillColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.ui.fillColor); }},
+        {"uiBackgroundColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.ui.backgroundColor); }},
+        {"uiBorderColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.ui.borderColor); }},
+        {"uiTextColor", +[](SceneObject& obj, const std::string& value) { ParseVec4(value, obj.ui.textColor); }},
+        {"uiFontSize", +[](SceneObject& obj, const std::string& value) { obj.ui.fontSize = std::max(0.0f, std::stof(value)); }},
+        {"uiSortingOrder", +[](SceneObject& obj, const std::string& value) { obj.ui.sortingOrder = std::stoi(value); }},
         {"uiSpriteCustomFrames", +[](SceneObject& obj, const std::string& value) {
              obj.ui.spriteCustomFrames.clear();
              std::stringstream ss(value);
@@ -1912,6 +1963,9 @@ ObjectType GetLegacyTypeFromComponents(const SceneObject& obj) {
     if (obj.hasLight2D) {
         return ObjectType::Light2D;
     }
+    if (obj.hasReflectionCast) {
+        return ObjectType::ReflectionCast;
+    }
     if (obj.hasCamera) {
         return ObjectType::Camera;
     }
@@ -2005,6 +2059,30 @@ bool SceneSerializationInternal::LoadLegacySceneStream(std::istream& file,
                 sceneSkyboxSettings.scrollingLookSensitivity = std::max(0.0f, std::stof(value));
             } else if (key == "skyboxScrollVerticalInfluence") {
                 sceneSkyboxSettings.scrollingVerticalInfluence = std::clamp(std::stof(value), 0.0f, 1.0f);
+            } else if (key == "skyboxEnvironmentReflections") {
+                sceneSkyboxSettings.environmentReflections = std::stoi(value) != 0;
+            } else if (key == "skyboxEnvironmentReflectionIntensity") {
+                sceneSkyboxSettings.environmentReflectionIntensity = std::clamp(std::stof(value), 0.0f, 2.0f);
+            } else if (key == "skyboxReflectionDistanceFadeStart") {
+                sceneSkyboxSettings.reflectionDistanceFadeStart = std::max(0.0f, std::stof(value));
+            } else if (key == "skyboxReflectionDistanceFadeEnd") {
+                sceneSkyboxSettings.reflectionDistanceFadeEnd = std::max(0.01f, std::stof(value));
+            } else if (key == "fogEnabled") {
+                sceneSkyboxSettings.fogEnabled = std::stoi(value) != 0;
+            } else if (key == "fogMode") {
+                sceneSkyboxSettings.fogMode = std::clamp(std::stoi(value), 0, 2);
+            } else if (key == "fogColor") {
+                ParseVec3(value, sceneSkyboxSettings.fogColor);
+            } else if (key == "fogStart") {
+                sceneSkyboxSettings.fogStart = std::max(0.0f, std::stof(value));
+            } else if (key == "fogEnd") {
+                sceneSkyboxSettings.fogEnd = std::max(0.01f, std::stof(value));
+            } else if (key == "fogDensity") {
+                sceneSkyboxSettings.fogDensity = std::clamp(std::stof(value), 0.0f, 1.0f);
+            } else if (key == "fogHeight") {
+                sceneSkyboxSettings.fogHeight = std::stof(value);
+            } else if (key == "fogHeightFalloff") {
+                sceneSkyboxSettings.fogHeightFalloff = std::clamp(std::stof(value), 0.0f, 1.0f);
             } else if (currentObj) {
                 const auto& handlers = GetSceneObjectKeyHandlers();
                 auto handlerIt = handlers.find(key);

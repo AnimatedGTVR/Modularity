@@ -14,6 +14,8 @@
 extern float vertices[288];
 extern float mirrorPlaneVertices[48];
 
+constexpr int kRendererMaxRealtimeLights = 100;
+
 // Primitive generation functions
 std::vector<float> generateSphere(int segments = 32, int rings = 16);
 std::vector<float> generateCapsule(int segments = 16, int rings = 8);
@@ -188,6 +190,21 @@ private:
         glm::vec3 lastMirrorScale = glm::vec3(FLT_MAX);
         double lastUpdateTime = -1.0;
     };
+    struct ReflectionCastTarget {
+        unsigned int fbo = 0;
+        unsigned int cube = 0;
+        unsigned int depth = 0;
+        int resolution = 0;
+        bool hasCapture = false;
+    };
+    struct SkyboxReflectionTarget {
+        unsigned int fbo = 0;
+        unsigned int cube = 0;
+        unsigned int depth = 0;
+        int resolution = 0;
+        uint64_t signature = 0;
+        bool hasCapture = false;
+    };
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
     Shader* postShader = nullptr;
@@ -231,6 +248,7 @@ private:
     std::string directionalShadowDepthVertPath = "Resources/Shaders/shadow_directional_depth_vert.glsl";
     std::string directionalShadowDepthFragPath = "Resources/Shaders/shadow_directional_depth_frag.glsl";
     bool autoReloadShaders = true;
+    int maxRealtimeLights = 10;
     int shadowMapResolution = 512;
     glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
     Mesh* cubeMesh = nullptr;
@@ -252,6 +270,8 @@ private:
     std::unordered_map<int, ShadowDirectionalMap> shadowDirectionalMaps;
     std::unordered_map<int, RenderTarget> mirrorTargets;
     std::unordered_map<int, MirrorUpdateState> mirrorUpdateStates;
+    std::unordered_map<int, ReflectionCastTarget> reflectionCastTargets;
+    SkyboxReflectionTarget skyboxReflectionTarget;
     std::unordered_map<int, RenderTarget> uiTargets;
     std::vector<StaticMergeBatch> staticMergeBatches;
     std::unordered_set<int> staticMergeSourceIds;
@@ -259,6 +279,7 @@ private:
     RenderStats previewStats;
     PostProcessStats viewportPostStats;
     PostProcessStats previewPostStats;
+    bool reflectionCapturePass = false;
     RenderStats* activeStats = nullptr;
     float selectionOutlineBlend = 0.0f;
     double selectionOutlineLastUpdateSec = 0.0;
@@ -271,7 +292,11 @@ private:
     void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha);
     void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr);
     void releaseRenderTarget(RenderTarget& target);
+    void releaseReflectionCastTarget(ReflectionCastTarget& target);
+    void releaseSkyboxReflectionTarget(SkyboxReflectionTarget& target);
     void updateMirrorTargets(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane);
+    void updateReflectionCastTargets(const std::vector<SceneObject>& sceneObjects, float nearPlane, float farPlane);
+    void updateSkyboxReflectionTarget();
     void ensureQuad();
     void drawFullscreenQuad();
     void purgeTextureCacheIfNeeded();
@@ -302,6 +327,8 @@ public:
     glm::vec3 getAmbientColor() const { return ambientColor; }
     void setShadowMapResolution(int resolution) { shadowMapResolution = std::clamp(resolution, 128, 4096); }
     int getShadowMapResolution() const { return shadowMapResolution; }
+    void setMaxRealtimeLights(int count) { maxRealtimeLights = std::clamp(count, 1, kRendererMaxRealtimeLights); }
+    int getMaxRealtimeLights() const { return maxRealtimeLights; }
     void setShaderAutoReload(bool enabled) { autoReloadShaders = enabled; }
     bool isShaderAutoReloadEnabled() const { return autoReloadShaders; }
     void resize(int w, int h);

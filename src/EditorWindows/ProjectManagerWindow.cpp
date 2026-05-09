@@ -359,6 +359,148 @@ static std::vector<std::string> SplitString(const std::string& input, char delim
     return out;
 }
 
+enum class ProjectSettingsVisibilityMode {
+    Simple = 0,
+    Advanced = 1,
+    Developer = 2
+};
+
+static const char* ProjectSettingsModeHelp(ProjectSettingsVisibilityMode mode) {
+    switch (mode) {
+        case ProjectSettingsVisibilityMode::Advanced:
+            return "Advanced shows technical settings most engine users may need.";
+        case ProjectSettingsVisibilityMode::Developer:
+            return "Developer shows debug, internal, and experimental controls.";
+        case ProjectSettingsVisibilityMode::Simple:
+        default:
+            return "Simple shows common safe settings and hides noisy options.";
+    }
+}
+
+static bool IsSettingVisibleForMode(ProjectSettingsVisibilityMode current,
+                                    ProjectSettingsVisibilityMode required) {
+    return static_cast<int>(current) >= static_cast<int>(required);
+}
+
+static std::string ProjectSettingsLowerCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+static bool ProjectSettingsMatchesSearch(const char* query,
+                                         const char* section,
+                                         const char* label,
+                                         const char* tags = nullptr) {
+    if (!query || !*query) {
+        return true;
+    }
+
+    const std::string needle = ProjectSettingsLowerCopy(TrimCopy(query));
+    if (needle.empty()) {
+        return true;
+    }
+
+    std::string haystack;
+    if (section) haystack += section;
+    haystack += ' ';
+    if (label) haystack += label;
+    haystack += ' ';
+    if (tags) haystack += tags;
+
+    return ProjectSettingsLowerCopy(haystack).find(needle) != std::string::npos;
+}
+
+static void DrawHelpText(const char* text) {
+    if (!text || !*text) {
+        return;
+    }
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+    ImGui::TextColored(ImVec4(0.52f, 0.59f, 0.67f, 1.0f), "%s", text);
+    ImGui::PopTextWrapPos();
+}
+
+static void DrawHelpTooltip(const char* text) {
+    if (!text || !*text) {
+        return;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+static bool DrawSettingSection(const char* icon,
+                               const char* title,
+                               const char* helper,
+                               bool defaultOpen = true) {
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.13f, 0.17f, 0.24f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f, 0.23f, 0.32f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.20f, 0.28f, 0.40f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 3.0f));
+
+    std::string label;
+    if (icon && *icon) {
+        label += icon;
+        label += "  ";
+    }
+    label += title ? title : "";
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (defaultOpen) {
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    }
+    const bool open = ImGui::CollapsingHeader(label.c_str(), flags);
+    if (helper && *helper && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(helper);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+    return open;
+}
+
+static bool DrawSettingRow(const char* label,
+                           const char* helper,
+                           const std::function<bool()>& drawControl) {
+    bool changed = false;
+    ImGui::PushID(label);
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0.0f, 1.0f));
+    if (ImGui::BeginTable("##SettingRow", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings)) {
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, 0.34f);
+        ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 0.66f);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextColored(ImVec4(0.86f, 0.90f, 0.96f, 1.0f), "%s", label ? label : "");
+        DrawHelpTooltip(helper);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-1);
+        changed = drawControl ? drawControl() : false;
+        ImGui::EndTable();
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+    return changed;
+}
+
+/*static bool DrawRecommendedResetButton(const std::function<void()>& resetAction) {
+    if (ImGui::Button("Reset to Recommended")) {
+        if (resetAction) {
+            resetAction();
+        }
+        return true;
+    }
+    return false;
+}*/
+
 static fs::path ResolveRecentProjectRoot(const std::string& recentPath) {
     fs::path path(recentPath);
     if (path.empty()) return {};
@@ -903,6 +1045,74 @@ void Engine::renderTermsOfServiceModal() {
 
         ImGui::EndPopup();
     }
+#endif
+}
+
+void Engine::renderWindowsDisclaimerPopup() {
+#if defined(_WIN32) && !defined(MODULARITY_PLAYER)
+    if (projectManager.windowsDisclaimerAcknowledgedV68) {
+        windowsDisclaimerPopupOpened = false;
+        return;
+    }
+    if (requiresTermsOfServiceAcceptance()) {
+        return;
+    }
+    if (showLauncher && !launcherIntroFinished) {
+        return;
+    }
+
+    constexpr const char* popupTitle = "Windows Disclaimer!";
+    if (!windowsDisclaimerPopupOpened) {
+        ImGui::OpenPopup(popupTitle);
+        windowsDisclaimerPopupOpened = true;
+    }
+
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const float popupWidth = ImClamp(displaySize.x * 0.46f, 440.0f, 620.0f);
+    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f),
+                            ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(popupWidth, 0.0f), ImGuiCond_Appearing);
+
+    const ImGuiWindowFlags popupFlags =
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    if (ImGui::BeginPopupModal(popupTitle, nullptr, popupFlags)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + popupWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
+        ImGui::TextWrapped("Hey!");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Modularity on Windows is currently not fully stable due to Windows having its own quirks and slower filesystem/toolchain behavior compared to Linux builds.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Because of this, you may experience:");
+        ImGui::BulletText("Slower compilation times");
+        ImGui::BulletText("Longer project loading times");
+        ImGui::BulletText("Occasional editor instability");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Linux builds are currently the primary recommended experience for development.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Thank you for your patience while Windows support continues improving!");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        constexpr float buttonWidth = 120.0f;
+        const float available = ImGui::GetContentRegionAvail().x;
+        if (available > buttonWidth) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (available - buttonWidth) * 0.5f);
+        }
+        if (ImGui::Button("Got it!", ImVec2(buttonWidth, 0.0f))) {
+            projectManager.windowsDisclaimerAcknowledgedV68 = true;
+            projectManager.saveLauncherSettings();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+#else
+    windowsDisclaimerPopupOpened = false;
 #endif
 }
 
@@ -3096,7 +3306,8 @@ void Engine::renderProjectBrowserPanel() {
         { "Assets", "Resources/Engine-Root/Project Settings/Tabs/Assets.png", "A" },
         { "Editor", "Resources/Engine-Root/Project Settings/Tabs/Editor.png", "E" },
         { "Build", "Resources/Engine-Root/Project Settings/Tabs/Build.png", "B" },
-        { "Compilation", "Resources/Engine-Root/Project Settings/Tabs/Compilation.png", "C" }
+        { "Compilation", "Resources/Engine-Root/Project Settings/Tabs/Compilation.png", "C" },
+        { "OpenXR Manager", "Resources/Engine-Root/Project Settings/Tabs/ModuVR Manager.png", "X" }
     };
 
     static int selectedTab = 0;
@@ -3234,6 +3445,50 @@ void Engine::renderProjectBrowserPanel() {
     ImGui::SameLine();
     ImGui::BeginChild("SettingsBody", ImVec2(0, 0), false);
 
+    static char settingsSearch[160] = "";
+    static int settingsModeIndex = 0;
+    settingsModeIndex = std::clamp(settingsModeIndex, 0, 2);
+    const ProjectSettingsVisibilityMode settingsMode =
+        static_cast<ProjectSettingsVisibilityMode>(settingsModeIndex);
+    int visibleSettingCount = 0;
+
+    auto visible = [&](ProjectSettingsVisibilityMode required,
+                       const char* section,
+                       const char* label,
+                       const char* tags = nullptr) {
+        const bool isVisible = IsSettingVisibleForMode(settingsMode, required) &&
+                               ProjectSettingsMatchesSearch(settingsSearch, section, label, tags);
+        if (isVisible) {
+            ++visibleSettingCount;
+        }
+        return isVisible;
+    };
+
+    auto sectionVisible = [&](const char* section, ProjectSettingsVisibilityMode required) {
+        (void)section;
+        return IsSettingVisibleForMode(settingsMode, required);
+    };
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0f, 2.0f));
+    const float controlsWidth = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(std::max(180.0f, controlsWidth * 0.36f));
+    ImGui::InputTextWithHint("##ProjectSettingsSearch", "Search settings", settingsSearch, sizeof(settingsSearch));
+    ImGui::SameLine();
+    const char* modeOptions[] = { "Simple", "Advanced", "Developer" };
+    ImGui::SetNextItemWidth(148.0f);
+    ImGui::Combo("##ProjectSettingsMode", &settingsModeIndex, modeOptions, IM_ARRAYSIZE(modeOptions));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(ProjectSettingsModeHelp(settingsMode));
+        ImGui::Separator();
+        ImGui::TextUnformatted("Simple: common safe settings.");
+        ImGui::TextUnformatted("Advanced: technical user settings.");
+        ImGui::TextUnformatted("Developer: debug and internal settings.");
+        ImGui::EndTooltip();
+    }
+    ImGui::Separator();
+
     if (selectedTab == 0) {
         if (ImGui::Button("+ New Scene")) {
             showNewSceneDialog = true;
@@ -3244,6 +3499,10 @@ void Engine::renderProjectBrowserPanel() {
 
         auto scenes = projectManager.currentProject.getSceneList();
         for (const auto& scene : scenes) {
+            if (!ProjectSettingsMatchesSearch(settingsSearch, "Scenes", scene.c_str(), "scene load duplicate delete")) {
+                continue;
+            }
+            ++visibleSettingCount;
             bool isCurrentScene = (scene == projectManager.currentProject.currentSceneName);
 
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
@@ -3275,364 +3534,563 @@ void Engine::renderProjectBrowserPanel() {
 
         if (scenes.empty()) {
             ImGui::TextDisabled("No scenes yet");
+        } else if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No scenes match this search.");
         }
     } else if (selectedTab == 1) {
-        ImGui::TextDisabled("Loaded OBJ Meshes");
-        const auto& meshesObj = g_objLoader.getAllMeshes();
-        if (meshesObj.empty()) {
-            ImGui::TextDisabled("No meshes loaded");
-            ImGui::TextDisabled("Import .obj files from File Browser");
-        } else {
-            for (size_t i = 0; i < meshesObj.size(); i++) {
-                const auto& mesh = meshesObj[i];
-                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
-                                          ImGuiTreeNodeFlags_SpanAvailWidth |
-                                          ImGuiTreeNodeFlags_NoTreePushOnOpen;
-                
-                ImGui::TreeNodeEx((void*)(intptr_t)i, flags, "[M] %s", mesh.name.c_str());
-                
-                if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::Text("Vertices: %d", mesh.vertexCount);
-                    ImGui::Text("Faces: %d", mesh.faceCount);
-                    ImGui::Text("Has Normals: %s", mesh.hasNormals ? "Yes" : "No");
-                    ImGui::Text("Has UVs: %s", mesh.hasTexCoords ? "Yes" : "No");
-                    ImGui::TextDisabled("%s", mesh.path.c_str());
-                    ImGui::EndTooltip();
+        if (DrawSettingSection("[M]", "Loaded OBJ Meshes", "Imported .obj meshes available to this project.")) {
+            const auto& meshesObj = g_objLoader.getAllMeshes();
+            if (meshesObj.empty()) {
+                ImGui::TextDisabled("No meshes loaded");
+                ImGui::TextDisabled("Import .obj files from File Browser");
+            } else {
+                for (size_t i = 0; i < meshesObj.size(); i++) {
+                    const auto& mesh = meshesObj[i];
+                    if (!ProjectSettingsMatchesSearch(settingsSearch, "Assets", mesh.name.c_str(), mesh.path.c_str())) {
+                        continue;
+                    }
+                    ++visibleSettingCount;
+                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
+                                              ImGuiTreeNodeFlags_SpanAvailWidth |
+                                              ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+                    ImGui::TreeNodeEx((void*)(intptr_t)i, flags, "[M] %s", mesh.name.c_str());
+
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::Text("Vertices: %d", mesh.vertexCount);
+                        ImGui::Text("Faces: %d", mesh.faceCount);
+                        ImGui::Text("Has Normals: %s", mesh.hasNormals ? "Yes" : "No");
+                        ImGui::Text("Has UVs: %s", mesh.hasTexCoords ? "Yes" : "No");
+                        ImGui::TextDisabled("%s", mesh.path.c_str());
+                        ImGui::EndTooltip();
+                    }
                 }
             }
         }
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Loaded Models (Assimp)");
-        const auto& meshesAssimp = getModelLoader().getAllMeshes();
-        if (meshesAssimp.empty()) {
-            ImGui::TextDisabled("No models loaded");
-            ImGui::TextDisabled("Import FBX/GLTF/other supported models from File Browser");
-        } else {
-            for (size_t i = 0; i < meshesAssimp.size(); i++) {
-                const auto& mesh = meshesAssimp[i];
-                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
-                                          ImGuiTreeNodeFlags_SpanAvailWidth |
-                                          ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        if (DrawSettingSection("[A]", "Loaded Models", "Imported Assimp-supported model assets available to this project.")) {
+            const auto& meshesAssimp = getModelLoader().getAllMeshes();
+            if (meshesAssimp.empty()) {
+                ImGui::TextDisabled("No models loaded");
+                ImGui::TextDisabled("Import FBX/GLTF/other supported models from File Browser");
+            } else {
+                for (size_t i = 0; i < meshesAssimp.size(); i++) {
+                    const auto& mesh = meshesAssimp[i];
+                    if (!ProjectSettingsMatchesSearch(settingsSearch, "Assets", mesh.name.c_str(), mesh.path.c_str())) {
+                        continue;
+                    }
+                    ++visibleSettingCount;
+                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf |
+                                              ImGuiTreeNodeFlags_SpanAvailWidth |
+                                              ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
-                ImGui::TreeNodeEx((void*)(intptr_t)(10000 + i), flags, "[A] %s", mesh.name.c_str());
+                    ImGui::TreeNodeEx((void*)(intptr_t)(10000 + i), flags, "[A] %s", mesh.name.c_str());
 
-                if (ImGui::IsItemHovered()) {
-                    ImGui::BeginTooltip();
-                    ImGui::Text("Vertices: %d", mesh.vertexCount);
-                    ImGui::Text("Faces: %d", mesh.faceCount);
-                    ImGui::Text("Has Normals: %s", mesh.hasNormals ? "Yes" : "No");
-                    ImGui::Text("Has UVs: %s", mesh.hasTexCoords ? "Yes" : "No");
-                    ImGui::TextDisabled("%s", mesh.path.c_str());
-                    ImGui::EndTooltip();
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::Text("Vertices: %d", mesh.vertexCount);
+                        ImGui::Text("Faces: %d", mesh.faceCount);
+                        ImGui::Text("Has Normals: %s", mesh.hasNormals ? "Yes" : "No");
+                        ImGui::Text("Has UVs: %s", mesh.hasTexCoords ? "Yes" : "No");
+                        ImGui::TextDisabled("%s", mesh.path.c_str());
+                        ImGui::EndTooltip();
+                    }
                 }
             }
+        }
+        if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No assets match this search.");
         }
     } else if (selectedTab == 2) {
         bool editorSettingsChanged = false;
         bool buildSettingsChanged = false;
 
-        if (ImGui::CollapsingHeader("Project Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
-            int pipelineIndex = ProjectPipelineToUiIndex(projectManager.currentProject.pipeline);
-            const char* pipelineOptions[] = { "3D Pipeline", "2.5D Pipeline (Experimental)", "2D Pipeline" };
-            if (ImGui::Combo("Mode", &pipelineIndex, pipelineOptions, IM_ARRAYSIZE(pipelineOptions))) {
-                projectManager.currentProject.pipeline = ProjectPipelineFromUiIndex(pipelineIndex);
-                projectManager.currentProject.saveProjectFile();
-                applyProjectPipelineDefaults(false);
-                projectManager.currentProject.hasUnsavedChanges = true;
+        if (sectionVisible("Project", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[P]", "Project", "Project identity and the broad mode this project uses.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Project", "Project Mode", "pipeline 2d 3d 2.5d")) {
+                editorSettingsChanged |= DrawSettingRow("Project Mode", "Choose the default editing pipeline for this project.", [&]() {
+                    int pipelineIndex = ProjectPipelineToUiIndex(projectManager.currentProject.pipeline);
+                    const char* pipelineOptions[] = { "3D Pipeline", "2.5D Pipeline (Experimental)", "2D Pipeline" };
+                    if (ImGui::Combo("##ProjectPipelineMode", &pipelineIndex, pipelineOptions, IM_ARRAYSIZE(pipelineOptions))) {
+                        projectManager.currentProject.pipeline = ProjectPipelineFromUiIndex(pipelineIndex);
+                        projectManager.currentProject.saveProjectFile();
+                        applyProjectPipelineDefaults(false);
+                        projectManager.currentProject.hasUnsavedChanges = true;
+                        return true;
+                    }
+                    return false;
+                });
             }
 
-            int rendererIndex = (projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
-            const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
-            if (ImGui::Combo("Renderer API##ProjectRendererApi", &rendererIndex, rendererOptions, IM_ARRAYSIZE(rendererOptions))) {
+            if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D &&
+                visible(ProjectSettingsVisibilityMode::Simple, "Project", "Pixel Grid Snap", "2d snap grid")) {
+                editorSettingsChanged |= DrawSettingRow("Pixel Grid Snap", "Keeps 2D object movement aligned to whole pixels.", [&]() {
+                    return ImGui::Checkbox("##PixelGridSnap", &pixelGridSnapEnabled);
+                });
+            }
+
+            if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D &&
+                visible(ProjectSettingsVisibilityMode::Advanced, "Project", "Snap Step", "2d snap grid pixels")) {
+                editorSettingsChanged |= DrawSettingRow("Snap Step", "Pixel size used by the 2D grid snap.", [&]() {
+                    ImGui::BeginDisabled(!pixelGridSnapEnabled);
+                    const bool changed = ImGui::DragInt("##PixelGridSnapStep", &pixelGridSnapStep, 1.0f, 1, 64);
+                    ImGui::EndDisabled();
+                    if (changed) pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
+                    return changed;
+                });
+            }
+        }
+
+        if (sectionVisible("Rendering", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[R]", "Rendering", "Renderer and visual quality controls.")) {
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rendering", "Renderer API", "opengl vulkan backend")) {
+                DrawSettingRow("Renderer API", "Changing this may require an editor restart.", [&]() {
+                    int rendererIndex = (projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
+                    const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
+                    if (ImGui::Combo("##ProjectRendererApi", &rendererIndex, rendererOptions, IM_ARRAYSIZE(rendererOptions))) {
 #if !MODULARITY_HAS_VULKAN
-                if (rendererIndex == 1) {
-                    rendererIndex = 0;
-                    addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
-                                      ConsoleMessageType::Warning);
-                }
+                        if (rendererIndex == 1) {
+                            rendererIndex = 0;
+                            addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
+                                              ConsoleMessageType::Warning);
+                        }
 #else
-                if (rendererIndex == 1 && !hasVulkanPipelinePackage()) {
-                    rendererIndex = 0;
-                    addConsoleMessage("Install moduengine.vulkan-pipeline to enable Vulkan. Keeping OpenGL.",
-                                      ConsoleMessageType::Warning);
-                }
+                        if (rendererIndex == 1 && !hasVulkanPipelinePackage()) {
+                            rendererIndex = 0;
+                            addConsoleMessage("Install moduengine.vulkan-pipeline to enable Vulkan. Keeping OpenGL.",
+                                              ConsoleMessageType::Warning);
+                        }
 #endif
-                projectManager.currentProject.rendererBackend =
-                    (rendererIndex == 1) ? Modularity::GraphicsBackend::Vulkan : Modularity::GraphicsBackend::OpenGL;
-                projectManager.currentProject.saveProjectFile();
+                        projectManager.currentProject.rendererBackend =
+                            (rendererIndex == 1) ? Modularity::GraphicsBackend::Vulkan : Modularity::GraphicsBackend::OpenGL;
+                        projectManager.currentProject.saveProjectFile();
+                        return true;
+                    }
+                    return false;
+                });
+                if (projectManager.currentProject.rendererBackend != graphicsBackend) {
+                    DrawHelpText("Current session uses a different renderer. Restart editor to apply this project renderer.");
+                }
             }
-            if (projectManager.currentProject.rendererBackend != graphicsBackend) {
-                ImGui::TextDisabled("Current session renderer: %s", Modularity::ToString(graphicsBackend));
-                ImGui::TextDisabled("Restart editor to apply project renderer.");
+
+            const bool openGlSettingsAvailable = rendererInitialized && !usingVulkan();
+            if (!openGlSettingsAvailable && IsSettingVisibleForMode(settingsMode, ProjectSettingsVisibilityMode::Advanced)) {
+                DrawHelpText("OpenGL renderer settings are editable only in OpenGL sessions.");
             }
-
-            if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline2D) {
-                ImGui::TextDisabled("2D world editing is always enabled in this project.");
-                if (ImGui::Checkbox("Pixel Grid Snap", &pixelGridSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!pixelGridSnapEnabled);
-                if (ImGui::DragInt("Snap Step (px)", &pixelGridSnapStep, 1.0f, 1, 64)) {
-                    pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-            } else if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline25D) {
-                ImGui::TextDisabled("2.5D projects keep 2D world overlay enabled without forcing pure 2D camera mode.");
-                ImGui::SeparatorText("2D Overlay Editing");
-                ImGui::TextDisabled("These controls affect the 2D/world overlay editor grid only.");
-                if (ImGui::Checkbox("Pixel Grid Snap", &pixelGridSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!pixelGridSnapEnabled);
-                if (ImGui::DragInt("Snap Step (px)", &pixelGridSnapStep, 1.0f, 1, 64)) {
-                    pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                ImGui::SeparatorText("2.5D Presentation");
-                ImGui::TextDisabled("These controls affect the TM/vexel presentation layer.");
-                auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
-
-                if (ImGui::Checkbox("Pitch Stretch", &tmPresentation.lookPitchStretchEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!tmPresentation.lookPitchStretchEnabled);
-                if (ImGui::DragFloat("Stretch Strength", &tmPresentation.lookPitchStretchStrength, 0.01f, 0.0f, 1.5f, "%.2f")) {
-                    tmPresentation.lookPitchStretchStrength = std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f);
-                    editorSettingsChanged = true;
-                }
-                if (ImGui::DragFloat("Compress Strength", &tmPresentation.lookPitchCompressStrength, 0.01f, 0.0f, 1.5f, "%.2f")) {
-                    tmPresentation.lookPitchCompressStrength = std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f);
-                    editorSettingsChanged = true;
-                }
-                if (ImGui::DragFloat("Shear Strength", &tmPresentation.lookPitchShearStrength, 0.01f, 0.0f, 1.0f, "%.2f")) {
-                    tmPresentation.lookPitchShearStrength = std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("World Snap", &tmPresentation.presentationSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!tmPresentation.presentationSnapEnabled);
-                if (ImGui::DragFloat("World Snap Step", &tmPresentation.presentationSnapStep, 0.005f, 0.001f, 8.0f, "%.3f")) {
-                    tmPresentation.presentationSnapStep = std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("Camera-Relative Snap", &tmPresentation.cameraRelativeSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!tmPresentation.cameraRelativeSnapEnabled);
-                if (ImGui::DragFloat("Camera Snap Step", &tmPresentation.cameraRelativeSnapStep, 0.005f, 0.001f, 8.0f, "%.3f")) {
-                    tmPresentation.cameraRelativeSnapStep = std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("Vertex Snap", &tmPresentation.vertexSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!tmPresentation.vertexSnapEnabled);
-                if (ImGui::DragFloat("Vertex Snap Step", &tmPresentation.vertexSnapStep, 0.0025f, 0.0005f, 4.0f, "%.4f")) {
-                    tmPresentation.vertexSnapStep = std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Checkbox("Screen Snap", &tmPresentation.screenSnapEnabled)) editorSettingsChanged = true;
-                ImGui::BeginDisabled(!tmPresentation.screenSnapEnabled);
-                if (ImGui::DragFloat("Screen Snap Step (px)", &tmPresentation.screenSnapStep, 0.25f, 0.25f, 16.0f, "%.2f")) {
-                    tmPresentation.screenSnapStep = std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f);
-                    editorSettingsChanged = true;
-                }
-                ImGui::EndDisabled();
-
-                if (ImGui::Button("Use High Precision")) {
-                    tmPresentation.presentationSnapEnabled = false;
-                    tmPresentation.cameraRelativeSnapEnabled = false;
-                    tmPresentation.vertexSnapEnabled = false;
-                    tmPresentation.screenSnapEnabled = false;
-                    editorSettingsChanged = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Use Retro Snap")) {
-                    tmPresentation.presentationSnapEnabled = true;
-                    tmPresentation.presentationSnapStep = 0.125f;
-                    tmPresentation.cameraRelativeSnapEnabled = true;
-                    tmPresentation.cameraRelativeSnapStep = 0.125f;
-                    tmPresentation.vertexSnapEnabled = true;
-                    tmPresentation.vertexSnapStep = 0.0625f;
-                    tmPresentation.screenSnapEnabled = true;
-                    tmPresentation.screenSnapStep = 2.0f;
-                    editorSettingsChanged = true;
-                }
-            } else {
-                ImGui::TextDisabled("2D world overlay remains optional in 3D projects.");
+            ImGui::BeginDisabled(!openGlSettingsAvailable);
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Rendering", "Ambient Color", "light color")) {
+                buildSettingsChanged |= DrawSettingRow("Ambient Color", "Base light color used by the OpenGL renderer.", [&]() {
+                    glm::vec3 ambient = renderer.getAmbientColor();
+                    if (ImGui::ColorEdit3("##RendererAmbientColor", &ambient.x)) {
+                        renderer.setAmbientColor(ambient);
+                        buildSettings.rendererAmbientColor = ambient;
+                        return true;
+                    }
+                    return false;
+                });
             }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rendering", "Shadow Resolution", "shadow map quality")) {
+                buildSettingsChanged |= DrawSettingRow("Shadow Resolution", "Higher values can look sharper but cost more GPU memory.", [&]() {
+                    int shadowResolution = renderer.getShadowMapResolution();
+                    if (ImGui::SliderInt("##RendererShadowResolution", &shadowResolution, 128, 4096)) {
+                        renderer.setShadowMapResolution(shadowResolution);
+                        buildSettings.rendererShadowResolution = renderer.getShadowMapResolution();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Rendering", "Auto Reload Shaders", "developer shader hot reload")) {
+                buildSettingsChanged |= DrawSettingRow("Auto Reload Shaders", "Reloads shaders while editing. Useful for shader development.", [&]() {
+                    bool shaderAutoReload = renderer.isShaderAutoReloadEnabled();
+                    if (ImGui::Checkbox("##RendererAutoReloadShaders", &shaderAutoReload)) {
+                        renderer.setShaderAutoReload(shaderAutoReload);
+                        buildSettings.rendererAutoReloadShaders = shaderAutoReload;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            ImGui::EndDisabled();
         }
 
-        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (sectionVisible("Physics", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[F]", "Physics", "Project-wide physics defaults.")) {
             ProjectPhysicsSettings& physicsSettings = projectManager.currentProject.physicsSettings;
-            int massUnitIndex = static_cast<int>(physicsSettings.massUnit);
-            const char* massUnitOptions[] = { "Kilograms (kg)", "Grams (g)", "Pounds (lb)", "Ounces (oz)" };
-            if (ImGui::Combo("Mass Units", &massUnitIndex, massUnitOptions, IM_ARRAYSIZE(massUnitOptions))) {
-                const ProjectMassUnit previousUnit = physicsSettings.massUnit;
-                const ProjectMassUnit nextUnit = static_cast<ProjectMassUnit>(
-                    std::clamp(massUnitIndex, 0, static_cast<int>(IM_ARRAYSIZE(massUnitOptions)) - 1));
-                if (previousUnit != nextUnit) {
-                    const float previousScale = std::max(0.000001f, ProjectMassUnitToKilograms(previousUnit));
-                    const float nextScale = std::max(0.000001f, ProjectMassUnitToKilograms(nextUnit));
-                    for (SceneObject& obj : sceneObjects) {
-                        if (!obj.hasRigidbody) continue;
-                        obj.rigidbody.mass = std::max(0.0001f, obj.rigidbody.mass * (previousScale / nextScale));
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Physics", "Mass Units", "kilograms grams pounds ounces")) {
+                DrawSettingRow("Mass Units", "Changes how Rigidbody mass values are shown and converted.", [&]() {
+                    int massUnitIndex = static_cast<int>(physicsSettings.massUnit);
+                    const char* massUnitOptions[] = { "Kilograms (kg)", "Grams (g)", "Pounds (lb)", "Ounces (oz)" };
+                    if (ImGui::Combo("##PhysicsMassUnits", &massUnitIndex, massUnitOptions, IM_ARRAYSIZE(massUnitOptions))) {
+                        const ProjectMassUnit previousUnit = physicsSettings.massUnit;
+                        const ProjectMassUnit nextUnit = static_cast<ProjectMassUnit>(
+                            std::clamp(massUnitIndex, 0, static_cast<int>(IM_ARRAYSIZE(massUnitOptions)) - 1));
+                        if (previousUnit != nextUnit) {
+                            const float previousScale = std::max(0.000001f, ProjectMassUnitToKilograms(previousUnit));
+                            const float nextScale = std::max(0.000001f, ProjectMassUnitToKilograms(nextUnit));
+                            for (SceneObject& obj : sceneObjects) {
+                                if (!obj.hasRigidbody) continue;
+                                obj.rigidbody.mass = std::max(0.0001f, obj.rigidbody.mass * (previousScale / nextScale));
+                            }
+                            physicsSettings.massUnit = nextUnit;
+                            projectManager.currentProject.saveProjectFile();
+                            projectManager.currentProject.hasUnsavedChanges = true;
+                            physics.setProjectSettings(physicsSettings);
+                            if ((isPlaying || specMode || testMode) && physics.isReady()) {
+                                physics.onPlayStart(sceneObjects);
+                            }
+                        }
+                        return true;
                     }
-                    physicsSettings.massUnit = nextUnit;
-                    projectManager.currentProject.saveProjectFile();
-                    projectManager.currentProject.hasUnsavedChanges = true;
-                    physics.setProjectSettings(physicsSettings);
-                    if ((isPlaying || specMode || testMode) && physics.isReady()) {
-                        physics.onPlayStart(sceneObjects);
-                    }
-                }
+                    return false;
+                });
             }
 
-            float gravityScale = physicsSettings.globalGravityScale;
-            if (ImGui::DragFloat("Global Gravity Scale", &gravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
-                physicsSettings.globalGravityScale = std::clamp(gravityScale, 0.0f, 10.0f);
-                projectManager.currentProject.saveProjectFile();
-                projectManager.currentProject.hasUnsavedChanges = true;
-                physics.setProjectSettings(physicsSettings);
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Physics", "World Gravity Strength", "global gravity scale")) {
+                DrawSettingRow("World Gravity Strength", "3D and 2D runtime gravity use this project-wide multiplier.", [&]() {
+                    float gravityScale = physicsSettings.globalGravityScale;
+                    if (ImGui::DragFloat("##WorldGravityStrength", &gravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                        physicsSettings.globalGravityScale = std::clamp(gravityScale, 0.0f, 10.0f);
+                        projectManager.currentProject.saveProjectFile();
+                        projectManager.currentProject.hasUnsavedChanges = true;
+                        physics.setProjectSettings(physicsSettings);
+                        return true;
+                    }
+                    return false;
+                });
             }
-
-            ImGui::TextDisabled("3D and 2D runtime gravity use this project-wide multiplier.");
         }
 
-        if (ImGui::CollapsingHeader("Player / Viewport", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (sectionVisible("Player / Viewport", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[V]", "Player / Viewport", "Preview and viewport behavior.")) {
             const char* resolutionOptions[] = { "Default (1280x720)", "1080p", "720p", "1440p", "Custom" };
-
             if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= static_cast<int>(IM_ARRAYSIZE(resolutionOptions))) {
                 gameViewportResolutionIndex = 0;
             }
-            int resolutionIndex = gameViewportResolutionIndex;
-            if (ImGui::Combo("Preview Resolution", &resolutionIndex, resolutionOptions, IM_ARRAYSIZE(resolutionOptions)))
-            {
-                gameViewportResolutionIndex = resolutionIndex;
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Player / Viewport", "Preview Resolution", "internal render size performance retro")) {
+                editorSettingsChanged |= DrawSettingRow("Preview Resolution", "Controls the internal preview render size. Lower values improve performance or create a retro look.", [&]() {
+                    int resolutionIndex = gameViewportResolutionIndex;
+                    if (ImGui::Combo("##PreviewResolution", &resolutionIndex, resolutionOptions, IM_ARRAYSIZE(resolutionOptions))) {
+                        gameViewportResolutionIndex = resolutionIndex;
+                        return true;
+                    }
+                    return false;
+                });
             }
-
-            if (gameViewportResolutionIndex == 4) {
-                if (ImGui::DragInt("Custom Width", &gameViewportCustomWidth, 1.0f, 64, 8192)) {
-                    gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
-                    editorSettingsChanged = true;
-                }
-                if (ImGui::DragInt("Custom Height", &gameViewportCustomHeight, 1.0f, 64, 8192)) {
-                    gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
-                    editorSettingsChanged = true;
-                }
+            if (gameViewportResolutionIndex == 4 &&
+                visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "Custom Preview Size", "width height resolution")) {
+                editorSettingsChanged |= DrawSettingRow("Custom Preview Size", "Used only when Preview Resolution is Custom.", [&]() {
+                    bool changed = false;
+                    ImGui::SetNextItemWidth((ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
+                    if (ImGui::DragInt("##PreviewCustomWidth", &gameViewportCustomWidth, 1.0f, 64, 8192)) {
+                        gameViewportCustomWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::DragInt("##PreviewCustomHeight", &gameViewportCustomHeight, 1.0f, 64, 8192)) {
+                        gameViewportCustomHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
+                        changed = true;
+                    }
+                    return changed;
+                });
             }
-            if (ImGui::Checkbox("Auto Fit Preview", &gameViewportAutoFit)) {
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Player / Viewport", "Auto Fit Preview", "zoom scale")) {
+                editorSettingsChanged |= DrawSettingRow("Auto Fit Preview", "Automatically fits the game preview inside its panel.", [&]() {
+                    return ImGui::Checkbox("##AutoFitPreview", &gameViewportAutoFit);
+                });
             }
-            ImGui::BeginDisabled(gameViewportAutoFit);
-            float zoomPercent = gameViewportZoom * 100.0f;
-            if (ImGui::SliderFloat("Preview Zoom", &zoomPercent, 100.0f, 800.0f, "%.0f%%")) {
-                gameViewportZoom = std::clamp(zoomPercent / 100.0f, 1.0f, 8.0f);
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "Preview Zoom", "scale")) {
+                editorSettingsChanged |= DrawSettingRow("Preview Zoom", "Manual zoom used when Auto Fit Preview is off.", [&]() {
+                    ImGui::BeginDisabled(gameViewportAutoFit);
+                    float zoomPercent = gameViewportZoom * 100.0f;
+                    const bool changed = ImGui::SliderFloat("##PreviewZoom", &zoomPercent, 100.0f, 800.0f, "%.0f%%");
+                    ImGui::EndDisabled();
+                    if (changed) gameViewportZoom = std::clamp(zoomPercent / 100.0f, 1.0f, 8.0f);
+                    return changed;
+                });
             }
-            ImGui::EndDisabled();
-
-            if (ImGui::Checkbox("Show Viewport Profiler Overlay", &showGameProfiler)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("Reveal Debug Sections and Menus", &revealDebugSectionsAndMenus)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("Canvas Guides", &showCanvasOverlay)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("UI World Grid", &showUIWorldGrid)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("Viewport Hint Overlay", &showViewportHintOverlay)) editorSettingsChanged = true;
-            const char* toolbarCornerOptions[] = { "Bottom Left", "Bottom Right", "Top Left", "Top Right" };
-            int toolbarCornerIndex = static_cast<int>(sceneViewportToolbarCorner);
-            if (toolbarCornerIndex < 0 || toolbarCornerIndex >= static_cast<int>(IM_ARRAYSIZE(toolbarCornerOptions))) {
-                toolbarCornerIndex = 0;
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Player / Viewport", "Canvas Guides", "ui overlay guides")) {
+                editorSettingsChanged |= DrawSettingRow("Canvas Guides", "Shows reference guides for UI layout while editing.", [&]() {
+                    return ImGui::Checkbox("##CanvasGuides", &showCanvasOverlay);
+                });
             }
-            if (ImGui::Combo("Viewport Toolbar Corner", &toolbarCornerIndex, toolbarCornerOptions, IM_ARRAYSIZE(toolbarCornerOptions))) {
-                sceneViewportToolbarCorner = static_cast<ViewportToolbarCorner>(toolbarCornerIndex);
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "UI World Grid", "world ui grid overlay")) {
+                editorSettingsChanged |= DrawSettingRow("UI World Grid", "Shows the grid while editing world-space UI.", [&]() {
+                    return ImGui::Checkbox("##UIWorldGrid", &showUIWorldGrid);
+                });
             }
-            if (ImGui::Checkbox("2D Light Stats Overlay", &showLight2DStatsOverlay)) editorSettingsChanged = true;
-            if (ImGui::SliderFloat("2D Light Buffer Scale", &light2DLightingBufferScale, 0.5f, 1.0f, "%.2fx")) {
-                light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "Viewport Toolbar Corner", "toolbar position")) {
+                editorSettingsChanged |= DrawSettingRow("Toolbar Corner", "Moves the scene viewport toolbar to a different corner.", [&]() {
+                    const char* toolbarCornerOptions[] = { "Bottom Left", "Bottom Right", "Top Left", "Top Right" };
+                    int toolbarCornerIndex = static_cast<int>(sceneViewportToolbarCorner);
+                    toolbarCornerIndex = std::clamp(toolbarCornerIndex, 0, static_cast<int>(IM_ARRAYSIZE(toolbarCornerOptions)) - 1);
+                    if (ImGui::Combo("##ViewportToolbarCorner", &toolbarCornerIndex, toolbarCornerOptions, IM_ARRAYSIZE(toolbarCornerOptions))) {
+                        sceneViewportToolbarCorner = static_cast<ViewportToolbarCorner>(toolbarCornerIndex);
+                        return true;
+                    }
+                    return false;
+                });
             }
-        }
-
-        if (ImGui::CollapsingHeader("Renderer##ProjectRendererSection", ImGuiTreeNodeFlags_DefaultOpen)) {
-            const bool openGlSettingsAvailable = rendererInitialized && !usingVulkan();
-            if (!openGlSettingsAvailable) {
-                ImGui::TextDisabled("OpenGL renderer settings are editable only in OpenGL sessions.");
-                ImGui::TextDisabled("Current session renderer: %s", Modularity::ToString(graphicsBackend));
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "Viewport Hint Overlay", "hints help overlay")) {
+                editorSettingsChanged |= DrawSettingRow("Viewport Hints", "Shows short helper hints in viewport toolbars.", [&]() {
+                    return ImGui::Checkbox("##ViewportHints", &showViewportHintOverlay);
+                });
             }
-            ImGui::BeginDisabled(!openGlSettingsAvailable);
-            glm::vec3 ambient = renderer.getAmbientColor();
-            if (ImGui::ColorEdit3("Ambient Color", &ambient.x)) {
-                renderer.setAmbientColor(ambient);
-                buildSettings.rendererAmbientColor = ambient;
-                buildSettingsChanged = true;
-            }
-
-            int shadowResolution = renderer.getShadowMapResolution();
-            if (ImGui::SliderInt("Shadow Resolution", &shadowResolution, 128, 4096)) {
-                renderer.setShadowMapResolution(shadowResolution);
-                buildSettings.rendererShadowResolution = renderer.getShadowMapResolution();
-                buildSettingsChanged = true;
-            }
-
-            bool shaderAutoReload = renderer.isShaderAutoReloadEnabled();
-            if (ImGui::Checkbox("Auto Reload Shaders", &shaderAutoReload)) {
-                renderer.setShaderAutoReload(shaderAutoReload);
-                buildSettings.rendererAutoReloadShaders = shaderAutoReload;
-                buildSettingsChanged = true;
-            }
-            ImGui::EndDisabled();
-        }
-
-        if (ImGui::CollapsingHeader("Editor Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::DragFloat("Move Speed", &camera.moveSpeed, 0.1f, 0.01f, 100.0f, "%.2f")) {
-                camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
-                camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
-                editorSettingsChanged = true;
-            }
-            if (ImGui::DragFloat("Sprint Speed", &camera.sprintSpeed, 0.1f, 0.01f, 200.0f, "%.2f")) {
-                camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
-                editorSettingsChanged = true;
-            }
-            if (ImGui::Checkbox("Smooth Movement", &camera.smoothMovement)) editorSettingsChanged = true;
-            ImGui::BeginDisabled(!camera.smoothMovement);
-            if (ImGui::DragFloat("Acceleration", &camera.acceleration, 0.1f, 0.1f, 200.0f, "%.2f")) {
-                camera.acceleration = std::max(0.1f, camera.acceleration);
-                editorSettingsChanged = true;
-            }
-            ImGui::EndDisabled();
-            if (ImGui::SliderFloat("Mouse Sensitivity", &camera.mouseSensitivity, 0.001f, 1.0f, "%.3f")) {
-                camera.mouseSensitivity = std::clamp(camera.mouseSensitivity, 0.001f, 1.0f);
-                editorSettingsChanged = true;
-            }
-            ImGui::Separator();
-            if (ImGui::SliderFloat("Projection FOV", &buildSettings.editorCameraFov, 20.0f, 140.0f, "%.1f")) {
-                buildSettingsChanged = true;
-            }
-            if (ImGui::DragFloat("Near Clip", &buildSettings.editorCameraNear, 0.01f, 0.01f, buildSettings.editorCameraFar - 0.01f, "%.3f")) {
-                buildSettings.editorCameraNear = std::max(0.01f, std::min(buildSettings.editorCameraNear, buildSettings.editorCameraFar - 0.01f));
-                buildSettingsChanged = true;
-            }
-            if (ImGui::DragFloat("Far Clip", &buildSettings.editorCameraFar, 0.1f, buildSettings.editorCameraNear + 0.05f, 5000.0f, "%.1f")) {
-                buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 0.05f, buildSettings.editorCameraFar);
-                buildSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Player / Viewport", "Viewport Profiler", "performance overlay profiler")) {
+                editorSettingsChanged |= DrawSettingRow("Viewport Profiler", "Shows runtime timing information over the preview.", [&]() {
+                    return ImGui::Checkbox("##ViewportProfiler", &showGameProfiler);
+                });
             }
         }
 
-        if (ImGui::CollapsingHeader("Debug / Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::Checkbox("Scene Gizmos", &showSceneGizmos)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("3D Grid", &showSceneGrid3D)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("Selection Collider Bounds", &collisionWireframe)) editorSettingsChanged = true;
-            if (ImGui::Checkbox("FPS Cap", &fpsCapEnabled)) editorSettingsChanged = true;
-            ImGui::BeginDisabled(!fpsCapEnabled);
-            if (ImGui::DragFloat("FPS Target", &fpsCap, 1.0f, 1.0f, 500.0f, "%.0f")) {
-                fpsCap = std::max(1.0f, fpsCap);
-                editorSettingsChanged = true;
+        if (sectionVisible("Audio", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[A]", "Audio", "Editor preview and feedback sounds.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Audio", "Feedback Sounds", "click error editor sounds")) {
+                editorSettingsChanged |= DrawSettingRow("Feedback Sounds", "Plays short editor sounds for clicks and status feedback.", [&]() {
+                    return ImGui::Checkbox("##FeedbackSounds", &feedbackSoundsEnabled);
+                });
             }
-            ImGui::EndDisabled();
-            if (revealDebugSectionsAndMenus) {
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Audio", "Preview Volume", "asset browser audio")) {
+                editorSettingsChanged |= DrawSettingRow("Preview Volume", "Volume for audio previews in editor tools.", [&]() {
+                    return ImGui::SliderFloat("##AudioPreviewVolume", &audioPreviewVolume, 0.0f, 2.0f, "%.2f");
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Audio", "Sound Categories", "click error other feedback")) {
+                editorSettingsChanged |= DrawSettingRow("Sound Categories", "Developer toggles for individual editor sound groups.", [&]() {
+                    bool changed = false;
+                    changed |= ImGui::Checkbox("Click##FeedbackClickSounds", &feedbackClickSoundsEnabled);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Error##FeedbackErrorSounds", &feedbackErrorSoundsEnabled);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Other##FeedbackOtherSounds", &feedbackOtherSoundsEnabled);
+                    return changed;
+                });
+            }
+        }
+
+        if (sectionVisible("Build", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[B]", "Build", "Build profile shortcuts. Full controls remain in the Build tab.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Platform", "target windows linux android")) {
+                buildSettingsChanged |= DrawSettingRow("Platform", "Target platform used by the build profile.", [&]() {
+                    const char* targets[] = {"Windows", "Linux", "Android"};
+                    int targetIndex = static_cast<int>(buildSettings.platform);
+                    if (ImGui::Combo("##BuildPlatformQuick", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
+                        buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build", "Development Build", "debug build profile")) {
+                buildSettingsChanged |= DrawSettingRow("Development Build", "Build with development flags enabled.", [&]() {
+                    return ImGui::Checkbox("##DevelopmentBuildQuick", &buildSettings.developmentBuild);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Build", "Profiling", "profiler script debugging deep profiling")) {
+                buildSettingsChanged |= DrawSettingRow("Profiling", "Developer build diagnostics and profiling options.", [&]() {
+                    bool changed = false;
+                    changed |= ImGui::Checkbox("Script Debug##ScriptDebuggingQuick", &buildSettings.scriptDebugging);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Profiler##AutoProfilerQuick", &buildSettings.autoConnectProfiler);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Deep##DeepProfilingQuick", &buildSettings.deepProfiling);
+                    return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Open Build Settings", "advanced build window")) {
+                DrawSettingRow("More Build Options", "Open the dedicated Build tab for scenes, packaging, and export.", [&]() {
+                    if (ImGui::Button("Open Build Tab")) {
+                        selectedTab = 3;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (sectionVisible("Editor", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[E]", "Editor", "Camera movement and editor-only viewport aids.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Editor", "Move Speed", "camera navigation")) {
+                editorSettingsChanged |= DrawSettingRow("Move Speed", "Base speed for editor camera movement.", [&]() {
+                    if (ImGui::DragFloat("##CameraMoveSpeed", &camera.moveSpeed, 0.1f, 0.01f, 100.0f, "%.2f")) {
+                        camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
+                        camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Editor", "Sprint Speed", "camera navigation")) {
+                editorSettingsChanged |= DrawSettingRow("Sprint Speed", "Fast movement speed while sprinting in the editor camera.", [&]() {
+                    if (ImGui::DragFloat("##CameraSprintSpeed", &camera.sprintSpeed, 0.1f, 0.01f, 200.0f, "%.2f")) {
+                        camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Editor", "Smooth Movement", "camera smoothing")) {
+                editorSettingsChanged |= DrawSettingRow("Smooth Movement", "Softens editor camera starts and stops.", [&]() {
+                    return ImGui::Checkbox("##CameraSmoothMovement", &camera.smoothMovement);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Editor", "Acceleration", "camera smoothing speed")) {
+                editorSettingsChanged |= DrawSettingRow("Acceleration", "How quickly smooth camera movement reaches full speed.", [&]() {
+                    ImGui::BeginDisabled(!camera.smoothMovement);
+                    const bool changed = ImGui::DragFloat("##CameraAcceleration", &camera.acceleration, 0.1f, 0.1f, 200.0f, "%.2f");
+                    ImGui::EndDisabled();
+                    if (changed) camera.acceleration = std::max(0.1f, camera.acceleration);
+                    return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Editor", "Mouse Sensitivity", "camera look")) {
+                editorSettingsChanged |= DrawSettingRow("Mouse Sensitivity", "Look sensitivity for the editor camera.", [&]() {
+                    if (ImGui::SliderFloat("##CameraMouseSensitivity", &camera.mouseSensitivity, 0.001f, 1.0f, "%.3f")) {
+                        camera.mouseSensitivity = std::clamp(camera.mouseSensitivity, 0.001f, 1.0f);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Editor", "Camera Projection", "fov near far clip")) {
+                buildSettingsChanged |= DrawSettingRow("Camera Projection", "Developer controls for the editor camera projection.", [&]() {
+                    bool changed = false;
+                    changed |= ImGui::SliderFloat("FOV##EditorCameraFov", &buildSettings.editorCameraFov, 20.0f, 140.0f, "%.1f");
+                    changed |= ImGui::DragFloat("Near##EditorCameraNear", &buildSettings.editorCameraNear, 0.01f, 0.01f, buildSettings.editorCameraFar - 0.01f, "%.3f");
+                    changed |= ImGui::DragFloat("Far##EditorCameraFar", &buildSettings.editorCameraFar, 0.1f, buildSettings.editorCameraNear + 0.05f, 5000.0f, "%.1f");
+                    if (changed) {
+                        buildSettings.editorCameraNear = std::max(0.01f, std::min(buildSettings.editorCameraNear, buildSettings.editorCameraFar - 0.01f));
+                        buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 0.05f, buildSettings.editorCameraFar);
+                    }
+                    return changed;
+                });
+            }
+        }
+
+        if (projectManager.currentProject.pipeline == ProjectPipeline::Pipeline25D &&
+            sectionVisible("2.5D Presentation", ProjectSettingsVisibilityMode::Advanced) &&
+            DrawSettingSection("[2.5D]", "2.5D Presentation", "Technical presentation controls for TM/vexel projects.", false)) {
+            auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "2.5D Presentation", "Pitch Stretch", "tm vexel look pitch")) {
+                editorSettingsChanged |= DrawSettingRow("Pitch Stretch", "Adjusts how 2.5D art responds to camera pitch.", [&]() {
+                    return ImGui::Checkbox("##TMPitchStretch", &tmPresentation.lookPitchStretchEnabled);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "2.5D Presentation", "Pitch Strength", "stretch compress shear")) {
+                editorSettingsChanged |= DrawSettingRow("Pitch Strength", "Internal stretch, compression, and shear tuning.", [&]() {
+                    bool changed = false;
+                    ImGui::BeginDisabled(!tmPresentation.lookPitchStretchEnabled);
+                    changed |= ImGui::DragFloat("Stretch##TMPitchStretchStrength", &tmPresentation.lookPitchStretchStrength, 0.01f, 0.0f, 1.5f, "%.2f");
+                    changed |= ImGui::DragFloat("Compress##TMPitchCompressStrength", &tmPresentation.lookPitchCompressStrength, 0.01f, 0.0f, 1.5f, "%.2f");
+                    changed |= ImGui::DragFloat("Shear##TMPitchShearStrength", &tmPresentation.lookPitchShearStrength, 0.01f, 0.0f, 1.0f, "%.2f");
+                    ImGui::EndDisabled();
+                    if (changed) {
+                        tmPresentation.lookPitchStretchStrength = std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f);
+                        tmPresentation.lookPitchCompressStrength = std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f);
+                        tmPresentation.lookPitchShearStrength = std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f);
+                    }
+                    return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "2.5D Presentation", "Snap Presets", "precision retro snap")) {
+                editorSettingsChanged |= DrawSettingRow("Snap Presets", "Switch between clean precision and retro snapped presentation.", [&]() {
+                    bool changed = false;
+                    if (ImGui::Button("High Precision")) {
+                        tmPresentation.presentationSnapEnabled = false;
+                        tmPresentation.cameraRelativeSnapEnabled = false;
+                        tmPresentation.vertexSnapEnabled = false;
+                        tmPresentation.screenSnapEnabled = false;
+                        changed = true;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Retro Snap")) {
+                        tmPresentation.presentationSnapEnabled = true;
+                        tmPresentation.presentationSnapStep = 0.125f;
+                        tmPresentation.cameraRelativeSnapEnabled = true;
+                        tmPresentation.cameraRelativeSnapStep = 0.125f;
+                        tmPresentation.vertexSnapEnabled = true;
+                        tmPresentation.vertexSnapStep = 0.0625f;
+                        tmPresentation.screenSnapEnabled = true;
+                        tmPresentation.screenSnapStep = 2.0f;
+                        changed = true;
+                    }
+                    return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "2.5D Presentation", "Snap Details", "world camera vertex screen snap steps")) {
+                editorSettingsChanged |= DrawSettingRow("Snap Details", "Internal snap toggles and step sizes for the 2.5D presentation layer.", [&]() {
+                    bool changed = false;
+                    changed |= ImGui::Checkbox("World##TMPresentationWorldSnap", &tmPresentation.presentationSnapEnabled);
+                    ImGui::BeginDisabled(!tmPresentation.presentationSnapEnabled);
+                    changed |= ImGui::DragFloat("World Step##TMPresentationWorldSnapStep", &tmPresentation.presentationSnapStep, 0.005f, 0.001f, 8.0f, "%.3f");
+                    ImGui::EndDisabled();
+                    changed |= ImGui::Checkbox("Camera##TMPresentationCameraSnap", &tmPresentation.cameraRelativeSnapEnabled);
+                    ImGui::BeginDisabled(!tmPresentation.cameraRelativeSnapEnabled);
+                    changed |= ImGui::DragFloat("Camera Step##TMPresentationCameraSnapStep", &tmPresentation.cameraRelativeSnapStep, 0.005f, 0.001f, 8.0f, "%.3f");
+                    ImGui::EndDisabled();
+                    changed |= ImGui::Checkbox("Vertex##TMPresentationVertexSnap", &tmPresentation.vertexSnapEnabled);
+                    ImGui::BeginDisabled(!tmPresentation.vertexSnapEnabled);
+                    changed |= ImGui::DragFloat("Vertex Step##TMPresentationVertexSnapStep", &tmPresentation.vertexSnapStep, 0.0025f, 0.0005f, 4.0f, "%.4f");
+                    ImGui::EndDisabled();
+                    changed |= ImGui::Checkbox("Screen##TMPresentationScreenSnap", &tmPresentation.screenSnapEnabled);
+                    ImGui::BeginDisabled(!tmPresentation.screenSnapEnabled);
+                    changed |= ImGui::DragFloat("Screen Step##TMPresentationScreenSnapStep", &tmPresentation.screenSnapStep, 0.25f, 0.25f, 16.0f, "%.2f");
+                    ImGui::EndDisabled();
+                    if (changed) {
+                        tmPresentation.presentationSnapStep = std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f);
+                        tmPresentation.cameraRelativeSnapStep = std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f);
+                        tmPresentation.vertexSnapStep = std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f);
+                        tmPresentation.screenSnapStep = std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f);
+                    }
+                    return changed;
+                });
+            }
+        }
+
+        if (sectionVisible("Debug / Developer", ProjectSettingsVisibilityMode::Advanced) &&
+            DrawSettingSection("[D]", "Debug / Developer", "Debug overlays and internal controls.", false)) {
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Debug / Developer", "Scene Gizmos", "camera light gizmos")) {
+                editorSettingsChanged |= DrawSettingRow("Scene Gizmos", "Shows editor-only visual handles and overlays.", [&]() {
+                    return ImGui::Checkbox("##SceneGizmos", &showSceneGizmos);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Debug / Developer", "3D Grid", "scene grid")) {
+                editorSettingsChanged |= DrawSettingRow("3D Grid", "Shows the scene grid in 3D viewports.", [&]() {
+                    return ImGui::Checkbox("##SceneGrid3D", &showSceneGrid3D);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Debug / Developer", "Show Developer Tools", "reveal debug sections menus")) {
+                editorSettingsChanged |= DrawSettingRow("Show Developer Tools", "Reveals debug sections and extra developer menus.", [&]() {
+                    return ImGui::Checkbox("##ShowDeveloperTools", &revealDebugSectionsAndMenus);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Debug / Developer", "Selection Collider Bounds", "collision wireframe physics")) {
+                editorSettingsChanged |= DrawSettingRow("Selection Collider Bounds", "Draws collider wireframes for selected objects.", [&]() {
+                    return ImGui::Checkbox("##SelectionColliderBounds", &collisionWireframe);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Debug / Developer", "FPS Cap", "performance frame rate limit")) {
+                editorSettingsChanged |= DrawSettingRow("FPS Cap", "Limits editor frame rate while testing performance.", [&]() {
+                    bool changed = ImGui::Checkbox("Enabled##FpsCapEnabled", &fpsCapEnabled);
+                    ImGui::BeginDisabled(!fpsCapEnabled);
+                    changed |= ImGui::DragFloat("Target##FpsCapTarget", &fpsCap, 1.0f, 1.0f, 500.0f, "%.0f");
+                    ImGui::EndDisabled();
+                    if (changed) fpsCap = std::max(1.0f, fpsCap);
+                    return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Debug / Developer", "2D Light Debug", "stats buffer scale lighting")) {
+                editorSettingsChanged |= DrawSettingRow("2D Light Debug", "Lighting stats and internal render buffer scale.", [&]() {
+                    bool changed = ImGui::Checkbox("Stats##Light2DStatsOverlay", &showLight2DStatsOverlay);
+                    changed |= ImGui::SliderFloat("Buffer##Light2DBufferScale", &light2DLightingBufferScale, 0.5f, 1.0f, "%.2fx");
+                    if (changed) light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
+                    return changed;
+                });
+            }
+            if (revealDebugSectionsAndMenus &&
+                visible(ProjectSettingsVisibilityMode::Developer, "Debug / Developer", "Game Profiler", "internal performance details")) {
                 ImGui::Separator();
                 if (ImGui::CollapsingHeader("Game Profiler", ImGuiTreeNodeFlags_DefaultOpen)) {
                     drawGameProfilerContent();
@@ -3640,7 +4098,12 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
+        if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No settings match this search.");
+        }
+
         if (editorSettingsChanged) {
+            audioPreviewVolume = std::clamp(audioPreviewVolume, 0.0f, 2.0f);
             saveEditorUserSettings();
         }
         if (buildSettingsChanged) {
@@ -3649,46 +4112,83 @@ void Engine::renderProjectBrowserPanel() {
     } else if (selectedTab == 3) {
         bool changed = false;
 
-        if (ImGui::CollapsingHeader("Build Targets", ImGuiTreeNodeFlags_DefaultOpen)) {
-            const char* targets[] = {"Windows", "Linux", "Android"};
-            int targetIndex = static_cast<int>(buildSettings.platform);
-            if (ImGui::Combo("Platform", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
-                buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
-                changed = true;
+        if (sectionVisible("Build Targets", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[B]", "Build Targets", "Platform and packaging options for exported builds.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Build Targets", "Platform", "windows linux android")) {
+                changed |= DrawSettingRow("Platform", "Target operating system for the build profile.", [&]() {
+                    const char* targets[] = {"Windows", "Linux", "Android"};
+                    int targetIndex = static_cast<int>(buildSettings.platform);
+                    if (ImGui::Combo("##BuildPlatform", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
+                        buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
+                        return true;
+                    }
+                    return false;
+                });
             }
-
-            const char* arches[] = {"x86_64", "x86"};
-            int archIndex = (buildSettings.architecture == "x86") ? 1 : 0;
-            if (ImGui::Combo("Architecture", &archIndex, arches, IM_ARRAYSIZE(arches))) {
-                buildSettings.architecture = arches[archIndex];
-                changed = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build Targets", "Architecture", "x86 x86_64 cpu")) {
+                changed |= DrawSettingRow("Architecture", "CPU architecture for desktop builds.", [&]() {
+                    const char* arches[] = {"x86_64", "x86"};
+                    int archIndex = (buildSettings.architecture == "x86") ? 1 : 0;
+                    if (ImGui::Combo("##BuildArchitecture", &archIndex, arches, IM_ARRAYSIZE(arches))) {
+                        buildSettings.architecture = arches[archIndex];
+                        return true;
+                    }
+                    return false;
+                });
             }
-
-            if (ImGui::Checkbox("Development Build", &buildSettings.developmentBuild)) changed = true;
-            if (ImGui::Checkbox("Script Debugging", &buildSettings.scriptDebugging)) changed = true;
-            if (ImGui::Checkbox("Auto-connect Profiler", &buildSettings.autoConnectProfiler)) changed = true;
-            if (ImGui::Checkbox("Deep Profiling", &buildSettings.deepProfiling)) changed = true;
-            if (ImGui::Checkbox("Scripts Only Build", &buildSettings.scriptsOnlyBuild)) changed = true;
-            if (ImGui::Checkbox("Server Build", &buildSettings.serverBuild)) changed = true;
-
-            const char* compressionOptions[] = {"Default", "None", "LZ4", "LZ4HC"};
-            int compressionIndex = 0;
-            for (int i = 0; i < IM_ARRAYSIZE(compressionOptions); ++i) {
-                if (buildSettings.compressionMethod == compressionOptions[i]) {
-                    compressionIndex = i;
-                    break;
-                }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build Targets", "Development Build", "debug development")) {
+                changed |= DrawSettingRow("Development Build", "Build with development options enabled.", [&]() {
+                    return ImGui::Checkbox("##BuildDevelopment", &buildSettings.developmentBuild);
+                });
             }
-            if (ImGui::Combo("Compression", &compressionIndex, compressionOptions, IM_ARRAYSIZE(compressionOptions))) {
-                buildSettings.compressionMethod = compressionOptions[compressionIndex];
-                changed = true;
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Build Targets", "Debugging", "script debugging profiler deep profiling")) {
+                changed |= DrawSettingRow("Debugging", "Developer diagnostics for exported builds.", [&]() {
+                    bool rowChanged = false;
+                    rowChanged |= ImGui::Checkbox("Script##BuildScriptDebugging", &buildSettings.scriptDebugging);
+                    ImGui::SameLine();
+                    rowChanged |= ImGui::Checkbox("Profiler##BuildAutoProfiler", &buildSettings.autoConnectProfiler);
+                    ImGui::SameLine();
+                    rowChanged |= ImGui::Checkbox("Deep##BuildDeepProfiling", &buildSettings.deepProfiling);
+                    return rowChanged;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Build Targets", "Special Builds", "scripts only server")) {
+                changed |= DrawSettingRow("Special Builds", "Internal build modes for script-only or server exports.", [&]() {
+                    bool rowChanged = false;
+                    rowChanged |= ImGui::Checkbox("Scripts Only##BuildScriptsOnly", &buildSettings.scriptsOnlyBuild);
+                    ImGui::SameLine();
+                    rowChanged |= ImGui::Checkbox("Server##BuildServer", &buildSettings.serverBuild);
+                    return rowChanged;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build Targets", "Compression", "package archive lz4")) {
+                changed |= DrawSettingRow("Compression", "Compression method used by exported packages.", [&]() {
+                    const char* compressionOptions[] = {"Default", "None", "LZ4", "LZ4HC"};
+                    int compressionIndex = 0;
+                    for (int i = 0; i < IM_ARRAYSIZE(compressionOptions); ++i) {
+                        if (buildSettings.compressionMethod == compressionOptions[i]) {
+                            compressionIndex = i;
+                            break;
+                        }
+                    }
+                    if (ImGui::Combo("##BuildCompression", &compressionIndex, compressionOptions, IM_ARRAYSIZE(compressionOptions))) {
+                        buildSettings.compressionMethod = compressionOptions[compressionIndex];
+                        return true;
+                    }
+                    return false;
+                });
             }
         }
 
-        if (ImGui::CollapsingHeader("Scenes In Build", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (sectionVisible("Scenes In Build", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[S]", "Scenes In Build", "Scene list included in the exported build.")) {
             ImGui::BeginChild("ProjectBuildScenes", ImVec2(0, 180), true);
             for (int i = 0; i < static_cast<int>(buildSettings.scenes.size()); ++i) {
                 BuildSceneEntry& entry = buildSettings.scenes[i];
+                if (!ProjectSettingsMatchesSearch(settingsSearch, "Scenes In Build", entry.name.c_str(), "scene build")) {
+                    continue;
+                }
+                ++visibleSettingCount;
                 ImGui::PushID(i);
                 bool enabled = entry.enabled;
                 if (ImGui::Checkbox("##enabled", &enabled)) {
@@ -3730,14 +4230,30 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Export");
-        if (ImGui::Button("Open Advanced Build Window")) {
-            showBuildSettings = true;
+        if (sectionVisible("Export", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[E]", "Export", "Save or open the dedicated build/export window.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Export", "Build Window", "advanced export")) {
+                DrawSettingRow("Build Window", "Open the full build/export window.", [&]() {
+                    if (ImGui::Button("Open Advanced Build Window")) {
+                        showBuildSettings = true;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Export", "Save Build Profile", "save profile")) {
+                DrawSettingRow("Save Profile", "Save the current build profile.", [&]() {
+                    if (ImGui::Button("Save Build Profile")) {
+                        saveBuildSettings();
+                        return true;
+                    }
+                    return false;
+                });
+            }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Save Build Profile")) {
-            saveBuildSettings();
+
+        if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No build settings match this search.");
         }
 
         if (changed) {
@@ -3770,41 +4286,28 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
-        {
-            const ProjectSettingsUiIcon cppLogo = resolveProjectSettingsIcon(
-                "Resources/Engine-Root/Project Settings/CompilationTab/CPPLogo.png");
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.11f, 0.16f, 0.84f));
-            ImGui::BeginChild("CompilationHeader", ImVec2(0, 76.0f), true,
-                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            if (cppLogo.id != static_cast<ImTextureID>(0)) {
-                const ImVec2 uvMin = cppLogo.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
-                const ImVec2 uvMax = cppLogo.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
-                ImGui::Image(cppLogo.id, ImVec2(44.0f, 44.0f), uvMin, uvMax);
-                ImGui::SameLine();
-            }
-            ImGui::BeginGroup();
-            ImGui::Text("Compilation");
-            ImGui::TextDisabled("C++26 default, C++23 fallback, pre-C++20 marked deprecated.");
-            ImGui::TextDisabled("Script compiler flags are normalized per toolchain.");
-            ImGui::EndGroup();
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::Spacing();
-        }
-
         bool editorSettingsChanged = false;
-        if (ImGui::CollapsingHeader("Compiler Workflow", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::Checkbox("Auto-compile on Save", &scriptEditorState.autoCompileOnSave)) {
-                editorSettingsChanged = true;
+        if (sectionVisible("Compiler Workflow", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[C]", "Compiler Workflow", "C++ script compiler workflow settings.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Compiler Workflow", "Auto-compile on Save", "scripts compile")) {
+                editorSettingsChanged |= DrawSettingRow("Auto-compile on Save", "Compile scripts automatically when a script file is saved.", [&]() {
+                    return ImGui::Checkbox("##ScriptAutoCompileOnSave", &scriptEditorState.autoCompileOnSave);
+                });
             }
-            float interval = static_cast<float>(scriptAutoCompileInterval);
-            if (ImGui::SliderFloat("Auto-compile Scan Interval (s)", &interval, 0.1f, 10.0f, "%.2f")) {
-                scriptAutoCompileInterval = std::clamp(static_cast<double>(interval), 0.1, 10.0);
-                editorSettingsChanged = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Compiler Workflow", "Scan Interval", "auto compile scan seconds")) {
+                editorSettingsChanged |= DrawSettingRow("Scan Interval", "How often the editor checks for script changes.", [&]() {
+                    float interval = static_cast<float>(scriptAutoCompileInterval);
+                    if (ImGui::SliderFloat("##ScriptAutoCompileInterval", &interval, 0.1f, 10.0f, "%.2f s")) {
+                        scriptAutoCompileInterval = std::clamp(static_cast<double>(interval), 0.1, 10.0);
+                        return true;
+                    }
+                    return false;
+                });
             }
         }
 
-        if (ImGui::CollapsingHeader("scripts.modu", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (sectionVisible("scripts.modu", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[S]", "scripts.modu", "Project script compiler configuration. C++26 is the default; C++23 is a fallback.")) {
             auto editString = [&](const char* label, std::string& value, size_t capacity = 1024) {
                 std::vector<char> buf(capacity, '\0');
                 std::snprintf(buf.data(), buf.size(), "%s", value.c_str());
@@ -3867,96 +4370,114 @@ void Engine::renderProjectBrowserPanel() {
                     break;
                 }
             }
-            if (ImGui::Combo("C++ Standard", &cppIdx, cppStdLabels, IM_ARRAYSIZE(cppStdLabels))) {
-                ui.config.cppStandard = cppStdValues[cppIdx];
-                ui.dirty = true;
-            }
-            if (isDeprecatedCppStd(ui.config.cppStandard)) {
-                ImGui::TextDisabled("ModuCPP standards below C++20 are deprecated and may be removed later.");
-            } else {
-                ImGui::TextDisabled("Default is C++26. Use C++23 if your toolchain is not ready for C++26 yet.");
+            if (visible(ProjectSettingsVisibilityMode::Simple, "scripts.modu", "C++ Standard", "cpp c++26 c++23")) {
+                DrawSettingRow("C++ Standard",
+                               isDeprecatedCppStd(ui.config.cppStandard)
+                                   ? "Standards below C++20 are deprecated and may be removed later."
+                                   : "Default is C++26. Use C++23 if your toolchain is not ready for C++26 yet.",
+                               [&]() {
+                    if (ImGui::Combo("##CppStandard", &cppIdx, cppStdLabels, IM_ARRAYSIZE(cppStdLabels))) {
+                        ui.config.cppStandard = cppStdValues[cppIdx];
+                        ui.dirty = true;
+                        return true;
+                    }
+                    return false;
+                });
             }
 
-            editPath("Scripts Directory", ui.config.scriptsDir);
-            editPath("Output Directory", ui.config.outDir);
+            if (visible(ProjectSettingsVisibilityMode::Simple, "scripts.modu", "Scripts Directory", "source folder path")) {
+                DrawSettingRow("Scripts Directory", "Folder containing project script source files.", [&]() {
+                    editPath("##ScriptsDirectory", ui.config.scriptsDir);
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "scripts.modu", "Output Directory", "compiled scripts output folder")) {
+                DrawSettingRow("Output Directory", "Folder where compiled script binaries are written.", [&]() {
+                    editPath("##ScriptsOutputDirectory", ui.config.outDir);
+                    return false;
+                });
+            }
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Include Directories");
-            for (size_t i = 0; i < ui.config.includeDirs.size(); ++i) {
-                ImGui::PushID(static_cast<int>(i));
-                editPath("##inc", ui.config.includeDirs[i], 1200);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    ui.config.includeDirs.erase(ui.config.includeDirs.begin() + static_cast<long>(i));
-                    ui.dirty = true;
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "scripts.modu", "Include Directories", "include path headers")) {
+                ImGui::SeparatorText("Include Directories");
+                for (size_t i = 0; i < ui.config.includeDirs.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    editPath("##inc", ui.config.includeDirs[i], 1200);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        ui.config.includeDirs.erase(ui.config.includeDirs.begin() + static_cast<long>(i));
+                        ui.dirty = true;
+                        ImGui::PopID();
+                        break;
+                    }
                     ImGui::PopID();
-                    break;
                 }
-                ImGui::PopID();
-            }
-            if (ImGui::SmallButton("Add Include Directory")) {
-                ui.config.includeDirs.emplace_back(fs::path());
-                ui.dirty = true;
-            }
-
-            ImGui::Separator();
-            ImGui::TextDisabled("Defines");
-            for (size_t i = 0; i < ui.config.defines.size(); ++i) {
-                ImGui::PushID(static_cast<int>(1000 + i));
-                editString("##def", ui.config.defines[i], 1024);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    ui.config.defines.erase(ui.config.defines.begin() + static_cast<long>(i));
+                if (ImGui::SmallButton("Add Include Directory")) {
+                    ui.config.includeDirs.emplace_back(fs::path());
                     ui.dirty = true;
-                    ImGui::PopID();
-                    break;
                 }
-                ImGui::PopID();
-            }
-            if (ImGui::SmallButton("Add Define")) {
-                ui.config.defines.push_back("");
-                ui.dirty = true;
             }
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Linux Link Libraries");
-            for (size_t i = 0; i < ui.config.linuxLinkLibs.size(); ++i) {
-                ImGui::PushID(static_cast<int>(2000 + i));
-                editString("##linlib", ui.config.linuxLinkLibs[i], 512);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    ui.config.linuxLinkLibs.erase(ui.config.linuxLinkLibs.begin() + static_cast<long>(i));
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "scripts.modu", "Defines", "preprocessor symbols")) {
+                ImGui::SeparatorText("Defines");
+                for (size_t i = 0; i < ui.config.defines.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(1000 + i));
+                    editString("##def", ui.config.defines[i], 1024);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        ui.config.defines.erase(ui.config.defines.begin() + static_cast<long>(i));
+                        ui.dirty = true;
+                        ImGui::PopID();
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+                if (ImGui::SmallButton("Add Define")) {
+                    ui.config.defines.push_back("");
                     ui.dirty = true;
-                    ImGui::PopID();
-                    break;
                 }
-                ImGui::PopID();
-            }
-            if (ImGui::SmallButton("Add Linux Lib")) {
-                ui.config.linuxLinkLibs.push_back("");
-                ui.dirty = true;
             }
 
-            ImGui::Separator();
-            ImGui::TextDisabled("Windows Link Libraries");
-            for (size_t i = 0; i < ui.config.windowsLinkLibs.size(); ++i) {
-                ImGui::PushID(static_cast<int>(3000 + i));
-                editString("##winlib", ui.config.windowsLinkLibs[i], 512);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    ui.config.windowsLinkLibs.erase(ui.config.windowsLinkLibs.begin() + static_cast<long>(i));
+            if (visible(ProjectSettingsVisibilityMode::Developer, "scripts.modu", "Linux Link Libraries", "linker libraries linux")) {
+                ImGui::SeparatorText("Linux Link Libraries");
+                for (size_t i = 0; i < ui.config.linuxLinkLibs.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(2000 + i));
+                    editString("##linlib", ui.config.linuxLinkLibs[i], 512);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        ui.config.linuxLinkLibs.erase(ui.config.linuxLinkLibs.begin() + static_cast<long>(i));
+                        ui.dirty = true;
+                        ImGui::PopID();
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+                if (ImGui::SmallButton("Add Linux Lib")) {
+                    ui.config.linuxLinkLibs.push_back("");
                     ui.dirty = true;
-                    ImGui::PopID();
-                    break;
                 }
-                ImGui::PopID();
-            }
-            if (ImGui::SmallButton("Add Windows Lib")) {
-                ui.config.windowsLinkLibs.push_back("");
-                ui.dirty = true;
             }
 
-            ImGui::Spacing();
+            if (visible(ProjectSettingsVisibilityMode::Developer, "scripts.modu", "Windows Link Libraries", "linker libraries windows")) {
+                ImGui::SeparatorText("Windows Link Libraries");
+                for (size_t i = 0; i < ui.config.windowsLinkLibs.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(3000 + i));
+                    editString("##winlib", ui.config.windowsLinkLibs[i], 512);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) {
+                        ui.config.windowsLinkLibs.erase(ui.config.windowsLinkLibs.begin() + static_cast<long>(i));
+                        ui.dirty = true;
+                        ImGui::PopID();
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+                if (ImGui::SmallButton("Add Windows Lib")) {
+                    ui.config.windowsLinkLibs.push_back("");
+                    ui.dirty = true;
+                }
+            }
+
             if (ImGui::Button("Reload scripts.modu")) {
                 ui.loaded = false;
             }
@@ -3991,11 +4512,34 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
+        if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No compilation settings match this search.");
+        }
+
         if (editorSettingsChanged) {
             saveEditorUserSettings();
         }
+    } else if (selectedTab == 5) {
+        if (DrawSettingSection("[XR]", "OpenXR Management", "VR and OpenXR project support status.")) {
+            const ProjectSettingsUiIcon wipLogo = resolveProjectSettingsIcon(
+                "Resources/Engine-Root/Project Settings/Tabs/Work in Progress.png");
+            const float logoSize = 72.0f;
+            if (wipLogo.id != static_cast<ImTextureID>(0)) {
+                const ImVec2 uvMin = wipLogo.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                const ImVec2 uvMax = wipLogo.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                ImGui::Image(wipLogo.id, ImVec2(logoSize, logoSize), uvMin, uvMax);
+                ImGui::SameLine();
+            }
+
+            ImGui::BeginGroup();
+            ImGui::Text("VR Support is coming soon!");
+            ImGui::TextDisabled("OpenXR manager is in progress alongside Android support.");
+            ImGui::TextDisabled("Some settings will appear here when the VR pipeline is ready.");
+            ImGui::EndGroup();
+        }
     }
 
+    ImGui::PopStyleVar(2);
     ImGui::EndChild();
 
     ImGui::End();

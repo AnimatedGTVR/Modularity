@@ -7,7 +7,7 @@ public class FPSDisplay : ModuBehaviour
 
     void TickUpdate()
     {
-        ctx.SetFPSCap(clampTo120, 120.0f);
+        SetFPSCap(clampTo120, 120.0f);
         obj.UILabel = "FPS: " + IntR(ModuEngine.FPS);
     }
 }

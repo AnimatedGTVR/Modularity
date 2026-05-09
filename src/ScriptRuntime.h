@@ -49,6 +49,9 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     SceneObject* FindObjectByName(const std::string& name);
     SceneObject* FindObjectById(int id);
     SceneObject* ResolveObjectRef(const std::string& ref);
+    int GetSceneObjectCount() const;
+    int GetSceneObjectIdAt(int index) const;
+    const SceneObject* GetSceneObjectAt(int index) const;
     bool IsObjectEnabled() const;
     void SetObjectEnabled(bool enabled);
     int GetLayer() const;
@@ -112,6 +115,8 @@ struct MODULARITY_SCRIPT_API ScriptContext {
                                 float deltaTime, StandaloneMovementDebug* debug = nullptr);
     // UI helpers
     bool IsUIButtonPressed() const;
+    bool IsUIHovered() const;
+    bool IsUIActive() const;
     bool IsUIInteractable() const;
     void SetUIInteractable(bool interactable);
     float GetUISliderValue() const;
@@ -153,6 +158,10 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     bool AddRigidbodyImpulse(const glm::vec3& impulse);
     bool AddRigidbodyTorque(const glm::vec3& torque);
     bool AddRigidbodyAngularImpulse(const glm::vec3& impulse);
+    bool SetObjectRigidbodyVelocity(int objectId, const glm::vec3& velocity);
+    bool GetObjectRigidbodyVelocity(int objectId, glm::vec3& outVelocity) const;
+    bool AddObjectRigidbodyImpulse(int objectId, const glm::vec3& impulse);
+    bool TeleportObjectRigidbody(int objectId, const glm::vec3& pos, const glm::vec3& rotDeg);
     bool SetRigidbodyYaw(float yawDegrees);
     float GetProjectGravityScale() const;
     void SetProjectGravityScale(float scale);

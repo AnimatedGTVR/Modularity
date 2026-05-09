@@ -436,7 +436,7 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             "",
             {
                 "materialColor", "materialAlpha", "materialAmbient", "materialSpecular",
-                "materialShininess", "materialTextureMix", "materialUvTiling", "materialUvOffset", "materialTextureFilter",
+                "materialShininess", "materialNormalMapIntensity", "materialTextureMix", "materialUvTiling", "materialUvOffset", "materialTextureFilter",
                 "materialPath", "albedoTex", "overlayTex", "normalMap",
                 "shaderPack", "vertexShader", "fragmentShader", "useOverlay", "additionalMaterialCount"
             },
@@ -448,6 +448,7 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"materialAmbient", "ambient"},
                 {"materialSpecular", "specular"},
                 {"materialShininess", "shininess"},
+                {"materialNormalMapIntensity", "normalMapIntensity"},
                 {"materialTextureMix", "textureMix"},
                 {"materialUvTiling", "uvTiling"},
                 {"materialUvOffset", "uvOffset"},
@@ -467,6 +468,7 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
                 {"ambient", "materialAmbient"},
                 {"specular", "materialSpecular"},
                 {"shininess", "materialShininess"},
+                {"normalMapIntensity", "materialNormalMapIntensity"},
                 {"textureMix", "materialTextureMix"},
                 {"uvTiling", "materialUvTiling"},
                 {"uvOffset", "materialUvOffset"},
@@ -778,6 +780,28 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             }
         },
         {
+            "ReflectionCast",
+            "hasReflectionCast",
+            "reflectionCastEnabled",
+            {"reflectionCastUpdateMode", "reflectionCastBox", "reflectionCastBlend", "reflectionCastIntensity", "reflectionCastResolution"},
+            {},
+            {},
+            {
+                {"reflectionCastUpdateMode", "updateMode"},
+                {"reflectionCastBox", "box"},
+                {"reflectionCastBlend", "blend"},
+                {"reflectionCastIntensity", "intensity"},
+                {"reflectionCastResolution", "resolution"},
+            },
+            {
+                {"updateMode", "reflectionCastUpdateMode"},
+                {"box", "reflectionCastBox"},
+                {"blend", "reflectionCastBlend"},
+                {"intensity", "reflectionCastIntensity"},
+                {"resolution", "reflectionCastResolution"},
+            }
+        },
+        {
             "ShadowCaster2D",
             "hasShadowCaster2D",
             "shadowCaster2dEnabled",
@@ -963,6 +987,18 @@ bool WriteModularScene(std::ostream& out,
     WriteField(out, 4, "skyboxScrollRepeat", doc.settings.count("skyboxScrollRepeat") ? doc.settings["skyboxScrollRepeat"] : "1,1");
     WriteField(out, 4, "skyboxScrollLookSensitivity", doc.settings.count("skyboxScrollLookSensitivity") ? doc.settings["skyboxScrollLookSensitivity"] : "0");
     WriteField(out, 4, "skyboxScrollVerticalInfluence", doc.settings.count("skyboxScrollVerticalInfluence") ? doc.settings["skyboxScrollVerticalInfluence"] : "0");
+    WriteField(out, 4, "skyboxEnvironmentReflections", doc.settings.count("skyboxEnvironmentReflections") ? doc.settings["skyboxEnvironmentReflections"] : "0");
+    WriteField(out, 4, "skyboxEnvironmentReflectionIntensity", doc.settings.count("skyboxEnvironmentReflectionIntensity") ? doc.settings["skyboxEnvironmentReflectionIntensity"] : "0.5");
+    WriteField(out, 4, "skyboxReflectionDistanceFadeStart", doc.settings.count("skyboxReflectionDistanceFadeStart") ? doc.settings["skyboxReflectionDistanceFadeStart"] : "4");
+    WriteField(out, 4, "skyboxReflectionDistanceFadeEnd", doc.settings.count("skyboxReflectionDistanceFadeEnd") ? doc.settings["skyboxReflectionDistanceFadeEnd"] : "24");
+    WriteField(out, 4, "fogEnabled", doc.settings.count("fogEnabled") ? doc.settings["fogEnabled"] : "0");
+    WriteField(out, 4, "fogMode", doc.settings.count("fogMode") ? doc.settings["fogMode"] : "0");
+    WriteField(out, 4, "fogColor", doc.settings.count("fogColor") ? doc.settings["fogColor"] : "0.65,0.72,0.78");
+    WriteField(out, 4, "fogStart", doc.settings.count("fogStart") ? doc.settings["fogStart"] : "20");
+    WriteField(out, 4, "fogEnd", doc.settings.count("fogEnd") ? doc.settings["fogEnd"] : "120");
+    WriteField(out, 4, "fogDensity", doc.settings.count("fogDensity") ? doc.settings["fogDensity"] : "0.015");
+    WriteField(out, 4, "fogHeight", doc.settings.count("fogHeight") ? doc.settings["fogHeight"] : "0");
+    WriteField(out, 4, "fogHeightFalloff", doc.settings.count("fogHeightFalloff") ? doc.settings["fogHeightFalloff"] : "0");
     out << "}\n\n";
 
     const auto& schemas = GetComponentSchemas();
@@ -1221,6 +1257,18 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "skyboxScrollRepeat",
             "skyboxScrollLookSensitivity",
             "skyboxScrollVerticalInfluence",
+            "skyboxEnvironmentReflections",
+            "skyboxEnvironmentReflectionIntensity",
+            "skyboxReflectionDistanceFadeStart",
+            "skyboxReflectionDistanceFadeEnd",
+            "fogEnabled",
+            "fogMode",
+            "fogColor",
+            "fogStart",
+            "fogEnd",
+            "fogDensity",
+            "fogHeight",
+            "fogHeightFalloff",
             "objectCount",
         };
         for (const std::string& key : orderedSettings) {
@@ -1238,7 +1286,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
         std::set<std::string> emitted;
         const std::vector<std::string> fixedKeys = {
             "id", "name", "type", "enabled", "invariable", "layer", "tag",
-            "hasRenderer", "renderType", "faceCamera", "hasLight", "hasLight2D",
+            "hasRenderer", "renderType", "faceCamera", "hasLight", "hasLight2D", "hasReflectionCast",
             "hasCamera", "hasPostFX", "hasUI", "hasShadowCaster2D", "uiType",
             "parentId", "position", "rotation", "scale",
             "hasRigidbody", "rbEnabled", "rbMass", "rbUseCustomCenterOfMass", "rbCenterOfMass", "rbUseGravity", "rbKinematic",
@@ -1334,7 +1382,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
         const std::vector<std::string> postAnimationKeys = {
             "hasSkeletalAnimation", "skelEnabled", "skelUseGpu", "skelAllowCpuFallback", "skelUseAnimation",
             "skelClipIndex", "skelPlaySpeed", "skelLoop", "skelMaxBones",
-            "materialColor", "materialAlpha", "materialAmbient", "materialSpecular", "materialShininess", "materialTextureMix",
+            "materialColor", "materialAlpha", "materialAmbient", "materialSpecular", "materialShininess", "materialNormalMapIntensity", "materialTextureMix",
             "materialUvTiling", "materialUvOffset",
             "materialTextureFilter", "materialPath", "albedoTex", "overlayTex", "normalMap", "shaderPack", "vertexShader", "fragmentShader",
             "useOverlay", "additionalMaterialCount"
@@ -1352,6 +1400,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "nextInspectorScriptId", "componentOrder", "scripts", "scriptCount",
             "lightColor", "lightType", "lightIntensity", "lightRange", "lightEdgeFade", "lightInner", "lightOuter",
             "lightSize", "lightCastShadows", "lightSoftShadows", "lightShadowBias", "lightShadowSoftness", "lightShadowResolution", "lightEnabled",
+            "reflectionCastEnabled", "reflectionCastUpdateMode", "reflectionCastBox", "reflectionCastBlend", "reflectionCastIntensity", "reflectionCastResolution",
             "light2dEnabled", "light2dType", "light2dColor", "light2dIntensity", "light2dRadius", "light2dInnerRadius",
             "light2dOuterRadius", "light2dFalloffStrength", "light2dInnerSpotAngle", "light2dOuterSpotAngle",
             "light2dBlendStyle", "light2dOrder", "light2dOverlap", "light2dShadowStrength", "light2dVolumetric",

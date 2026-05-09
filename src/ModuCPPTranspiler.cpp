@@ -242,8 +242,16 @@ std::optional<size_t> findLikelyMissingSemicolonBeforeMethod(const std::string& 
         return boundary;
     }
 
-    const size_t eqPos = findTopLevelChar(declaration, '=');
     const size_t openParenPos = findTopLevelChar(declaration, '(');
+    if (openParenPos != std::string::npos) {
+        const size_t methodLineStart = lineStartFromOffset(declaration, openParenPos);
+        const std::string beforeMethodLine = trimCopy(declaration.substr(0, methodLineStart));
+        if (!beforeMethodLine.empty()) {
+            return previousStatementEnd(declaration, methodLineStart);
+        }
+    }
+
+    const size_t eqPos = findTopLevelChar(declaration, '=');
     if (eqPos == std::string::npos || openParenPos == std::string::npos || eqPos > openParenPos) {
         return std::nullopt;
     }
@@ -1657,55 +1665,161 @@ bool parseMethodDecl(const std::string& signatureDecl, const std::string& body,
     return true;
 }
 
+void replaceRegexAll(std::string& text, const std::regex& pattern, const std::string& replacement);
+
+// Narrow targeted rewrites for known [ObjectRef] string fields.
+// Only the field names in objectRefFields are touched. Locals, regular bools,
+// and SceneObj handles are intentionally left alone.
+//
+// Supported forms (FIELD is one of objectRefFields):
+//   FIELD.UI.Position = expr;        ->  ::ModuCPP::SetUIPosition(FIELD, expr);
+//   FIELD.UI.Size     = expr;        ->  ::ModuCPP::SetUISize(FIELD, expr);
+//   FIELD.UI.Position                ->  ::ModuCPP::UIPosition(FIELD)
+//   FIELD.UI.Size                    ->  ::ModuCPP::UISize(FIELD)
+//   FIELD.UI.Exists                  ->  ::ModuCPP::UIExists(FIELD)
+//   if (FIELD)                       ->  if (!FIELD.empty())
+//   if (!FIELD)                      ->  if (FIELD.empty())
+//   ... !FIELD ... (inline, between ( || && and space/||/&&/) )
+//                                    ->  ... FIELD.empty() ...
+inline std::string regexEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        if (c == '.' || c == '\\' || c == '+' || c == '*' || c == '?' ||
+            c == '(' || c == ')' || c == '[' || c == ']' || c == '{' ||
+            c == '}' || c == '^' || c == '$' || c == '|' || c == '/') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string transformObjectRefAccess(const std::string& body,
+                                     const std::unordered_set<std::string>& objectRefFields) {
+    if (objectRefFields.empty()) return body;
+    std::string out = body;
+    for (const std::string& field : objectRefFields) {
+        const std::string esc = regexEscape(field);
+
+        // 1. UI assignments (must run BEFORE the UI read rewrites so we don't
+        //    accidentally rewrite the LHS `FIELD.UI.Position` as a read first).
+        replaceRegexAll(out,
+            std::regex("\\b" + esc + "\\s*\\.\\s*UI\\s*\\.\\s*Position\\s*=\\s*([^;]+);"),
+            "::ModuCPP::SetUIPosition(" + field + ", $1);");
+        replaceRegexAll(out,
+            std::regex("\\b" + esc + "\\s*\\.\\s*UI\\s*\\.\\s*Size\\s*=\\s*([^;]+);"),
+            "::ModuCPP::SetUISize(" + field + ", $1);");
+
+        // 2. UI reads.
+        replaceRegexAll(out,
+            std::regex("\\b" + esc + "\\s*\\.\\s*UI\\s*\\.\\s*Position\\b"),
+            "::ModuCPP::UIPosition(" + field + ")");
+        replaceRegexAll(out,
+            std::regex("\\b" + esc + "\\s*\\.\\s*UI\\s*\\.\\s*Size\\b"),
+            "::ModuCPP::UISize(" + field + ")");
+        replaceRegexAll(out,
+            std::regex("\\b" + esc + "\\s*\\.\\s*UI\\s*\\.\\s*Exists\\b"),
+            "::ModuCPP::UIExists(" + field + ")");
+
+        // 3. Truthiness in plain `if (...)` heads.
+        replaceRegexAll(out,
+            std::regex("\\bif\\s*\\(\\s*!\\s*" + esc + "\\s*\\)"),
+            "if (" + field + ".empty())");
+        replaceRegexAll(out,
+            std::regex("\\bif\\s*\\(\\s*" + esc + "\\s*\\)"),
+            "if (!" + field + ".empty())");
+
+        // 4. Inline `!FIELD` in compound conditions (e.g. `if (!a || !b.UI.Exists)`).
+        //    Match `!FIELD` not preceded by an identifier char and followed by a
+        //    boolean separator. ECMAScript regex supports lookahead but not
+        //    lookbehind, so the prefix char is captured and re-emitted.
+        replaceRegexAll(out,
+            std::regex("([^A-Za-z0-9_.])!\\s*" + esc + "(?=[\\s\\|\\&\\)])"),
+            "$1" + field + ".empty()");
+    }
+    return out;
+}
+
+// Lowers the long form
+//   each <var> in <listExpr> then <var>.State(<expr>);
+// to the existing short form
+//   each <listExpr>.state(<expr>);
+// MUST run BEFORE rewriteThenSyntax — that pass strips `then` keywords, and
+// without `then` this pattern can never match. Called from the method-body
+// pipeline before cachedRewriteSurfaceSyntax.
+std::string lowerEachInSyntax(const std::string& body) {
+    static const std::regex eachInPattern(
+        R"(each\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+then\s+\1\s*\.\s*[Ss]tate\s*\(\s*([^\)]+?)\s*\)\s*;)");
+    return std::regex_replace(body, eachInPattern, "each $2.state($3);");
+}
+
 std::string transformEachSyntax(const std::string& body,
                                 const std::unordered_set<std::string>& listFields,
                                 const std::string& supportNamespace,
                                 bool hasContext,
                                 std::string& error) {
+
+    // The inner `(?!...)` keeps the dotted-path capture from greedily eating
+    // the trailing `.state(` segment that the next part of the regex needs.
     static const std::regex eachPattern(
-        R"(each\s+([A-Za-z_][A-Za-z0-9_]*)\s*\.state\s*\(\s*([^\)]+?)\s*\)\s*;)");
+        R"(each\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*(?![Ss]tate\s*\()[A-Za-z_][A-Za-z0-9_]*)*)\s*\.\s*[Ss]tate\s*\(\s*([^\)]+?)\s*\)\s*;)");
 
     std::string out;
     size_t cursor = 0;
     std::smatch match;
-    while (std::regex_search(body.cbegin() + static_cast<std::ptrdiff_t>(cursor), body.cend(), match, eachPattern)) {
+    const std::string& body_ref = body;
+    while (std::regex_search(body_ref.cbegin() + static_cast<std::ptrdiff_t>(cursor), body_ref.cend(), match, eachPattern)) {
         const size_t relPos = static_cast<size_t>(match.position());
         const size_t matchPos = cursor + relPos;
         const size_t matchLen = static_cast<size_t>(match.length());
 
-        out += body.substr(cursor, matchPos - cursor);
+        out += body_ref.substr(cursor, matchPos - cursor);
 
         const std::string listName = match[1].str();
         const std::string enabledExpr = trimCopy(match[2].str());
-        if (listFields.find(listName) == listFields.end()) {
+        // For dotted accesses (e.g. action.disable from a SubScript), skip the
+        // listFields registry check — the enclosing class doesn't own that name.
+        // The C++ expression is still type-checked at compile time.
+        const bool isDottedAccess = listName.find('.') != std::string::npos;
+        if (!isDottedAccess && listFields.find(listName) == listFields.end()) {
             error = "Unknown list field in each-expression: " + listName;
             return {};
         }
-        if (!hasContext) {
-            error = "each-expression requires a MODU_obj/ScriptContext parameter.";
-            return {};
-        }
-
-        const size_t lineStartPos = body.rfind('\n', matchPos);
+        const size_t lineStartPos = body_ref.rfind('\n', matchPos);
         const size_t indentStart = (lineStartPos == std::string::npos) ? 0 : lineStartPos + 1;
         size_t indentEnd = indentStart;
         while (indentEnd < matchPos &&
-               (body[indentEnd] == ' ' || body[indentEnd] == '\t')) {
+               (body_ref[indentEnd] == ' ' || body_ref[indentEnd] == '\t')) {
             ++indentEnd;
         }
-        const std::string indent = body.substr(indentStart, indentEnd - indentStart);
+        const std::string indent = body_ref.substr(indentStart, indentEnd - indentStart);
 
-        out += indent + "for (SceneObject* _moduObj : " + supportNamespace +
-               "::ResolveObjectList(ctx, " + listName + ")) {\n";
-        out += indent + "    if (!_moduObj) continue;\n";
-        out += indent + "    " + supportNamespace +
-               "::SetResolvedObjectEnabled(ctx, _moduObj, (" + enabledExpr + "));\n";
-        out += indent + "}\n";
+        if (hasContext) {
+            // Method has a ctx parameter — use it directly.
+            out += indent + "for (SceneObject* _moduObj : " + supportNamespace +
+                   "::ResolveObjectList(ctx, " + listName + ")) {\n";
+            out += indent + "    if (!_moduObj) continue;\n";
+            out += indent + "    " + supportNamespace +
+                   "::SetResolvedObjectEnabled(ctx, _moduObj, (" + enabledExpr + "));\n";
+            out += indent + "}\n";
+        } else {
+            // No ctx parameter (user-defined helper method). Resolve through the
+            // thread-local script context pointer instead of erroring.
+            out += indent + "if (auto* _moduCtx = ::ModuCPP::ctxPtr()) {\n";
+            out += indent + "    for (SceneObject* _moduObj : " + supportNamespace +
+                   "::ResolveObjectList(*_moduCtx, " + listName + ")) {\n";
+            out += indent + "        if (!_moduObj) continue;\n";
+            out += indent + "        " + supportNamespace +
+                   "::SetResolvedObjectEnabled(*_moduCtx, _moduObj, (" + enabledExpr + "));\n";
+            out += indent + "    }\n";
+            out += indent + "}\n";
+        }
 
         cursor = matchPos + matchLen;
     }
 
-    out += body.substr(cursor);
+    out += body_ref.substr(cursor);
     return out;
 }
 
@@ -2077,7 +2191,15 @@ ExtractedCodeBlocks extractEnumClassDefinitions(const std::string& sourceText) {
         }
 
         out.remaining += sourceText.substr(cursor, matchPos - cursor);
-        out.extracted += sourceText.substr(matchPos, endPos - matchPos);
+        std::string block = sourceText.substr(matchPos, endPos - matchPos);
+        // ModuCPP allows omitting the trailing semicolon on an `enum class`
+        // declaration; C++ requires it. Find the last non-whitespace character
+        // in the extracted block and ensure a semicolon follows the closing brace.
+        size_t lastNonSpace = block.find_last_not_of(" \t\r\n");
+        if (lastNonSpace != std::string::npos && block[lastNonSpace] == '}') {
+            block.insert(lastNonSpace + 1, ";");
+        }
+        out.extracted += block;
         if (!out.extracted.empty() && out.extracted.back() != '\n') {
             out.extracted.push_back('\n');
         }
@@ -2435,8 +2557,11 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
     std::string out = rewriteThenSyntax(sourceText);
 
     replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
-    replaceRegexAll(out, std::regex(R"(\b([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Z][A-Za-z0-9_]*)\b)"),
-                    "$1::$2");
+    // Convert Namespace.Member → Namespace::Member for enum/namespace-style access.
+    // Require the match not be preceded by '.' (i.e. not a chained member like obj.UI.Foo).
+    // We capture an optional non-dot boundary character before the identifier.
+    replaceRegexAll(out, std::regex(R"((^|[^.A-Za-z0-9_])([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Z][A-Za-z0-9_]*)\b)"),
+                    "$1$2::$3");
     replaceRegexAll(out, std::regex(R"(\bModuEngine::FPS\b)"), "::ModuCPP::ModuEngine.FPS");
     replaceRegexAll(out, std::regex(R"(\bModuCPP::FPS\b)"), "::ModuCPP::ModuEngine.FPS");
     // Fully qualify 'time.' to avoid ambiguity with the C standard library ::time() function
@@ -2455,6 +2580,14 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
     replaceRegexAll(out,
                     std::regex(R"(\b([A-Za-z_][A-Za-z0-9_\[\]\(\)]*)\s*\.\s*IsEmpty\s*\(\s*\))"),
                     "$1.empty()");
+
+    // Convert ModuCPP lambda syntax  () => { }  /  (Type param) => { }
+    // to C++ capture-by-ref lambdas  [&]() { }  /  [&](Type param) { }
+    // The prefix group (^|[^A-Za-z0-9_]) ensures we don't consume the opening
+    // paren of the enclosing function call (e.g. OnValueChanged((float v) => )).
+    replaceRegexAll(out,
+                    std::regex(R"((^|[^A-Za-z0-9_])\(([^)]*)\)\s*=>)"),
+                    "$1[&]($2)");
 
     std::string timerRewritten;
     timerRewritten.reserve(out.size() + 64);
@@ -2895,11 +3028,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     };
 
     std::unordered_set<std::string> listFields;
+    std::unordered_set<std::string> objectRefFields;
     std::vector<std::string> customPublicFieldNames;
     bool hasAutoInspectorFields = false;
     bool needsDialogueLinesSupport = strippedInspector.find("DialogueLines") != std::string::npos;
     bool needsDialoguePortSupport = needsDialogueLinesSupport;
     bool needsObjectRefSupport = false;
+    bool needsObjectListSupport = false;
     bool hasTransientFields = false;
     auto fieldNeedsDialogueLinesSupport = [&](const FieldSpec& field) {
         if (field.kind == FieldKind::DialogueLines || field.hasDialogueLinesAttribute) {
@@ -2916,6 +3051,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         }
         if (fieldPersists(field) && field.kind == FieldKind::ObjectList) {
             listFields.insert(field.name);
+        }
+        if (fieldPersists(field) &&
+            (field.kind == FieldKind::ObjectRef || field.hasObjectRefAttribute)) {
+            objectRefFields.insert(field.name);
+        }
+        if (field.kind == FieldKind::ObjectList || field.hasObjectListAttribute) {
+            needsObjectListSupport = true;
         }
         if (field.kind == FieldKind::ObjectRef ||
             field.kind == FieldKind::ObjectList ||
@@ -2945,6 +3087,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     }
     for (const SubScriptSpec& subScript : spec.subScripts) {
         for (const FieldSpec& field : subScript.fields) {
+            if (field.kind == FieldKind::ObjectList || field.hasObjectListAttribute) {
+                needsObjectListSupport = true;
+            }
             if (field.kind == FieldKind::ObjectRef ||
                 field.kind == FieldKind::ObjectList ||
                 field.hasObjectRefAttribute ||
@@ -2968,7 +3113,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             return reachableSubScriptTypes.count(
                        toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(ss.name)))) > 0;
         });
-    const bool needsEscapedStringHelpers = needsObjectRefSupport || hasReachableSubScripts;
+    const bool needsEscapedStringHelpers = needsObjectListSupport || hasReachableSubScripts;
 
     std::ostringstream out;
     std::unordered_map<std::string, std::string> rewrittenSyntaxCache;
@@ -3127,8 +3272,17 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         }
         if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef) {
             if (field.kind == FieldKind::ObjectRef || field.hasObjectRefAttribute) {
-                out << indent << "changed |= " << supportNs << "::DrawObjectRefInput(ctx, \""
-                    << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
+                const std::string changedVar = "_moduChangedRef_" + std::to_string(fieldIndex);
+                out << indent << "{\n";
+                out << indent << "    const bool " << changedVar
+                    << " = DrawObjectRefInput(ctx, \"" << escapeCStringLiteral(label)
+                    << "\", " << fieldAccess << ");\n";
+                out << indent << "    changed |= " << changedVar << ";\n";
+                out << indent << "    if (" << changedVar << ") {\n";
+                out << indent << "        ctx.SetSetting(\"" << field.name
+                    << "\", " << fieldAccess << ");\n";
+                out << indent << "    }\n";
+                out << indent << "}\n";
             } else {
                 out << indent << "{\n";
                 out << indent << "    std::vector<char> buffer(512, '\\0');\n";
@@ -3145,12 +3299,12 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.kind == FieldKind::ObjectList) {
             const std::string changedVar = "_moduChanged_" + std::to_string(fieldIndex);
             out << indent << "{\n";
-            out << indent << "    const bool " << changedVar << " = DialoguePort::DrawObjectRefListEditor(ctx, \""
+            out << indent << "    const bool " << changedVar << " = " << supportNs << "::DrawObjectRefListEditor(ctx, \""
                 << escapeCStringLiteral(label) << "\", " << fieldAccess << ");\n";
             out << indent << "    changed |= " << changedVar << ";\n";
             out << indent << "    if (" << changedVar << ") {\n";
             out << indent << "        ctx.SetSetting(\"" << field.name
-                << "\", DialoguePort::SerializeObjectRefs(" << fieldAccess << "));\n";
+                << "\", " << supportNs << "::SerializeObjectRefs(" << fieldAccess << "));\n";
             out << indent << "    }\n";
             out << indent << "}\n";
             return true;
@@ -3340,7 +3494,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         if (field.kind == FieldKind::String || field.kind == FieldKind::ObjectRef ||
             fieldLooksLikeObjectRefString(field)) {
             if (field.kind == FieldKind::ObjectRef || fieldLooksLikeObjectRefString(field)) {
-                out << "        changed |= " << supportNs << "::DrawObjectRefInput(ctx, " << labelLiteral
+                out << "        changed |= DrawObjectRefInput(ctx, " << labelLiteral
                     << ", " << valueExpr << ");\n";
             } else {
                 out << "        changed |= ::ModuCPP::EditString(" << labelLiteral << ", " << valueExpr << ");\n";
@@ -3353,7 +3507,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
             return true;
         }
         if (fieldLooksLikeStringArray(field) || field.kind == FieldKind::ObjectList) {
-            out << "        changed |= DialoguePort::DrawObjectRefListEditor(ctx, " << labelLiteral
+            out << "        changed |= " << supportNs << "::DrawObjectRefListEditor(ctx, " << labelLiteral
                 << ", " << valueExpr << ");\n";
             return true;
         }
@@ -3523,6 +3677,9 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     if (needsDialoguePortSupport) {
         out << "using namespace DialoguePort;\n\n";
     }
+    if (needsObjectRefSupport) {
+        out << "using ::ModuCPP::DrawObjectRefInput;\n\n";
+    }
     out << "struct " << configType << " {\n";
     for (const FieldSpec& field : spec.fields) {
         if (!fieldPersists(field)) continue;
@@ -3636,7 +3793,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "}\n\n";
     }
 
-    if (needsObjectRefSupport) {
+    if (needsObjectListSupport) {
         out << "inline bool IsAllDigits(const std::string& value) {\n";
         out << "    if (value.empty()) return false;\n";
         out << "    size_t start = (value[0] == '-' || value[0] == '+') ? 1u : 0u;\n";
@@ -3711,7 +3868,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "}\n\n";
     }
 
-    if (needsObjectRefSupport) {
+    if (needsObjectListSupport) {
         out << "inline void SetResolvedObjectEnabled(ScriptContext& ctx, SceneObject* obj, bool enabled) {\n";
         out << "    if (!obj) return;\n";
         out << "    bool changed = false;\n";
@@ -3730,35 +3887,6 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
         out << "    if (changed) {\n";
         out << "        ctx.MarkDirty();\n";
         out << "    }\n";
-        out << "}\n\n";
-
-        out << "inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::string& objectRef) {\n";
-        out << "    bool changed = false;\n";
-        out << "    std::vector<char> buffer(256, '\\0');\n";
-        out << "    std::snprintf(buffer.data(), buffer.size(), \"%s\", objectRef.c_str());\n";
-        out << "    if (ModuGUI::InputText(label, buffer.data(), buffer.size())) {\n";
-        out << "        objectRef = buffer.data();\n";
-        out << "        changed = true;\n";
-        out << "    }\n";
-        out << "    if (ModuGUI::BeginDragDropTarget()) {\n";
-        out << "        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload(\"SCENE_OBJECT\")) {\n";
-        out << "            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {\n";
-        out << "                const int droppedId = *static_cast<const int*>(payload->Data);\n";
-        out << "                const std::string newRef = std::string(\"Object.ID-\") + std::to_string(droppedId);\n";
-        out << "                if (objectRef != newRef) {\n";
-        out << "                    objectRef = newRef;\n";
-        out << "                    changed = true;\n";
-        out << "                }\n";
-        out << "            }\n";
-        out << "        }\n";
-        out << "        ModuGUI::EndDragDropTarget();\n";
-        out << "    }\n";
-        out << "    if (SceneObject* resolved = ResolveSceneObjectRef(ctx, objectRef)) {\n";
-        out << "        ModuGUI::TextDisabled(\"-> %s (id=%d)\", resolved->name.c_str(), resolved->id);\n";
-        out << "    } else if (!Trim(objectRef).empty()) {\n";
-        out << "        ModuGUI::TextDisabled(\"-> unresolved\");\n";
-        out << "    }\n";
-        out << "    return changed;\n";
         out << "}\n\n";
 
         out << "inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label,\n";
@@ -4243,7 +4371,7 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 std::string expr;
                 if (!parseLabelValue(args, "ObjectRef(value) or ObjectRef(label, value) expected.",
                                      labelExpr, expr)) return false;
-                out << indent << "changed |= " << supportNs << "::DrawObjectRefInput(ctx, " << labelExpr
+                out << indent << "changed |= DrawObjectRefInput(ctx, " << labelExpr
                     << ", " << expr << ");\n";
                 return true;
             }
@@ -4265,16 +4393,16 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
                 if (field && field->kind == FieldKind::ObjectList) {
                     const std::string changedVar = nextInspectorTemp("Changed");
                     out << indent << "{\n";
-                    out << indent << "    const bool " << changedVar << " = DialoguePort::DrawObjectRefListEditor(ctx, "
+                    out << indent << "    const bool " << changedVar << " = " << supportNs << "::DrawObjectRefListEditor(ctx, "
                         << labelExpr << ", " << expr << ");\n";
                     out << indent << "    changed |= " << changedVar << ";\n";
                     out << indent << "    if (" << changedVar << ") {\n";
                     out << indent << "        ctx.SetSetting(\"" << field->name
-                        << "\", DialoguePort::SerializeObjectRefs(" << expr << "));\n";
+                        << "\", " << supportNs << "::SerializeObjectRefs(" << expr << "));\n";
                     out << indent << "    }\n";
                     out << indent << "}\n";
                 } else {
-                    out << indent << "changed |= DialoguePort::DrawObjectRefListEditor(ctx, " << labelExpr << ", "
+                    out << indent << "changed |= " << supportNs << "::DrawObjectRefListEditor(ctx, " << labelExpr << ", "
                         << expr << ");\n";
                 }
                 return true;
@@ -4662,7 +4790,13 @@ std::string generateTranspiledSource(const fs::path& sourcePath, const ClassSpec
     out << "\n";
 
     for (const MethodSpec& method : spec.methods) {
-        std::string rewrittenBody = cachedRewriteSurfaceSyntax(method.body);
+        // Lower `each X in LIST then X.State(EXPR);` BEFORE the surface rewrite —
+        // rewriteThenSyntax inside it strips the `then` keyword we depend on.
+        const std::string preLoweredBody = lowerEachInSyntax(method.body);
+        std::string rewrittenBody = cachedRewriteSurfaceSyntax(preLoweredBody);
+        // Narrow rewrite for known [ObjectRef] field truthiness + UI access.
+        // Runs before transformEachSyntax so the each-loop pass sees the same body.
+        rewrittenBody = transformObjectRefAccess(rewrittenBody, objectRefFields);
         std::string transformedBody = transformEachSyntax(rewrittenBody, listFields, supportNs,
                                                           method.hasContext, error);
         if (!error.empty()) {

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <limits>
 #include <regex>
+#include <unordered_map>
 
 namespace ModuCPP {
 
@@ -383,33 +384,6 @@ inline bool DrawStdStringInput(const char* label, std::string& value,
         value = buffer.data();
     }
     return edited;
-}
-
-inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::string& objectRef) {
-    bool changed = DrawStdStringInput(label, objectRef, 256);
-
-    if (ModuGUI::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("SCENE_OBJECT")) {
-            if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {
-                const int droppedId = *static_cast<const int*>(payload->Data);
-                const std::string newRef = MakeObjectRef(droppedId);
-                if (objectRef != newRef) {
-                    objectRef = newRef;
-                    changed = true;
-                }
-            }
-        }
-        ModuGUI::EndDragDropTarget();
-    }
-
-    SceneObject* resolved = ResolveSceneObjectRef(ctx, objectRef);
-    if (resolved) {
-        ModuGUI::TextDisabled("-> %s (id=%d)", resolved->name.c_str(), resolved->id);
-    } else if (!Trim(objectRef).empty()) {
-        ModuGUI::TextDisabled("-> unresolved");
-    }
-
-    return changed;
 }
 
 inline bool IsAudioClipPath(const std::string& path) {

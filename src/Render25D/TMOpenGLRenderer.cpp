@@ -4,6 +4,9 @@
 #include "Skybox/Skybox.h"
 #include "ThirdParty/glfw/include/GLFW/glfw3.h"
 
+#include <cstddef>
+#include <cmath>
+
 namespace Modularity::Render25D {
 
 namespace {
@@ -12,6 +15,14 @@ constexpr const char* kTMFloorVertexShader = "Resources/Shaders/tm_floor_vert.gl
 constexpr const char* kTMFloorFragmentShader = "Resources/Shaders/tm_floor_frag.glsl";
 constexpr const char* kTMMeshVertexShader = "Resources/Shaders/tm_mesh_vert.glsl";
 constexpr const char* kTMMeshFragmentShader = "Resources/Shaders/tm_mesh_frag.glsl";
+constexpr const char* kTMSpriteVertexShader = "Resources/Shaders/tm_sprite25d_vert.glsl";
+constexpr const char* kTMSpriteFragmentShader = "Resources/Shaders/tm_sprite25d_frag.glsl";
+
+struct SpriteVertex {
+    glm::vec3 position;
+    glm::vec2 uv;
+    glm::vec4 color;
+};
 
 std::string ResolveTexturePath(const std::string& texturePath, const std::string& sourceMeshPath) {
     if (texturePath.empty()) {
@@ -100,9 +111,11 @@ void TMOpenGLRenderer::invalidateCaches() {
     textureCache.clear();
     floorShader.reset();
     meshShader.reset();
+    spriteShader.reset();
     skybox.reset();
     activeSkyboxSettingsInitialized = false;
     destroyQuad();
+    destroySpriteGeometry();
     destroyFallbackTexture();
     destroyRenderTarget(viewportTarget);
     for (auto& [slot, target] : previewTargets) {
@@ -135,10 +148,18 @@ bool TMOpenGLRenderer::ensureInitialized(std::string& error) {
     if (!meshShader) {
         meshShader = std::make_unique<Shader>(kTMMeshVertexShader, kTMMeshFragmentShader);
     }
+    if (!spriteShader) {
+        spriteShader = std::make_unique<Shader>(kTMSpriteVertexShader, kTMSpriteFragmentShader);
+    }
     if (!skybox) {
         skybox = std::make_unique<Skybox>();
     }
-    if (!floorShader || floorShader->ID == 0 || !meshShader || meshShader->ID == 0 || !skybox) {
+    ensureSpriteGeometry();
+    if (!floorShader || floorShader->ID == 0 ||
+        !meshShader || meshShader->ID == 0 ||
+        !spriteShader || spriteShader->ID == 0 ||
+        spriteVAO == 0 || spriteVBO == 0 ||
+        !skybox) {
         error = "TM renderer failed to initialize shaders/resources";
         return false;
     }
@@ -280,6 +301,40 @@ void TMOpenGLRenderer::destroyQuad() {
     if (quadVAO != 0) {
         glDeleteVertexArrays(1, &quadVAO);
         quadVAO = 0;
+    }
+}
+
+void TMOpenGLRenderer::ensureSpriteGeometry() {
+    if (spriteVAO != 0 && spriteVBO != 0) {
+        return;
+    }
+
+    glGenVertexArrays(1, &spriteVAO);
+    glGenBuffers(1, &spriteVBO);
+    glBindVertexArray(spriteVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, spriteVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(SpriteVertex) * 6, nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(SpriteVertex),
+                          reinterpret_cast<void*>(offsetof(SpriteVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(SpriteVertex),
+                          reinterpret_cast<void*>(offsetof(SpriteVertex, uv)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(SpriteVertex),
+                          reinterpret_cast<void*>(offsetof(SpriteVertex, color)));
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void TMOpenGLRenderer::destroySpriteGeometry() {
+    if (spriteVBO != 0) {
+        glDeleteBuffers(1, &spriteVBO);
+        spriteVBO = 0;
+    }
+    if (spriteVAO != 0) {
+        glDeleteVertexArrays(1, &spriteVAO);
+        spriteVAO = 0;
     }
 }
 
@@ -514,6 +569,84 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
     glBindTexture(GL_TEXTURE_2D, 0);
     if (activeBackendStats != nullptr) {
         ++activeBackendStats->modelDraws;
+    }
+}
+
+void TMOpenGLRenderer::drawSprite25D(const Sprite25DDrawCommand& command) {
+    if (activeContext == nullptr || spriteShader == nullptr || spriteShader->ID == 0 ||
+        spriteVAO == 0 || spriteVBO == 0) {
+        return;
+    }
+
+    const TMSprite25DInstance& sprite = command.sprite;
+    const glm::mat4 inverseView = glm::inverse(activeContext->view);
+    const glm::vec3 cameraRight = glm::normalize(glm::vec3(inverseView[0]));
+    const glm::vec3 cameraUp = glm::normalize(glm::vec3(inverseView[1]));
+    const glm::vec3 cameraForward =
+        (glm::dot(activeContext->cameraForward, activeContext->cameraForward) > 1e-6f)
+            ? glm::normalize(activeContext->cameraForward)
+            : glm::vec3(0.0f, 0.0f, -1.0f);
+
+    const float angle = glm::radians(sprite.rotationDegrees);
+    const float c = std::cos(angle);
+    const float s = std::sin(angle);
+    auto corner = [&](float x, float y) {
+        const float rx = x * c - y * s;
+        const float ry = x * s + y * c;
+        return sprite.position + cameraRight * rx + cameraUp * ry;
+    };
+
+    const glm::vec4 uv = sprite.uvRect;
+    const float u0 = uv.x;
+    const float v0 = uv.y;
+    const float u1 = uv.x + uv.z;
+    const float v1 = uv.y + uv.w;
+    const glm::vec3 p0 = corner(-sprite.halfExtents.x, -sprite.halfExtents.y);
+    const glm::vec3 p1 = corner( sprite.halfExtents.x, -sprite.halfExtents.y);
+    const glm::vec3 p2 = corner( sprite.halfExtents.x,  sprite.halfExtents.y);
+    const glm::vec3 p3 = corner(-sprite.halfExtents.x,  sprite.halfExtents.y);
+    const SpriteVertex vertices[6] = {
+        {p0, glm::vec2(u0, v1), sprite.colorTint},
+        {p1, glm::vec2(u1, v1), sprite.colorTint},
+        {p2, glm::vec2(u1, v0), sprite.colorTint},
+        {p0, glm::vec2(u0, v1), sprite.colorTint},
+        {p2, glm::vec2(u1, v0), sprite.colorTint},
+        {p3, glm::vec2(u0, v0), sprite.colorTint}
+    };
+
+    const unsigned int textureId = resolveTextureId(sprite.texturePath, sprite.textureFilter);
+
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    spriteShader->use();
+    spriteShader->setMat4("u_view", activeContext->view);
+    spriteShader->setMat4("u_projection", activeContext->projection);
+    spriteShader->setVec3("u_cameraForward", cameraForward);
+    spriteShader->setInt("u_spriteTexture", 0);
+    spriteShader->setBool("u_hasTexture", !sprite.texturePath.empty() && textureId != fallbackWhiteTexture);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glBindVertexArray(spriteVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, spriteVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
+    if (activeBackendStats != nullptr) {
+        ++activeBackendStats->spriteDraws;
     }
 }
 

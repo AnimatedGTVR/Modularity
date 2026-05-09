@@ -52,14 +52,12 @@ public class EditorWindowSample : ModuBehaviour
         if (ImGui::DragFloat3("Position", &position.x, config.moveStep, -10000.0f, 10000.0f, "%.2f"))
         {
             ctx.SetPosition(position);
-            ctx.MarkDirty();
         }
 
         vec3 rotation = selected->rotation;
         if (ImGui::DragFloat3("Rotation", &rotation.x, config.rotateStep, -3600.0f, 3600.0f, "%.1f"))
         {
             ctx.SetRotation(rotation);
-            ctx.MarkDirty();
         }
 
         vec3 scale = selected->scale;
@@ -69,7 +67,6 @@ public class EditorWindowSample : ModuBehaviour
             scale.y = Max(scale.y, 0.01f);
             scale.z = Max(scale.z, 0.01f);
             ctx.SetScale(scale);
-            ctx.MarkDirty();
         }
 
         if (ImGui::Button("Nudge +Y"))
@@ -77,7 +74,6 @@ public class EditorWindowSample : ModuBehaviour
             position = selected->position;
             position.y += config.moveStep;
             ctx.SetPosition(position);
-            ctx.MarkDirty();
         }
 
         ImGui::SameLine();
@@ -86,7 +82,6 @@ public class EditorWindowSample : ModuBehaviour
             rotation = selected->rotation;
             rotation.y += config.rotateStep;
             ctx.SetRotation(rotation);
-            ctx.MarkDirty();
         }
 
         ImGui::SameLine();
@@ -97,7 +92,6 @@ public class EditorWindowSample : ModuBehaviour
             scale.y = Max(scale.y, 0.01f);
             scale.z = Max(scale.z, 0.01f);
             ctx.SetScale(scale);
-            ctx.MarkDirty();
         }
 
         if (ImGui::Button("Reset Local Transform"))
@@ -105,7 +99,6 @@ public class EditorWindowSample : ModuBehaviour
             ctx.SetPosition(vec3(0.0f));
             ctx.SetRotation(vec3(0.0f));
             ctx.SetScale(vec3(1.0f));
-            ctx.MarkDirty();
         }
     }
 

@@ -237,6 +237,7 @@ inline bool ReadProperty(const SceneObject& obj, const std::string& propertyId, 
     if (propertyId == "Material.AmbientStrength") { outValue = obj.material.ambientStrength; return true; }
     if (propertyId == "Material.SpecularStrength") { outValue = obj.material.specularStrength; return true; }
     if (propertyId == "Material.Shininess") { outValue = obj.material.shininess; return true; }
+    if (propertyId == "Material.NormalMapIntensity") { outValue = obj.material.normalMapIntensity; return true; }
     if (propertyId == "Material.TextureMix") { outValue = obj.material.textureMix; return true; }
 
     if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { outValue = obj.rigidbody.mass; return true; }
@@ -372,6 +373,7 @@ inline bool WriteProperty(SceneObject& obj, const std::string& propertyId, float
     if (propertyId == "Material.AmbientStrength") { obj.material.ambientStrength = value; return true; }
     if (propertyId == "Material.SpecularStrength") { obj.material.specularStrength = value; return true; }
     if (propertyId == "Material.Shininess") { obj.material.shininess = value; return true; }
+    if (propertyId == "Material.NormalMapIntensity") { obj.material.normalMapIntensity = std::clamp(value, 0.0f, 2.0f); return true; }
     if (propertyId == "Material.TextureMix") { obj.material.textureMix = value; return true; }
 
     if (propertyId == "Rigidbody.Mass" && obj.hasRigidbody) { obj.rigidbody.mass = std::max(0.001f, value); return true; }

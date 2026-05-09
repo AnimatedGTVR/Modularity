@@ -1,6 +1,7 @@
 #include "EditorUI.h"
 #include <chrono>
 #include <cstring>
+#include <iomanip>
 #include <sstream>
 #include <unordered_map>
 
@@ -39,6 +40,127 @@ bool hasScrollableAxis(const ImGuiWindow* window, int axis) {
     return window->ScrollMax[axis] > 0.0f;
 }
 
+std::string buildFileSelectionKey(const fs::path& path) {
+    std::error_code ec;
+    fs::path canonical = fs::weakly_canonical(path, ec);
+    if (!ec) {
+        return canonical.generic_string();
+    }
+    return fs::absolute(path, ec).lexically_normal().generic_string();
+}
+
+FileCategory classifyFileBrowserEntry(const fs::directory_entry& entry) {
+    if (entry.is_directory()) {
+        return FileCategory::Folder;
+    }
+
+    std::string filename = entry.path().filename().string();
+    std::transform(filename.begin(), filename.end(), filename.begin(), ::tolower);
+
+    std::string ext = entry.path().extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    if (filename == "project.modu" ||
+        filename == "build.modu" ||
+        filename == "scripts.modu" ||
+        filename == "packages.modu" ||
+        filename == "autostart.modu" ||
+        filename == "launcher_settings.modu") {
+        return FileCategory::Text;
+    }
+
+    if (ext == ".modu" || ext == ".scene") return FileCategory::Scene;
+    if (ext == ".modupak") return FileCategory::Text;
+
+    if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" ||
+        ext == ".dae" || ext == ".blend" || ext == ".3ds" || ext == ".b3d" ||
+        ext == ".ply" || ext == ".stl" || ext == ".x" || ext == ".md5mesh" ||
+        ext == ".rmesh" || ext == ".mmesh") {
+        return FileCategory::Model;
+    }
+
+    if (ext == ".mat") return FileCategory::Material;
+
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+        ext == ".tga" || ext == ".dds" || ext == ".hdr") {
+        return FileCategory::Texture;
+    }
+
+    if (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".avi" ||
+        ext == ".mkv" || ext == ".webm" || ext == ".wmv" || ext == ".ogv") {
+        return FileCategory::Video;
+    }
+
+    if (ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" ||
+        ext == ".shader" || ext == ".modushader") {
+        return FileCategory::Shader;
+    }
+
+    if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".h" || ext == ".hpp" ||
+        ext == ".lua" || ext == ".py" || ext == ".cs") {
+        return FileCategory::Script;
+    }
+
+    if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") {
+        return FileCategory::Audio;
+    }
+
+    if (ext == ".txt" || ext == ".md" || ext == ".json" || ext == ".xml" ||
+        ext == ".yaml" || ext == ".ini" || ext == ".cfg") {
+        return FileCategory::Text;
+    }
+
+    return FileCategory::Unknown;
+}
+
+std::string formatFileBrowserByteSize(uintmax_t bytes) {
+    static const char* kUnits[] = { "B", "KB", "MB", "GB", "TB" };
+    double size = static_cast<double>(bytes);
+    int unit = 0;
+    while (size >= 1024.0 && unit < 4) {
+        size /= 1024.0;
+        ++unit;
+    }
+
+    std::ostringstream ss;
+    if (unit == 0) {
+        ss << bytes << " " << kUnits[unit];
+    } else {
+        ss << std::fixed << std::setprecision(size >= 10.0 ? 1 : 2) << size << " " << kUnits[unit];
+    }
+    return ss.str();
+}
+
+const char* fileBrowserCategoryLabel(FileCategory cat) {
+    switch (cat) {
+        case FileCategory::Folder: return "Folder";
+        case FileCategory::Scene: return "Scene";
+        case FileCategory::Model: return "Model";
+        case FileCategory::Material: return "Material";
+        case FileCategory::Texture: return "Texture";
+        case FileCategory::Video: return "Video";
+        case FileCategory::Shader: return "Shader";
+        case FileCategory::Script: return "Script";
+        case FileCategory::Audio: return "Audio";
+        case FileCategory::Text: return "Text";
+        default: return "File";
+    }
+}
+
+bool folderHasVisibleItemsCached(const fs::path& path, bool showHiddenFiles) {
+    std::error_code ec;
+    for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::directory_iterator();
+         ++it) {
+        const std::string name = it->path().filename().string();
+        if (!showHiddenFiles && !name.empty() && name[0] == '.') {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 FileBrowser::RefreshResult BuildFileBrowserRefreshResult(const fs::path& currentPath,
                                                         const std::string& searchFilter,
                                                         bool showHiddenFiles) {
@@ -73,6 +195,32 @@ FileBrowser::RefreshResult BuildFileBrowserRefreshResult(const fs::path& current
             }
             return a.path().filename().string() < b.path().filename().string();
         });
+
+        result.cachedEntries.reserve(result.entries.size());
+        for (const fs::directory_entry& entry : result.entries) {
+            FileBrowser::CachedEntry cached;
+            cached.path = entry.path();
+            cached.filename = cached.path.filename().string();
+            cached.selectionKey = buildFileSelectionKey(cached.path);
+            cached.category = classifyFileBrowserEntry(entry);
+            cached.isDirectory = entry.is_directory();
+            cached.lastWriteTime = entry.last_write_time();
+            cached.metadata = fileBrowserCategoryLabel(cached.category);
+
+            if (cached.isDirectory) {
+                cached.folderHasItems = folderHasVisibleItemsCached(cached.path, showHiddenFiles);
+            } else {
+                std::error_code sizeEc;
+                cached.sizeBytes = entry.file_size(sizeEc);
+                cached.hasSizeBytes = !sizeEc;
+                if (cached.hasSizeBytes) {
+                    cached.metadata += "  ";
+                    cached.metadata += formatFileBrowserByteSize(cached.sizeBytes);
+                }
+            }
+
+            result.cachedEntries.push_back(std::move(cached));
+        }
     } catch (...) {
     }
 
@@ -247,6 +395,7 @@ void FileBrowser::refresh() {
                 result.filter == searchFilter &&
                 result.showHiddenFiles == showHiddenFiles) {
                 entries = std::move(result.entries);
+                cachedEntries = std::move(result.cachedEntries);
                 needsRefresh = false;
             }
         }
@@ -333,75 +482,7 @@ void FileBrowser::setProjectRoot(const fs::path& root) {
 }
 
 FileCategory FileBrowser::getFileCategory(const fs::directory_entry& entry) const {
-    if (entry.is_directory()) return FileCategory::Folder;
-    
-    std::string filename = entry.path().filename().string();
-    std::transform(filename.begin(), filename.end(), filename.begin(), ::tolower);
-
-    std::string ext = entry.path().extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-    // Project manifests use .modu too, but they are plain text config files.
-    if (filename == "project.modu" ||
-        filename == "build.modu" ||
-        filename == "scripts.modu" ||
-        filename == "packages.modu" ||
-        filename == "autostart.modu" ||
-        filename == "launcher_settings.modu") {
-        return FileCategory::Text;
-    }
-    
-    // Scene files
-    if (ext == ".modu" || ext == ".scene") return FileCategory::Scene;
-    if (ext == ".modupak") return FileCategory::Text;
-    
-    // Model files
-    if (ext == ".fbx" || ext == ".obj" || ext == ".gltf" || ext == ".glb" ||
-        ext == ".dae" || ext == ".blend" || ext == ".3ds" || ext == ".b3d" ||
-        ext == ".ply" || ext == ".stl" || ext == ".x" || ext == ".md5mesh" ||
-        ext == ".rmesh" || ext == ".mmesh") {
-        return FileCategory::Model;
-    }
-    
-    // Material files
-    if (ext == ".mat") return FileCategory::Material;
-
-    // Texture files
-    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || 
-        ext == ".tga" || ext == ".dds" || ext == ".hdr") {
-        return FileCategory::Texture;
-    }
-
-    // Video files
-    if (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext == ".avi" ||
-        ext == ".mkv" || ext == ".webm" || ext == ".wmv" || ext == ".ogv") {
-        return FileCategory::Video;
-    }
-    
-    // Shader files
-    if (ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".hlsl" ||
-        ext == ".shader" || ext == ".modushader") {
-        return FileCategory::Shader;
-    }
-    
-    // Script files
-    if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".h" || ext == ".hpp" ||
-        ext == ".lua" || ext == ".py" || ext == ".cs") {
-        return FileCategory::Script;
-    }
-    
-    // Audio files
-    if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") {
-        return FileCategory::Audio;
-    }
-    
-    // Text files
-    if (ext == ".txt" || ext == ".md" || ext == ".json" || ext == ".xml" ||
-        ext == ".yaml" || ext == ".ini" || ext == ".cfg") {
-        return FileCategory::Text;
-    }
-    
-    return FileCategory::Unknown;
+    return classifyFileBrowserEntry(entry);
 }
 
 const char* FileBrowser::getFileIcon(const fs::directory_entry& entry) const {

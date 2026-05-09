@@ -2,6 +2,7 @@
 #define SKYBOX_H
 
 #include <string>
+#include "ThirdParty/glm/glm.hpp"
 
 class Shader;
 class Texture;
@@ -20,6 +21,18 @@ struct SkyboxSettings {
     float scrollingRepeatY = 1.0f;
     float scrollingLookSensitivity = 1.0f;
     float scrollingVerticalInfluence = 0.18f;
+    bool environmentReflections = false;
+    float environmentReflectionIntensity = 0.5f;
+    float reflectionDistanceFadeStart = 4.0f;
+    float reflectionDistanceFadeEnd = 24.0f;
+    bool fogEnabled = false;
+    int fogMode = 0; // 0 linear, 1 exponential, 2 exponential squared
+    float fogStart = 20.0f;
+    float fogEnd = 120.0f;
+    float fogDensity = 0.015f;
+    float fogHeight = 0.0f;
+    float fogHeightFalloff = 0.0f;
+    glm::vec3 fogColor = glm::vec3(0.65f, 0.72f, 0.78f);
 };
 
 class Skybox {
@@ -32,6 +45,7 @@ private:
     std::string vertPath = "Resources/Shaders/skybox_vert.glsl";
     std::string fragPath = "Resources/Shaders/skybox_frag.glsl";
     float timeOfDay = 0.5f; // 0.0 = night, 0.25 = sunrise, 0.5 = day, 0.75 = sunset, 1.0 = midnight
+    float animationTime = 0.0f;
     SkyboxSettings settings;
 
     void setupMesh();

@@ -18,6 +18,7 @@
 #include "PhysicsSystem.h"
 #include "AudioSystem.h"
 #include "PackageManager.h"
+#include "ModuPak.h"
 #include "ManagedScriptRuntime.h"
 #include "Profiler.h"
 #include "SpritesheetFormat.h"
@@ -90,6 +91,15 @@ private:
     float deltaTime = 0.0f;
     float lastFrame = 0.0f;
     bool cursorLocked = false; // true only while holding right mouse for freelook
+    double viewportMoveSpeedHudTime = -1000.0;
+    float viewportMoveSpeedHudValue = 5.0f;
+    bool viewportFocusActive = false;
+    double viewportFocusStartTime = 0.0;
+    double viewportFocusDuration = 0.55;
+    glm::vec3 viewportFocusStartPosition = glm::vec3(0.0f);
+    glm::vec3 viewportFocusTargetPosition = glm::vec3(0.0f);
+    glm::vec3 viewportFocusStartFront = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 viewportFocusTargetFront = glm::vec3(0.0f, 0.0f, -1.0f);
     int viewportWidth = 800;
     int viewportHeight = 600;
     bool gizmoHistoryCaptured = false;
@@ -179,6 +189,10 @@ private:
     bool showBuildSettings = false;
     bool showStyleEditor = false;
     bool showScriptingWindow = false;
+    bool showModuPakExportDialog = false;
+    bool showModuPakImportDialog = false;
+    bool showModuObjExportDialog = false;
+    bool showModuObjImportDialog = false;
     bool firstFrame = true;
     bool playerMode = false;
     bool autoStartRequested = false;
@@ -299,11 +313,13 @@ private:
     fs::path pendingWorkspaceIniPath;
     ImGuiID mainDockspaceId = 0;
     bool editorSettingsDirty = false;
+    bool windowsDisclaimerPopupOpened = false;
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
     bool showAnimationWindow = false;
     bool showAIPathfindingWindow = false;
     bool showPixelSpriteEditorWindow = false;
+    bool showVisualScriptingWindow = false;
     char registryPackageSearch[256] = "";
     std::string registryPackageSelectedId;
     int registryPackageView = 0;
@@ -312,6 +328,26 @@ private:
     int registryPackageSort = 0;
     bool registryPackageLastActionSucceeded = true;
     std::string registryPackageFeedback;
+    char moduPakPackageName[128] = "";
+    char moduPakAuthorName[128] = "";
+    char moduPakDescription[512] = "";
+    char moduPakVersion[32] = "1.0.0";
+    char moduPakOutputPath[512] = "";
+    char moduPakAddPath[512] = "";
+    char moduPakSearch[128] = "";
+    bool moduPakRecursiveFolders = true;
+    std::vector<fs::path> moduPakExportInputs;
+    std::vector<uint8_t> moduPakExportSelections;
+    char moduPakImportPath[512] = "";
+    std::vector<ModuPakFileEntry> moduPakImportEntries;
+    ModuPakManifest moduPakImportManifest;
+    std::string moduPakImportFeedback;
+    char moduObjName[128] = "";
+    char moduObjAuthor[128] = "";
+    char moduObjDescription[512] = "";
+    char moduObjVersion[32] = "1.0.0";
+    char moduObjOutputPath[512] = "";
+    char moduObjImportPath[512] = "";
     bool pixelSpriteOpenImagePopupOpen = false;
     bool pixelSpriteOpenImagePopupTrigger = false;
     FileBrowser pixelSpriteOpenImageBrowser;
@@ -910,6 +946,7 @@ private:
     void renderAnimationWindow();
     void renderAIPathfindingWindow();
     void renderPixelSpriteEditorWindow();
+    void renderVisualScriptingWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter,
                           std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep);
@@ -926,6 +963,14 @@ private:
     void renderUiCanvas3DTargets();
     void renderBuildSettingsWindow();
     void renderScriptingWindow();
+    void renderModuPakExportDialog();
+    void renderModuPakImportDialog();
+    void renderModuObjExportDialog();
+    void renderModuObjImportDialog();
+    void openModuPakExportDialog(const std::vector<fs::path>& seedPaths);
+    void openModuPakImportDialog(const fs::path& packagePath = {});
+    void openModuObjExportDialog();
+    void openModuObjImportDialog(const fs::path& packagePath = {});
     void renderDialogs();
     void updateCompileJob();
     void renderProjectBrowserPanel();
@@ -988,6 +1033,7 @@ private:
     void applyWorkspacePreset(WorkspaceMode mode, bool rebuildLayout);
     void buildWorkspaceLayout(WorkspaceMode mode);
     void updateDockDrawerInteractions();
+    void renderWindowsDisclaimerPopup();
     bool bakeAIPathGrid(bool logResult);
     bool findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vector<glm::vec3>& outPath) const;
     void autosaveWorkspaceLayout();

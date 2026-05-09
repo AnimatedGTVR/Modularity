@@ -518,16 +518,13 @@ int modu_ctx_get_selected_object_id(ScriptContext* ctx) {
 }
 
 int modu_ctx_get_scene_object_count(ScriptContext* ctx) {
-    if (!ctx || !ctx->engine) return 0;
-    const auto& objects = ctx->engine->getSceneObjects();
-    return static_cast<int>(objects.size());
+    if (!ctx) return 0;
+    return ctx->GetSceneObjectCount();
 }
 
 int modu_ctx_get_scene_object_id_at(ScriptContext* ctx, int index) {
-    if (!ctx || !ctx->engine || index < 0) return -1;
-    const auto& objects = ctx->engine->getSceneObjects();
-    if (index >= static_cast<int>(objects.size())) return -1;
-    return objects[static_cast<size_t>(index)].id;
+    if (!ctx) return -1;
+    return ctx->GetSceneObjectIdAt(index);
 }
 
 int modu_ctx_has_audio_source(ScriptContext* ctx) {

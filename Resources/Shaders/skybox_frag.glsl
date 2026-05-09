@@ -3,6 +3,7 @@ out vec4 FragColor;
 in vec3 fragPos;
 
 uniform float timeOfDay;
+uniform float uSkyTime;
 uniform sampler2D uSunTex;
 uniform sampler2D uMoonTex;
 uniform sampler2D uScrollTex;
@@ -13,6 +14,8 @@ uniform float uScrollVerticalInfluence;
 uniform bool uHasScrollTexture;
 uniform vec2 uViewportSize;
 uniform vec2 uCameraAngles;
+uniform mat4 projection;
+uniform mat4 view;
 
 const float PI = 3.14159265359;
 
@@ -69,6 +72,29 @@ float fbmPeriodic(vec2 p, vec2 period) {
     return value;
 }
 
+float starLayer(vec2 uv, float density, float threshold, float sharpness) {
+    vec2 grid = uv * density;
+    vec2 cell = floor(grid);
+    cell.x = mod(cell.x, density);
+    vec2 local = fract(grid) - 0.5;
+    float seed = hash(cell);
+    vec2 starOffset = vec2(hash(cell + 13.17), hash(cell + 71.43)) - 0.5;
+    float distToStar = length(local - starOffset * 0.72);
+    float starCore = smoothstep(0.045, 0.0, distToStar);
+    float visible = step(threshold, seed);
+    float brightness = pow(seed, sharpness);
+    return starCore * visible * brightness;
+}
+
+vec3 reconstructSkyDir() {
+    vec2 viewport = max(uViewportSize, vec2(1.0));
+    vec2 ndc = (gl_FragCoord.xy / viewport) * 2.0 - 1.0;
+    vec4 viewRay = inverse(projection) * vec4(ndc, 1.0, 1.0);
+    float safeW = abs(viewRay.w) < 0.0001 ? 0.0001 : viewRay.w;
+    vec3 viewDir = normalize(viewRay.xyz / safeW);
+    return normalize(inverse(mat3(view)) * viewDir);
+}
+
 vec4 sampleBillboard(sampler2D tex, vec3 dir, vec3 centerDir, float angularRadius) {
     vec3 basisUp = abs(centerDir.y) > 0.96 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
     vec3 right = normalize(cross(basisUp, centerDir));
@@ -117,36 +143,56 @@ vec3 proceduralSky(vec3 dir, vec3 sunDir, float dayAmount) {
     skyColor += mix(vec3(0.06, 0.08, 0.12), vec3(1.0, 0.93, 0.86), dayAmount) * haze * mix(0.05, 0.18, dayAmount);
 
     float cloudYaw = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
-    vec2 cloudUv = vec2(cloudYaw * 6.0, height * 4.6 + 1.7);
-    float cloudShape = fbmPeriodic(cloudUv, vec2(6.0, 1024.0));
-    float cloudMask = smoothstep(0.56, 0.76, cloudShape) * smoothstep(-0.22, 0.18, height);
-    vec3 cloudLit = mix(vec3(0.09, 0.11, 0.16), vec3(1.0, 0.98, 0.95), dayAmount);
-    cloudLit *= 0.55 + mieGlow * 0.45;
-    skyColor = mix(skyColor, skyColor + cloudLit * 0.38, cloudMask * mix(0.12, 0.55, dayAmount));
+    float cloudBand = smoothstep(-0.12, 0.16, height) * (1.0 - smoothstep(0.68, 0.92, height));
+    vec2 windA = vec2(uSkyTime * 0.012, uSkyTime * 0.004);
+    vec2 windB = vec2(-uSkyTime * 0.006, uSkyTime * 0.009);
+    vec2 cloudUv = vec2(cloudYaw * 6.0, height * 3.4 + 1.25);
+    float broadClouds = fbmPeriodic(cloudUv + windA, vec2(6.0, 1024.0));
+    float detailClouds = fbmPeriodic(cloudUv * 2.0 + windB, vec2(12.0, 2048.0));
+    float cloudShape = broadClouds * 0.74 + detailClouds * 0.26;
+    float cloudMask = smoothstep(0.50, 0.72, cloudShape) * cloudBand;
+    float cloudSilver = pow(max(dot(dir, sunDir), 0.0), 5.0) * dayAmount;
+    vec3 cloudShadow = mix(vec3(0.08, 0.10, 0.15), vec3(0.58, 0.65, 0.72), dayAmount);
+    vec3 cloudBright = mix(vec3(0.20, 0.23, 0.30), vec3(1.0, 0.98, 0.93), dayAmount);
+    vec3 cloudLit = mix(cloudShadow, cloudBright, 0.55 + cloudSilver * 0.45);
+    float cloudAlpha = cloudMask * mix(0.08, 0.62, dayAmount);
+    skyColor = mix(skyColor, cloudLit, cloudAlpha);
+    skyColor += vec3(1.0, 0.92, 0.76) * cloudSilver * cloudMask * 0.12;
 
     float nightAmount = 1.0 - dayAmount;
     if (nightAmount > 0.001) {
-        vec2 starUv = vec2(atan(dir.z, dir.x) * 24.0, asin(height) * 34.0);
-        float starField = pow(max(fbm(starUv * 1.7) - 0.72, 0.0), 7.0) * 18.0;
-        float starMask = smoothstep(-0.12, 0.35, height);
+        vec2 starUv = vec2(atan(dir.z, dir.x) / (2.0 * PI) + 0.5, asin(height) / PI + 0.5);
+        float fineStars = starLayer(starUv, 190.0, 0.953, 2.9);
+        float brightStars = starLayer(starUv + vec2(0.37, 0.19), 92.0, 0.974, 2.1);
+        float twinkle = 0.82 + 0.18 * sin(uSkyTime * 1.7 + hash(floor(starUv * 145.0)) * 31.4);
+        float starField = (fineStars * 0.78 + brightStars * 1.65) * twinkle;
+        float starMask = smoothstep(-0.04, 0.28, height) * (1.0 - smoothstep(0.88, 1.0, height) * 0.25);
         vec3 galaxy = vec3(0.30, 0.38, 0.55) * pow(max(1.0 - abs(dot(dir, normalize(vec3(0.18, 0.88, -0.42)))), 0.0), 5.0);
-        skyColor += (vec3(0.92, 0.94, 1.0) * starField + galaxy * 0.55) * nightAmount * starMask;
+        skyColor += (vec3(0.92, 0.94, 1.0) * starField * 1.8 + galaxy * 0.45) * nightAmount * starMask;
     }
 
     return skyColor;
 }
 
-vec3 scrollingSky() {
-    vec2 viewport = max(uViewportSize, vec2(1.0));
-    vec2 screenUv = gl_FragCoord.xy / viewport;
-    vec2 uv = vec2(screenUv.x * uScrollRepeat.x + 0.5 * uScrollRepeat.x +
-                       uCameraAngles.x * uScrollLookSensitivity * uScrollRepeat.x,
-                   screenUv.y * uScrollRepeat.y + uCameraAngles.y * uScrollVerticalInfluence * uScrollRepeat.y);
-    return texture(uScrollTex, uv).rgb;
+vec3 scrollingSky(vec3 dir) {
+    float yaw = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    float vertical = asin(clamp(dir.y, -0.96, 0.96)) / PI + 0.5;
+    float horizonLift = mix(0.0, uCameraAngles.y * 0.18, uScrollVerticalInfluence);
+    float wind = uSkyTime * 0.018;
+    vec2 uv = vec2((yaw + uCameraAngles.x * uScrollLookSensitivity * 0.35 + wind) * uScrollRepeat.x,
+                   (vertical + horizonLift + sin(yaw * 6.28318 + uSkyTime * 0.22) * 0.012) * uScrollRepeat.y);
+    vec3 cloudColor = texture(uScrollTex, uv).rgb;
+
+    vec2 highUv = vec2(uv.x + uSkyTime * 0.006, (0.82 + horizonLift) * uScrollRepeat.y);
+    vec3 zenithColor = texture(uScrollTex, highUv).rgb;
+    float zenithFade = smoothstep(0.70, 0.92, dir.y);
+    float nadirFade = smoothstep(-0.72, -0.92, dir.y);
+    vec3 bottomColor = texture(uScrollTex, vec2(uv.x, (0.08 + horizonLift) * uScrollRepeat.y)).rgb;
+    return mix(mix(cloudColor, zenithColor, zenithFade), bottomColor, nadirFade);
 }
 
 void main() {
-    vec3 dir = normalize(fragPos);
+    vec3 dir = reconstructSkyDir();
 
     float t = fract(timeOfDay);
     float angle = t * 2.0 * PI;
@@ -156,7 +202,7 @@ void main() {
     float nightAmount = 1.0 - dayAmount;
 
     if (uSkyMode == 1 && uHasScrollTexture) {
-        FragColor = vec4(scrollingSky(), 1.0);
+        FragColor = vec4(scrollingSky(dir), 1.0);
         return;
     }
 

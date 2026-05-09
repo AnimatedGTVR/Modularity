@@ -15,6 +15,7 @@ public:
         uint32_t floorDraws = 0;
         uint32_t modelDraws = 0;
         uint32_t submeshDraws = 0;
+        uint32_t spriteDraws = 0;
     };
 
     TMOpenGLRenderer() = default;
@@ -54,6 +55,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
     std::unique_ptr<Shader> floorShader;
     std::unique_ptr<Shader> meshShader;
+    std::unique_ptr<Shader> spriteShader;
     std::unique_ptr<Skybox> skybox;
     SkyboxSettings activeSkyboxSettings;
     bool activeSkyboxSettingsInitialized = false;
@@ -61,6 +63,8 @@ private:
     unsigned int fallbackWhiteTexture = 0;
     unsigned int quadVAO = 0;
     unsigned int quadVBO = 0;
+    unsigned int spriteVAO = 0;
+    unsigned int spriteVBO = 0;
     const TMRenderContext* activeContext = nullptr;
     RenderTarget* activeTarget = nullptr;
     BackendStats viewportBackendStats;
@@ -79,6 +83,8 @@ private:
     void destroyRenderTarget(RenderTarget& target);
     void ensureQuad();
     void destroyQuad();
+    void ensureSpriteGeometry();
+    void destroySpriteGeometry();
     bool ensureFallbackTexture();
     void destroyFallbackTexture();
     Texture* getTexture(const std::string& path, TMTextureFilter filter);
@@ -90,6 +96,7 @@ private:
     void beginFrame(const TMRenderContext& context) override;
     void drawM7Floor(const M7FloorDrawCommand& command) override;
     void drawSectorModel(const SectorModelDrawCommand& command) override;
+    void drawSprite25D(const Sprite25DDrawCommand& command) override;
     void endFrame() override;
 };
 

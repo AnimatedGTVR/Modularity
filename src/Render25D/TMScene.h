@@ -68,10 +68,26 @@ struct TMSectorModelInstance {
     TMWobbleSettings wobble;
 };
 
+struct TMSprite25DInstance {
+    uint32_t segmentIndex = 0;
+    int objectId = -1;
+    std::string name = "Sprite25D";
+    std::string texturePath;
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec2 halfExtents = glm::vec2(0.5f);
+    float rotationDegrees = 0.0f;
+    glm::vec4 colorTint = glm::vec4(1.0f);
+    glm::vec4 uvRect = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+    TMTextureFilter textureFilter = TMTextureFilter::Point;
+    int depthSort = 0;
+    bool enabled = true;
+};
+
 struct TMScene {
     std::vector<TMTileLayer> tileLayers;
     std::vector<TMSegment> segments;
     std::vector<TMSectorModelInstance> sectorModels;
+    std::vector<TMSprite25DInstance> sprites25D;
 };
 
 struct TMRenderContext {

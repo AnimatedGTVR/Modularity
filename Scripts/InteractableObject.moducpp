@@ -120,7 +120,7 @@ public class InteractableObject : ModuNode
 
         ctx.SetSetting("options", SerializeSubScriptArray(options));
         ctx.SetSetting("optionsBlob", "");
-        ctx.MarkDirty();
+        // ctx.SetSetting already marks dirty; no manual MarkDirty needed here.
     }
 
     void SyncSelectedState()
@@ -190,7 +190,7 @@ public class InteractableObject : ModuNode
 
     bool executeDialogueOption(InteractionOption option)
     {
-        SceneObject* dialogueObject = ResolveSceneObjectRef(ctx, option.dialogueSystemRef);
+        auto dialogueObject = ResolveObject(option.dialogueSystemRef);
         if (!dialogueObject) {
             ctx.AddConsoleMessage("InteractableObject: dialogue option is missing a valid DialogueSystem object reference.",
                                   ConsoleMessageType::Warning);
@@ -205,22 +205,21 @@ public class InteractableObject : ModuNode
         }
 
         bool changed = false;
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionRequestPending, "1");
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionOverrideLines,
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionRequestPending, "1");
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionOverrideLines,
                                     SerializeDialogueLines(option.dialogueLines));
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionEndEnable,
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionEndEnable,
                                     SerializeObjectRefs(option.dialogueItemsToEnableOnEnd));
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionEndDisable,
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionEndDisable,
                                     SerializeObjectRefs(option.dialogueItemsToDisableOnEnd));
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionPlayerRef, playerRef);
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionPlayerRef, playerRef);
 
         const int currentSerial = ParseInt(GetScriptSetting(dialogueTarget.script, kInteractionRequestSerial, "0"), 0);
-        changed |= SetScriptSetting(dialogueTarget.script, kInteractionRequestSerial, std::to_string(currentSerial + 1));
+        changed |= WriteScriptSetting(dialogueTarget.script, kInteractionRequestSerial, std::to_string(currentSerial + 1));
         changed |= SetObjectEnabledState(ctx, dialogueTarget.object, true);
 
-        if (changed) {
-            ctx.MarkDirty();
-        }
+        // WriteScriptSetting auto-dirties on change; SetObjectEnabledState dirties internally.
+        (void)changed;
 
         return true;
     }
@@ -240,7 +239,7 @@ public class InteractableObject : ModuNode
     {
         if (!ctx.object) return false;
 
-        SceneObject* player = ResolveSceneObjectRef(ctx, playerRef);
+        auto player = ResolveObject(playerRef);
         if (!player) {
             lastRangeHasPlayer = false;
             lastRangeInRange = false;

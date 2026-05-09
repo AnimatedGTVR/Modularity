@@ -101,6 +101,38 @@ inline bool IsRuntimeKeyDown(int glfwKey, ImGuiKey imguiKey) {
     return glfwGetKey(window, glfwKey) == GLFW_PRESS;
 }
 
+namespace Key {
+constexpr int W = GLFW_KEY_W;
+constexpr int A = GLFW_KEY_A;
+constexpr int S = GLFW_KEY_S;
+constexpr int D = GLFW_KEY_D;
+constexpr int E = GLFW_KEY_E;
+constexpr int UpArrow = GLFW_KEY_UP;
+constexpr int DownArrow = GLFW_KEY_DOWN;
+constexpr int LeftArrow = GLFW_KEY_LEFT;
+constexpr int RightArrow = GLFW_KEY_RIGHT;
+// Short aliases — equivalent to the *Arrow variants above.
+constexpr int Up = GLFW_KEY_UP;
+constexpr int Down = GLFW_KEY_DOWN;
+constexpr int Left = GLFW_KEY_LEFT;
+constexpr int Right = GLFW_KEY_RIGHT;
+constexpr int LeftShift = GLFW_KEY_LEFT_SHIFT;
+constexpr int RightShift = GLFW_KEY_RIGHT_SHIFT;
+constexpr int Space = GLFW_KEY_SPACE;
+constexpr int Enter = GLFW_KEY_ENTER;
+constexpr int KeypadEnter = GLFW_KEY_KP_ENTER;
+} // namespace Key
+
+inline bool IsKeyDown(int key) { return KeyDown(key); }
+inline bool IsKeyDown(int keyA, int keyB) { return KeyDown(keyA) || KeyDown(keyB); }
+inline bool IsKeyPressed(int key) { return KeyPressed(key); }
+
+namespace Input {
+inline bool IsKeyDown(int key) { return ::ModuCPP::KeyDown(key); }
+inline bool IsKeyDown(int keyA, int keyB) { return ::ModuCPP::KeyDown(keyA) || ::ModuCPP::KeyDown(keyB); }
+inline bool IsKeyPressed(int key) { return ::ModuCPP::KeyPressed(key); }
+} // namespace Input
+
 inline bool IsSubmitDown() {
     return IsRuntimeKeyDown(GLFW_KEY_ENTER, ImGuiKey_Enter) ||
            IsRuntimeKeyDown(GLFW_KEY_KP_ENTER, ImGuiKey_KeypadEnter);

@@ -77,4 +77,7 @@ Code modification expectations:
 - Return the closest production-ready result possible, not pseudocode.
 
 (oh and, if modifying ModuCPP, make sure to bump up the ABI version just in case.)
+
+Known traps:
+- `ScriptCompiler::makeCommands` is NOT a cheap path-lookup helper. It reads the script source and runs multiple `std::regex_search` passes (~250 ms per script) to detect entry-point shapes for wrapper generation. Never call it from hot paths (per-frame inspector draws, project-load init, scene refreshes) just to get the expected `.so`/`.dll` path. If you only need the binary path, derive it directly: `config.outDir / <relative-parent> / <stem><ext>` — that's the same logic `makeCommands` uses internally for `binaryPath`. Only call `makeCommands` when you actually need the full compile/link command lines.
 </INSTRUCTIONS>

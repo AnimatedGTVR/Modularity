@@ -203,7 +203,7 @@ public class DialogueSystem : ModuNode
         openDelayRemaining -= step;
         if (openDelayRemaining <= 0.0f) {
             if (!enterSoundClip.empty()) {
-                ctx.PlayAudioOneShot(enterSoundClip);
+                PlaySoundClip(enterSoundClip);
             }
             startLine();
         }
@@ -215,7 +215,7 @@ public class DialogueSystem : ModuNode
         if (isTyping) {
             completeTyping();
             if (!skipSoundClip.empty()) {
-                ctx.PlayAudioOneShot(skipSoundClip);
+                PlaySoundClip(skipSoundClip);
             }
             return;
         }
@@ -225,14 +225,14 @@ public class DialogueSystem : ModuNode
         if (index < static_cast<int>(activeLines.size()) - 1) {
             ++index;
             if (!enterSoundClip.empty()) {
-                ctx.PlayAudioOneShot(enterSoundClip);
+                PlaySoundClip(enterSoundClip);
             }
             startLine();
             return;
         }
 
         if (!exitSoundClip.empty()) {
-            ctx.PlayAudioOneShot(exitSoundClip);
+            PlaySoundClip(exitSoundClip);
         }
         beginDialogueClose();
     }
@@ -360,7 +360,7 @@ public class DialogueSystem : ModuNode
         TryPlayAnimationClipNamed(ctx, "DialogueStateOpen");
 
         if (!triggerSoundClip.empty()) {
-            ctx.PlayAudioOneShot(triggerSoundClip);
+            PlaySoundClip(triggerSoundClip);
         }
 
         if (openDelayRemaining <= 0.0f) {
@@ -408,7 +408,7 @@ public class DialogueSystem : ModuNode
                 if (std::isalnum(static_cast<unsigned char>(character)) != 0) {
                     const std::string& clip = line.characterSoundClip.empty() ? characterSoundClip : line.characterSoundClip;
                     if (!clip.empty() && soundCooldown <= 0.0f) {
-                        ctx.PlayAudioOneShot(clip);
+                        PlaySoundClip(clip);
                         soundCooldown = std::max(0.01f, typingSpeed * 0.6f);
                     }
                 }
@@ -453,9 +453,9 @@ public class DialogueSystem : ModuNode
         const bool isClosed = (mouthState == MouthState.TalkingClosed);
         const bool isIdle = (mouthState == MouthState.NotTalking);
 
-        SceneObject* openObj = ResolveSceneObjectRef(ctx, line.openMouthObjectRef);
-        SceneObject* closedObj = ResolveSceneObjectRef(ctx, line.closedMouthObjectRef);
-        SceneObject* idleObj = ResolveSceneObjectRef(ctx, line.notTalkingObjectRef);
+        auto openObj = ResolveObject(line.openMouthObjectRef);
+        auto closedObj = ResolveObject(line.closedMouthObjectRef);
+        auto idleObj = ResolveObject(line.notTalkingObjectRef);
 
         SetObjectEnabledState(ctx, openObj, isOpen);
         SetObjectEnabledState(ctx, closedObj, isClosed);

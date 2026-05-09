@@ -8,10 +8,15 @@ in vec2 TexCoord;
 uniform sampler2D texture1;
 uniform sampler2D overlayTex;
 uniform sampler2D normalMap;
+uniform samplerCube reflectionCube;
 uniform float mixAmount = 0.2;
 uniform bool hasOverlay = false;
 uniform bool hasNormalMap = false;
+uniform bool hasReflectionCast = false;
 uniform bool unlit = false;
+uniform float reflectionIntensity = 0.0;
+uniform float reflectionFadeStart = 4.0;
+uniform float reflectionFadeEnd = 24.0;
 uniform vec4 uvTransform = vec4(1.0, 1.0, 0.0, 0.0);
 
 uniform vec3 viewPos;
@@ -22,8 +27,18 @@ uniform float ambientStrength = 0.2;
 uniform vec3 ambientColor = vec3(1.0);
 uniform float specularStrength = 0.5;
 uniform float shininess = 32.0;
+uniform float normalMapIntensity = 1.0;
 
-const int MAX_LIGHTS = 10;
+uniform bool fogEnabled = false;
+uniform int fogMode = 0;
+uniform vec3 fogColor = vec3(0.65, 0.72, 0.78);
+uniform float fogStart = 20.0;
+uniform float fogEnd = 120.0;
+uniform float fogDensity = 0.015;
+uniform float fogHeight = 0.0;
+uniform float fogHeightFalloff = 0.0;
+
+const int MAX_LIGHTS = 100;
 const int MAX_SHADOW_MAPS = 4;
 uniform int lightCount = 0; // up to MAX_LIGHTS
 
@@ -214,6 +229,36 @@ vec3 evaluateDirectSpecular(
     return (microfacet * smoothVisibility + enhanced) * lightColor * intensity * NdotL;
 }
 
+float computeFogFactor()
+{
+    if (!fogEnabled) {
+        return 0.0;
+    }
+
+    float dist = length(viewPos - FragPos);
+    float factor = 0.0;
+    if (fogMode == 1) {
+        factor = 1.0 - exp(-max(fogDensity, 0.0) * dist);
+    } else if (fogMode == 2) {
+        float densityDistance = max(fogDensity, 0.0) * dist;
+        factor = 1.0 - exp(-(densityDistance * densityDistance));
+    } else {
+        factor = smoothstep(fogStart, max(fogStart + 0.01, fogEnd), dist);
+    }
+
+    if (fogHeightFalloff > 0.0001) {
+        float heightWeight = 1.0 - exp(-abs(FragPos.y - fogHeight) * fogHeightFalloff);
+        factor *= clamp(heightWeight, 0.0, 1.0);
+    }
+
+    return clamp(factor, 0.0, 1.0);
+}
+
+vec3 applyFog(vec3 color)
+{
+    return mix(color, fogColor, computeFogFactor());
+}
+
 void main()
 {
     vec2 uv = TexCoord * uvTransform.xy + uvTransform.zw;
@@ -224,8 +269,8 @@ void main()
     vec4 tex1 = texture(texture1, uv);
     vec3 texColor = tex1.rgb;
     if (hasOverlay) {
-        vec3 overlay = texture(overlayTex, uv).rgb;
-        texColor = mix(texColor, overlay, mixAmount);
+        vec4 overlay = texture(overlayTex, uv);
+        texColor = mix(texColor, overlay.rgb, overlay.a * mixAmount);
     }
     vec3 baseColor = texColor * materialColor;
     float alpha = tex1.a * materialAlpha;
@@ -234,13 +279,15 @@ void main()
     }
 
     if (unlit) {
-        FragColor = vec4(baseColor, alpha);
+        FragColor = vec4(applyFog(baseColor), alpha);
         return;
     }
 
     // Normal map (tangent-space)
     if (hasNormalMap) {
         vec3 mapN = texture(normalMap, uv).xyz * 2.0 - 1.0;
+        mapN.xy *= max(normalMapIntensity, 0.0);
+        mapN = normalize(mapN);
         vec3 dp1 = dFdx(FragPos);
         vec3 dp2 = dFdy(FragPos);
         vec2 duv1 = dFdx(uv);
@@ -410,6 +457,16 @@ void main()
         lighting += (1.0 - shadow) * (attenuation * diffuse + specular);
     }
 
+    if (hasReflectionCast && reflectionIntensity > 0.0) {
+        vec3 reflectionDir = reflect(-viewDir, norm);
+        float distanceFade = smoothstep(reflectionFadeStart, max(reflectionFadeStart + 0.01, reflectionFadeEnd), length(viewPos - FragPos));
+        float fresnel = pow(1.0 - clamp(dot(norm, viewDir), 0.0, 1.0), 5.0);
+        float reflectivity = smoothness * mix(0.18, 1.0, distanceFade) * mix(0.35, 1.0, fresnel);
+        vec3 reflected = texture(reflectionCube, reflectionDir).rgb;
+        lighting = mix(lighting, reflected, clamp(reflectivity * reflectionIntensity, 0.0, 1.0));
+    }
+
     vec3 finalColor = pow(max(lighting, vec3(0.0)), vec3(1.0 / 2.2));
+    finalColor = applyFog(finalColor);
     FragColor = vec4(finalColor, alpha);
 }

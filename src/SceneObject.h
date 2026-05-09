@@ -30,7 +30,8 @@ enum class ObjectType {
     Sprite25D = 22,
     Light2D = 23,
     ShadowCaster2D = 24,
-    ParticleSystem2D = 25
+    ParticleSystem2D = 25,
+    ReflectionCast = 26
 };
 
 enum class RenderType {
@@ -67,6 +68,7 @@ struct MaterialProperties {
     float ambientStrength = 0.2f;
     float specularStrength = 0.5f;
     float shininess = 32.0f;
+    float normalMapIntensity = 1.0f;
     float textureMix = 0.3f;  // Blend factor between albedo and overlay
     glm::vec2 uvTiling = glm::vec2(1.0f);
     glm::vec2 uvOffset = glm::vec2(0.0f);
@@ -78,6 +80,11 @@ enum class LightType {
     Point = 1,
     Spot = 2,
     Area = 3
+};
+
+enum class ReflectionCastUpdateMode {
+    EveryFrame = 0,
+    FirstFrame = 1
 };
 
 enum class UIAnchor {
@@ -103,7 +110,10 @@ enum class UITextVAlign {
 enum class UISliderStyle {
     ImGui = 0,
     Fill = 1,
-    Circle = 2
+    Circle = 2,
+    Vertical = 3,
+    Ring = 4,
+    Stepped = 5
 };
 
 enum class UIButtonStyle {
@@ -336,6 +346,16 @@ struct LightComponent {
     float shadowSoftness = 0.04f;
     int shadowResolution = 0; // 0 = use renderer default
     bool enabled = true;
+};
+
+struct ReflectionCastComponent {
+    bool enabled = true;
+    ReflectionCastUpdateMode updateMode = ReflectionCastUpdateMode::FirstFrame;
+    glm::vec3 boxSize = glm::vec3(6.0f);
+    float blendDistance = 8.0f;
+    float intensity = 1.0f;
+    int resolution = 128;
+    bool baked = false;
 };
 
 enum class SceneCameraType {
@@ -597,6 +617,16 @@ struct UIElementComponent {
     bool receiveLighting2D = true;
     bool unlitLighting2D = false;
     float emissiveLighting2D = 0.0f;
+    // Per-component color overrides (alpha == 0 means "use derived default")
+    glm::vec4 fillColor = glm::vec4(0.0f);        // slider fill / image tint override
+    glm::vec4 backgroundColor = glm::vec4(0.0f);  // slider/button background override
+    glm::vec4 borderColor = glm::vec4(0.0f);      // slider/button border override
+    glm::vec4 textColor = glm::vec4(0.0f);        // label/text color override
+    float fontSize = 0.0f;                         // explicit font size in px (0 = inherit textScale)
+    int sortingOrder = 0;                          // draw order within layer
+    // Runtime interaction state — set each frame by the rendering pass
+    bool uiHovered = false;
+    bool uiActive = false;
 };
 
 struct Rigidbody2DComponent {
@@ -825,6 +855,7 @@ public:
     bool faceCamera = false;
     bool hasLight = false;
     bool hasLight2D = false;
+    bool hasReflectionCast = false;
     bool hasCamera = false;
     bool hasPostFX = false;
     bool hasUI = false;
@@ -853,6 +884,7 @@ public:
     std::string fragmentShaderPath;
     bool useOverlay = false;
     LightComponent light;  // Only used when type is a light
+    ReflectionCastComponent reflectionCast;
     Light2DComponent light2D;
     ShadowCaster2DComponent shadowCaster2D;
     CameraComponent camera; // Only used when type is camera
@@ -1023,6 +1055,7 @@ inline const std::vector<std::string>& GetDefaultInspectorComponentOrderTemplate
         "camera",
         "camera_follow2d",
         "post_fx",
+        "reflection_cast",
         "script",
         "renderer",
         "light",
@@ -1071,6 +1104,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     if (obj.hasCamera) presentKeys.push_back("camera");
     if (obj.hasCameraFollow2D) presentKeys.push_back("camera_follow2d");
     if (obj.hasPostFX) presentKeys.push_back("post_fx");
+    if (obj.hasReflectionCast) presentKeys.push_back("reflection_cast");
     if (obj.hasRenderer) presentKeys.push_back("renderer");
     if (obj.hasLight) presentKeys.push_back("light");
     if (obj.hasLight2D) presentKeys.push_back("light2d");

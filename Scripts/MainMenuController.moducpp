@@ -1,395 +1,160 @@
 add ModuCPP;
+add ModuEngine;
 add ModuInput;
-add ModuCPP.Experimental;
-#include "DialoguePortShared.h"
-
-using namespace DialoguePort;
-
-enum class MenuOrientation {
-    Vertical = 0,
-    Horizontal = 1
-};
-
-struct MenuRuntimeState {
-    int currentIndex = 0;
-    float nextInputTime = 0.0f;
-    float startupDelayRemaining = 0.0f;
-    float elapsed = 0.0f;
-    glm::vec2 heartVisualPos = glm::vec2(0.0f);
-    bool initialized = false;
-};
-
-SubScript MenuAction {
-    public SceneObj[] enable;
-    public SceneObj[] disable;
-};
-
-namespace {
-
-std::unordered_map<int, MenuRuntimeState> g_runtimeStates;
-
-constexpr const char* kLegacySettingOrientation = "menu.orientation";
-constexpr const char* kLegacySettingHeartRef = "menu.heartRef";
-constexpr const char* kLegacySettingMenuItems = "menu.itemRefs";
-constexpr const char* kLegacySettingMoveSoundRef = "menu.moveSoundRef";
-constexpr const char* kLegacySettingSelectSoundRef = "menu.selectSoundRef";
-constexpr const char* kLegacySettingMoveSpeed = "menu.moveSpeed";
-constexpr const char* kLegacySettingOffset = "menu.offset";
-constexpr const char* kLegacySettingInputDelay = "menu.inputDelay";
-constexpr const char* kLegacySettingInitialDelay = "menu.initialDelay";
-constexpr const char* kLegacySettingActions = "menu.actions";
-
-SceneObject* resolveMenuItem(ScriptContext& ctx, const std::vector<std::string>& menuItemRefs, int index) {
-    if (index < 0 || index >= static_cast<int>(menuItemRefs.size())) return nullptr;
-    return ResolveSceneObjectRef(ctx, menuItemRefs[static_cast<size_t>(index)]);
-}
-
-void playSoundFromRef(ScriptContext& ctx, const std::string& objectRef) {
-    SceneObject* source = ResolveSceneObjectRef(ctx, objectRef);
-    if (!source || !source->hasAudioSource || source->audioSource.clipPath.empty()) return;
-    SceneObject* originalObject = ctx.object;
-    ctx.object = source;
-    ctx.PlayAudioOneShot(source->audioSource.clipPath);
-    ctx.object = originalObject;
-}
-
-bool getAnyGamepadState(GLFWgamepadstate& outState) {
-    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST; ++jid) {
-        if (!glfwJoystickPresent(jid) || !glfwJoystickIsGamepad(jid)) continue;
-        if (glfwGetGamepadState(jid, &outState) == GLFW_TRUE) {
-            return true;
-        }
-    }
-    return false;
-}
-
-int getDirectionInput(MenuOrientation orientation) {
-    GLFWgamepadstate gamepadState{};
-    const bool hasGamepad = getAnyGamepadState(gamepadState);
-
-    if (orientation == MenuOrientation::Vertical) {
-        if (IsRuntimeKeyDown(GLFW_KEY_DOWN, ImGuiKey_DownArrow) ||
-            IsRuntimeKeyDown(GLFW_KEY_S, ImGuiKey_S) ||
-            (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS ||
-                            gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] > 0.5f))) {
-            return 1;
-        }
-        if (IsRuntimeKeyDown(GLFW_KEY_UP, ImGuiKey_UpArrow) ||
-            IsRuntimeKeyDown(GLFW_KEY_W, ImGuiKey_W) ||
-            (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS ||
-                            gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] < -0.5f))) {
-            return -1;
-        }
-        return 0;
-    }
-
-    if (IsRuntimeKeyDown(GLFW_KEY_RIGHT, ImGuiKey_RightArrow) ||
-        IsRuntimeKeyDown(GLFW_KEY_D, ImGuiKey_D) ||
-        (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS ||
-                        gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X] > 0.5f))) {
-        return 1;
-    }
-    if (IsRuntimeKeyDown(GLFW_KEY_LEFT, ImGuiKey_LeftArrow) ||
-        IsRuntimeKeyDown(GLFW_KEY_A, ImGuiKey_A) ||
-        (hasGamepad && (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS ||
-                        gamepadState.axes[GLFW_GAMEPAD_AXIS_LEFT_X] < -0.5f))) {
-        return -1;
-    }
-    return 0;
-}
-
-bool isSubmitPressed() {
-    return IsRuntimeKeyDown(GLFW_KEY_ENTER, ImGuiKey_Enter) ||
-           IsRuntimeKeyDown(GLFW_KEY_KP_ENTER, ImGuiKey_KeypadEnter) ||
-           []() {
-               GLFWgamepadstate gamepadState{};
-               return getAnyGamepadState(gamepadState) &&
-                      (gamepadState.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS ||
-                       gamepadState.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS);
-           }();
-}
-
-void updateHeartPosition(ScriptContext& ctx,
-                         const std::string& heartRef,
-                         const std::vector<std::string>& menuItemRefs,
-                         MenuOrientation orientation,
-                         float offset,
-                         float moveSpeed,
-                         MenuRuntimeState& state,
-                         float deltaTime) {
-    SceneObject* heart = ResolveSceneObjectRef(ctx, heartRef);
-    SceneObject* target = resolveMenuItem(ctx, menuItemRefs, state.currentIndex);
-    if (!heart || !target || !HasUIComponent(*heart) || !HasUIComponent(*target)) return;
-
-    glm::vec2 targetPosition = target->ui.position;
-    const float itemHalfW = std::max(0.0f, target->ui.size.x * 0.5f);
-    const float itemHalfH = std::max(0.0f, target->ui.size.y * 0.5f);
-    const float heartHalfW = std::max(0.0f, heart->ui.size.x * 0.5f);
-    const float heartHalfH = std::max(0.0f, heart->ui.size.y * 0.5f);
-    if (orientation == MenuOrientation::Vertical) {
-        targetPosition.x -= itemHalfW + heartHalfW + offset;
-    } else {
-        targetPosition.y -= itemHalfH + heartHalfH + offset;
-    }
-
-    if (!state.initialized) {
-        state.heartVisualPos = heart->ui.position;
-    }
-    if (moveSpeed <= 0.0001f) {
-        state.heartVisualPos = targetPosition;
-    } else {
-        float alpha = std::clamp(deltaTime / moveSpeed, 0.0f, 1.0f);
-        state.heartVisualPos = glm::mix(state.heartVisualPos, targetPosition, alpha);
-    }
-
-    if (glm::distance(state.heartVisualPos, heart->ui.position) > 0.001f) {
-        heart->ui.position = state.heartVisualPos;
-        ctx.MarkDirty();
-    }
-}
-
-void executeAction(ScriptContext& ctx, const std::vector<MenuAction>& actions, int index) {
-    if (index < 0 || index >= static_cast<int>(actions.size())) {
-        ctx.AddConsoleMessage("MainMenuController: no action assigned for current menu item.",
-                              ConsoleMessageType::Warning);
-        return;
-    }
-    const MenuAction& action = actions[static_cast<size_t>(index)];
-    SetObjectsEnabledState(ctx, action.disable, false);
-    SetObjectsEnabledState(ctx, action.enable, true);
-}
-
-void drawRuntimeStatus(const std::vector<std::string>& menuItemRefs,
-                       const std::vector<MenuAction>& actions,
-                       const MenuRuntimeState* runtimeState) {
-    ImGui::Separator();
-    ImGui::TextUnformatted("Runtime");
-    ImGui::TextDisabled("Menu Items: %zu", menuItemRefs.size());
-    ImGui::TextDisabled("Actions: %zu", actions.size());
-    if (!runtimeState) {
-        ImGui::TextDisabled("State: idle");
-        return;
-    }
-
-    ImGui::TextDisabled("Current Index: %d", runtimeState->currentIndex + 1);
-    ImGui::TextDisabled("Initialized: %s", runtimeState->initialized ? "Yes" : "No");
-    ImGui::TextDisabled("Startup Delay Remaining: %.2f", runtimeState->startupDelayRemaining);
-    ImGui::TextDisabled("Next Input Time: %.2f", runtimeState->nextInputTime);
-    ImGui::TextDisabled("Elapsed: %.2f", runtimeState->elapsed);
-}
-
-}
-
+enum class MenuOrientation {Vertical, Horizontal}
+SubScript MenuAction {public SceneObj[] enable; public SceneObj[] disable;}
 public class MainMenuController : ModuNode {
     public MenuOrientation orientation = MenuOrientation.Vertical;
-    [ObjectRef] public string heartRef;
-    [ObjectList] public string[] menuItemRefs;
-    [ObjectRef] public string moveSoundRef;
-    [ObjectRef] public string selectSoundRef;
-    public float moveSpeed = 0.3f;
-    public float offset = 20.0f;
-    public float inputDelay = 0.2f;
-    public float initialDelay = 0.2f;
+    [ObjectRef]  public SceneObj heart;
+    [ObjectList] public SceneObj[] menuItems;
+    [ObjectRef]  public SceneObj moveSound;
+    [ObjectRef]  public SceneObj selectSound;
+    public float        moveSpeed    = 0.3f;
+    public float        offset       = 20.0f;
+    public float        inputDelay   = 0.2f;
+    public float        initialDelay = 0.2f;
     public MenuAction[] actions;
-
+    private int         currentIndex = 0;
+    private float       nextInputTime = 0.0f;
+    private float       startupDelayRemaining = 0.0f;
+    private float       elapsed = 0.0f;
+    private Vector2     lerpStart = Vector2(0.0f, 0.0f);
+    private Vector2     lerpEnd   = Vector2(0.0f, 0.0f);
+    private float       lerpT     = 1.0f;
+    private bool        initialized = false;
     inspector {
         Header("Main Menu Controller");
-
         Tabs {
             Tab("Layout") {
-                Run(MigrateLegacySettingsIfNeeded());
                 Enum("Menu Orientation", orientation);
-                AutoFields(heartRef, menuItemRefs);
+                AutoFields(heart, menuItems);
                 Slider("Offset", offset, -500.0f, 500.0f);
             }
-
-            Tab("Timing") {
-                AutoFields(moveSpeed, inputDelay, initialDelay);
-            }
-
-            Tab("Audio") {
-                AutoFields(moveSoundRef, selectSoundRef);
-            }
-
-            Tab("Actions") {
-                AutoFields(actions);
-            }
-
-            Tab("Runtime") {
-                Run(DrawRuntimeStatus());
-            }
+            Tab("Timing")  {AutoFields(moveSpeed, inputDelay, initialDelay);}
+            Tab("Audio")   {AutoFields(moveSound, selectSound);}
+            Tab("Actions") {AutoFields(actions);}
+            Tab("Runtime") {Run(DrawRuntimeStatus());}
         }
     }
 
     void Begin() {
-        MigrateLegacySettingsIfNeeded();
         SyncActionsToMenuItems();
-        if (!ctx.object) return;
-
-        MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
-        state.currentIndex = 0;
-        state.nextInputTime = 0.0f;
-        state.startupDelayRemaining = initialDelay;
-        state.elapsed = 0.0f;
-        state.initialized = false;
-        updateHeartPosition(ctx, heartRef, menuItemRefs, orientation, offset, moveSpeed, state, 1.0f);
-        state.initialized = true;
+        currentIndex = 0;
+        nextInputTime = 0.0f;
+        startupDelayRemaining = initialDelay;
+        elapsed = 0.0f;
+        initialized = false;
+        UpdateHeartPosition(1.0f);
+        initialized = true;
     }
-
     void TickUpdate() {
-        MigrateLegacySettingsIfNeeded();
-        if (!ctx.object || dt <= 0.0f) return;
-
         SyncActionsToMenuItems();
-
-        MenuRuntimeState& state = g_runtimeStates[ctx.object->id];
-        if (!state.initialized) {
-            state.currentIndex = 0;
-            state.nextInputTime = 0.0f;
-            state.startupDelayRemaining = initialDelay;
-            state.elapsed = 0.0f;
-            state.initialized = true;
+        if (!initialized) {
+            currentIndex = 0;
+            nextInputTime = 0.0f;
+            startupDelayRemaining = initialDelay;
+            elapsed = 0.0f;
+            initialized = true;
         }
-
-        const int itemCount = static_cast<int>(menuItemRefs.size());
-        if (itemCount <= 0) {
-            updateHeartPosition(ctx, heartRef, menuItemRefs, orientation, offset, moveSpeed, state, dt);
-            return;
-        }
-
-        state.currentIndex = std::clamp(state.currentIndex, 0, itemCount - 1);
-        state.elapsed += dt;
-        state.startupDelayRemaining = std::max(0.0f, state.startupDelayRemaining - dt);
-        const bool canMove = state.startupDelayRemaining <= 0.0f;
-
-        if (canMove && state.elapsed >= state.nextInputTime) {
-            const int direction = getDirectionInput(orientation);
+        int itemCount = menuItems.size();
+        if (itemCount <= 0) {UpdateHeartPosition(dt); return;}
+        currentIndex = Math.Clamp(currentIndex, 0, itemCount - 1);
+        elapsed = elapsed + dt;
+        startupDelayRemaining = Math.Max(0.0f, startupDelayRemaining - dt);
+        bool canMove = startupDelayRemaining <= 0.0f;
+        if (canMove && elapsed >= nextInputTime) {
+            int direction = ReadDirection();
             if (direction != 0) {
-                state.currentIndex += direction;
-                if (state.currentIndex < 0) state.currentIndex = itemCount - 1;
-                if (state.currentIndex >= itemCount) state.currentIndex = 0;
-                state.nextInputTime = state.elapsed + std::max(0.0f, inputDelay);
-                playSoundFromRef(ctx, moveSoundRef);
+                currentIndex = currentIndex + direction;
+                if (currentIndex < 0)          then currentIndex = itemCount - 1;
+                if (currentIndex >= itemCount) then currentIndex = 0;
+                nextInputTime = elapsed + Math.Max(0.0f, inputDelay);
+                if (moveSound) then Audio.PlayOneShot(moveSound);
             }
-
-            if (isSubmitPressed()) {
-                executeAction(ctx, actions, state.currentIndex);
-                playSoundFromRef(ctx, selectSoundRef);
-                state.nextInputTime = state.elapsed + std::max(0.0f, inputDelay);
+            if (IsSubmitPressed()) {
+                ExecuteAction(currentIndex);
+                if (selectSound) then Audio.PlayOneShot(selectSound);
+                nextInputTime = elapsed + Math.Max(0.0f, inputDelay);
             }
         }
-
-        updateHeartPosition(ctx, heartRef, menuItemRefs, orientation, offset, moveSpeed, state, dt);
+        UpdateHeartPosition(dt);
     }
 
-    void MigrateLegacySettingsIfNeeded() {
-        bool changed = false;
+    // ---- Input ----------------------------------------------------------
+    int ReadDirection() {
+        if (orientation == MenuOrientation.Vertical) {
+            if (Input.IsKeyDown(Key.S, Key.Down)) then return 1;
+            if (Input.IsKeyDown(Key.W, Key.Up))   then return -1; return 0;
+        }
+        if (Input.IsKeyDown(Key.D, Key.Right)) then return 1;
+        if (Input.IsKeyDown(Key.A, Key.Left))  then return -1; return 0;
+    }
+    bool IsSubmitPressed() {return Input.IsKeyDown(Key.Enter);}
 
-        if (ctx.GetSetting("orientation", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingOrientation, "");
-            if (!legacy.empty()) {
-                orientation = static_cast<MenuOrientation>(std::clamp(ParseInt(legacy, 0), 0, 1));
-                ctx.SetSetting("orientation", std::to_string(static_cast<int>(orientation)));
-                changed = true;
-            }
+    // ---- Heart cursor ---------------------------------------------------
+    void UpdateHeartPosition(float dt) {
+        if (!heart || !heart.UI.Exists) return;
+        if (currentIndex < 0 || currentIndex >= menuItems.size()) return;
+
+        // Local ref is a string ([ObjectList] storage). Use the UI* helpers
+        // directly — the transpiler rewrites only fire for known [ObjectRef] fields.
+        string targetRef = menuItems[currentIndex];
+        if (targetRef.empty() || !UIExists(targetRef)) return;
+        Vector2 targetPos = UIPosition(targetRef);
+        float itemHalfW  = Math.Max(0.0f, UISize(targetRef).x * 0.5f);
+        float itemHalfH  = Math.Max(0.0f, UISize(targetRef).y * 0.5f);
+        float heartHalfW = Math.Max(0.0f, heart.UI.Size.x * 0.5f);
+        float heartHalfH = Math.Max(0.0f, heart.UI.Size.y * 0.5f);
+        if (orientation == MenuOrientation.Vertical) then targetPos.x = targetPos.x - (itemHalfW + heartHalfW + offset);
+        else targetPos.y = targetPos.y - (itemHalfH + heartHalfH + offset);
+
+        // First call after Begin: snap and arm the lerp at rest on the target.
+        if (!initialized) {
+            lerpStart = heart.UI.Position;
+            lerpEnd   = targetPos;
+            lerpT     = 1.0f;
         }
 
-        if (ctx.GetSetting("heartRef", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingHeartRef, "");
-            if (!legacy.empty()) {
-                heartRef = legacy;
-                ctx.SetSetting("heartRef", heartRef);
-                changed = true;
-            }
+        // Restart the lerp whenever the destination changes (i.e. the user navigated).
+        // Linear in time over moveSpeed seconds — matches the original Unity coroutine.
+        if (Math.Distance(lerpEnd, targetPos) > 0.001f) {
+            lerpStart = heart.UI.Position;
+            lerpEnd   = targetPos;
+            lerpT     = 0.0f;
         }
+        if (moveSpeed <= 0.0001f) then lerpT = 1.0f;
+        else if (lerpT < 1.0f)    then lerpT = Math.Min(1.0f, lerpT + dt / moveSpeed);
 
-        if (ctx.GetSetting("menuItemRefs", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingMenuItems, "");
-            if (!legacy.empty()) {
-                menuItemRefs = DeserializeObjectRefs(legacy);
-                ctx.SetSetting("menuItemRefs", SerializeObjectRefs(menuItemRefs));
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("moveSoundRef", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingMoveSoundRef, "");
-            if (!legacy.empty()) {
-                moveSoundRef = legacy;
-                ctx.SetSetting("moveSoundRef", moveSoundRef);
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("selectSoundRef", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingSelectSoundRef, "");
-            if (!legacy.empty()) {
-                selectSoundRef = legacy;
-                ctx.SetSetting("selectSoundRef", selectSoundRef);
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("moveSpeed", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingMoveSpeed, "");
-            if (!legacy.empty()) {
-                moveSpeed = std::max(0.0f, ParseFloat(legacy, moveSpeed));
-                ctx.SetSetting("moveSpeed", std::to_string(moveSpeed));
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("offset", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingOffset, "");
-            if (!legacy.empty()) {
-                offset = ParseFloat(legacy, offset);
-                ctx.SetSetting("offset", std::to_string(offset));
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("inputDelay", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingInputDelay, "");
-            if (!legacy.empty()) {
-                inputDelay = std::max(0.0f, ParseFloat(legacy, inputDelay));
-                ctx.SetSetting("inputDelay", std::to_string(inputDelay));
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("initialDelay", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingInitialDelay, "");
-            if (!legacy.empty()) {
-                initialDelay = std::max(0.0f, ParseFloat(legacy, initialDelay));
-                ctx.SetSetting("initialDelay", std::to_string(initialDelay));
-                changed = true;
-            }
-        }
-
-        if (ctx.GetSetting("actions", "").empty()) {
-            string legacy = ctx.GetSetting(kLegacySettingActions, "");
-            if (!legacy.empty()) {
-                actions = DeserializeSubScriptArray<MenuAction>(legacy);
-                ctx.SetSetting("actions", SerializeSubScriptArray(actions));
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            ctx.MarkDirty();
-        }
+        // Cubic ease-out: 1 - (1 - t)^3. Fast at the start, gentle settle into place.
+        float oneMinusT = 1.0f - lerpT;
+        float easedT    = 1.0f - oneMinusT * oneMinusT * oneMinusT;
+        Vector2 newPos  = Math.Mix(lerpStart, lerpEnd, easedT);
+        if (Math.Distance(newPos, heart.UI.Position) > 0.001f) then heart.UI.Position = newPos;
     }
 
+    // ---- Actions --------------------------------------------------------
     void SyncActionsToMenuItems() {
-        if (actions.size() == menuItemRefs.size()) return;
-        actions.resize(menuItemRefs.size());
-        ctx.SetSetting("actions", SerializeSubScriptArray(actions));
-        ctx.MarkDirty();
+        if (actions.size() == menuItems.size()) return;
+        actions.resize(menuItems.size());
+    }
+    void ExecuteAction(int index) {
+        if (index < 0 || index >= actions.size()) {
+            AddLog("MainMenuController: no action assigned for current menu item.", Type.Warning); return;
+        }
+        MenuAction action = actions[index];
+        each obj in action.disable then obj.State(false); each obj in action.enable  then obj.State(true);
     }
 
+    // ---- Runtime panel (ModuGUI) ---------------------------------------
     void DrawRuntimeStatus() {
-        const int objectId = ctx.object ? ctx.object->id : -1;
-        auto it = g_runtimeStates.find(objectId);
-        drawRuntimeStatus(menuItemRefs, actions, it != g_runtimeStates.end() ? &it->second : nullptr);
+        UI.Separator();
+        UI.TextDisabled("Menu Items: " + IntR(menuItems.size()));
+        UI.TextDisabled("Actions: "    + IntR(actions.size()));
+        if(!initialized){UI.TextDisabled("State: idle"); return;}
+        UI.TextDisabled("Current Index: "           + IntR(currentIndex + 1));
+        UI.TextDisabled(initialized ? "Initialized: Yes" : "Initialized: No");
+        UI.TextDisabled("Startup Delay Remaining: " + FloatR(startupDelayRemaining, 2));
+        UI.TextDisabled("Next Input Time: "         + FloatR(nextInputTime, 2));
+        UI.TextDisabled("Elapsed: "                 + FloatR(elapsed, 2));
     }
 }

@@ -234,14 +234,12 @@ void applyPoseAtTime(ScriptContext& ctx, SceneObject& obj, float time) {
         ctx.SetPosition(keyframes.front().position);
         ctx.SetRotation(keyframes.front().rotation);
         ctx.SetScale(keyframes.front().scale);
-        ctx.MarkDirty();
         return;
     }
     if (time >= keyframes.back().time) {
         ctx.SetPosition(keyframes.back().position);
         ctx.SetRotation(keyframes.back().rotation);
         ctx.SetScale(keyframes.back().scale);
-        ctx.MarkDirty();
         return;
     }
 
@@ -254,7 +252,6 @@ void applyPoseAtTime(ScriptContext& ctx, SceneObject& obj, float time) {
             ctx.SetPosition(lerpVec3(a.position, b.position, t));
             ctx.SetRotation(lerpVec3(a.rotation, b.rotation, t));
             ctx.SetScale(lerpVec3(a.scale, b.scale, t));
-            ctx.MarkDirty();
             return;
         }
     }

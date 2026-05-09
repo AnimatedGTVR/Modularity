@@ -6,8 +6,8 @@
 
 namespace SceneSerializationInternal {
 
-constexpr int kLegacySceneFormatVersion = 25;
-constexpr int kModularSceneFormatVersion = 26;
+constexpr int kLegacySceneFormatVersion = 28;
+constexpr int kModularSceneFormatVersion = 29;
 
 bool WriteLegacySceneStream(std::ostream& out,
                             const std::vector<SceneObject>& objects,

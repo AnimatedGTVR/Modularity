@@ -485,6 +485,8 @@ bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
             outData.props.specularStrength = std::stof(val);
         } else if (key == "shininess") {
             outData.props.shininess = std::stof(val);
+        } else if (key == "normalIntensity" || key == "normalMapIntensity") {
+            outData.props.normalMapIntensity = std::clamp(std::stof(val), 0.0f, 2.0f);
         } else if (key == "textureMix") {
             outData.props.textureMix = std::stof(val);
         } else if (key == "uvTiling") {
@@ -539,6 +541,7 @@ bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
     f << "ambient=" << data.props.ambientStrength << "\n";
     f << "specular=" << data.props.specularStrength << "\n";
     f << "shininess=" << data.props.shininess << "\n";
+    f << "normalMapIntensity=" << data.props.normalMapIntensity << "\n";
     f << "textureMix=" << data.props.textureMix << "\n";
     f << "uvTiling=" << data.props.uvTiling.x << "," << data.props.uvTiling.y << "\n";
     f << "uvOffset=" << data.props.uvOffset.x << "," << data.props.uvOffset.y << "\n";
@@ -559,6 +562,7 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
     obj.renderType = RenderType::None;
     obj.hasLight = false;
     obj.hasLight2D = false;
+    obj.hasReflectionCast = false;
     obj.hasCamera = false;
     obj.hasPostFX = false;
     obj.hasUI = false;
@@ -659,6 +663,11 @@ void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
             obj.light.range = 10.0f;
             obj.light.intensity = 3.0f;
             obj.light.size = glm::vec2(2.0f, 2.0f);
+            break;
+        case ObjectType::ReflectionCast:
+            obj.hasReflectionCast = true;
+            obj.reflectionCast = ReflectionCastComponent{};
+            obj.scale = obj.reflectionCast.boxSize;
             break;
         case ObjectType::Camera:
             obj.hasCamera = true;
@@ -3416,6 +3425,14 @@ void Engine::applySceneSkyboxSettings(const SkyboxSettings& settings) {
     sceneSkyboxSettings.scrollingRepeatY = std::max(0.01f, sceneSkyboxSettings.scrollingRepeatY);
     sceneSkyboxSettings.scrollingLookSensitivity = std::max(0.0f, sceneSkyboxSettings.scrollingLookSensitivity);
     sceneSkyboxSettings.scrollingVerticalInfluence = std::clamp(sceneSkyboxSettings.scrollingVerticalInfluence, 0.0f, 1.0f);
+    sceneSkyboxSettings.environmentReflectionIntensity = std::clamp(sceneSkyboxSettings.environmentReflectionIntensity, 0.0f, 2.0f);
+    sceneSkyboxSettings.reflectionDistanceFadeStart = std::max(0.0f, sceneSkyboxSettings.reflectionDistanceFadeStart);
+    sceneSkyboxSettings.reflectionDistanceFadeEnd = std::max(sceneSkyboxSettings.reflectionDistanceFadeStart + 0.01f, sceneSkyboxSettings.reflectionDistanceFadeEnd);
+    sceneSkyboxSettings.fogMode = std::clamp(sceneSkyboxSettings.fogMode, 0, 2);
+    sceneSkyboxSettings.fogStart = std::max(0.0f, sceneSkyboxSettings.fogStart);
+    sceneSkyboxSettings.fogEnd = std::max(sceneSkyboxSettings.fogStart + 0.01f, sceneSkyboxSettings.fogEnd);
+    sceneSkyboxSettings.fogDensity = std::clamp(sceneSkyboxSettings.fogDensity, 0.0f, 1.0f);
+    sceneSkyboxSettings.fogHeightFalloff = std::clamp(sceneSkyboxSettings.fogHeightFalloff, 0.0f, 1.0f);
 
     if (Skybox* skybox = renderer.getSkybox()) {
         skybox->setSettings(sceneSkyboxSettings);
@@ -3583,16 +3600,23 @@ bool Engine::init() {
         }
     }
 
-    setupImGui();
+    {
+        MODU_PROFILE_SCOPE("Engine::init setupImGui", ProfilerSampleCategory::Engine);
+        setupImGui();
+    }
 
     if (usingVulkan()) {
+        MODU_PROFILE_SCOPE("Engine::init initVulkanRenderer", ProfilerSampleCategory::Engine);
         if (!initVulkanRenderer()) {
             return false;
         }
     }
 
-    if (!audio.init()) {
-        addConsoleMessage("Audio initialization failed. Audio playback will be disabled.", ConsoleMessageType::Warning);
+    {
+        MODU_PROFILE_SCOPE("Engine::init audio", ProfilerSampleCategory::Audio);
+        if (!audio.init()) {
+            addConsoleMessage("Audio initialization failed. Audio playback will be disabled.", ConsoleMessageType::Warning);
+        }
     }
     
     logToConsole("Engine initialized - Waiting for project selection");
@@ -3664,6 +3688,7 @@ void Engine::run() {
     bool runtime2DProfileWasEnabled = false;
     
     while (!glfwWindowShouldClose(editorWindow)) {
+        const auto __frameWall = std::chrono::steady_clock::now();
         ++renderFrameSerial;
         renderer.setFrameSerial(renderFrameSerial);
         Profiler& profiler = Profiler::instance();
@@ -3706,6 +3731,7 @@ void Engine::run() {
         lastFrame = currentFrame;
         deltaTime = std::min(deltaTime, 1.0f / 30.0f);
 
+        const auto __preStart = std::chrono::steady_clock::now();
         glfwPollEvents();
         pollProjectLoad();
         pollSceneLoad();
@@ -3742,19 +3768,37 @@ void Engine::run() {
             }
         }
 
-        // Scroll-wheel speed adjustment while freelook is active
-        if (viewportController.isViewportFocused() && cursorLocked) {
-            float wheel = ImGui::GetIO().MouseWheel;
-            if (std::abs(wheel) > 0.0001f) {
-                float factor = std::pow(1.12f, wheel);
-                float ratio = (camera.moveSpeed > 0.001f) ? (camera.sprintSpeed / camera.moveSpeed) : 2.0f;
-                camera.moveSpeed = std::clamp(camera.moveSpeed * factor, 0.5f, 100.0f);
-                camera.sprintSpeed = std::clamp(camera.moveSpeed * ratio, 0.5f, 200.0f);
-            }
-        }
-
         if (viewportController.isViewportFocused() && cursorLocked) {
             camera.processKeyboard(deltaTime, editorWindow);
+        } else {
+            camera.velocity = glm::vec3(0.0f);
+        }
+
+        if (viewportFocusActive) {
+            if (cursorLocked) {
+                viewportFocusActive = false;
+            } else {
+                const double elapsed = currentFrame - viewportFocusStartTime;
+                const float t = static_cast<float>(std::clamp(
+                    elapsed / std::max(0.001, viewportFocusDuration), 0.0, 1.0));
+                const float eased = t * t * (3.0f - 2.0f * t);
+                camera.position = glm::mix(viewportFocusStartPosition,
+                                           viewportFocusTargetPosition,
+                                           eased);
+                glm::vec3 front = glm::mix(viewportFocusStartFront,
+                                           viewportFocusTargetFront,
+                                           eased);
+                if (std::isfinite(front.x) && glm::length(front) > 1e-4f) {
+                    camera.front = glm::normalize(front);
+                    camera.pitch = glm::degrees(std::asin(glm::clamp(camera.front.y, -1.0f, 1.0f)));
+                    camera.pitch = glm::clamp(camera.pitch, -89.0f, 89.0f);
+                    camera.yaw = glm::degrees(std::atan2(camera.front.z, camera.front.x));
+                    camera.firstMouse = true;
+                }
+                if (t >= 1.0f) {
+                    viewportFocusActive = false;
+                }
+            }
         }
 
         // Run scripts only in play/spec/test modes to avoid edit-time side effects (e.g., cursor grabs)
@@ -3925,15 +3969,26 @@ void Engine::run() {
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         {
             MODU_PROFILE_SCOPE("Audio", ProfilerSampleCategory::Audio);
+            const auto __auStart = std::chrono::steady_clock::now();
             audio.update(sceneObjects, listenerCamera, audioShouldPlay);
+            const double __auMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - __auStart).count();
+            if (__auMs > 50.0) std::fprintf(stderr, "[ModuTimer]   audio.update %.1f ms\n", __auMs);
         }
 
         if (!playerMode) {
             MODU_PROFILE_SCOPE("Asset Loading", ProfilerSampleCategory::Asset);
-            updateCompileJob();
-            updateAutoCompileScripts();
-            processAutoCompileQueue();
-            pollExportBuild();
+            auto __t = std::chrono::steady_clock::now();
+            auto __mark = [&](const char* name) {
+                const auto now = std::chrono::steady_clock::now();
+                const double ms = std::chrono::duration<double, std::milli>(now - __t).count();
+                if (ms > 50.0) std::fprintf(stderr, "[ModuTimer]   %s %.1f ms\n", name, ms);
+                __t = now;
+            };
+            updateCompileJob();           __mark("updateCompileJob");
+            updateAutoCompileScripts();   __mark("updateAutoCompileScripts");
+            processAutoCompileQueue();    __mark("processAutoCompileQueue");
+            pollExportBuild();            __mark("pollExportBuild");
         }
 
         if (playerMode && !showLauncher) {
@@ -3989,6 +4044,7 @@ void Engine::run() {
                                                       static_cast<float>(std::max(1, runtimeRenderHeight)),
                                                   renderNear,
                                                   renderFar);
+                const auto __rsStart = std::chrono::steady_clock::now();
                 renderer.beginRender(view, proj, activeRenderCamera.position);
                 renderer.renderScene(activeRenderCamera, sceneObjects, selectedObjectId,
                                      renderFov,
@@ -3997,6 +4053,9 @@ void Engine::run() {
                                      false,
                                      &selectedObjectIds);
                 renderer.endRender();
+                const double __rsMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - __rsStart).count();
+                if (__rsMs > 100.0) std::fprintf(stderr, "[ModuTimer] renderScene(editor) %.1f ms\n", __rsMs);
             }
             profiler.endOpenGlGpuFrame();
             if (runtime2DProfileThisFrame) {
@@ -4028,6 +4087,10 @@ void Engine::run() {
             }
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
+            const double __preMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - __preStart).count();
+            if (__preMs > 100.0) std::fprintf(stderr, "[ModuTimer] preImGuiWork %.1f ms\n", __preMs);
+            const auto __dispatchStart = std::chrono::steady_clock::now();
             uiCanvas3DInputs.clear();
 
             if (showLauncher) {
@@ -4039,36 +4102,58 @@ void Engine::run() {
                 #endif
             } else if (!playerMode) {
 #if !MODULARITY_RUNTIME_ONLY
+                const auto __dsStart = std::chrono::steady_clock::now();
                 mainDockspaceId = setupDockspace(uiChromeScale);
+                const double __dsMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - __dsStart).count();
+                if (__dsMs > 50.0) std::fprintf(stderr, "[ModuTimer] setupDockspace %.1f ms\n", __dsMs);
+                const auto __mbStart = std::chrono::steady_clock::now();
                 renderMainMenuBar();
+                const double __mbMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - __mbStart).count();
+                if (__mbMs > 50.0) std::fprintf(stderr, "[ModuTimer] mainMenuBar %.1f ms\n", __mbMs);
                 const bool skipDockedWindowsThisFrame = workspaceLayoutSettlingFrame;
                 workspaceLayoutSettlingFrame = false;
 
+#define MODU_TIME_PANEL(name, expr) do { \
+    const auto __pStart = std::chrono::steady_clock::now(); \
+    expr; \
+    const double __pMs = std::chrono::duration<double, std::milli>( \
+        std::chrono::steady_clock::now() - __pStart).count(); \
+    if (__pMs > 100.0) std::fprintf(stderr, "[ModuTimer] panel:" name " %.1f ms\n", __pMs); \
+} while(0)
                 if (!viewportFullscreen && !skipDockedWindowsThisFrame) {
-                    if (showHierarchy) renderHierarchyPanel();
-                    if (showInspector) renderInspectorPanel();
-                    if (showFileBrowser) renderFileBrowserPanel();
-                    if (showMeshBuilder && hasMeshBuilderPackage()) renderMeshBuilderPanel();
-                    if (showScriptingWindow && hasScriptingWindowPackage()) renderScriptingWindow();
-                    if (showEnvironmentWindow) renderEnvironmentWindow();
-                    if (showCameraWindow) renderCameraWindow();
-                    if (showAnimationWindow) renderAnimationWindow();
-                    if (showAIPathfindingWindow) renderAIPathfindingWindow();
-                    if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) renderPixelSpriteEditorWindow();
-                    if (showProjectBrowser) renderProjectBrowserPanel();
-                    if (showRegistryPackagesWindow) renderRegistryPackagesWindow();
+                    if (showHierarchy) MODU_TIME_PANEL("Hierarchy", renderHierarchyPanel());
+                    if (showInspector) MODU_TIME_PANEL("Inspector", renderInspectorPanel());
+                    if (showFileBrowser) MODU_TIME_PANEL("FileBrowser", renderFileBrowserPanel());
+                    if (showMeshBuilder && hasMeshBuilderPackage()) MODU_TIME_PANEL("MeshBuilder", renderMeshBuilderPanel());
+                    if (showScriptingWindow && hasScriptingWindowPackage()) MODU_TIME_PANEL("Scripting", renderScriptingWindow());
+                    if (showEnvironmentWindow) MODU_TIME_PANEL("Environment", renderEnvironmentWindow());
+                    if (showCameraWindow) MODU_TIME_PANEL("Camera", renderCameraWindow());
+                    if (showAnimationWindow) MODU_TIME_PANEL("Animation", renderAnimationWindow());
+                    if (showAIPathfindingWindow) MODU_TIME_PANEL("AIPath", renderAIPathfindingWindow());
+                    if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) MODU_TIME_PANEL("PixelSprite", renderPixelSpriteEditorWindow());
+                    if (showVisualScriptingWindow) MODU_TIME_PANEL("VisualScript", renderVisualScriptingWindow());
+                    if (showProjectBrowser) MODU_TIME_PANEL("ProjectBrowser", renderProjectBrowserPanel());
+                    if (showRegistryPackagesWindow) MODU_TIME_PANEL("Registry", renderRegistryPackagesWindow());
                 }
 
-                if (showBuildSettings) renderBuildSettingsWindow();
+                if (showBuildSettings) MODU_TIME_PANEL("BuildSettings", renderBuildSettingsWindow());
                 if (!skipDockedWindowsThisFrame) {
-                    renderScriptEditorWindows();
-                    renderViewport();
-                    if (showGameViewport) renderGameViewportWindow();
-                    if (showConsole) renderConsolePanel();
+                    MODU_TIME_PANEL("ScriptEditorWindows", renderScriptEditorWindows());
+                    MODU_TIME_PANEL("Viewport", renderViewport());
+                    if (showGameViewport) MODU_TIME_PANEL("GameViewport", renderGameViewportWindow());
+                    if (showConsole) MODU_TIME_PANEL("Console", renderConsolePanel());
                 }
+#undef MODU_TIME_PANEL
                 renderLatestErrorBar();
                 renderEditorToast();
                 updateDockDrawerInteractions();
+                {
+                    const double __dispatchMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - __dispatchStart).count();
+                    if (__dispatchMs > 100.0) std::fprintf(stderr, "[ModuTimer] panelDispatch %.1f ms\n", __dispatchMs);
+                }
 #else
                 mainDockspaceId = 0;
                 renderPlayerViewport();
@@ -4081,17 +4166,35 @@ void Engine::run() {
             if (!playerMode) {
 #if !MODULARITY_RUNTIME_ONLY
                 renderTermsOfServiceModal();
+                renderWindowsDisclaimerPopup();
                 renderDialogs();
+                renderModuPakExportDialog();
+                renderModuPakImportDialog();
+                renderModuObjExportDialog();
+                renderModuObjImportDialog();
 #endif
             }
         }
 
+        const auto __postStart = std::chrono::steady_clock::now();
         if (!playerMode) {
             updateTouchSwipeScrolling();
             autosaveWorkspaceLayout();
         }
+        const double __postMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - __postStart).count();
+        if (__postMs > 50.0) std::fprintf(stderr, "[ModuTimer] postPanels(touch+autosave) %.1f ms\n", __postMs);
+        const auto __uiC3DStart = std::chrono::steady_clock::now();
         renderUiCanvas3DTargets();
+        const auto __renderImGuiStart = std::chrono::steady_clock::now();
         ImGui::Render();
+        const auto __renderImGuiEnd = std::chrono::steady_clock::now();
+        {
+            const double __c3DMs = std::chrono::duration<double, std::milli>(__renderImGuiStart - __uiC3DStart).count();
+            const double __irMs = std::chrono::duration<double, std::milli>(__renderImGuiEnd - __renderImGuiStart).count();
+            if (__c3DMs > 50.0) std::fprintf(stderr, "[ModuTimer] uiCanvas3D %.1f ms\n", __c3DMs);
+            if (__irMs > 50.0) std::fprintf(stderr, "[ModuTimer] ImGui::Render %.1f ms\n", __irMs);
+        }
         if (runtime2DProfileThisFrame) {
             imguiDrawCounters = CollectImGuiDrawCounters(ImGui::GetDrawData());
         }
@@ -4121,7 +4224,11 @@ void Engine::run() {
             glClearColor(0.1f, 0.1f, 0.12f, 1.00f);
             glClear(GL_COLOR_BUFFER_BIT);
 
+            const auto __glDrawStart = std::chrono::steady_clock::now();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            const double __glDrawMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - __glDrawStart).count();
+            if (__glDrawMs > 50.0) std::fprintf(stderr, "[ModuTimer] OpenGL3_RenderDrawData %.1f ms\n", __glDrawMs);
 
             ImGuiIO& io = ImGui::GetIO();
             if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
@@ -4266,6 +4373,13 @@ void Engine::run() {
             profiler.setCurrentFrameGpuCapability(false, false);
         }
         profiler.endFrame();
+        const double __frameMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - __frameWall).count();
+        if (__frameMs > 200.0) {
+            std::fprintf(stderr, "[ModuTimer] FRAME #%llu took %.1f ms (showLauncher=%d sceneLoadInProgress=%d)\n",
+                         (unsigned long long)renderFrameSerial, __frameMs,
+                         showLauncher ? 1 : 0, sceneLoadInProgress ? 1 : 0);
+        }
         firstFrame = false;
     }
 }
@@ -5792,6 +5906,29 @@ void Engine::updateAutoCompileScripts() {
         }
     }
 
+    // Cheap, deterministic derivation of the expected binary path — mirrors the
+    // path-building logic in ScriptCompiler::makeCommands without the regex scan
+    // of the source file. Used for the up-to-date check below; only sources that
+    // actually need a rebuild go through the full makeCommands path via
+    // queueAutoCompile -> compileScriptFile.
+    auto deriveBinaryPath = [&](const fs::path& scriptAbs) -> fs::path {
+        std::error_code ec;
+        fs::path relToScripts = fs::relative(scriptAbs, config.scriptsDir, ec);
+        if (ec) relToScripts.clear();
+        bool hasDotDot = false;
+        for (const auto& part : relToScripts) { if (part == "..") { hasDotDot = true; break; } }
+        if (relToScripts.empty() || relToScripts.is_absolute() || hasDotDot) relToScripts.clear();
+        fs::path relativeParent = relToScripts.has_parent_path() ? relToScripts.parent_path() : fs::path();
+        std::string baseName = scriptAbs.stem().string();
+        fs::path binaryPath = config.outDir / relativeParent;
+#ifdef _WIN32
+        binaryPath /= baseName + ".dll";
+#else
+        binaryPath /= baseName + ".so";
+#endif
+        return binaryPath;
+    };
+
     for (const auto& sourceKey : sources) {
         fs::path sourcePath = sourceKey;
         std::error_code sourceEc;
@@ -5808,11 +5945,10 @@ void Engine::updateAutoCompileScripts() {
         if (canUseCachedBinary) {
             binaryPath = cachedBinaryIt->second;
         } else {
-            ScriptBuildCommands commands;
-            if (!scriptCompiler.makeCommands(config, sourcePath, commands, error)) {
-                continue;
-            }
-            binaryPath = commands.binaryPath;
+            fs::path scriptAbs = fs::absolute(sourcePath, sourceEc);
+            if (sourceEc) scriptAbs = sourcePath;
+            binaryPath = deriveBinaryPath(scriptAbs);
+            if (binaryPath.empty()) continue;
             scriptAutoCompileBinaryCache[sourceKey] = binaryPath;
             scriptAutoCompileCheckedSourceTime[sourceKey] = sourceTime;
         }
@@ -7702,6 +7838,7 @@ void Engine::pollSceneLoad() {
     while (sceneLoadAssetsDone < sceneLoadAssetIndices.size() && processed < kAssetsPerFrame) {
         size_t objIndex = sceneLoadAssetIndices[sceneLoadAssetsDone];
         SceneObject& obj = sceneLoadObjects[objIndex];
+        const auto __aT0 = std::chrono::steady_clock::now();
 
         if (obj.renderType == RenderType::OBJMesh) {
             std::string err;
@@ -7728,6 +7865,11 @@ void Engine::pollSceneLoad() {
             }
         }
 
+        const double __aMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - __aT0).count();
+        if (__aMs > 30.0) {
+            std::fprintf(stderr, "[ModuTimer] sceneAsset %.1f ms  %s\n", __aMs, obj.meshPath.c_str());
+        }
         ++sceneLoadAssetsDone;
         ++processed;
     }
@@ -7745,13 +7887,17 @@ void Engine::pollSceneLoad() {
 
 void Engine::finalizeDeferredSceneLoad() {
     if (!sceneLoadInProgress) return;
+    const auto __fdT0 = std::chrono::steady_clock::now();
 
     sceneObjects = std::move(sceneLoadObjects);
     ResetParticleSystem2DRuntimes(sceneObjects);
     nextObjectId = sceneLoadNextId;
+    const auto __fdT1 = std::chrono::steady_clock::now();
 
     initializeLocalTransformsFromWorld(sceneLoadVersion);
+    const auto __fdT2 = std::chrono::steady_clock::now();
     rebuildSkeletalBindings();
+    const auto __fdT3 = std::chrono::steady_clock::now();
     currentSceneSerialization = sceneLoadMetadata;
     legacySceneSaveChoice = sceneLoadMetadata.fileFormat == SceneSerializer::FileFormat::LegacyFlat
         ? LegacySceneSaveChoice::Ask
@@ -7789,9 +7935,23 @@ void Engine::finalizeDeferredSceneLoad() {
     } else {
         showLauncher = false;
     }
+    const auto __fdT4 = std::chrono::steady_clock::now();
+    auto msF = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    std::fprintf(stderr,
+        "[ModuTimer] finalizeDeferredSceneLoad: move+particles=%.1f xforms=%.1f skel=%.1f tail=%.1f total=%.1f\n",
+        msF(__fdT0, __fdT1), msF(__fdT1, __fdT2), msF(__fdT2, __fdT3), msF(__fdT3, __fdT4), msF(__fdT0, __fdT4));
 }
 
 void Engine::finishProjectLoad(ProjectLoadResult& result) {
+    const auto __fpStart = std::chrono::steady_clock::now();
+    auto __fpDone = [&](const char* tag) {
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - __fpStart).count();
+        std::fprintf(stderr, "[ModuTimer] finishProjectLoad/%s %.1f ms\n", tag, ms);
+    };
+    struct __Scoped { std::function<void()> f; ~__Scoped(){ if(f) f(); } } __fpScope{[&]{ __fpDone("total"); }};
     if (!result.success) {
         projectManager.errorMessage = result.error.empty() ? "Failed to load project file" : result.error;
         addConsoleMessage("Error opening project: " + projectManager.errorMessage, ConsoleMessageType::Error);
@@ -9491,11 +9651,14 @@ bool Engine::saveCurrentScene(bool allowLegacyUpgradePrompt) {
 void Engine::performLoadScene(const std::string& sceneName) {
     if (!projectManager.currentProject.isLoaded) return;
 
+    MODU_PROFILE_SCOPE("Engine::performLoadScene", ProfilerSampleCategory::Asset);
+    const auto __lsTotal = std::chrono::steady_clock::now();
     const fs::path scenePath = projectManager.currentProject.getSceneFilePath(sceneName);
     int sceneVersion = 9;
     float loadedTimeOfDay = -1.0f;
     SkyboxSettings loadedSkyboxSettings;
     SceneSerializer::Metadata loadedMetadata;
+    const auto __lsBeforeLoad = std::chrono::steady_clock::now();
     if (SceneSerializer::loadScene(scenePath,
                                    sceneObjects,
                                    nextObjectId,
@@ -9503,10 +9666,27 @@ void Engine::performLoadScene(const std::string& sceneName) {
                                    &loadedTimeOfDay,
                                    &loadedSkyboxSettings,
                                    &loadedMetadata)) {
+        const auto __lsAfterLoad = std::chrono::steady_clock::now();
         markRuntimeScriptBindingsDirty();
+        const auto __lsAfterMark = std::chrono::steady_clock::now();
         initializeLocalTransformsFromWorld(sceneVersion);
+        const auto __lsAfterXf = std::chrono::steady_clock::now();
         ResetParticleSystem2DRuntimes(sceneObjects);
+        const auto __lsAfterPS = std::chrono::steady_clock::now();
         rebuildSkeletalBindings();
+        const auto __lsAfterSkel = std::chrono::steady_clock::now();
+        auto msL = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        std::fprintf(stderr,
+            "[ModuTimer] loadScene: serializer=%.1f mark=%.1f xforms=%.1f particles=%.1f skel=%.1f total=%.1f  (%s)\n",
+            msL(__lsBeforeLoad, __lsAfterLoad),
+            msL(__lsAfterLoad, __lsAfterMark),
+            msL(__lsAfterMark, __lsAfterXf),
+            msL(__lsAfterXf, __lsAfterPS),
+            msL(__lsAfterPS, __lsAfterSkel),
+            msL(__lsTotal, __lsAfterSkel),
+            sceneName.c_str());
         undoStack.clear();
         redoStack.clear();
         currentSceneSerialization = loadedMetadata;
@@ -11150,9 +11330,9 @@ void Engine::resetScriptRuntimeStateForReload(bool clearBinaryPaths) {
     for (SceneObject& obj : sceneObjects) {
         for (ScriptComponent& sc : obj.scripts) {
             sc.activeIEnums.clear();
-            sc.lastBinaryVerified = false;
             if (clearBinaryPaths) {
                 sc.lastBinaryPath.clear();
+                sc.lastBinaryVerified = false;
             }
         }
     }
@@ -11438,6 +11618,7 @@ void Engine::compileManagedScripts() {
 
 void Engine::updateCompileJob() {
     if (compileResultReady) {
+        const auto __moduFinalizeStart = std::chrono::steady_clock::now();
         if (compileWorker.joinable()) {
             compileWorker.join();
         }
@@ -11662,17 +11843,34 @@ void Engine::updateCompileJob() {
 
         if (!hasQueuedContinuation) {
             // Refresh runtime state once after the entire batch finishes.
-            resetScriptRuntimeStateForReload(true);
+            auto __t0 = std::chrono::steady_clock::now();
+            resetScriptRuntimeStateForReload(false);
+            auto __t1 = std::chrono::steady_clock::now();
             scriptEditorWindowsDirty = true;
             refreshScriptEditorWindows();
+            auto __t2 = std::chrono::steady_clock::now();
             nativeScriptMissingLogged.clear();
             nativeScriptLoadErrorLogged.clear();
+            if (result.success && !result.isManaged && !result.binaryPath.empty()) {
+                (void)scriptRuntime.getInspector(result.binaryPath);
+            }
+            auto __t3 = std::chrono::steady_clock::now();
             compileCompletionStart = glfwGetTime();
+            auto ms = [](auto a, auto b) {
+                return std::chrono::duration<double, std::milli>(b - a).count();
+            };
+            std::fprintf(stderr,
+                "[ModuTimer]   reset=%.2f refreshWindows=%.2f preWarmInspector=%.2f\n",
+                ms(__t0, __t1), ms(__t1, __t2), ms(__t2, __t3));
         }
         compileBatchTotal = 0;
         compileBatchCompleted = 0;
         compileCurrentManaged = false;
         showCompilePopup = true;
+        const double __moduFinalizeMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - __moduFinalizeStart).count();
+        std::fprintf(stderr, "[ModuTimer] post-compile finalize %.2f ms  %s\n",
+                     __moduFinalizeMs, result.scriptPath.string().c_str());
     }
 
     if (!compileInProgress && managedAutoCompileQueued) {
@@ -11689,6 +11887,9 @@ void Engine::refreshScriptEditorWindows() {
         scriptEditorWindows.clear();
         return;
     }
+    auto __rA = std::chrono::steady_clock::now();
+    int __sceneCount = 0;
+    int __dirCount = 0;
 
     std::unordered_map<std::string, bool> previousState;
     for (const auto& entry : scriptEditorWindows) {
@@ -11715,16 +11916,15 @@ void Engine::refreshScriptEditorWindows() {
 
     for (const auto& obj : sceneObjects) {
         for (const auto& sc : obj.scripts) {
-            fs::path binaryPath;
-            if (!sc.lastBinaryPath.empty()) {
-                binaryPath = fs::path(sc.lastBinaryPath);
-            }
-            if (binaryPath.empty() || !fs::exists(binaryPath)) {
-                binaryPath = resolveScriptBinary(sc.path);
-            }
+            ++__sceneCount;
+            if (sc.lastBinaryPath.empty()) continue;
+            fs::path binaryPath(sc.lastBinaryPath);
+            std::error_code __ec;
+            if (!fs::exists(binaryPath, __ec)) continue;
             tryAddEntry(binaryPath);
         }
     }
+    auto __rB = std::chrono::steady_clock::now();
 
     // Also scan the configured script output directory for standalone editor tabs.
     fs::path configPath = resolveScriptsConfigPath(projectManager.currentProject);
@@ -11746,6 +11946,7 @@ void Engine::refreshScriptEditorWindows() {
                     }
                     continue;
                 }
+                ++__dirCount;
                 auto ext = it->path().extension().string();
                 if (ext == ".so" || ext == ".dll" || ext == ".dylib") {
                     tryAddEntry(it->path());
@@ -11753,8 +11954,15 @@ void Engine::refreshScriptEditorWindows() {
             }
         }
     }
+    auto __rC = std::chrono::steady_clock::now();
 
     scriptEditorWindows.swap(updated);
+    auto msF = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    std::fprintf(stderr,
+        "[ModuTimer]   refresh: sceneScripts=%.2f (%d) dirScan=%.2f (%d files)\n",
+        msF(__rA, __rB), __sceneCount, msF(__rB, __rC), __dirCount);
 }
 
 void Engine::renderScriptEditorWindows() {
@@ -12493,6 +12701,8 @@ void Engine::loadEditorUserSettings() {
             showLight2DStatsOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "light2DLightingBufferScale") {
             try { light2DLightingBufferScale = std::clamp(std::stof(value), 0.5f, 1.0f); } catch (...) {}
+        } else if (key == "maxRealtimeLights") {
+            try { renderer.setMaxRealtimeLights(std::stoi(value)); } catch (...) {}
         } else if (key == "world2DPostFxEnabled") {
             world2DPostFx.enabled = (value == "1" || value == "true" || value == "yes");
         } else if (key == "world2DPostFxDitherIntensity") {
@@ -12737,6 +12947,7 @@ void Engine::loadEditorUserSettings() {
     sceneViewportRenderWidth = std::clamp(sceneViewportRenderWidth, 64, 8192);
     sceneViewportRenderHeight = std::clamp(sceneViewportRenderHeight, 64, 8192);
     light2DLightingBufferScale = std::clamp(light2DLightingBufferScale, 0.5f, 1.0f);
+    renderer.setMaxRealtimeLights(renderer.getMaxRealtimeLights());
     pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
     {
         auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
@@ -12865,6 +13076,7 @@ void Engine::saveEditorUserSettings() const {
     file << "showViewportHintOverlay=" << (showViewportHintOverlay ? "1" : "0") << "\n";
     file << "showLight2DStatsOverlay=" << (showLight2DStatsOverlay ? "1" : "0") << "\n";
     file << "light2DLightingBufferScale=" << std::clamp(light2DLightingBufferScale, 0.5f, 1.0f) << "\n";
+    file << "maxRealtimeLights=" << renderer.getMaxRealtimeLights() << "\n";
     file << "world2DPostFxEnabled=" << (world2DPostFx.enabled ? "1" : "0") << "\n";
     file << "world2DPostFxDitherIntensity=" << std::clamp(world2DPostFx.ditherIntensity, 0.0f, 1.5f) << "\n";
     file << "world2DPostFxColorBits=" << std::clamp(world2DPostFx.colorBits, 1, 8) << "\n";

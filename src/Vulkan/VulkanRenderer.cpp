@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <chrono>
 #include <numeric>
 
 namespace {
@@ -55,7 +56,7 @@ struct SkyboxPushConstants {
     alignas(16) glm::vec4 params = glm::vec4(0.5f, 0.0f, 0.0f, 0.18f);
     // x = scrollRepeatX, y = scrollRepeatY, z = viewportWidth, w = viewportHeight
     alignas(16) glm::vec4 scroll = glm::vec4(2.0f, 1.0f, 1.0f, 1.0f);
-    // x = yawOffset, y = pitchRadians, z = lookSensitivity
+    // x = yawOffset, y = pitchRadians, z = lookSensitivity, w = animation time
     alignas(16) glm::vec4 camera = glm::vec4(0.0f);
 };
 
@@ -1736,6 +1737,8 @@ void VulkanRenderer::renderSceneTarget(VkCommandBuffer cmd,
         skyPush.camera.x = std::atan2(forward.x, -forward.z) / (2.0f * 3.14159265359f);
         skyPush.camera.y = std::asin(std::clamp(forward.y, -1.0f, 1.0f));
         skyPush.camera.z = skyboxSettings.scrollingLookSensitivity;
+        static const auto skyStartTime = std::chrono::steady_clock::now();
+        skyPush.camera.w = std::chrono::duration<float>(std::chrono::steady_clock::now() - skyStartTime).count();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyboxPipeline);
         vkCmdBindDescriptorSets(cmd,
                                 VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1751,7 +1754,7 @@ void VulkanRenderer::renderSceneTarget(VkCommandBuffer cmd,
                            0,
                            sizeof(SkyboxPushConstants),
                            &skyPush);
-        vkCmdDraw(cmd, 36, 1, 0, 0);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
 
         const float timeSeconds = static_cast<float>(glfwGetTime());
         for (const SceneInstance& instance : instances) {

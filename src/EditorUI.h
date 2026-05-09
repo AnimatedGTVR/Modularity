@@ -30,11 +30,25 @@ enum class FileCategory {
 
 class FileBrowser {
 public:
+    struct CachedEntry {
+        fs::path path;
+        std::string filename;
+        std::string selectionKey;
+        std::string metadata;
+        FileCategory category = FileCategory::Unknown;
+        fs::file_time_type lastWriteTime{};
+        uintmax_t sizeBytes = 0;
+        bool isDirectory = false;
+        bool folderHasItems = false;
+        bool hasSizeBytes = false;
+    };
+
     struct RefreshResult {
         fs::path path;
         std::string filter;
         bool showHiddenFiles = false;
         std::vector<fs::directory_entry> entries;
+        std::vector<CachedEntry> cachedEntries;
     };
 
     fs::path currentPath;
@@ -44,6 +58,7 @@ public:
     int selectionAnchorIndex = -1;
     fs::path projectRoot;  // Root of current project
     std::vector<fs::directory_entry> entries;
+    std::vector<CachedEntry> cachedEntries;
     bool needsRefresh = true;
     
     FileBrowserViewMode viewMode = FileBrowserViewMode::Grid;

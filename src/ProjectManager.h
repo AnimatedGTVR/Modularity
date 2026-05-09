@@ -151,6 +151,7 @@ public:
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     std::string acceptedTermsVersion;
+    bool windowsDisclaimerAcknowledgedV68 = false;
     int newProjectPipelineMode = 0;
     int newProjectRendererMode = 0;
     bool newProjectImportLastPackages = true;

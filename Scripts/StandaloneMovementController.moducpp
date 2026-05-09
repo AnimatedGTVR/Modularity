@@ -17,10 +17,10 @@ public class StandaloneMovementController : ModuBehaviour {
         resetStateFromObject(state, *obj);
 
         if (config.settings.enforceCollider) {
-            ctx.EnsureCapsuleCollider(config.settings.capsuleTuning.x, config.settings.capsuleTuning.y);
+            EnsureCapsuleCollider(config.settings.capsuleTuning.x, config.settings.capsuleTuning.y);
         }
         if (config.settings.enforceRigidbody) {
-            ctx.EnsureRigidbody(true, false);
+            EnsureRigidbody(true, false);
         }
     }
 

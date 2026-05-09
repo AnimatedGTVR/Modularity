@@ -5,16 +5,14 @@ public class TestMathAndStartScripts : ModuNode
     public int DoubleValueAmount = 5;
     public int ResultNumber;
     public bool ready = true;
-    // v-- this allows you to calculate a value of type like a Lambda for example below.
     Calc DValue(x) to x * 2;
 
     void Begin()
     {
         // You can call a Calculation through here.
         int ExpectedResult = DValue(DoubleValueAmount);
-
         if (ResultNumber != ExpectedResult) then ResultNumber = ExpectedResult;
-
+        
         // New Sentax 'then' + allow brackets to store multiple values in both the 'to' and 'then' syntax values.
         if (ready) then [ StartGame(), PlaySound(), SaveData() ];
     }
@@ -22,5 +20,5 @@ public class TestMathAndStartScripts : ModuNode
     // Change from the old logging system 'ctx.AddConsoleMessage("Hello World!", ConsoleMessageType::Info);' to this new system.
     void StartGame() to AddLog("Game Started", Type.Info);
     void PlaySound() to AddLog("Sound Played", Type.Info);
-    void SaveData() to AddLog("Data Saved", Type.Info);
+    void SaveData() to AddLog("Data Saved", DValue, Type.Info);
 }

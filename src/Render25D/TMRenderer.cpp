@@ -375,12 +375,41 @@ bool TMRenderer::render(const TMRenderContext& context,
     outStats.modelCommands = static_cast<uint32_t>(modelCommands.size());
     outStats.rejectedModels = modelStats.rejectedModels;
 
+    std::vector<Sprite25DDrawCommand> spriteCommands;
+    spriteCommands.reserve(scene.sprites25D.size());
+    for (const TMSprite25DInstance& sprite : scene.sprites25D) {
+        if (!sprite.enabled) {
+            continue;
+        }
+        const float depth = glm::dot(sprite.position - context.cameraPosition, context.cameraForward);
+        if (depth <= 0.0f || depth > context.maxVisibleDistance) {
+            continue;
+        }
+        Sprite25DDrawCommand command;
+        command.sprite = sprite;
+        command.sortDepth = depth;
+        spriteCommands.push_back(std::move(command));
+    }
+    std::stable_sort(spriteCommands.begin(), spriteCommands.end(),
+                     [](const Sprite25DDrawCommand& a, const Sprite25DDrawCommand& b) {
+                         if (a.sprite.depthSort != b.sprite.depthSort) {
+                             return a.sprite.depthSort < b.sprite.depthSort;
+                         }
+                         if (std::abs(a.sortDepth - b.sortDepth) > 0.001f) {
+                             return a.sortDepth > b.sortDepth;
+                         }
+                         return a.sprite.objectId < b.sprite.objectId;
+                     });
+
     backend.beginFrame(context);
     for (const M7FloorDrawCommand& command : floorCommands) {
         backend.drawM7Floor(command);
     }
     for (const SectorModelDrawCommand& command : modelCommands) {
         backend.drawSectorModel(command);
+    }
+    for (const Sprite25DDrawCommand& command : spriteCommands) {
+        backend.drawSprite25D(command);
     }
     backend.endFrame();
 

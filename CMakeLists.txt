@@ -383,7 +383,7 @@ set(MODULARITY_PLAYER_EDITOR_ONLY_SOURCES
     ${PROJECT_SOURCE_DIR}/src/EditorWindows/PixelSpriteEditorWindow.cpp
     ${PROJECT_SOURCE_DIR}/src/EditorWindows/ProjectManagerWindow.cpp
     ${PROJECT_SOURCE_DIR}/src/EditorWindows/RegistryPackagesWindow.cpp
-    ${PROJECT_SOURCE_DIR}/src/EditorWindows/SceneWindows.cpp
+    ${PROJECT_SOURCE_DIR}/src/EditorWindows/Panels/SceneHierarchyWindow.cpp
     ${PROJECT_SOURCE_DIR}/src/EditorWindows/ScriptingWindow.cpp
 )
 

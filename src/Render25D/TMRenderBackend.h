@@ -23,6 +23,11 @@ struct SectorModelDrawCommand {
     float worldBaseHeight = 0.0f;
 };
 
+struct Sprite25DDrawCommand {
+    TMSprite25DInstance sprite;
+    float sortDepth = 0.0f;
+};
+
 class ITMRenderBackend {
 public:
     virtual ~ITMRenderBackend() = default;
@@ -30,6 +35,7 @@ public:
     virtual void beginFrame(const TMRenderContext& context) = 0;
     virtual void drawM7Floor(const M7FloorDrawCommand& command) = 0;
     virtual void drawSectorModel(const SectorModelDrawCommand& command) = 0;
+    virtual void drawSprite25D(const Sprite25DDrawCommand& command) = 0;
     virtual void endFrame() = 0;
 };
 
@@ -38,6 +44,7 @@ public:
     void beginFrame(const TMRenderContext& context) override { (void)context; }
     void drawM7Floor(const M7FloorDrawCommand& command) override { (void)command; }
     void drawSectorModel(const SectorModelDrawCommand& command) override { (void)command; }
+    void drawSprite25D(const Sprite25DDrawCommand& command) override { (void)command; }
     void endFrame() override {}
 };
 

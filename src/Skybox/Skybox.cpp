@@ -4,6 +4,7 @@
 #include <glad/glad.h>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <iostream>
 #include <string>
 #include "../../src/ThirdParty/glm/glm.hpp"
@@ -172,10 +173,21 @@ void Skybox::setSettings(const SkyboxSettings& newSettings) {
     settings.scrollingRepeatY = std::max(0.01f, settings.scrollingRepeatY);
     settings.scrollingLookSensitivity = std::max(0.0f, settings.scrollingLookSensitivity);
     settings.scrollingVerticalInfluence = std::clamp(settings.scrollingVerticalInfluence, 0.0f, 1.0f);
+    settings.environmentReflectionIntensity = std::clamp(settings.environmentReflectionIntensity, 0.0f, 2.0f);
+    settings.reflectionDistanceFadeStart = std::max(0.0f, settings.reflectionDistanceFadeStart);
+    settings.reflectionDistanceFadeEnd = std::max(settings.reflectionDistanceFadeStart + 0.01f, settings.reflectionDistanceFadeEnd);
+    settings.fogMode = std::clamp(settings.fogMode, 0, 2);
+    settings.fogStart = std::max(0.0f, settings.fogStart);
+    settings.fogEnd = std::max(settings.fogStart + 0.01f, settings.fogEnd);
+    settings.fogDensity = std::clamp(settings.fogDensity, 0.0f, 1.0f);
+    settings.fogHeightFalloff = std::clamp(settings.fogHeightFalloff, 0.0f, 1.0f);
     reloadTextures();
 }
 
 void Skybox::draw(const float* view, const float* projection) {
+    static const auto startTime = std::chrono::steady_clock::now();
+    animationTime = std::chrono::duration<float>(std::chrono::steady_clock::now() - startTime).count();
+
     // Properly reconstruct the view matrix from the float array
     glm::mat4 viewMat = glm::make_mat4(view);
     glm::mat4 projMat = glm::make_mat4(projection);
@@ -195,6 +207,7 @@ void Skybox::draw(const float* view, const float* projection) {
     skyboxShader->setMat4("view", viewMat);
     skyboxShader->setMat4("projection", projMat);
     skyboxShader->setFloat("timeOfDay", timeOfDay);
+    skyboxShader->setFloat("uSkyTime", animationTime);
     skyboxShader->setInt("uSunTex", 0);
     skyboxShader->setInt("uMoonTex", 1);
     skyboxShader->setInt("uScrollTex", 2);
@@ -215,7 +228,7 @@ void Skybox::draw(const float* view, const float* projection) {
     glBindTexture(GL_TEXTURE_2D, (scrollingTexture && scrollingTexture->GetID() != 0) ? scrollingTexture->GetID() : 0);
     
     glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, 0);

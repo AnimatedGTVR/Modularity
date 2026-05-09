@@ -698,7 +698,14 @@ bool PhysicsSystem::setLinearVelocity(int id, const glm::vec3& velocity) {
     ActorRecord& rec = it->second;
     if (!rec.actor || !rec.isDynamic) return false;
     if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
+        // Re-enable simulation in case the actor was put to sleep / disabled
+        // while its parent or component was off, then force-wake so the
+        // velocity actually takes effect on the next step.
+        dyn->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, false);
         dyn->setLinearVelocity(ToPxVec3(velocity));
+        if (!dyn->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+            dyn->wakeUp();
+        }
         return true;
     }
 #endif
@@ -916,7 +923,62 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         objectsById[obj.id] = &obj;
     }
 
-    // Sync actors to authoring transforms before stepping
+    // Sync actors to authoring transforms before stepping.
+    // Zeroth pass: any SceneObject that just became hierarchyEnabled mid-play
+    // (e.g. a parent group flipped on, or a script toggled the object back on)
+    // needs its actor lazily created — onPlayStart only spawns actors for
+    // objects that were enabled at play start.
+    for (SceneObject& obj : objects) {
+        if (mActors.find(obj.id) != mActors.end()) continue;
+        if (!IsObjectEnabledInHierarchy(obj)) continue;
+        const bool wantsDyn = obj.hasRigidbody && obj.rigidbody.enabled;
+        const bool wantsCol = obj.hasCollider && obj.collider.enabled;
+        if (!wantsDyn && !wantsCol) continue;
+        ActorRecord rec = createActorFor(obj);
+        if (!rec.actor) continue;
+        mScene->addActor(*rec.actor);
+        mActors[obj.id] = rec;
+        mActorIdsByPtr[rec.actor] = obj.id;
+    }
+
+    // First pass: detect actors whose dynamic/static type no longer matches the
+    // SceneObject's current rigidbody.enabled state (e.g. a rigidbody toggled
+    // on after the actor was first spawned as static). PhysX actor identity
+    // can't change in place, so we release and re-create.
+    {
+        std::vector<int> idsToRecreate;
+        for (auto& [id, rec] : mActors) {
+            if (!rec.actor) continue;
+            auto objIt = objectsById.find(id);
+            if (objIt == objectsById.end()) continue;
+            const SceneObject& obj = *objIt->second;
+            const bool wantsDynamicNow = obj.hasRigidbody && obj.rigidbody.enabled;
+            if (rec.isDynamic != wantsDynamicNow) {
+                idsToRecreate.push_back(id);
+            }
+        }
+        for (int id : idsToRecreate) {
+            auto recIt = mActors.find(id);
+            if (recIt == mActors.end()) continue;
+            ActorRecord& rec = recIt->second;
+            if (rec.actor) {
+                mActorIdsByPtr.erase(rec.actor);
+                if (mScene) mScene->removeActor(*rec.actor);
+                rec.actor->release();
+                rec.actor = nullptr;
+            }
+            const SceneObject& obj = *objectsById[id];
+            ActorRecord fresh = createActorFor(obj);
+            if (fresh.actor) {
+                mScene->addActor(*fresh.actor);
+                mActorIdsByPtr[fresh.actor] = id;
+                recIt->second = fresh;
+            } else {
+                mActors.erase(recIt);
+            }
+        }
+    }
+
     for (auto& [id, rec] : mActors) {
         if (!rec.actor) continue;
         auto objIt = objectsById.find(id);
