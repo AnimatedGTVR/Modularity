@@ -713,13 +713,11 @@ configure_file(
 if(MODULARITY_BUILD_EDITOR)
     install(TARGETS Modularity
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
 
 install(TARGETS ModularityPlayer
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(SCRIPT ${MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT})
 
@@ -731,6 +729,41 @@ if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
     install(FILES ${PHYSX_SO_FILES}
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
+endif()
+
+if(WIN32)
+    if(MODULARITY_FFMPEG_RUNTIME_DLLS)
+        install(FILES ${MODULARITY_FFMPEG_RUNTIME_DLLS}
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+    foreach(_modularity_ffmpeg_dir IN LISTS MODULARITY_FFMPEG_RUNTIME_DLL_DIRS)
+        if(_modularity_ffmpeg_dir AND IS_DIRECTORY "${_modularity_ffmpeg_dir}")
+            install(DIRECTORY "${_modularity_ffmpeg_dir}/"
+                DESTINATION ${CMAKE_INSTALL_BINDIR}
+                FILES_MATCHING PATTERN "*.dll"
+            )
+        endif()
+    endforeach()
+
+    if(MODULARITY_USE_MONO AND MONO_RUNTIME_DLL)
+        install(FILES "${MONO_RUNTIME_DLL}"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+
+    if(MODULARITY_ENABLE_PHYSX)
+        install(CODE "
+            file(GLOB _modularity_physx_dlls
+                \"${PX_OUTPUT_BIN_DIR}/*/*/*.dll\"
+                \"${PX_OUTPUT_BIN_DIR}/*.dll\"
+                \"${CMAKE_BINARY_DIR}/physx/sdk_source_bin/*.dll\"
+            )
+            foreach(_physx_dll IN LISTS _modularity_physx_dlls)
+                file(INSTALL \"\${_physx_dll}\" DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
+            endforeach()
+        ")
+    endif()
 endif()
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
@@ -753,7 +786,11 @@ set(CPACK_PACKAGE_FILE_NAME
     "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}"
 )
 
-set(CPACK_GENERATOR "TGZ")
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
 
 set(CPACK_INSTALL_CMAKE_PROJECTS
     "${CMAKE_BINARY_DIR};${CMAKE_PROJECT_NAME};ALL;/"

@@ -68,10 +68,10 @@ if errorlevel 1 (
 
 echo [INFO] Collecting package binaries...
 if not exist "Packages\\ThirdParty" mkdir "Packages\\ThirdParty"
-for /r %%F in (*.lib) do call :copy_if_not_packages "%%F" "Packages\\ThirdParty"
+for /r %%F in (*.lib) do call :copy_thirdparty_lib "%%F" "Packages\\ThirdParty"
 for /r %%F in (*.dll) do call :copy_if_not_packages "%%F" "Packages\\ThirdParty"
 if not exist "Packages\\Engine" mkdir "Packages\\Engine"
-for /r %%F in (core*.lib core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
+for /r %%F in (core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
 
 echo [INFO] Copying Resources...
 xcopy /e /i /y "..\Resources" "Resources\" >nul
@@ -107,11 +107,20 @@ if errorlevel 1 (
 pushd "%PLAYER_CACHE_DIR%"
 echo [INFO] Collecting player package binaries...
 if not exist "Packages\\ThirdParty" mkdir "Packages\\ThirdParty"
-for /r %%F in (*.lib) do call :copy_if_not_packages "%%F" "Packages\\ThirdParty"
+for /r %%F in (*.lib) do call :copy_thirdparty_lib "%%F" "Packages\\ThirdParty"
 for /r %%F in (*.dll) do call :copy_if_not_packages "%%F" "Packages\\ThirdParty"
 if not exist "Packages\\Engine" mkdir "Packages\\Engine"
-for /r %%F in (core*.lib core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
+for /r %%F in (core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
 popd
+
+echo [INFO] Producing distribution archive (CPack ZIP)...
+pushd build
+cpack -G ZIP -C %BUILD_TYPE%
+set "CPACK_RESULT=%errorlevel%"
+popd
+if not "%CPACK_RESULT%"=="0" (
+    echo [WARN] CPack failed (exit %CPACK_RESULT%). Distribution zip was not produced.
+)
 
 call :time_to_cs "%time%" END_CS
 set /a "DUR_CS=END_CS-START_CS"
@@ -123,7 +132,9 @@ if !DUR_REM! lss 10 set "DUR_REM=0!DUR_REM!"
 echo.
 echo =========================================
 echo   SUCCESS! Native Windows Build Complete in !DUR_SEC!.!DUR_REM!s!
-echo   At build\%BUILD_TYPE%\main.exe
+echo   Editor:        build\%BUILD_TYPE%\Modularity.exe
+echo   Player:        build\%BUILD_TYPE%\ModularityPlayer.exe
+echo   Distribution:  build\Modularity-1.0.0-Windows.zip
 echo =========================================
 echo.
 pause
@@ -137,6 +148,25 @@ echo %SRC% | findstr /I /C:"\\Packages\\" >nul
 if errorlevel 1 (
     copy /Y "%SRC%" "%DEST%" >nul
 )
+exit /b 0
+
+:: Same as :copy_if_not_packages but also skips engine static libs and
+:: per-target import libs that are link-time only (not needed at runtime
+:: and individually huge — core.lib / core_player.lib are ~100 MB each).
+:copy_thirdparty_lib
+set "SRC=%~1"
+set "DEST=%~2"
+set "BASE=%~nx1"
+echo %SRC% | findstr /I /C:"\\Packages\\" >nul
+if not errorlevel 1 exit /b 0
+if /I "%BASE%"=="core.lib"           exit /b 0
+if /I "%BASE%"=="core_player.lib"    exit /b 0
+if /I "%BASE%"=="Modularity.lib"     exit /b 0
+if /I "%BASE%"=="ModularityPlayer.lib" exit /b 0
+if /I "%BASE%"=="glad.lib"           exit /b 0
+if /I "%BASE%"=="imgui.lib"          exit /b 0
+if /I "%BASE%"=="imguizmo.lib"       exit /b 0
+copy /Y "%SRC%" "%DEST%" >nul
 exit /b 0
 
 :time_to_cs
