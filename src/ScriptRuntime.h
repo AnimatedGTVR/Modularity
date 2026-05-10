@@ -20,7 +20,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 9
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 10
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
@@ -267,6 +267,8 @@ private:
     struct Module {
         void* handle = nullptr;
         fs::path loadedPath;
+        fs::file_time_type binaryWriteTime{};
+        uintmax_t binarySize = 0;
         bool loadedFromShadowCopy = false;
         InspectorFn inspector = nullptr;
         BeginFn begin = nullptr;

@@ -8453,7 +8453,7 @@ void Engine::renderViewport() {
     fg->PushClipRect(viewportImageMin, viewportImageMax, true);
     const ImU32 hintShadow = IM_COL32(0, 0, 0, 180);
     if (showViewportHintOverlay) {
-      const char *hintText =
+      /*const char *hintText =
           worldUiEditing ? "MMB/Space+LMB: Pan | Wheel: Zoom | LMB: Select | "
                            "Gizmo: Move/Rotate/Scale"
                          : "Hold RMB: Look & Move | LMB: Select | WASD+QE: Move "
@@ -8463,15 +8463,15 @@ void Engine::renderViewport() {
       ImVec2 hintPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 10.0f);
       fg->AddText(ImVec2(hintPos.x + 1.0f, hintPos.y + 1.0f), hintShadow,
                   hintText);
-      fg->AddText(hintPos, hintColor, hintText);
+      fg->AddText(hintPos, hintColor, hintText);*/
 
       if (cursorLocked) {
-        ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 30.0f);
+        ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 10.0f);
         fg->AddText(ImVec2(statusPos.x + 1.0f, statusPos.y + 1.0f), hintShadow,
                     "Freelook Active");
         fg->AddText(statusPos, IM_COL32(120, 255, 120, 255), "Freelook Active");
       } else if (viewportController.isViewportFocused()) {
-        ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 30.0f);
+        ImVec2 statusPos(viewportImageMin.x + 10.0f, viewportImageMin.y + 10.0f);
         fg->AddText(ImVec2(statusPos.x + 1.0f, statusPos.y + 1.0f), hintShadow,
                     "Viewport Focused");
         fg->AddText(statusPos, IM_COL32(180, 226, 255, 255), "Viewport Focused");

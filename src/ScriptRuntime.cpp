@@ -1752,10 +1752,21 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     lastError.clear();
     if (binaryPath.empty()) return nullptr;
     auto key = binaryPath.string();
+    std::error_code statEc;
+    const fs::file_time_type binaryWriteTime = fs::last_write_time(binaryPath, statEc);
+    const uintmax_t binarySize = statEc ? 0 : fs::file_size(binaryPath, statEc);
+    if (statEc) {
+        lastError = "Unable to stat native script binary: " + binaryPath.string();
+        return nullptr;
+    }
+
     auto it = loaded.find(key);
     if (it != loaded.end()) {
-        return &it->second;
-        // Previously loaded but missing inspector; try reloading.
+        if (it->second.binaryWriteTime == binaryWriteTime && it->second.binarySize == binarySize) {
+            return &it->second;
+        }
+
+        // The script binary was rebuilt in place; unload the stale handle and reload it.
 #if defined(_WIN32)
         if (it->second.handle) FreeLibrary(static_cast<HMODULE>(it->second.handle));
 #else
@@ -1765,6 +1776,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     }
 
     Module mod{};
+    mod.binaryWriteTime = binaryWriteTime;
+    mod.binarySize = binarySize;
     auto unloadModuleHandle = [&](void* handle) {
         if (!handle) return;
 #if defined(_WIN32)
