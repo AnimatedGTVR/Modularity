@@ -198,6 +198,7 @@ private:
     bool autoStartRequested = false;
     bool autoStartPlayerMode = false;
     bool deferInspectorRefresh = false;
+    std::string startupProjectPath;
     std::string autoStartBundlePath;
     std::string autoStartProjectPath;
     std::string autoStartSceneName;
@@ -1176,6 +1177,7 @@ private:
 public:
     Engine() = default;
 
+    void setStartupProjectPath(const std::string& path);
     bool init();
     void run();
     void shutdown();

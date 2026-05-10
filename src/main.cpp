@@ -71,6 +71,28 @@ static bool isLspMode(int argc, char** argv) {
   return false;
 }
 
+static std::string startupProjectPathFromArgs(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = (argv && argv[i]) ? argv[i] : "";
+    if ((arg == "--project" || arg == "--open") && i + 1 < argc) {
+      return (argv && argv[i + 1]) ? argv[i + 1] : "";
+    }
+    if (arg.rfind("--project=", 0) == 0) {
+      return arg.substr(10);
+    }
+    if (arg.rfind("--open=", 0) == 0) {
+      return arg.substr(7);
+    }
+    if (!arg.empty() && arg[0] != '-') {
+      std::filesystem::path path(arg);
+      if (path.extension() == ".modu") {
+        return arg;
+      }
+    }
+  }
+  return "";
+}
+
 static int ModularityMain(int argc, char** argv) {
   if (isLspMode(argc, argv)) {
     if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
@@ -100,6 +122,7 @@ static int ModularityMain(int argc, char** argv) {
   return Modularity::CrashReporter::RunProtected([argc, argv]() -> int {
     logStartupDebug("[DEBUG] Starting engine initialization...");
     Engine engine;
+    engine.setStartupProjectPath(startupProjectPathFromArgs(argc, argv));
 
     logStartupDebug("[DEBUG] Calling engine.init()...");
     if (!engine.init()) {

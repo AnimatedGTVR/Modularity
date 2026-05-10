@@ -2004,10 +2004,11 @@ bool relaunchEditorWithBackend(Modularity::GraphicsBackend backend,
     std::string command;
 #if defined(_WIN32)
     command = "cmd /C \"set MODULARITY_RENDER_BACKEND=" + backendValue + " && start \"\" " +
-              quotePath(executablePath) + "\"";
+              quotePath(executablePath) + " --project " + quotePath(normalizedProject) + "\"";
 #else
     command = "MODULARITY_RENDER_BACKEND=" + backendValue + " " +
-              quotePath(executablePath) + " >/dev/null 2>&1 &";
+              quotePath(executablePath) + " --project " + quotePath(normalizedProject) +
+              " >/dev/null 2>&1 &";
 #endif
 
     if (std::system(command.c_str()) != 0) {
@@ -3571,6 +3572,12 @@ bool Engine::init() {
     glfwSetDropCallback(editorWindow, drop_cb);
 
     loadAutoStartConfig();
+    if (!startupProjectPath.empty()) {
+        autoStartProjectPath = startupProjectPath;
+        autoStartBundlePath.clear();
+        autoStartRequested = true;
+        autoStartPlayerMode = false;
+    }
 #ifdef MODULARITY_PLAYER
     playerMode = true;
     autoStartPlayerMode = true;
@@ -7698,6 +7705,10 @@ void Engine::updateHierarchyWorldTransforms() {
 #pragma endregion
 
 #pragma region Project Lifecycle
+void Engine::setStartupProjectPath(const std::string& path) {
+    startupProjectPath = path;
+}
+
 void Engine::OpenProjectPath(const std::string& path) {
     startProjectLoad(path);
 }
