@@ -648,12 +648,12 @@ namespace {
     }
 
     Texture* GetModularityLogoTexture(Renderer& renderer) {
-        static const fs::path kLogoPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/Modu-Logo.png");
+        static const fs::path kLogoPath("Resources/Engine-Root/Modu-Logo.png");
         return renderer.getTexture(kLogoPath.string());
     }
 
     Texture* GetSceneIconTexture(Renderer& renderer) {
-        static const fs::path kSceneIconPath("/home/anemunt/Git-base/Modularity/Resources/Engine-Root/File Explorer/File Icon Scenes.png");
+        static const fs::path kSceneIconPath("Resources/Engine-Root/File Explorer/File Icon Scenes.png");
         return renderer.getTexture(kSceneIconPath.string());
     }
 

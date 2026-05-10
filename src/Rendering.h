@@ -14,7 +14,7 @@
 extern float vertices[288];
 extern float mirrorPlaneVertices[48];
 
-constexpr int kRendererMaxRealtimeLights = 100;
+constexpr int kRendererMaxRealtimeLights = 32;
 
 // Primitive generation functions
 std::vector<float> generateSphere(int segments = 32, int rings = 16);

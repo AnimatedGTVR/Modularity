@@ -1605,13 +1605,28 @@ void Renderer::initialize() {
 #if MODULARITY_RUNTIME_ONLY
     autoReloadShaders = false;
 #endif
+    auto requireFile = [](const std::string& path, const char* label) {
+        std::error_code ec;
+        if (!fs::exists(path, ec) || ec) {
+            throw std::runtime_error(std::string(label) + " not found: " + path);
+        }
+        if (!fs::is_regular_file(path, ec) || ec) {
+            throw std::runtime_error(std::string(label) + " is not a file: " + path);
+        }
+    };
+    requireFile(defaultVertPath, "Default vertex shader");
+    requireFile(defaultFragPath, "Default fragment shader");
+
     shader = new Shader(defaultVertPath.c_str(), defaultFragPath.c_str());
     defaultShader = shader;
     if (shader->ID == 0) {
-        std::cerr << "Shader compilation failed!\n";
+        std::cerr << "Shader compilation failed: " << defaultVertPath
+                  << " + " << defaultFragPath << "\n";
         delete shader;
         shader = nullptr;
-        throw std::runtime_error("Shader error");
+        defaultShader = nullptr;
+        throw std::runtime_error("Default shader compilation failed: " +
+                                 defaultVertPath + " + " + defaultFragPath);
     }
     postShader = new Shader(postVertPath.c_str(), postFragPath.c_str());
     if (!postShader || postShader->ID == 0) {

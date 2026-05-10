@@ -3651,7 +3651,15 @@ bool Engine::initRenderer() {
         applySceneSkyboxSettings(sceneSkyboxSettings);
         applySceneTimeOfDay(sceneTimeOfDay);
         return true;
+    } catch (const std::exception& e) {
+        addConsoleMessage(std::string("OpenGL renderer initialization failed: ") + e.what(),
+                          ConsoleMessageType::Error);
+        std::cerr << "OpenGL renderer initialization failed: " << e.what() << std::endl;
+        return false;
     } catch (...) {
+        addConsoleMessage("OpenGL renderer initialization failed with an unknown error.",
+                          ConsoleMessageType::Error);
+        std::cerr << "OpenGL renderer initialization failed with an unknown error." << std::endl;
         return false;
     }
 }
@@ -7982,6 +7990,13 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     vulkanMaterialFeatureWarningShown = false;
     packageManager.setProjectRoot(projectManager.currentProject.projectPath);
     clampOptionalPackageState(true);
+    fs::path contentRoot = projectManager.currentProject.usesNewLayout
+        ? projectManager.currentProject.assetsPath
+        : projectManager.currentProject.projectPath;
+    if (!playerMode) {
+        fileBrowser.setProjectRoot(contentRoot);
+        fileBrowser.currentPath = contentRoot;
+    }
 
     if (projectManager.currentProject.rendererBackend != graphicsBackend) {
         const Modularity::GraphicsBackend targetBackend = projectManager.currentProject.rendererBackend;
@@ -8026,14 +8041,10 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     } else {
         loadRecentScenes();
     }
-    fs::path contentRoot = projectManager.currentProject.usesNewLayout
-        ? projectManager.currentProject.assetsPath
-        : projectManager.currentProject.projectPath;
     refreshUIFontCatalog();
     preloadUIFontCatalogForContext(ImGui::GetCurrentContext());
     if (!playerMode) {
-        fileBrowser.setProjectRoot(contentRoot);
-        fileBrowser.currentPath = contentRoot;
+        fileBrowser.needsRefresh = true;
         loadEditorUserSettings();
     }
     applyProjectPipelineDefaults(false);

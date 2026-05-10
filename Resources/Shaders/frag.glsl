@@ -38,7 +38,7 @@ uniform float fogDensity = 0.015;
 uniform float fogHeight = 0.0;
 uniform float fogHeightFalloff = 0.0;
 
-const int MAX_LIGHTS = 100;
+const int MAX_LIGHTS = 32;
 const int MAX_SHADOW_MAPS = 4;
 uniform int lightCount = 0; // up to MAX_LIGHTS
 
