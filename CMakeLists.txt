@@ -732,19 +732,17 @@ if(NOT WIN32 AND MODULARITY_ENABLE_PHYSX)
 endif()
 
 if(WIN32)
+    # Only install the FFmpeg DLLs the engine actually links against
+    # (avformat, avcodec, avutil, swresample, swscale). The build-time copy
+    # script in CopyRuntimeDlls.cmake also pulls everything in the FFmpeg
+    # bin/ dir for safety while iterating, but for distribution we ship only
+    # the linked set — avoids dragging in avfilter (~109 MB) and avdevice
+    # (~6 MB), which the engine doesn't reference.
     if(MODULARITY_FFMPEG_RUNTIME_DLLS)
         install(FILES ${MODULARITY_FFMPEG_RUNTIME_DLLS}
             DESTINATION ${CMAKE_INSTALL_BINDIR}
         )
     endif()
-    foreach(_modularity_ffmpeg_dir IN LISTS MODULARITY_FFMPEG_RUNTIME_DLL_DIRS)
-        if(_modularity_ffmpeg_dir AND IS_DIRECTORY "${_modularity_ffmpeg_dir}")
-            install(DIRECTORY "${_modularity_ffmpeg_dir}/"
-                DESTINATION ${CMAKE_INSTALL_BINDIR}
-                FILES_MATCHING PATTERN "*.dll"
-            )
-        endif()
-    endforeach()
 
     if(MODULARITY_USE_MONO AND MONO_RUNTIME_DLL)
         install(FILES "${MONO_RUNTIME_DLL}"
@@ -764,6 +762,37 @@ if(WIN32)
             endforeach()
         ")
     endif()
+
+    # PhysX (and a few other vendored CMake subprojects) install their own
+    # static .lib / .pdb / .exp files alongside the runtime DLLs. The runtime
+    # player does not need any of them — they exist only for SDK consumers
+    # linking against PhysX. Prune them after all install rules have run so
+    # the CPack-produced ZIP stays close to the actual runtime payload.
+    install(CODE "
+        file(GLOB_RECURSE _modularity_runtime_junk
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/*.lib\"
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/*.pdb\"
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/*.exp\"
+        )
+        foreach(_f IN LISTS _modularity_runtime_junk)
+            message(STATUS \"Pruning non-runtime artifact from package: \${_f}\")
+            file(REMOVE \"\${_f}\")
+        endforeach()
+
+        # Drop empty PhysX layout directories that get left behind
+        # (e.g. bin/win.x86_64.vc143.md/release after we strip its .lib/.pdb).
+        file(GLOB _modularity_empty_dirs LIST_DIRECTORIES true
+            \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/win.*\"
+        )
+        foreach(_d IN LISTS _modularity_empty_dirs)
+            if(IS_DIRECTORY \"\${_d}\")
+                file(GLOB _remaining \"\${_d}/*\" \"\${_d}/*/*\")
+                if(NOT _remaining)
+                    file(REMOVE_RECURSE \"\${_d}\")
+                endif()
+            endif()
+        endforeach()
+    ")
 endif()
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
@@ -786,11 +815,10 @@ set(CPACK_PACKAGE_FILE_NAME
     "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}"
 )
 
-if(WIN32)
-    set(CPACK_GENERATOR "ZIP")
-else()
-    set(CPACK_GENERATOR "TGZ")
-endif()
+set(CPACK_GENERATOR "7Z")
+# Use all available cores for the LZMA pass — packaging is otherwise
+# single-threaded and dominates total CPack wall time on big trees.
+set(CPACK_THREADS 0)
 
 set(CPACK_INSTALL_CMAKE_PROJECTS
     "${CMAKE_BINARY_DIR};${CMAKE_PROJECT_NAME};ALL;/"

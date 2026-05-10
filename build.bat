@@ -113,13 +113,13 @@ if not exist "Packages\\Engine" mkdir "Packages\\Engine"
 for /r %%F in (core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
 popd
 
-echo [INFO] Producing distribution archive (CPack ZIP)...
+echo [INFO] Producing distribution archive (CPack 7z)...
 pushd build
-cpack -G ZIP -C %BUILD_TYPE%
+cpack -C %BUILD_TYPE%
 set "CPACK_RESULT=%errorlevel%"
 popd
 if not "%CPACK_RESULT%"=="0" (
-    echo [WARN] CPack failed (exit %CPACK_RESULT%). Distribution zip was not produced.
+    echo [WARN] CPack failed (exit %CPACK_RESULT%). Distribution archive was not produced.
 )
 
 call :time_to_cs "%time%" END_CS
@@ -134,7 +134,7 @@ echo =========================================
 echo   SUCCESS! Native Windows Build Complete in !DUR_SEC!.!DUR_REM!s!
 echo   Editor:        build\%BUILD_TYPE%\Modularity.exe
 echo   Player:        build\%BUILD_TYPE%\ModularityPlayer.exe
-echo   Distribution:  build\Modularity-1.0.0-Windows.zip
+echo   Distribution:  build\Modularity-1.0.0-Windows.7z
 echo =========================================
 echo.
 pause
