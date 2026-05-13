@@ -338,7 +338,9 @@ Options:
   --Windows               Cross-build a Windows target with MinGW-w64
   --build-type=<type>     CMake build type (default: Release)
   --generator=<name>      Force CMake generator (e.g. Ninja, "Unix Makefiles")
+  --jobs=<N>              Parallel compile jobs (default: nproc - 2, min 1)
   --skip-deps             Skip automatic dependency checks/install
+  --zip                   Package as .zip instead of the default .7z
   --help                  Show this help message
 EOF
 }
@@ -346,7 +348,13 @@ EOF
 clean_build=0
 build_type="Release"
 skip_deps=0
-jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
+package_format="7Z"
+ncpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
+jobs=$(( ncpus - 2 ))
+if (( jobs < 1 )); then
+    jobs=1
+fi
+jobs_overridden=0
 preferred_generator=""
 cmake_generator=""
 
@@ -367,8 +375,23 @@ for arg in "$@"; do
         --generator=*)
             preferred_generator="${arg#*=}"
             ;;
+        --jobs=*)
+            jobs_value="${arg#*=}"
+            if ! [[ "${jobs_value}" =~ ^[0-9]+$ ]] || (( jobs_value < 1 )); then
+                log_error "--jobs requires a positive integer (got: ${jobs_value})"
+                exit 1
+            fi
+            jobs="${jobs_value}"
+            jobs_overridden=1
+            ;;
         --skip-deps)
             skip_deps=1
+            ;;
+        --zip|--ZIP)
+            package_format="ZIP"
+            ;;
+        --7z|--7Z)
+            package_format="7Z"
             ;;
         --help)
             usage
@@ -386,7 +409,7 @@ if [[ "${build_platform}" == "windows" ]]; then
     build_platform_label="Windows cross-build"
     build_dir="${script_dir}/build/windows"
     player_cache_dir="${build_dir}/player-cache"
-    cmake_platform_args=(-DMODULARITY_USE_MONO=OFF -DMODULARITY_ENABLE_PHYSX=OFF -DMODULARITY_ENABLE_VULKAN=OFF -DMODULARITY_ENABLE_SNDFILE=OFF)
+    cmake_platform_args=(-DMODULARITY_USE_MONO=OFF -DMODULARITY_ENABLE_PHYSX=OFF -DMODULARITY_ENABLE_VULKAN=OFF -DMODULARITY_ENABLE_SNDFILE=OFF -DMODULARITY_ENABLE_OPUSFILE=OFF)
 
     if command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1 && \
        command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && \
@@ -558,6 +581,12 @@ ensure_linux_dependencies() {
             need_install=1
             missing+=("vulkan-dev")
         fi
+        for module in sndfile opusfile; do
+            if ! pkg-config --exists "${module}"; then
+                need_install=1
+                missing+=("${module}")
+            fi
+        done
     fi
 
     if ! command -v glslc >/dev/null 2>&1; then
@@ -582,6 +611,7 @@ ensure_linux_dependencies() {
             x11_pkgs=(libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev)
             graphics_pkgs=(libgl1-mesa-dev libegl1-mesa-dev libwayland-dev)
             vulkan_pkgs=(libvulkan-dev vulkan-tools glslang-tools)
+            audio_pkgs=(libsndfile1-dev libopusfile-dev)
             optional_pkgs=(ccache)
             glslc_candidates=(glslc shaderc)
             ;;
@@ -590,6 +620,7 @@ ensure_linux_dependencies() {
             x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
             graphics_pkgs=(mesa-libGL-devel mesa-libEGL-devel wayland-devel)
             vulkan_pkgs=(vulkan-loader-devel vulkan-tools glslang)
+            audio_pkgs=(libsndfile-devel opusfile-devel)
             optional_pkgs=(ccache)
             glslc_candidates=(shaderc shaderc-devel)
             ;;
@@ -598,6 +629,7 @@ ensure_linux_dependencies() {
             x11_pkgs=(libx11 libxrandr libxinerama libxcursor libxi)
             graphics_pkgs=(mesa wayland)
             vulkan_pkgs=(vulkan-headers vulkan-tools glslang)
+            audio_pkgs=(libsndfile opusfile)
             optional_pkgs=(ccache)
             glslc_candidates=(shaderc)
             ;;
@@ -606,6 +638,7 @@ ensure_linux_dependencies() {
             x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
             graphics_pkgs=(Mesa-libGL-devel Mesa-libEGL-devel wayland-devel)
             vulkan_pkgs=(vulkan-devel vulkan-tools glslang)
+            audio_pkgs=(libsndfile-devel libopusfile-devel)
             optional_pkgs=(ccache)
             glslc_candidates=(shaderc shaderc-devel)
             ;;
@@ -615,6 +648,7 @@ ensure_linux_dependencies() {
         "${x11_pkgs[@]}"
         "${graphics_pkgs[@]}"
         "${vulkan_pkgs[@]}"
+        "${audio_pkgs[@]}"
         "${optional_pkgs[@]}"
     )
 
@@ -627,6 +661,8 @@ ensure_linux_dependencies() {
     for pkg in "${graphics_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
     echo "  +-- Vulkan stack"
     for pkg in "${vulkan_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
+    echo "  +-- Audio import (sndfile, opusfile)"
+    for pkg in "${audio_pkgs[@]}"; do echo "  |   +-- ${pkg}"; done
     echo "  +-- Optional acceleration"
     for pkg in "${optional_pkgs[@]}"; do echo "      +-- ${pkg}"; done
 
@@ -747,7 +783,7 @@ finalize_packaging() {
         cp "${build_dir}/Resources/imgui.ini" "${build_dir}/"
     fi
     ln -sfn "${build_dir}/compile_commands.json" "${script_dir}/compile_commands.json"
-    (cd "${build_dir}" && cpack)
+    (cd "${build_dir}" && cpack -G "${package_format}")
 }
 
 show_stage_hierarchy() {
@@ -800,10 +836,15 @@ detect_cmake_generator
 printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
 printf "%s   Modularity - %s%s\n" "${C_BOLD}" "${build_platform_label}" "${C_RESET}"
 printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
-log_info "Build type: ${build_type} | Jobs: ${jobs}"
+if [[ "${jobs_overridden}" -eq 0 && "${jobs}" -lt "${ncpus}" ]]; then
+    log_info "Build type: ${build_type} | Jobs: ${jobs} (of ${ncpus} cores; reserved 2 to keep desktop responsive — override with --jobs=N)"
+else
+    log_info "Build type: ${build_type} | Jobs: ${jobs}"
+fi
 if [[ -n "${cmake_generator}" ]]; then
     log_info "CMake generator: ${cmake_generator}"
 fi
+log_info "Package format: ${package_format}"
 if [[ "${build_platform}" == "windows" && -n "${windows_toolchain_file}" ]]; then
     log_info "Windows toolchain: ${windows_toolchain_file}"
 fi

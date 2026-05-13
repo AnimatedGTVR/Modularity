@@ -19,26 +19,20 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
-
 #ifdef _WIN32
 #include <shlobj.h>
 #endif
 
 using namespace ViewportRenderHelpers;
 namespace {
-
 template <typename EnumType, size_t N>
-ObjectType MapEnumToObjectType(EnumType value,
-                               const std::array<ObjectType, N> &mapping) {
+ObjectType MapEnumToObjectType(EnumType value, const std::array<ObjectType, N> &mapping) {
   const size_t index = static_cast<size_t>(value);
-  if (index >= mapping.size()) {
-    return ObjectType::Empty;
-  }
+  if (index >= mapping.size()) {return ObjectType::Empty;}
   return mapping[index];
 }
 
-static constexpr std::array<ObjectType,
-                            static_cast<size_t>(RenderType::Sprite) + 1>
+static constexpr std::array<ObjectType, static_cast<size_t>(RenderType::Sprite) + 1>
     kRenderTypeMainObjectMap = {{
         ObjectType::Empty,   // RenderType::None
         ObjectType::Cube,    // RenderType::Cube
@@ -52,8 +46,7 @@ static constexpr std::array<ObjectType,
         ObjectType::Sprite   // RenderType::Sprite
     }};
 
-static constexpr std::array<ObjectType,
-                            static_cast<size_t>(UIElementType::Sprite2D) + 1>
+static constexpr std::array<ObjectType, static_cast<size_t>(UIElementType::Sprite2D) + 1>
     kUiTypeMainObjectMap = {{
         ObjectType::Empty,    // UIElementType::None
         ObjectType::Canvas,   // UIElementType::Canvas
@@ -64,8 +57,7 @@ static constexpr std::array<ObjectType,
         ObjectType::Sprite2D  // UIElementType::Sprite2D
     }};
 
-static constexpr std::array<ObjectType,
-                            static_cast<size_t>(LightType::Area) + 1>
+static constexpr std::array<ObjectType, static_cast<size_t>(LightType::Area) + 1>
     kLightTypeMainObjectMap = {{
         ObjectType::DirectionalLight, // LightType::Directional
         ObjectType::PointLight,       // LightType::Point
@@ -79,41 +71,29 @@ static constexpr std::array<ObjectType,
 #pragma region Scene Viewport
 // Final scene output for the editor viewport.
 void Engine::renderViewport() {
-  ImGuiWindowFlags viewportFlags =
-      ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
-
+  ImGuiWindowFlags viewportFlags = ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
   if (viewportFullscreen) {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
-    viewportFlags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking;
+    viewportFlags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking;
   }
 
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   const bool windowVisible = ImGui::Begin("Viewport", nullptr, viewportFlags);
   ImGui::PopStyleVar();
-  if (!windowVisible) {
-    ImGui::End();
-    return;
-  }
+  if (!windowVisible) {ImGui::End(); return;}
 
   ImVec2 panelMin = ImGui::GetCursorScreenPos();
   ImVec2 panelSize = ImGui::GetContentRegionAvail();
   panelSize.x = std::max(1.0f, panelSize.x);
   panelSize.y = std::max(1.0f, panelSize.y);
 
-  viewportWidth =
-      std::clamp(static_cast<int>(std::floor(panelSize.x)), 1, 8192);
-  viewportHeight =
-      std::clamp(static_cast<int>(std::floor(panelSize.y)), 1, 8192);
-  if (rendererInitialized) {
-    renderer.resize(viewportWidth, viewportHeight);
-  }
+  viewportWidth = std::clamp(static_cast<int>(std::floor(panelSize.x)), 1, 8192);
+  viewportHeight = std::clamp(static_cast<int>(std::floor(panelSize.y)), 1, 8192);
+  if (rendererInitialized) {renderer.resize(viewportWidth, viewportHeight);}
 
-  const EmbeddedViewportLayout sceneLayout =
-      BuildEmbeddedViewportLayout(panelMin, panelSize, viewportWidth,
-                                  viewportHeight, sceneViewportDisplayMode);
+  const EmbeddedViewportLayout sceneLayout = BuildEmbeddedViewportLayout(panelMin, panelSize, viewportWidth, viewportHeight, sceneViewportDisplayMode);
   ImVec2 imageSize = sceneLayout.displaySize;
 
   bool mouseOverViewportImage = false;
@@ -129,47 +109,33 @@ void Engine::renderViewport() {
 
   auto collectSelectionRoots = [&](const std::vector<int> &ids) {
     std::vector<int> roots;
-    if (ids.empty()) {
-      return roots;
-    }
+    if (ids.empty()) {return roots;}
 
     std::unordered_set<int> selectedSet(ids.begin(), ids.end());
     auto getParentId = [&](int id) -> int {
-      auto it = std::find_if(
-          sceneObjects.begin(), sceneObjects.end(),
-          [id](const SceneObject &obj) { return obj.id == id; });
-      if (it == sceneObjects.end()) {
-        return -1;
-      }
+      auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(), [id](const SceneObject &obj) { return obj.id == id; });
+      if (it == sceneObjects.end()) {return -1;}
       return it->parentId;
     };
 
     auto hasSelectedAncestor = [&](int id) -> bool {
       int parentId = getParentId(id);
       while (parentId != -1) {
-        if (selectedSet.count(parentId) > 0) {
-          return true;
-        }
+        if (selectedSet.count(parentId) > 0) {return true;}
         parentId = getParentId(parentId);
       }
       return false;
     };
 
     roots.reserve(ids.size());
-    for (int id : ids) {
-      if (!hasSelectedAncestor(id)) {
-        roots.push_back(id);
-      }
-    }
+    for (int id : ids) {if (!hasSelectedAncestor(id)) {roots.push_back(id);}}
     return roots;
   };
 
   auto allocateRig25DNodeId = [&]() {
     int nextNodeId = 0;
     for (const SceneObject &obj : sceneObjects) {
-      if (!obj.hasRig25DNode || obj.rig25DNode.nodeId < 0) {
-        continue;
-      }
+      if (!obj.hasRig25DNode || obj.rig25DNode.nodeId < 0) continue;
       nextNodeId = std::max(nextNodeId, obj.rig25DNode.nodeId + 1);
     }
     return nextNodeId;
@@ -247,13 +213,8 @@ void Engine::renderViewport() {
   if (worldUiEditing) {
     int bestArea = 0;
     for (const auto &obj : sceneObjects) {
-      if (!IsObjectEnabledInHierarchy(obj)) {
-        continue;
-      }
-      if (!(obj.hasUI && obj.ui.type == UIElementType::Canvas) ||
-          obj.ui.renderIn3D) {
-        continue;
-      }
+      if (!IsObjectEnabledInHierarchy(obj)) continue;
+      if (!(obj.hasUI && obj.ui.type == UIElementType::Canvas) || obj.ui.renderIn3D) continue;
       const int canvasWidth = std::clamp(
           static_cast<int>(std::round(std::max(1.0f, obj.ui.size.x))), 1, 8192);
       const int canvasHeight = std::clamp(
@@ -278,45 +239,32 @@ void Engine::renderViewport() {
 
   if (!rendererInitialized && !hasVulkanSceneTexture) {
     ImGui::SetNextItemAllowOverlap();
-    ImGui::InvisibleButton("##SceneViewportPanelEmpty", panelSize,
-                           ImGuiButtonFlags_MouseButtonRight);
+    ImGui::InvisibleButton("##SceneViewportPanelEmpty", panelSize, ImGuiButtonFlags_MouseButtonRight);
     ImVec2 imageMin = sceneLayout.displayMin;
     ImVec2 imageMax = sceneLayout.displayMax;
-    ImVec2 drawSize(std::max(1.0f, imageMax.x - imageMin.x),
-                    std::max(1.0f, imageMax.y - imageMin.y));
+    ImVec2 drawSize(std::max(1.0f, imageMax.x - imageMin.x), std::max(1.0f, imageMax.y - imageMin.y));
     viewportImageMin = imageMin;
     viewportImageMax = imageMax;
     hasViewportImageRect = true;
     glm::vec2 hoveredPixel(0.0f);
-    mouseOverViewportImage = TryMapScreenPointToRenderPixel(
-        sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight,
-        hoveredPixel);
+    mouseOverViewportImage = TryMapScreenPointToRenderPixel(sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight, hoveredPixel);
 
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(imageMin, imageMax, IM_COL32(14, 18, 30, 255), 8.0f);
     dl->AddRect(imageMin, imageMax, IM_COL32(78, 96, 128, 210), 8.0f, 0, 1.5f);
 
-    const char *title = usingVulkan() ? "Vulkan Scene Viewport Unavailable"
-                                      : "Scene Viewport Unavailable";
-    const char *line1 = usingVulkan()
-                            ? "Vulkan scene render target is not ready."
-                            : "Renderer is not initialized for this session.";
-    const char *line2 =
-        usingVulkan()
-            ? "Open a project scene or retry after renderer initialization."
-            : "Open or create a project to initialize rendering.";
+    const char *title = usingVulkan() ? "Vulkan Scene Viewport Unavailable" : "Scene Viewport Unavailable";
+    const char *line1 = usingVulkan() ? "Vulkan scene render target is not ready." : "Renderer is not initialized for this session.";
+    const char *line2 = usingVulkan() ? "Open a project scene or retry after renderer initialization." : "Open or create a project to initialize rendering.";
 
     ImVec2 titleSize = ImGui::CalcTextSize(title);
     ImVec2 line1Size = ImGui::CalcTextSize(line1);
     ImVec2 line2Size = ImGui::CalcTextSize(line2);
     float centerX = imageMin.x + drawSize.x * 0.5f;
     float baseY = imageMin.y + drawSize.y * 0.5f - 28.0f;
-    dl->AddText(ImVec2(centerX - titleSize.x * 0.5f, baseY),
-                IM_COL32(220, 228, 244, 255), title);
-    dl->AddText(ImVec2(centerX - line1Size.x * 0.5f, baseY + 24.0f),
-                IM_COL32(170, 184, 212, 255), line1);
-    dl->AddText(ImVec2(centerX - line2Size.x * 0.5f, baseY + 44.0f),
-                IM_COL32(170, 184, 212, 255), line2);
+    dl->AddText(ImVec2(centerX - titleSize.x * 0.5f, baseY), IM_COL32(220, 228, 244, 255), title);
+    dl->AddText(ImVec2(centerX - line1Size.x * 0.5f, baseY + 24.0f), IM_COL32(170, 184, 212, 255), line1);
+    dl->AddText(ImVec2(centerX - line2Size.x * 0.5f, baseY + 44.0f), IM_COL32(170, 184, 212, 255), line2);
   }
 
   if (rendererInitialized || hasVulkanSceneTexture) {
@@ -338,21 +286,15 @@ void Engine::renderViewport() {
                              &tmError);
       } else {
         const bool showSelected3DColliderPreview = [&]() {
-          if (worldUiEditing)
-            return false;
+          if (worldUiEditing) return false;
           auto shouldPreview = [&](int id) {
             auto it = std::find_if(
                 sceneObjects.begin(), sceneObjects.end(),
                 [&](const SceneObject &obj) { return obj.id == id; });
-            return it != sceneObjects.end() && IsObjectEnabledInHierarchy(*it) &&
-                   it->hasCollider && it->collider.enabled;
+            return it != sceneObjects.end() && IsObjectEnabledInHierarchy(*it) && it->hasCollider && it->collider.enabled;
           };
-          for (int id : selectedObjectIds) {
-            if (shouldPreview(id))
-              return true;
-          }
-          return selectedObjectIds.empty() && selectedObjectId >= 0 &&
-                 shouldPreview(selectedObjectId);
+          for (int id : selectedObjectIds) {if (shouldPreview(id)) return true;}
+          return selectedObjectIds.empty() && selectedObjectId >= 0 && shouldPreview(selectedObjectId);
         }();
         renderer.beginRender(view, proj, camera.position);
         renderer.renderScene(
@@ -366,12 +308,10 @@ void Engine::renderViewport() {
       ImGui::InvisibleButton("##SceneViewportPanel", panelSize,
                              ImGuiButtonFlags_MouseButtonRight);
       ImDrawList *drawList = ImGui::GetWindowDrawList();
-      drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax,
-                              IM_COL32(10, 12, 18, 255));
+      drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax, IM_COL32(10, 12, 18, 255));
       if (tex != 0) {
         ApplyNearestTextureSampling(tex);
-        drawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax,
-                               true);
+        drawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax, true);
         drawList->AddImage(
             (void *)(intptr_t)tex, sceneLayout.displayMin,
             sceneLayout.displayMax,
@@ -381,9 +321,7 @@ void Engine::renderViewport() {
       }
       if (isProject25DPipeline()) {
         const std::string label = buildTMOverlayLabel(tmStats, tmError);
-        drawList->AddText(ImVec2(sceneLayout.displayMin.x + 10.0f,
-                                 sceneLayout.displayMin.y + 10.0f),
-                          IM_COL32(236, 240, 246, 255), label.c_str());
+        drawList->AddText(ImVec2(sceneLayout.displayMin.x + 10.0f, sceneLayout.displayMin.y + 10.0f), IM_COL32(236, 240, 246, 255), label.c_str());
       }
 
       ImVec2 imageMin = sceneLayout.displayMin;
@@ -396,21 +334,14 @@ void Engine::renderViewport() {
           sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight,
           hoveredPixel);
     } else {
-      ImTextureID texId = vulkanRenderer
-                              ? vulkanRenderer->getViewportSceneTextureID()
-                              : static_cast<ImTextureID>(0);
+      ImTextureID texId = vulkanRenderer ? vulkanRenderer->getViewportSceneTextureID() : static_cast<ImTextureID>(0);
       ImGui::SetNextItemAllowOverlap();
-      ImGui::InvisibleButton("##SceneViewportPanelVk", panelSize,
-                             ImGuiButtonFlags_MouseButtonRight);
+      ImGui::InvisibleButton("##SceneViewportPanelVk", panelSize, ImGuiButtonFlags_MouseButtonRight);
       if (texId != static_cast<ImTextureID>(0)) {
         ImDrawList *drawList = ImGui::GetWindowDrawList();
-        drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax,
-                                IM_COL32(10, 12, 18, 255));
-        drawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax,
-                               true);
-        drawList->AddImage(texId, sceneLayout.displayMin,
-                           sceneLayout.displayMax, sceneLayout.uvMin,
-                           sceneLayout.uvMax);
+        drawList->AddRectFilled(sceneLayout.panelMin, sceneLayout.panelMax, IM_COL32(10, 12, 18, 255));
+        drawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax, true);
+        drawList->AddImage(texId, sceneLayout.displayMin, sceneLayout.displayMax, sceneLayout.uvMin, sceneLayout.uvMax);
         drawList->PopClipRect();
       }
       ImVec2 imageMin = sceneLayout.displayMin;
@@ -420,81 +351,56 @@ void Engine::renderViewport() {
       hasViewportImageRect = true;
       glm::vec2 hoveredPixel(0.0f);
       mouseOverViewportImage = TryMapScreenPointToRenderPixel(
-          sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight,
-          hoveredPixel);
+          sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight, hoveredPixel);
     }
 
     ImVec2 imageMin = sceneLayout.displayMin;
     ImVec2 imageMax = sceneLayout.displayMax;
     ImDrawList *viewportDrawList = ImGui::GetWindowDrawList();
-    viewportDrawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax,
-                                   true);
+    viewportDrawList->PushClipRect(sceneLayout.panelMin, sceneLayout.panelMax, true);
 
     if (worldUiEditing) {
-      viewportDrawList->AddRectFilled(imageMin, imageMax,
-                                      IM_COL32(14, 16, 20, 255));
+      viewportDrawList->AddRectFilled(imageMin, imageMax, IM_COL32(14, 16, 20, 255));
     } else if (showSceneGrid3D) {
       auto projectToScreen = [&](const glm::vec3 &p) -> std::optional<ImVec2> {
         glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);
-        if (clip.w <= 0.0f)
-          return std::nullopt;
+        if (clip.w <= 0.0f) return std::nullopt;
         glm::vec3 ndc = glm::vec3(clip) / clip.w;
         ImVec2 screen;
-        screen.x =
-            imageMin.x + (ndc.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x);
-        screen.y = imageMin.y +
-                   (1.0f - (ndc.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y);
+        screen.x = imageMin.x + (ndc.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x);
+        screen.y = imageMin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y);
         return screen;
       };
-      auto clipLineToScreen = [&](glm::vec3 a, glm::vec3 b, ImVec2 &outA,
-                                  ImVec2 &outB) -> bool {
+      auto clipLineToScreen = [&](glm::vec3 a, glm::vec3 b, ImVec2 &outA, ImVec2 &outB) -> bool {
         glm::vec4 va = view * glm::vec4(a, 1.0f);
         glm::vec4 vb = view * glm::vec4(b, 1.0f);
         const float nearZ = -buildSettings.editorCameraNear;
-        if (va.z > nearZ && vb.z > nearZ) {
-          return false;
-        }
+        if (va.z > nearZ && vb.z > nearZ) { return false;}
         if (va.z > nearZ || vb.z > nearZ) {
           float t = (nearZ - va.z) / (vb.z - va.z);
           t = std::clamp(t, 0.0f, 1.0f);
           glm::vec4 vclip = va + (vb - va) * t;
-          if (va.z > nearZ) {
-            va = vclip;
-          } else {
-            vb = vclip;
-          }
+          if (va.z > nearZ) va = vclip;
+          else              vb = vclip;
         }
         glm::vec4 ca = proj * va;
         glm::vec4 cb = proj * vb;
-        if (ca.w <= 0.0f || cb.w <= 0.0f)
-          return false;
+        if (ca.w <= 0.0f || cb.w <= 0.0f) return false;
         glm::vec3 ndcA = glm::vec3(ca) / ca.w;
         glm::vec3 ndcB = glm::vec3(cb) / cb.w;
-        outA = ImVec2(imageMin.x +
-                          (ndcA.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x),
-                      imageMin.y + (1.0f - (ndcA.y * 0.5f + 0.5f)) *
-                                       (imageMax.y - imageMin.y));
-        outB = ImVec2(imageMin.x +
-                          (ndcB.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x),
-                      imageMin.y + (1.0f - (ndcB.y * 0.5f + 0.5f)) *
-                                       (imageMax.y - imageMin.y));
+        outA = ImVec2(imageMin.x + (ndcA.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x), imageMin.y + (1.0f - (ndcA.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y));
+        outB = ImVec2(imageMin.x + (ndcB.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x), imageMin.y + (1.0f - (ndcB.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y));
         return true;
       };
       glm::vec2 camXZ(camera.position.x, camera.position.z);
       float camDist = glm::length(camXZ);
-      float extent =
-          60.0f + camDist * 0.5f + std::abs(camera.position.y) * 4.0f;
+      float extent = 60.0f + camDist * 0.5f + std::abs(camera.position.y) * 4.0f;
       extent = std::clamp(extent, 60.0f, 1200.0f);
       float step = 1.0f;
-      if (extent > 400.0f) {
-        step = 20.0f;
-      } else if (extent > 200.0f) {
-        step = 10.0f;
-      } else if (extent > 120.0f) {
-        step = 5.0f;
-      } else if (extent > 70.0f) {
-        step = 2.0f;
-      }
+      if (extent > 400.0f)      step = 20.0f;
+      else if (extent > 200.0f) step = 10.0f;
+      else if (extent > 120.0f) step = 5.0f;
+      else if (extent > 70.0f)  step = 2.0f;
       float gridStrength = std::clamp(camDist / 120.0f, 0.15f, 1.0f);
       ImVec4 baseCol(0.35f, 0.43f, 0.55f, 0.55f * gridStrength);
       ImVec4 axisXCol(0.94f, 0.45f, 0.45f, 0.9f);
@@ -503,12 +409,10 @@ void Engine::renderViewport() {
       float startX = std::floor((camera.position.x - extent) / step) * step;
       float endX = std::floor((camera.position.x + extent) / step) * step;
       for (float x = startX; x <= endX; x += step) {
-        float t =
-            1.0f - std::min(1.0f, std::abs(x - camera.position.x) / extent);
+        float t = 1.0f - std::min(1.0f, std::abs(x - camera.position.x) / extent);
         ImVec4 col = baseCol;
         col.w *= t;
-        if (col.w < 0.02f)
-          continue;
+        if (col.w < 0.02f) continue;
         ImVec2 s0, s1;
         if (clipLineToScreen(glm::vec3(x, 0.0f, camera.position.z - extent),
                              glm::vec3(x, 0.0f, camera.position.z + extent), s0,
@@ -519,12 +423,10 @@ void Engine::renderViewport() {
       float startZ = std::floor((camera.position.z - extent) / step) * step;
       float endZ = std::floor((camera.position.z + extent) / step) * step;
       for (float z = startZ; z <= endZ; z += step) {
-        float t =
-            1.0f - std::min(1.0f, std::abs(z - camera.position.z) / extent);
+        float t = 1.0f - std::min(1.0f, std::abs(z - camera.position.z) / extent);
         ImVec4 col = baseCol;
         col.w *= t;
-        if (col.w < 0.02f)
-          continue;
+        if (col.w < 0.02f) continue;
         ImVec2 s0, s1;
         if (clipLineToScreen(glm::vec3(camera.position.x - extent, 0.0f, z),
                              glm::vec3(camera.position.x + extent, 0.0f, z), s0,
@@ -547,19 +449,13 @@ void Engine::renderViewport() {
     auto importDroppedModel = [&](const fs::path &path) {
       std::error_code ec;
       fs::directory_entry entry(path, ec);
-      if (ec || !fileBrowser.isModelFile(entry)) {
-        return;
-      }
-      if (fileBrowser.isOBJFile(entry)) {
-        importOBJToScene(path.string(), "");
-      } else {
-        importModelToScene(path.string(), "");
-      }
+      if (ec || !fileBrowser.isModelFile(entry)) return;
+      if (fileBrowser.isOBJFile(entry)) {importOBJToScene(path.string(), "");}
+      else                              {importModelToScene(path.string(), "");}
     };
 
     if (ImGui::BeginDragDropTarget()) {
-      if (const ImGuiPayload *payload =
-              ImGui::AcceptDragDropPayload("FILE_PATH")) {
+      if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
         const char *path = static_cast<const char *>(payload->Data);
         importDroppedModel(fs::path(path));
       }
@@ -570,20 +466,16 @@ void Engine::renderViewport() {
       glm::vec3 worldUp = glm::vec3(0, 1, 0);
       glm::vec3 n = glm::normalize(dir);
       glm::vec3 up = worldUp;
-      if (std::abs(glm::dot(n, worldUp)) > 0.98f) {
-        up = glm::vec3(0, 0, 1);
-      }
+      if (std::abs(glm::dot(n, worldUp)) > 0.98f) { up = glm::vec3(0, 0, 1); }
       glm::vec3 right = glm::normalize(glm::cross(up, n));
-      if (glm::length(right) < 1e-4f) {
-        right = glm::vec3(1, 0, 0);
-      }
+      if (glm::length(right) < 1e-4f) { right = glm::vec3(1, 0, 0); }
       up = glm::normalize(glm::cross(n, right));
 
       camera.front = n;
       camera.up = up;
       camera.pitch = glm::degrees(std::asin(glm::clamp(n.y, -1.0f, 1.0f)));
       camera.pitch = glm::clamp(camera.pitch, -89.0f, 89.0f);
-      camera.yaw = glm::degrees(std::atan2(n.z, n.x));
+      camera.yaw   = glm::degrees(std::atan2(n.z, n.x));
       camera.firstMouse = true;
     };
 
@@ -605,16 +497,10 @@ void Engine::renderViewport() {
           center, 5.5f, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.6f)), 24);
 
       glm::mat3 viewRot = glm::mat3(view);
-      ImVec2 widgetMin =
-          ImVec2(center.x - widgetSize * 0.5f, center.y - widgetSize * 0.5f);
-      ImVec2 widgetMax =
-          ImVec2(center.x + widgetSize * 0.5f, center.y + widgetSize * 0.5f);
+      ImVec2 widgetMin = ImVec2(center.x - widgetSize * 0.5f, center.y - widgetSize * 0.5f);
+      ImVec2 widgetMax = ImVec2(center.x + widgetSize * 0.5f, center.y + widgetSize * 0.5f);
       bool widgetHover = ImGui::IsMouseHoveringRect(widgetMin, widgetMax);
-      struct AxisArrow {
-        glm::vec3 dir;
-        ImU32 color;
-        const char *label;
-      };
+      struct AxisArrow {glm::vec3 dir; ImU32 color; const char *label;};
       AxisArrow arrows[] = {
           {glm::vec3(1, 0, 0),
            ImGui::GetColorU32(ImVec4(0.9f, 0.2f, 0.2f, 1.0f)), "X"},
@@ -642,51 +528,34 @@ void Engine::renderViewport() {
         float len = radius * depthScale;
         ImVec2 tip = ImVec2(center.x + dir2.x * len, center.y + dir2.y * len);
 
-        ImVec2 base1 =
-            ImVec2(center.x + dir2.x * (len * 0.55f) + dir2.y * (len * 0.12f),
-                   center.y + dir2.y * (len * 0.55f) - dir2.x * (len * 0.12f));
-        ImVec2 base2 =
-            ImVec2(center.x + dir2.x * (len * 0.55f) - dir2.y * (len * 0.12f),
-                   center.y + dir2.y * (len * 0.55f) + dir2.x * (len * 0.12f));
+        ImVec2 base1 = ImVec2(center.x + dir2.x * (len * 0.55f) + dir2.y * (len * 0.12f),
+                              center.y + dir2.y * (len * 0.55f) - dir2.x * (len * 0.12f));
+        ImVec2 base2 = ImVec2(center.x + dir2.x * (len * 0.55f) - dir2.y * (len * 0.12f),
+                              center.y + dir2.y * (len * 0.55f) + dir2.x * (len * 0.12f));
 
         viewportDrawList->AddTriangleFilled(base1, tip, base2, arrows[i].color);
-        viewportDrawList->AddTriangle(
-            base1, tip, base2, ImGui::GetColorU32(ImVec4(0, 0, 0, 0.35f)));
+        viewportDrawList->AddTriangle(base1, tip, base2, ImGui::GetColorU32(ImVec4(0, 0, 0, 0.35f)));
 
-        ImVec2 labelPos = ImVec2(center.x + dir2.x * (len * 0.78f),
-                                 center.y + dir2.y * (len * 0.78f));
+        ImVec2 labelPos = ImVec2(center.x + dir2.x * (len * 0.78f), center.y + dir2.y * (len * 0.78f));
         viewportDrawList->AddCircleFilled(
             labelPos, 6.0f, ImGui::GetColorU32(ImVec4(0, 0, 0, 0.5f)), 12);
-        viewportDrawList->AddText(ImVec2(labelPos.x - 4.0f, labelPos.y - 7.0f),
-                                  ImGui::GetColorU32(ImVec4(1, 1, 1, 0.95f)),
-                                  arrows[i].label);
+        viewportDrawList->AddText(ImVec2(labelPos.x - 4.0f, labelPos.y - 7.0f), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.95f)), arrows[i].label);
 
         if (widgetHover) {
           float dx = mouse.x - tip.x;
           float dy = mouse.y - tip.y;
-          if (std::sqrt(dx * dx + dy * dy) <= clickRadius &&
-              ImGui::IsMouseReleased(0)) {
-            clickedIdx = i;
-          }
+          if (std::sqrt(dx * dx + dy * dy) <= clickRadius && ImGui::IsMouseReleased(0)) {clickedIdx = i;}
         }
       }
 
-      if (clickedIdx >= 0) {
-        setCameraFacing(arrows[clickedIdx].dir);
-      }
-
-      // Prevent viewport picking when interacting with the axis widget.
-      if (widgetHover) {
-        blockSelection = true;
-      }
+      if (clickedIdx >= 0) {setCameraFacing(arrows[clickedIdx].dir);}
+      if (widgetHover) blockSelection = true;
     }
 
     ImGuiWindow *sceneViewportWindow = ImGui::GetCurrentWindow();
     ImGuiWindow *sceneViewportRootWindow =
         sceneViewportWindow ? sceneViewportWindow->RootWindowDockTree : nullptr;
-    bool windowActive =
-        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+    bool windowActive = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
     const float toolbarWidthEstimate = 520.0f;
     const float toolbarHeightEstimate = 42.0f;
     const float toolbarInsetX = 12.0f;
@@ -699,109 +568,61 @@ void Engine::renderViewport() {
       float maxX = imageMax.x - toolbarInsetX;
       float minY = imageMin.y + toolbarInsetY;
       float maxY = imageMax.y - toolbarInsetY;
-      float toolbarLeft =
-          (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight ||
-           sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight)
-              ? (maxX - toolbarSizeCache.x)
-              : minX;
-      if (toolbarLeft + toolbarSizeCache.x > maxX)
-        toolbarLeft = maxX - toolbarSizeCache.x;
-      if (toolbarLeft < minX)
-        toolbarLeft = minX;
-      float toolbarTop =
-          (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomLeft ||
-           sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight)
-              ? (maxY - toolbarSizeCache.y)
-              : minY;
-      if (toolbarTop + toolbarSizeCache.y > maxY)
-        toolbarTop = maxY - toolbarSizeCache.y;
-      if (toolbarTop < minY)
-        toolbarTop = minY;
+      float toolbarLeft = (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight || sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight) ? (maxX - toolbarSizeCache.x) : minX;
+      if (toolbarLeft + toolbarSizeCache.x > maxX) toolbarLeft = maxX - toolbarSizeCache.x;
+      if (toolbarLeft < minX)                      toolbarLeft = minX;
+      float toolbarTop = (sceneViewportToolbarCorner == ViewportToolbarCorner::BottomLeft || sceneViewportToolbarCorner == ViewportToolbarCorner::BottomRight) ? (maxY - toolbarSizeCache.y) : minY;
+      if (toolbarTop + toolbarSizeCache.y > maxY)  toolbarTop = maxY - toolbarSizeCache.y;
+      if (toolbarTop < minY)                       toolbarTop = minY;
       toolbarRectMin = ImVec2(toolbarLeft, toolbarTop);
-      toolbarRectMax = ImVec2(toolbarLeft + toolbarSizeCache.x,
-                              toolbarTop + toolbarSizeCache.y);
+      toolbarRectMax = ImVec2(toolbarLeft + toolbarSizeCache.x, toolbarTop + toolbarSizeCache.y);
     };
     computeToolbarRect();
     static float toolbarHideAnim = 0.0f;
     float toolbarHideOffset = toolbarSizeCache.y + 14.0f;
-    const float toolbarHideDirection =
-        (sceneViewportToolbarCorner == ViewportToolbarCorner::TopLeft ||
-         sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight)
-            ? -1.0f
-            : 1.0f;
-    ImVec2 toolbarRectMinAnim =
-        ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset *
-                                                        toolbarHideAnim *
-                                                        toolbarHideDirection);
-    ImVec2 toolbarRectMaxAnim =
-        ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset *
-                                                        toolbarHideAnim *
-                                                        toolbarHideDirection);
+    const float toolbarHideDirection = (sceneViewportToolbarCorner == ViewportToolbarCorner::TopLeft || sceneViewportToolbarCorner == ViewportToolbarCorner::TopRight) ? -1.0f : 1.0f;
+    ImVec2 toolbarRectMinAnim = ImVec2(toolbarRectMin.x, toolbarRectMin.y + toolbarHideOffset * toolbarHideAnim * toolbarHideDirection);
+    ImVec2 toolbarRectMaxAnim = ImVec2(toolbarRectMax.x, toolbarRectMax.y + toolbarHideOffset * toolbarHideAnim * toolbarHideDirection);
     bool mouseInViewportRect =
         ImGui::IsMouseHoveringRect(imageMin, imageMax, true);
     auto isToolbarHoverWindow = [&](ImGuiWindow *hoveredWindow) {
-      if (!hoveredWindow) {
-        return false;
-      }
-      if (sceneViewportRootWindow &&
-          hoveredWindow->RootWindowDockTree == sceneViewportRootWindow) {
-        return true;
-      }
-      if (sceneViewportWindow && hoveredWindow->RootWindowPopupTree ==
-                                     sceneViewportWindow->RootWindowPopupTree) {
-        return true;
-      }
+      if (!hoveredWindow) return false;
+      if (sceneViewportRootWindow && hoveredWindow->RootWindowDockTree == sceneViewportRootWindow) return true;
+      if (sceneViewportWindow && hoveredWindow->RootWindowPopupTree == sceneViewportWindow->RootWindowPopupTree) return true;
       return false;
     };
-    auto isMouseInToolbarZone = [&](const ImVec2 &rectMin,
-                                    const ImVec2 &rectMax) {
+    auto isMouseInToolbarZone = [&](const ImVec2 &rectMin, const ImVec2 &rectMax) {
       ImGuiWindow *hoveredWindow = nullptr;
       ImGuiWindow *hoveredWindowUnderMovingWindow = nullptr;
       ImGui::FindHoveredWindowEx(ImGui::GetIO().MousePos, false, &hoveredWindow,
                                  &hoveredWindowUnderMovingWindow);
-      if (!isToolbarHoverWindow(hoveredWindow)) {
-        return false;
-      }
+      if (!isToolbarHoverWindow(hoveredWindow)) return false;
       const bool overToolbarRect = ImGui::IsMouseHoveringRect(
           ImVec2(rectMin.x - 4.0f, rectMin.y - 4.0f),
           ImVec2(rectMax.x + 4.0f, rectMax.y + 4.0f), true);
-      ImVec2 toolbarGuardMin(std::max(imageMin.x + 6.0f, rectMin.x - 12.0f),
-                             std::max(imageMin.y + 6.0f, rectMin.y - 12.0f));
-      ImVec2 toolbarGuardMax(std::min(imageMax.x - 6.0f, rectMax.x + 12.0f),
-                             std::min(imageMax.y - 6.0f, rectMax.y + 12.0f));
-      const bool overToolbarGuard =
-          ImGui::IsMouseHoveringRect(toolbarGuardMin, toolbarGuardMax, true);
+      ImVec2 toolbarGuardMin(std::max(imageMin.x + 6.0f, rectMin.x - 12.0f), std::max(imageMin.y + 6.0f, rectMin.y - 12.0f));
+      ImVec2 toolbarGuardMax(std::min(imageMax.x - 6.0f, rectMax.x + 12.0f), std::min(imageMax.y - 6.0f, rectMax.y + 12.0f));
+      const bool overToolbarGuard = ImGui::IsMouseHoveringRect(toolbarGuardMin, toolbarGuardMax, true);
       return overToolbarRect || overToolbarGuard;
     };
     bool mouseInToolbarGuard =
         isMouseInToolbarZone(toolbarRectMinAnim, toolbarRectMaxAnim);
     bool mouseInToolbar = mouseInToolbarGuard;
-    bool toolbarAllowed = !cursorLocked && !gameViewportFocused &&
-                          !(isPlaying && showGameViewport);
+    bool toolbarAllowed = !cursorLocked && !gameViewportFocused && !(isPlaying && showGameViewport);
     bool showViewportToolbar =
-        toolbarAllowed && (windowActive || mouseInViewportRect ||
-                           mouseInToolbar || toolbarHideAnim < 0.999f);
-    bool toolbarHover =
-        toolbarAllowed && (mouseInViewportRect || mouseInToolbar);
+        toolbarAllowed && (windowActive || mouseInViewportRect || mouseInToolbar || toolbarHideAnim < 0.999f);
+    bool toolbarHover = toolbarAllowed && (mouseInViewportRect || mouseInToolbar);
     float toolbarAnimSpeed = 10.0f;
     float toolbarTarget = toolbarHover ? 0.0f : 1.0f;
-    if (worldUiEditing && toolbarAllowed && mouseInViewportRect) {
-      toolbarTarget = 0.0f;
-    }
-    float toolbarAnimStep =
-        1.0f - std::exp(-toolbarAnimSpeed * ImGui::GetIO().DeltaTime);
+    if (worldUiEditing && toolbarAllowed && mouseInViewportRect) toolbarTarget = 0.0f;
+    float toolbarAnimStep = 1.0f - std::exp(-toolbarAnimSpeed * ImGui::GetIO().DeltaTime);
     toolbarHideAnim += (toolbarTarget - toolbarHideAnim) * toolbarAnimStep;
-    toolbarRectMin.y +=
-        toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
-    toolbarRectMax.y +=
-        toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
+    toolbarRectMin.y += toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
+    toolbarRectMax.y += toolbarHideOffset * toolbarHideAnim * toolbarHideDirection;
     mouseInToolbar = isMouseInToolbarZone(toolbarRectMin, toolbarRectMax);
-    if (showViewportToolbar && mouseInToolbar) {
-      blockSelection = true;
-    }
+    if (showViewportToolbar && mouseInToolbar) blockSelection = true;
 
-    SpriteTextureResolver spriteTextureResolver(rendererInitialized ? &renderer
-                                                                    : nullptr);
+    SpriteTextureResolver spriteTextureResolver(rendererInitialized ? &renderer : nullptr);
     auto drawProjected25DSceneSprites = [&]() {
       auto brightenTint = [](const ImVec4 &c, float k) {
         return ImVec4(std::clamp(c.x * k, 0.0f, 1.0f),
@@ -811,132 +632,87 @@ void Engine::renderViewport() {
       BatchedSpriteEmitter spriteBatch(viewportDrawList);
       spriteBatch.reserve(sceneObjects.size());
       for (auto &obj : sceneObjects) {
-        if (obj.type == ObjectType::Sprite25D) {
-          continue;
-        }
-        if (!IsObjectEnabledInHierarchy(obj) ||
-            obj.type != ObjectType::Sprite25D || !obj.hasUI) {
-          continue;
-        }
-        if (!(obj.ui.type == UIElementType::Image ||
-              obj.ui.type == UIElementType::Sprite2D)) {
-          continue;
-        }
+        if (obj.type == ObjectType::Sprite25D)                                                   continue;
+        if (!IsObjectEnabledInHierarchy(obj) || obj.type != ObjectType::Sprite25D || !obj.hasUI) continue;
+        if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D))    continue;
         ImVec2 rectMin, rectMax;
-        if (!ResolveProjectedSprite25DRect(
-                obj, view, proj, imageMin,
-                ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y),
-                rectMin, rectMax)) {
-          continue;
-        }
+        if (!ResolveProjectedSprite25DRect(obj, view, proj, imageMin, ImVec2(imageMax.x - imageMin.x, imageMax.y - imageMin.y), rectMin, rectMax)) continue;
         ImVec2 drawSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
-        if (drawSize.x <= 1.0f || drawSize.y <= 1.0f)
-          continue;
+        if (drawSize.x <= 1.0f || drawSize.y <= 1.0f) continue;
 
         Texture *spriteTex = spriteTextureResolver.resolveTexture(obj);
         unsigned int texId = (spriteTex != nullptr) ? spriteTex->GetID() : 0;
         std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
         const int frame = resolveSpriteSheetFrame(obj);
-        const ImVec2 sourceFrameSizePx =
-            ResolveUiSourceFrameSizePx(obj, frame, spriteTex);
-        ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
-                    obj.ui.color.a);
+        const ImVec2 sourceFrameSizePx = ResolveUiSourceFrameSizePx(obj, frame, spriteTex);
+        ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
         const ImU32 tintColor = ImGui::GetColorU32(tint);
         float angle = glm::radians(obj.ui.rotation);
-        if (DrawNineSliceSprite(spriteBatch, (ImTextureID)(intptr_t)texId, obj,
-                                rectMin, rectMax, uvQuad, sourceFrameSizePx,
-                                angle, tintColor)) {
-        } else if (std::abs(angle) > 1e-4f) {
-          ImVec2 center((rectMin.x + rectMax.x) * 0.5f,
-                        (rectMin.y + rectMax.y) * 0.5f);
-          ImVec2 half(drawSize.x * 0.5f, drawSize.y * 0.5f);
-          float c = std::cos(angle);
-          float s = std::sin(angle);
-          auto rotPt = [&](float x, float y) {
-            return ImVec2(center.x + x * c - y * s, center.y + x * s + y * c);
-          };
-          ImVec2 p0 = rotPt(-half.x, -half.y);
-          ImVec2 p1 = rotPt(half.x, -half.y);
-          ImVec2 p2 = rotPt(half.x, half.y);
-          ImVec2 p3 = rotPt(-half.x, half.y);
-          if (texId != 0) {
-            spriteBatch.push((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                             uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
-                             tintColor);
+        if (!DrawNineSliceSprite(spriteBatch, (ImTextureID)(intptr_t)texId, obj, rectMin, rectMax, uvQuad, sourceFrameSizePx, angle, tintColor)) {
+          if (std::abs(angle) > 1e-4f) {
+            ImVec2 center((rectMin.x + rectMax.x) * 0.5f, (rectMin.y + rectMax.y) * 0.5f);
+            ImVec2 half(drawSize.x * 0.5f, drawSize.y * 0.5f);
+            float c = std::cos(angle);
+            float s = std::sin(angle);
+            auto rotPt = [&](float x, float y) { return ImVec2(center.x + x * c - y * s, center.y + x * s + y * c); };
+            ImVec2 p0 = rotPt(-half.x, -half.y);
+            ImVec2 p1 = rotPt(half.x, -half.y);
+            ImVec2 p2 = rotPt(half.x, half.y);
+            ImVec2 p3 = rotPt(-half.x, half.y);
+            if (texId != 0) { spriteBatch.push((ImTextureID)(intptr_t)texId, p0, p1, p2, p3, uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3], tintColor); }
+            else {
+              spriteBatch.flush();
+              ImU32 fill = tintColor;
+              ImU32 border = ImGui::GetColorU32(brightenTint(tint, 0.85f));
+              viewportDrawList->AddQuadFilled(p0, p1, p2, p3, fill);
+              viewportDrawList->AddQuad(p0, p1, p2, p3, border, 1.5f);
+            }
+          } else if (texId != 0) {
+            spriteBatch.push((ImTextureID)(intptr_t)texId, rectMin,
+                             ImVec2(rectMax.x, rectMin.y), rectMax,
+                             ImVec2(rectMin.x, rectMax.y), uvQuad[0],
+                             ImVec2(uvQuad[2].x, uvQuad[0].y), uvQuad[2],
+                             ImVec2(uvQuad[0].x, uvQuad[2].y), tintColor);
           } else {
             spriteBatch.flush();
             ImU32 fill = tintColor;
             ImU32 border = ImGui::GetColorU32(brightenTint(tint, 0.85f));
-            viewportDrawList->AddQuadFilled(p0, p1, p2, p3, fill);
-            viewportDrawList->AddQuad(p0, p1, p2, p3, border, 1.5f);
+            viewportDrawList->AddRectFilled(rectMin, rectMax, fill, 4.0f);
+            viewportDrawList->AddRect(rectMin, rectMax, border, 4.0f, 0, 1.5f);
           }
-        } else if (texId != 0) {
-          spriteBatch.push((ImTextureID)(intptr_t)texId, rectMin,
-                           ImVec2(rectMax.x, rectMin.y), rectMax,
-                           ImVec2(rectMin.x, rectMax.y), uvQuad[0],
-                           ImVec2(uvQuad[2].x, uvQuad[0].y), uvQuad[2],
-                           ImVec2(uvQuad[0].x, uvQuad[2].y), tintColor);
-        } else {
-          spriteBatch.flush();
-          ImU32 fill = tintColor;
-          ImU32 border = ImGui::GetColorU32(brightenTint(tint, 0.85f));
-          viewportDrawList->AddRectFilled(rectMin, rectMax, fill, 4.0f);
-          viewportDrawList->AddRect(rectMin, rectMax, border, 4.0f, 0, 1.5f);
         }
       }
 
-      const unsigned int fallbackParticleTextureId =
-          rendererInitialized ? renderer.getDebugWhiteTextureId() : 0;
+      const unsigned int fallbackParticleTextureId = rendererInitialized ? renderer.getDebugWhiteTextureId() : 0;
       const glm::mat4 invView = glm::inverse(view);
       const glm::vec3 cameraRight = glm::normalize(glm::vec3(invView[0]));
       const glm::vec3 cameraUp = glm::normalize(glm::vec3(invView[1]));
       for (auto &obj : sceneObjects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) {
-          continue;
-        }
+        if (!IsObjectEnabledInHierarchy(obj) || !obj.hasParticleSystem2D) continue;
         SimulateParticleSystem2D(obj, glfwGetTime());
         ParticleSystem2DComponent &ps = obj.particleSystem2D;
         if (!ps.enabled || ps.particles.empty()) continue;
 
         unsigned int texId = 0;
-        const std::string texturePath =
-            !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
+        const std::string texturePath = !ps.texturePath.empty() ? ps.texturePath : obj.albedoTexturePath;
         if (rendererInitialized && !texturePath.empty()) {
-          if (Texture *particleTex =
-                  renderer.getTexture(texturePath, obj.material.textureFilter)) {
-            texId = particleTex->GetID();
-          }
+          if (Texture *particleTex = renderer.getTexture(texturePath, obj.material.textureFilter)) texId = particleTex->GetID();
         }
         if (texId == 0) texId = fallbackParticleTextureId;
 
         for (const auto &particle : ps.particles) {
           if (!particle.alive) continue;
-          const float t = std::clamp(
-              particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
-          const float size = ps.sizeOverLifetimeEnabled
-                                 ? glm::mix(particle.size,
-                                            ps.sizeOverLifetime, t)
-                                 : particle.size;
+          const float t = std::clamp(particle.age / std::max(0.01f, particle.lifetime), 0.0f, 1.0f);
+          const float size = ps.sizeOverLifetimeEnabled ? glm::mix(particle.size, ps.sizeOverLifetime, t) : particle.size;
           const float halfSize = std::max(0.001f, size) * 0.5f;
           const float angle = glm::radians(particle.rotation);
           const float c = std::cos(angle);
           const float s = std::sin(angle);
           glm::mat4 objectRotation(1.0f);
-          objectRotation =
-              glm::rotate(objectRotation, glm::radians(obj.rotation.x),
-                          glm::vec3(1.0f, 0.0f, 0.0f));
-          objectRotation =
-              glm::rotate(objectRotation, glm::radians(obj.rotation.y),
-                          glm::vec3(0.0f, 1.0f, 0.0f));
-          objectRotation =
-              glm::rotate(objectRotation, glm::radians(obj.rotation.z),
-                          glm::vec3(0.0f, 0.0f, 1.0f));
-          const glm::vec3 particleWorldCenter =
-              obj.position +
-              glm::vec3(objectRotation *
-                        glm::vec4(particle.position.x * obj.scale.x,
-                                  particle.position.y * obj.scale.y, 0.0f,
-                                  0.0f));
+          objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+          objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+          objectRotation = glm::rotate(objectRotation, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+          const glm::vec3 particleWorldCenter = obj.position + glm::vec3(objectRotation * glm::vec4(particle.position.x * obj.scale.x, particle.position.y * obj.scale.y, 0.0f, 0.0f));
           auto localToWorld = [&](float x, float y) {
             const float rx = x * c - y * s;
             const float ry = x * s + y * c;
@@ -970,49 +746,28 @@ void Engine::renderViewport() {
             rectMax.x = std::max(rectMax.x, point.x);
             rectMax.y = std::max(rectMax.y, point.y);
           }
-          if (rectMax.x < imageMin.x || rectMin.x > imageMax.x ||
-              rectMax.y < imageMin.y || rectMin.y > imageMax.y) {
-            continue;
-          }
+          if (rectMax.x < imageMin.x || rectMin.x > imageMax.x || rectMax.y < imageMin.y || rectMin.y > imageMax.y) continue;
 
           const glm::vec4 tint =
-              ps.colorOverLifetimeEnabled
-                  ? glm::mix(particle.startColor, ps.colorOverLifetime, t)
-                  : particle.startColor;
-          const ImU32 tintColor = ImGui::GetColorU32(
-              ImVec4(tint.r, tint.g, tint.b, tint.a));
-          if (texId != 0) {
-            spriteBatch.push((ImTextureID)(intptr_t)texId, quad[0], quad[1],
-                             quad[2], quad[3], ImVec2(0.0f, 0.0f),
-                             ImVec2(1.0f, 0.0f), ImVec2(1.0f, 1.0f),
-                             ImVec2(0.0f, 1.0f), tintColor);
-          } else {
-            spriteBatch.flush();
-            viewportDrawList->AddQuadFilled(quad[0], quad[1], quad[2],
-                                            quad[3], tintColor);
-          }
+              ps.colorOverLifetimeEnabled ? glm::mix(particle.startColor, ps.colorOverLifetime, t) : particle.startColor;
+          const ImU32 tintColor = ImGui::GetColorU32(ImVec4(tint.r, tint.g, tint.b, tint.a));
+          if (texId != 0) { spriteBatch.push((ImTextureID)(intptr_t)texId, quad[0], quad[1], quad[2], quad[3], ImVec2(0.0f, 0.0f), ImVec2(1.0f, 0.0f), ImVec2(1.0f, 1.0f), ImVec2(0.0f, 1.0f), tintColor); }
+          else { spriteBatch.flush(); viewportDrawList->AddQuadFilled(quad[0], quad[1], quad[2], quad[3], tintColor); }
         }
       }
       spriteBatch.flush();
     };
-    if (!worldUiEditing && !isProject25DPipeline()) {
-      drawProjected25DSceneSprites();
-    }
+    if (!worldUiEditing && !isProject25DPipeline()) drawProjected25DSceneSprites();
 
     bool uiWorldCameraActive = false;
     if (worldUiEditing) {
       UiSceneLookupCache uiSceneLookup(sceneObjects);
       int editCanvas3DId = -1;
-      if (SceneObject *selected = getSelectedObject()) {
-        editCanvas3DId = uiSceneLookup.find3DCanvasId(*selected);
-      }
+      if (SceneObject *selected = getSelectedObject()) {editCanvas3DId = uiSceneLookup.find3DCanvasId(*selected);}
       auto isUIType = [&](const SceneObject &target) {
-        if (target.type == ObjectType::Sprite25D)
-          return false;
-        if (!worldUiEditing)
-          return false;
-        if (!target.hasUI || target.ui.type == UIElementType::None)
-          return false;
+        if (target.type == ObjectType::Sprite25D) return false;
+        if (!worldUiEditing)                                        return false;
+        if (!target.hasUI || target.ui.type == UIElementType::None) return false;
         int canvasId = uiSceneLookup.find3DCanvasId(target);
         return (canvasId < 0) || (canvasId == editCanvas3DId);
       };
@@ -1036,9 +791,7 @@ void Engine::renderViewport() {
           mouseInToolbarGuard;
       bool uiWorldHover =
           (mouseOverViewportImage ||
-           ImGui::IsWindowHovered(
-               ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) &&
-          !mouseInToolbar;
+           ImGui::IsWindowHovered( ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) && !mouseInToolbar;
       auto worldToScreen = [&](const glm::vec2 &world) {
         glm::vec2 local = uiWorldCamera.WorldToScreen(world);
         return ImVec2(overlayPos.x + local.x, overlayPos.y + local.y);
@@ -1048,38 +801,22 @@ void Engine::renderViewport() {
         return uiWorldCamera.ScreenToWorld(local);
       };
       auto parallaxOffset = [&](const SceneObject &obj) {
-        if (!obj.hasParallaxLayer2D || !obj.parallaxLayer2D.enabled)
-          return glm::vec2(0.0f);
+        if (!obj.hasParallaxLayer2D || !obj.parallaxLayer2D.enabled) return glm::vec2(0.0f);
         float factor = std::clamp(obj.parallaxLayer2D.factor, 0.0f, 1.0f);
         return uiWorldCamera.position * (1.0f - factor);
       };
-      auto resolveUIRectWorld = [&](const SceneObject &obj, ImVec2 &outMin,
-                                    ImVec2 &outMax) {
-        if (obj.type == ObjectType::Sprite25D) {
-          return ResolveProjectedSprite25DRect(obj, view, proj, overlayPos,
-                                               overlaySize, outMin, outMax);
-        }
+      auto resolveUIRectWorld = [&](const SceneObject &obj, ImVec2 &outMin, ImVec2 &outMax) {
+        if (obj.type == ObjectType::Sprite25D) {return ResolveProjectedSprite25DRect(obj, view, proj, overlayPos,overlaySize, outMin, outMax);}
         glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
-        glm::vec2 worldPos = parentOffset +
-                             glm::vec2(obj.ui.position.x, obj.ui.position.y) +
-                             parallaxOffset(obj);
+        glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
         glm::vec2 sizeWorld = getSpriteDisplaySize(obj);
         ImVec2 pivotOffset = ImVec2(sizeWorld.x * 0.5f, sizeWorld.y * 0.5f);
         switch (obj.ui.anchor) {
-        case UIAnchor::TopLeft:
-          pivotOffset = ImVec2(0.0f, 0.0f);
-          break;
-        case UIAnchor::TopRight:
-          pivotOffset = ImVec2(sizeWorld.x, 0.0f);
-          break;
-        case UIAnchor::BottomLeft:
-          pivotOffset = ImVec2(0.0f, sizeWorld.y);
-          break;
-        case UIAnchor::BottomRight:
-          pivotOffset = ImVec2(sizeWorld.x, sizeWorld.y);
-          break;
-        default:
-          break;
+        case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
+        case UIAnchor::TopRight: pivotOffset = ImVec2(sizeWorld.x, 0.0f); break;
+        case UIAnchor::BottomLeft: pivotOffset = ImVec2(0.0f, sizeWorld.y); break;
+        case UIAnchor::BottomRight: pivotOffset = ImVec2(sizeWorld.x, sizeWorld.y); break;
+        default: break;
         }
         glm::vec2 worldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
         glm::vec2 worldMax = worldMin + sizeWorld;
@@ -1090,20 +827,14 @@ void Engine::renderViewport() {
         return true;
       };
       auto rectOutsideOverlay = [&](const ImVec2 &min, const ImVec2 &max) {
-        return (max.x < overlayPos.x || min.x > overlayPos.x + overlaySize.x ||
-                max.y < overlayPos.y || min.y > overlayPos.y + overlaySize.y);
+        return (max.x < overlayPos.x || min.x > overlayPos.x + overlaySize.x || max.y < overlayPos.y || min.y > overlayPos.y + overlaySize.y);
       };
 
       if (uiWorldHover) {
         ImGuiIO &io = ImGui::GetIO();
-        bool panHeld = ImGui::IsMouseDown(ImGuiMouseButton_Middle) ||
-                       (ImGui::IsKeyDown(ImGuiKey_Space) &&
-                        ImGui::IsMouseDown(ImGuiMouseButton_Left));
-        if (panHeld) {
-          uiWorldPanning = true;
-        } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle) &&
-                   !(ImGui::IsKeyDown(ImGuiKey_Space) &&
-                     ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
+        bool panHeld = ImGui::IsMouseDown(ImGuiMouseButton_Middle) || (ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+        if (panHeld) uiWorldPanning = true;
+        else if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !(ImGui::IsKeyDown(ImGuiKey_Space) && ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
           uiWorldPanning = false;
         }
         if (uiWorldPanning) {
@@ -1115,12 +846,10 @@ void Engine::renderViewport() {
           uiWorldCameraActive = true;
         }
         if (io.MouseWheel != 0.0f) {
-          glm::vec2 mouseLocal(io.MousePos.x - overlayPos.x,
-                               io.MousePos.y - overlayPos.y);
+          glm::vec2 mouseLocal(io.MousePos.x - overlayPos.x, io.MousePos.y - overlayPos.y);
           glm::vec2 worldBefore = uiWorldCamera.ScreenToWorld(mouseLocal);
           float zoomFactor = 1.0f + io.MouseWheel * 0.1f;
-          float newZoom =
-              std::clamp(uiWorldCamera.zoom * zoomFactor, 5.0f, 2000.0f);
+          float newZoom = std::clamp(uiWorldCamera.zoom * zoomFactor, 5.0f, 2000.0f);
           if (newZoom != uiWorldCamera.zoom) {
             uiWorldCamera.zoom = newZoom;
             glm::vec2 worldAfter = uiWorldCamera.ScreenToWorld(mouseLocal);
@@ -1129,48 +858,34 @@ void Engine::renderViewport() {
           }
         }
         glm::vec2 panDir(0.0f);
-        if (ImGui::IsKeyDown(ImGuiKey_A))
-          panDir.x -= 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_D))
-          panDir.x += 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_W))
-          panDir.y += 1.0f;
-        if (ImGui::IsKeyDown(ImGuiKey_S))
-          panDir.y -= 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_A)) panDir.x -= 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_D)) panDir.x += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_W)) panDir.y += 1.0f;
+        if (ImGui::IsKeyDown(ImGuiKey_S)) panDir.y -= 1.0f;
         if (panDir.x != 0.0f || panDir.y != 0.0f) {
           float panSpeed = 6.0f;
-          if (ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
-              ImGui::IsKeyDown(ImGuiKey_RightShift)) {
-            panSpeed *= 2.5f;
-          }
+          if (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)) panSpeed *= 2.5f;
           uiWorldCamera.position += panDir * (panSpeed * deltaTime);
           uiWorldCameraActive = true;
         }
       }
 
       auto brighten = [](const ImVec4 &c, float k) {
-        return ImVec4(std::clamp(c.x * k, 0.0f, 1.0f),
-                      std::clamp(c.y * k, 0.0f, 1.0f),
-                      std::clamp(c.z * k, 0.0f, 1.0f), c.w);
+        return ImVec4(std::clamp(c.x * k, 0.0f, 1.0f), std::clamp(c.y * k, 0.0f, 1.0f), std::clamp(c.z * k, 0.0f, 1.0f), c.w);
       };
 
       if (showUIWorldGrid) {
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        ImVec2 overlayMax(overlayPos.x + overlaySize.x,
-                          overlayPos.y + overlaySize.y);
+        ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
         dl->PushClipRect(overlayPos, overlayMax, true);
         float step = 1.0f;
         float minPx = 30.0f;
         float maxPx = 140.0f;
-        while (step * uiWorldCamera.zoom < minPx)
-          step *= 2.0f;
-        while (step * uiWorldCamera.zoom > maxPx)
-          step *= 0.5f;
+        while (step * uiWorldCamera.zoom < minPx) step *= 2.0f;
+        while (step * uiWorldCamera.zoom > maxPx) step *= 0.5f;
 
-        glm::vec2 worldMin =
-            uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y));
-        glm::vec2 worldMax =
-            uiWorldCamera.ScreenToWorld(glm::vec2(overlaySize.x, 0.0f));
+        glm::vec2 worldMin = uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y));
+        glm::vec2 worldMax = uiWorldCamera.ScreenToWorld(glm::vec2(overlaySize.x, 0.0f));
         float startX = std::floor(worldMin.x / step) * step;
         float endX = std::ceil(worldMax.x / step) * step;
         float startY = std::floor(worldMin.y / step) * step;
@@ -1199,80 +914,58 @@ void Engine::renderViewport() {
         dl->PopClipRect();
       }
 
-      if (showCanvasOverlay && worldUiReferenceResolutionWidth > 0 &&
-          worldUiReferenceResolutionHeight > 0) {
-        ImDrawList *dl =
-            ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
-        ImVec2 overlayMax(overlayPos.x + overlaySize.x,
-                          overlayPos.y + overlaySize.y);
+      if (showCanvasOverlay && worldUiReferenceResolutionWidth > 0 && worldUiReferenceResolutionHeight > 0) {
+        ImDrawList *dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
+        ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
         dl->PushClipRect(overlayPos, overlayMax, true);
 
         const float fitScale = std::max(
             0.01f,
-            std::min(overlaySize.x /
-                         static_cast<float>(worldUiReferenceResolutionWidth),
-                     overlaySize.y /
-                         static_cast<float>(worldUiReferenceResolutionHeight)));
+            std::min(overlaySize.x / static_cast<float>(worldUiReferenceResolutionWidth), overlaySize.y / static_cast<float>(worldUiReferenceResolutionHeight)));
         const ImVec2 frameSize(
             static_cast<float>(worldUiReferenceResolutionWidth) * fitScale,
             static_cast<float>(worldUiReferenceResolutionHeight) * fitScale);
         const ImVec2 frameMin(
             overlayPos.x + (overlaySize.x - frameSize.x) * 0.5f,
             overlayPos.y + (overlaySize.y - frameSize.y) * 0.5f);
-        const ImVec2 frameMax(frameMin.x + frameSize.x,
-                              frameMin.y + frameSize.y);
-        dl->AddRect(frameMin, frameMax, IM_COL32(84, 176, 255, 220), 4.0f, 0,
-                    2.0f);
+        const ImVec2 frameMax(frameMin.x + frameSize.x, frameMin.y + frameSize.y);
+        dl->AddRect(frameMin, frameMax, IM_COL32(84, 176, 255, 220), 4.0f, 0, 2.0f);
 
         char label[80];
-        std::snprintf(label, sizeof(label), "Resolution %dx%d",
-                      worldUiReferenceResolutionWidth,
-                      worldUiReferenceResolutionHeight);
+        std::snprintf(label, sizeof(label), "Resolution %dx%d", worldUiReferenceResolutionWidth, worldUiReferenceResolutionHeight);
         ImVec2 labelSize = ImGui::CalcTextSize(label);
         ImVec2 labelPad(6.0f, 3.0f);
         ImVec2 labelMin(frameMin.x + 8.0f, frameMin.y + 8.0f);
-        ImVec2 labelMax(labelMin.x + labelSize.x + labelPad.x * 2.0f,
-                        labelMin.y + labelSize.y + labelPad.y * 2.0f);
+        ImVec2 labelMax(labelMin.x + labelSize.x + labelPad.x * 2.0f, labelMin.y + labelSize.y + labelPad.y * 2.0f);
         dl->AddRectFilled(labelMin, labelMax, IM_COL32(12, 22, 34, 190), 4.0f);
-        dl->AddRect(labelMin, labelMax, IM_COL32(84, 176, 255, 180), 4.0f, 0,
-                    1.0f);
-        dl->AddText(ImVec2(labelMin.x + labelPad.x, labelMin.y + labelPad.y),
-                    IM_COL32(214, 240, 255, 235), label);
+        dl->AddRect(labelMin, labelMax, IM_COL32(84, 176, 255, 180), 4.0f, 0, 1.0f);
+        dl->AddText(ImVec2(labelMin.x + labelPad.x, labelMin.y + labelPad.y), IM_COL32(214, 240, 255, 235), label);
         dl->PopClipRect();
       }
 
       if (showSceneGizmos && gizmoShowCameraOverlays) {
-        ImDrawList *dl =
-            ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
-        ImVec2 overlayMax(overlayPos.x + overlaySize.x,
-                          overlayPos.y + overlaySize.y);
+        ImDrawList *dl = ImGui::GetForegroundDrawList(ImGui::GetWindowViewport());
+        ImVec2 overlayMax(overlayPos.x + overlaySize.x, overlayPos.y + overlaySize.y);
         dl->PushClipRect(overlayPos, overlayMax, true);
 
         for (const auto &camObj : sceneObjects) {
-          if (!camObj.hasCamera || !IsObjectEnabledInHierarchy(camObj))
-            continue;
+          if (!camObj.hasCamera || !IsObjectEnabledInHierarchy(camObj)) continue;
           const bool cameraIs2D = project2DPipeline || camObj.camera.use2D;
-          if (!cameraIs2D)
-            continue;
+          if (!cameraIs2D) continue;
 
           const float alpha = camObj.enabled ? 1.0f : 0.35f;
-          const float pixelsPerUnit =
-              std::max(1.0f, camObj.camera.pixelsPerUnit);
+          const float pixelsPerUnit = std::max(1.0f, camObj.camera.pixelsPerUnit);
           const int cameraResolutionWidth = activeGameResolutionWidth;
           const int cameraResolutionHeight = activeGameResolutionHeight;
-          const float halfWidth = static_cast<float>(cameraResolutionWidth) /
-                                  (2.0f * pixelsPerUnit);
-          const float halfHeight = static_cast<float>(cameraResolutionHeight) /
-                                   (2.0f * pixelsPerUnit);
+          const float halfWidth = static_cast<float>(cameraResolutionWidth) / (2.0f * pixelsPerUnit);
+          const float halfHeight = static_cast<float>(cameraResolutionHeight) / (2.0f * pixelsPerUnit);
 
           glm::quat q = glm::quat(glm::radians(camObj.rotation));
           glm::mat3 rot = glm::mat3_cast(q);
           glm::vec2 right(rot[0].x, rot[0].y);
           glm::vec2 up(rot[1].x, rot[1].y);
-          if (glm::length(right) < 1e-4f)
-            right = glm::vec2(1.0f, 0.0f);
-          if (glm::length(up) < 1e-4f)
-            up = glm::vec2(0.0f, 1.0f);
+          if (glm::length(right) < 1e-4f) right = glm::vec2(1.0f, 0.0f);
+          if (glm::length(up) < 1e-4f) up = glm::vec2(0.0f, 1.0f);
           right = glm::normalize(right);
           up = glm::normalize(up);
 
@@ -1288,20 +981,16 @@ void Engine::renderViewport() {
 
           ImU32 boundsCol =
               ImGui::GetColorU32(ImVec4(0.28f, 0.88f, 1.0f, 0.92f * alpha));
-          ImU32 diagCol =
-              ImGui::GetColorU32(ImVec4(0.28f, 0.88f, 1.0f, 0.45f * alpha));
-          const float edgeThickness = std::max(
-              1.4f, 2.0f * std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f));
+          ImU32 diagCol = ImGui::GetColorU32(ImVec4(0.28f, 0.88f, 1.0f, 0.45f * alpha));
+          const float edgeThickness = std::max( 1.4f, 2.0f * std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f));
           for (int i = 0; i < 4; ++i) {
-            dl->AddLine(screenCorners[i], screenCorners[(i + 1) % 4], boundsCol,
-                        edgeThickness);
+            dl->AddLine(screenCorners[i], screenCorners[(i + 1) % 4], boundsCol, edgeThickness);
           }
           dl->AddLine(screenCorners[0], screenCorners[2], diagCol, 1.2f);
           dl->AddLine(screenCorners[1], screenCorners[3], diagCol, 1.2f);
 
           ImVec2 camCenter = worldToScreen(center);
-          ImVec2 camForward =
-              worldToScreen(center + up * std::max(0.1f, halfHeight * 0.45f));
+          ImVec2 camForward = worldToScreen(center + up * std::max(0.1f, halfHeight * 0.45f));
           dl->AddLine(
               camCenter, camForward,
               ImGui::GetColorU32(ImVec4(0.94f, 0.98f, 1.0f, 0.88f * alpha)),
@@ -1337,21 +1026,13 @@ void Engine::renderViewport() {
       }
 
       float animSpeed = 0.0f;
-      if (uiAnimationMode == UIAnimationMode::Fluid) {
-        animSpeed = 8.0f;
-      } else if (uiAnimationMode == UIAnimationMode::Snappy) {
-        animSpeed = 18.0f;
-      }
+      if (uiAnimationMode == UIAnimationMode::Fluid)       animSpeed = 8.0f;
+      else if (uiAnimationMode == UIAnimationMode::Snappy) animSpeed = 18.0f;
       float animStep =
-          (uiAnimationMode == UIAnimationMode::Off)
-              ? 1.0f
-              : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
+          (uiAnimationMode == UIAnimationMode::Off) ? 1.0f : (1.0f - std::exp(-animSpeed * ImGui::GetIO().DeltaTime));
       auto animateValue = [&](float &current, float target, bool immediate) {
-        if (uiAnimationMode == UIAnimationMode::Off || immediate) {
-          current = target;
-        } else {
-          current += (target - current) * animStep;
-        }
+        if (uiAnimationMode == UIAnimationMode::Off || immediate) current = target;
+        else current += (target - current) * animStep;
         return current;
       };
 
@@ -1359,8 +1040,7 @@ void Engine::renderViewport() {
       uiDrawList.reserve(sceneObjects.size());
       bool needsSort = false;
       for (auto &obj : sceneObjects) {
-        if (!IsObjectEnabledInHierarchy(obj) || !isUIType(obj))
-          continue;
+        if (!IsObjectEnabledInHierarchy(obj) || !isUIType(obj)) continue;
         uiDrawList.push_back(&obj);
         needsSort =
             needsSort ||
@@ -1368,43 +1048,29 @@ void Engine::renderViewport() {
              obj.parallaxLayer2D.order != 0) ||
             (obj.hasUI && obj.ui.sortingOrder != 0);
       }
-      if (needsSort && uiDrawList.size() > 1) {
-        StableSortRuntimeUiDrawList(uiDrawList);
-      }
+      if (needsSort && uiDrawList.size() > 1) StableSortRuntimeUiDrawList(uiDrawList);
 
-      glm::vec2 worldViewMin =
-          uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y));
-      glm::vec2 worldViewMax =
-          uiWorldCamera.ScreenToWorld(glm::vec2(overlaySize.x, 0.0f));
+      glm::vec2 worldViewMin = uiWorldCamera.ScreenToWorld(glm::vec2(0.0f, overlaySize.y));
+      glm::vec2 worldViewMax = uiWorldCamera.ScreenToWorld(glm::vec2(overlaySize.x, 0.0f));
       BatchedSpriteEmitter spriteBatch(ImGui::GetWindowDrawList());
       spriteBatch.reserve(uiDrawList.size());
-      struct ResolvedUiRect {
-        ImVec2 min;
-        ImVec2 max;
-      };
+      struct ResolvedUiRect { ImVec2 min; ImVec2 max;};
       std::unordered_map<int, ResolvedUiRect> resolvedUiRects;
       resolvedUiRects.reserve(uiDrawList.size());
       std::vector<SceneObject *> drawnUiObjects;
       drawnUiObjects.reserve(uiDrawList.size());
-      auto resolveCanvasMaskRectForObject =
-          [&](const SceneObject &obj, ImVec2 &outMin, ImVec2 &outMax) -> bool {
+      auto resolveCanvasMaskRectForObject = [&](const SceneObject &obj, ImVec2 &outMin, ImVec2 &outMax) -> bool {
         bool hasMask = false;
         ImVec2 maskMin(0.0f, 0.0f);
         ImVec2 maskMax(0.0f, 0.0f);
         const SceneObject *current = &obj;
         while (current && current->parentId >= 0) {
           current = uiSceneLookup.find(current->parentId);
-          if (!current)
-            break;
-          if (!(current->hasUI && current->ui.type == UIElementType::Canvas &&
-                current->ui.maskChildren)) {
-            continue;
-          }
+          if (!current) break;
+          if (!(current->hasUI && current->ui.type == UIElementType::Canvas && current->ui.maskChildren)) continue;
 
           ImVec2 canvasMin, canvasMax;
-          if (!resolveUIRectWorld(*current, canvasMin, canvasMax)) {
-            continue;
-          }
+          if (!resolveUIRectWorld(*current, canvasMin, canvasMax)) continue;
 
           if (!hasMask) {
             maskMin = canvasMin;
@@ -1418,8 +1084,7 @@ void Engine::renderViewport() {
           }
         }
 
-        if (!hasMask)
-          return false;
+        if (!hasMask) return false;
         outMin = maskMin;
         outMax = maskMax;
         return (outMax.x > outMin.x) && (outMax.y > outMin.y);
@@ -1435,22 +1100,15 @@ void Engine::renderViewport() {
       std::unordered_map<int, std::string> light2DRoutingReasons;
       SceneObject *selectedForRoutingReasons =
           showInspector ? getSelectedObject() : nullptr;
-      const bool captureLight2DRoutingReasons =
-          selectedForRoutingReasons && selectedForRoutingReasons->hasUI;
-      if (captureLight2DRoutingReasons) {
-        light2DRoutingReasons.reserve(uiDrawList.size());
-      }
+      const bool captureLight2DRoutingReasons = selectedForRoutingReasons && selectedForRoutingReasons->hasUI;
+      if (captureLight2DRoutingReasons) light2DRoutingReasons.reserve(uiDrawList.size());
       auto setLight2DRoutingReason = [&](int objectId, const char *reason) {
-        if (captureLight2DRoutingReasons) {
-          light2DRoutingReasons[objectId] = reason;
-        }
+        if (captureLight2DRoutingReasons) light2DRoutingReasons[objectId] = reason;
       };
       if (rendererInitialized) {
         Light2DRenderRequest lightRequest;
-        lightRequest.width =
-            std::max(1, static_cast<int>(std::round(overlaySize.x)));
-        lightRequest.height =
-            std::max(1, static_cast<int>(std::round(overlaySize.y)));
+        lightRequest.width = std::max(1, static_cast<int>(std::round(overlaySize.x)));
+        lightRequest.height = std::max(1, static_cast<int>(std::round(overlaySize.y)));
         lightRequest.clearColor = glm::vec4(0.0f);
         lightRequest.baseAmbient = glm::vec3(0.0f);
         lightRequest.lightingBufferScale = light2DLightingBufferScale;
@@ -1458,37 +1116,24 @@ void Engine::renderViewport() {
         lightRequest.blendStyles = light2DBlendStyles;
         auto computeFlickerMultiplier =
             [](const Light2DFlickerSettings &flicker) {
-              if (!flicker.enabled || flicker.amount <= 0.0001f) {
-                return 1.0f;
-              }
+              if (!flicker.enabled || flicker.amount <= 0.0001f) return 1.0f;
               const float time = static_cast<float>(glfwGetTime());
-              const float base = std::sin(
-                  time * std::max(0.01f, flicker.speed) + flicker.seed);
-              const float jitter =
-                  std::sin(time * std::max(0.01f, flicker.speed * 2.173f) +
-                           flicker.seed * 1.913f);
+              const float base = std::sin( time * std::max(0.01f, flicker.speed) + flicker.seed);
+              const float jitter = std::sin(time * std::max(0.01f, flicker.speed * 2.173f) + flicker.seed * 1.913f);
               const float noise = 0.5f + 0.35f * base + 0.15f * jitter;
-              return glm::mix(1.0f, std::max(0.0f, noise),
-                              std::clamp(flicker.amount, 0.0f, 1.0f));
+              return glm::mix(1.0f, std::max(0.0f, noise), std::clamp(flicker.amount, 0.0f, 1.0f));
             };
 
         int spriteDrawOrder = 0;
         for (SceneObject *objPtr : uiDrawList) {
           SceneObject &obj = *objPtr;
-          if (!(obj.ui.type == UIElementType::Image ||
-                obj.ui.type == UIElementType::Sprite2D)) {
-            continue;
-          }
+          if (!(obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D)) continue;
           if (obj.ui.nineSliceEnabled) {
-            setLight2DRoutingReason(obj.id,
-                                    "Legacy path: nine-slice sprites are not "
-                                    "routed through Light2D yet.");
+            setLight2DRoutingReason(obj.id, "Legacy path: nine-slice sprites are not " "routed through Light2D yet.");
             continue;
           }
           if (obj.ui.unlitLighting2D) {
-            setLight2DRoutingReason(obj.id,
-                                    "Legacy path: Force Unlit keeps this "
-                                    "sprite on the legacy 2D renderer.");
+            setLight2DRoutingReason(obj.id, "Legacy path: Force Unlit keeps this " "sprite on the legacy 2D renderer.");
             continue;
           }
 
@@ -1504,24 +1149,18 @@ void Engine::renderViewport() {
 
           ImVec2 rectMin, rectMax;
           if (!resolveUIRectWorld(obj, rectMin, rectMax)) {
-            setLight2DRoutingReason(
-                obj.id, "Legacy path: failed to resolve a world-space sprite "
-                        "rect for the active viewport.");
+            setLight2DRoutingReason( obj.id, "Legacy path: failed to resolve a world-space sprite " "rect for the active viewport.");
             continue;
           }
           if (!disableCulling && !repeatX && !repeatY &&
               rectOutsideOverlay(rectMin, rectMax)) {
-            setLight2DRoutingReason(obj.id,
-                                    "Skipped Light2D: object is outside the "
-                                    "visible 2D world overlay.");
+            setLight2DRoutingReason(obj.id, "Skipped Light2D: object is outside the " "visible 2D world overlay.");
             continue;
           }
 
           Texture *spriteTex = spriteTextureResolver.resolveTexture(obj);
           if (!spriteTex || spriteTex->GetID() == 0) {
-            setLight2DRoutingReason(
-                obj.id,
-                "Legacy path: no sprite texture is bound for this object.");
+            setLight2DRoutingReason(obj.id, "Legacy path: no sprite texture is bound for this object.");
             continue;
           }
 
@@ -1530,20 +1169,12 @@ void Engine::renderViewport() {
           const float c = std::cos(angle);
           const float s = std::sin(angle);
           ImVec2 maskMin, maskMax;
-          const bool hasMaskRect =
-              resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
-          auto appendSpriteQuad = [&](const ImVec2 &quadMin,
-                                      const ImVec2 &quadMax) {
-            if (!disableCulling && rectOutsideOverlay(quadMin, quadMax)) {
-              return false;
-            }
+          const bool hasMaskRect = resolveCanvasMaskRectForObject(obj, maskMin, maskMax);
+          auto appendSpriteQuad = [&](const ImVec2 &quadMin, const ImVec2 &quadMax) {
+            if (!disableCulling && rectOutsideOverlay(quadMin, quadMax)) return false;
             if (hasMaskRect) {
-              const bool maskClipsSprite =
-                  quadMin.x < maskMin.x || quadMax.x > maskMax.x ||
-                  quadMin.y < maskMin.y || quadMax.y > maskMax.y;
-              if (maskClipsSprite) {
-                return false;
-              }
+              const bool maskClipsSprite = quadMin.x < maskMin.x || quadMax.x > maskMax.x || quadMin.y < maskMin.y || quadMax.y > maskMax.y;
+              if (maskClipsSprite) return false;
             }
 
             Light2DScreenSprite sprite;
@@ -1563,8 +1194,7 @@ void Engine::renderViewport() {
                 std::max(0.5f, (quadMax.x - quadMin.x) * 0.5f),
                 std::max(0.5f, (quadMax.y - quadMin.y) * 0.5f));
             auto rotatePoint = [&](float x, float y) {
-              return glm::vec2(center.x + x * c - y * s,
-                               center.y + x * s + y * c);
+              return glm::vec2(center.x + x * c - y * s, center.y + x * s + y * c);
             };
             sprite.positions[0] = rotatePoint(-half.x, -half.y);
             sprite.positions[1] = rotatePoint(half.x, -half.y);
@@ -1581,130 +1211,67 @@ void Engine::renderViewport() {
           bool addedAnySprite = false;
           if (repeatX || repeatY) {
             glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
-            glm::vec2 spacing = obj.hasParallaxLayer2D
-                                    ? obj.parallaxLayer2D.repeatSpacing
-                                    : glm::vec2(0.0f);
+            glm::vec2 spacing = obj.hasParallaxLayer2D ? obj.parallaxLayer2D.repeatSpacing : glm::vec2(0.0f);
             float stepX = spriteSizeWorld.x + spacing.x;
             float stepY = spriteSizeWorld.y + spacing.y;
-            ImVec2 pivotOffset(spriteSizeWorld.x * 0.5f,
-                               spriteSizeWorld.y * 0.5f);
+            ImVec2 pivotOffset(spriteSizeWorld.x * 0.5f, spriteSizeWorld.y * 0.5f);
             switch (obj.ui.anchor) {
-            case UIAnchor::TopLeft:
-              pivotOffset = ImVec2(0.0f, 0.0f);
-              break;
-            case UIAnchor::TopRight:
-              pivotOffset = ImVec2(spriteSizeWorld.x, 0.0f);
-              break;
-            case UIAnchor::BottomLeft:
-              pivotOffset = ImVec2(0.0f, spriteSizeWorld.y);
-              break;
-            case UIAnchor::BottomRight:
-              pivotOffset = ImVec2(spriteSizeWorld.x, spriteSizeWorld.y);
-              break;
-            default:
-              break;
+            case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f);                               break;
+            case UIAnchor::TopRight: pivotOffset = ImVec2(spriteSizeWorld.x, 0.0f);                 break;
+            case UIAnchor::BottomLeft: pivotOffset = ImVec2(0.0f, spriteSizeWorld.y);               break;
+            case UIAnchor::BottomRight: pivotOffset = ImVec2(spriteSizeWorld.x, spriteSizeWorld.y); break;
+            default:                                                                                     break;
             }
             glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
-            glm::vec2 worldPos =
-                parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) +
-                parallaxOffset(obj);
-            glm::vec2 baseWorldMin =
-                worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
-            int startX = repeatX
-                             ? static_cast<int>(std::floor(
-                                   (worldViewMin.x - baseWorldMin.x) / stepX)) -
-                                   1
-                             : 0;
-            int endX = repeatX
-                           ? static_cast<int>(std::ceil(
-                                 (worldViewMax.x - baseWorldMin.x) / stepX)) +
-                                 1
-                           : 0;
-            int startY = repeatY
-                             ? static_cast<int>(std::floor(
-                                   (worldViewMin.y - baseWorldMin.y) / stepY)) -
-                                   1
-                             : 0;
-            int endY = repeatY
-                           ? static_cast<int>(std::ceil(
-                                 (worldViewMax.y - baseWorldMin.y) / stepY)) +
-                                 1
-                           : 0;
+            glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
+            glm::vec2 baseWorldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
+            int startX = repeatX ? static_cast<int>(std::floor((worldViewMin.x - baseWorldMin.x) / stepX)) - 1 : 0;
+            int endX = repeatX ? static_cast<int>(std::ceil((worldViewMax.x - baseWorldMin.x) / stepX)) + 1 : 0;
+            int startY = repeatY ? static_cast<int>(std::floor((worldViewMin.y - baseWorldMin.y) / stepY)) - 1 : 0;
+            int endY = repeatY ? static_cast<int>(std::ceil((worldViewMax.y - baseWorldMin.y) / stepY)) + 1 : 0;
             for (int ix = startX; ix <= endX; ++ix) {
               for (int iy = startY; iy <= endY; ++iy) {
                 float dx = repeatX ? static_cast<float>(ix) * stepX : 0.0f;
                 float dy = repeatY ? static_cast<float>(iy) * stepY : 0.0f;
                 glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
                 ImVec2 s0 = worldToScreen(tileMin);
-                ImVec2 s1 = worldToScreen(
-                    tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                ImVec2 s1 = worldToScreen( tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
                 ImVec2 tileRectMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
                 ImVec2 tileRectMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
-                addedAnySprite = appendSpriteQuad(tileRectMin, tileRectMax) ||
-                                 addedAnySprite;
+                addedAnySprite = appendSpriteQuad(tileRectMin, tileRectMax) || addedAnySprite;
               }
             }
-          } else {
-            addedAnySprite = appendSpriteQuad(rectMin, rectMax);
-          }
+          } else addedAnySprite = appendSpriteQuad(rectMin, rectMax);
 
           if (!addedAnySprite) {
-            setLight2DRoutingReason(
-                obj.id,
-                hasMaskRect
-                    ? "Legacy path: repeating or masked tiles still use legacy "
-                      "rendering when the canvas clip cuts the visible tile."
-                    : "Skipped Light2D: object has no visible tiles inside the "
-                      "current 2D world overlay.");
+            setLight2DRoutingReason(obj.id, hasMaskRect
+                    ? "Legacy path: repeating or masked tiles still use legacy " "rendering when the canvas clip cuts the visible tile."
+                           : "Skipped Light2D: object has no visible tiles inside the " "current 2D world overlay.");
             continue;
           }
 
           light2DRenderedObjectIds.insert(obj.id);
           if (obj.ui.type == UIElementType::Sprite2D) {
-            if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-              ++litSprite2DCount;
-            }
-          } else if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-            ++litWorldImageCount;
-          }
-          if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) {
-            setLight2DRoutingReason(
-                obj.id,
-                repeatX || repeatY
-                    ? "Lit path: repeating parallax tiles are routed through "
-                      "the Light2D compositor."
-                    : "Lit path: routed through the Light2D compositor.");
-          } else if (obj.ui.unlitLighting2D) {
-            setLight2DRoutingReason(obj.id,
-                                    "Lit compositor path: object is routed, "
-                                    "but Force Unlit is enabled.");
-          } else {
-            setLight2DRoutingReason(obj.id,
-                                    "Lit compositor path: object is routed, "
-                                    "but Receive Lighting is disabled.");
-          }
+            if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D) ++litSprite2DCount;
+          } else if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D)++litWorldImageCount;
+          if (obj.ui.receiveLighting2D && !obj.ui.unlitLighting2D)
+                                           setLight2DRoutingReason(obj.id, repeatX || repeatY ? "Lit path: repeating parallax tiles are routed through " "the Light2D compositor." : "Lit path: routed through the Light2D compositor.");
+          else if (obj.ui.unlitLighting2D) setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, " "but Force Unlit is enabled.");
+          else                             setLight2DRoutingReason(obj.id, "Lit compositor path: object is routed, " "but Receive Lighting is disabled.");
         }
 
-        auto projectedParticleOutside = [&](const ImVec2 &min,
-                                            const ImVec2 &max) {
-          return max.x < 0.0f || min.x > overlaySize.x || max.y < 0.0f ||
-                 min.y > overlaySize.y;
-        };
+        auto projectedParticleOutside = [&](const ImVec2 &min, const ImVec2 &max) { return max.x < 0.0f || min.x > overlaySize.x || max.y < 0.0f || min.y > overlaySize.y; };
         AppendProjectedParticleSystem2DSprites(
             sceneObjects, renderer, glfwGetTime(), view, proj, overlayPos,
             overlaySize, overlayPos, projectedParticleOutside, lightRequest,
             spriteDrawOrder);
 
         for (const SceneObject &obj : sceneObjects) {
-          if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D ||
-              !obj.light2D.enabled) {
-            continue;
-          }
+          if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight2D || !obj.light2D.enabled) continue;
           ++activeLight2DCount;
 
           if (obj.light2D.type == Light2DType::Global) {
-            lightRequest.baseAmbient +=
-                glm::vec3(obj.light2D.color) * obj.light2D.intensity;
+            lightRequest.baseAmbient += glm::vec3(obj.light2D.color) * obj.light2D.intensity;
             continue;
           }
 
@@ -1718,14 +1285,10 @@ void Engine::renderViewport() {
           light.targetAllLayers = obj.light2D.targetAllLayers;
           light.targetLayerMask = obj.light2D.targetLayerMask;
           light.color = obj.light2D.color;
-          light.intensity = obj.light2D.intensity *
-                            computeFlickerMultiplier(obj.light2D.flicker);
-          light.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius) *
-                         uiWorldCamera.zoom;
+          light.intensity = obj.light2D.intensity * computeFlickerMultiplier(obj.light2D.flicker);
+          light.radius = std::max(obj.light2D.radius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
           light.innerRadius = obj.light2D.innerRadius * uiWorldCamera.zoom;
-          light.outerRadius =
-              std::max(obj.light2D.innerRadius, obj.light2D.outerRadius) *
-              uiWorldCamera.zoom;
+          light.outerRadius = std::max(obj.light2D.innerRadius, obj.light2D.outerRadius) * uiWorldCamera.zoom;
           light.falloffStrength = obj.light2D.falloffStrength;
           light.innerSpotAngle = obj.light2D.innerSpotAngle;
           light.outerSpotAngle = obj.light2D.outerSpotAngle;
@@ -1735,30 +1298,21 @@ void Engine::renderViewport() {
           light.rotationRad = glm::radians(obj.rotation.z);
           light.cookieScale = obj.light2D.cookieScale;
           light.cookieRotationRad = glm::radians(obj.light2D.cookieRotation);
-          light.freeformFeatherPx =
-              obj.light2D.freeformFeather * uiWorldCamera.zoom;
+          light.freeformFeatherPx = obj.light2D.freeformFeather * uiWorldCamera.zoom;
           light.freeformEdgeFalloff = obj.light2D.freeformEdgeFalloff;
           if (!obj.light2D.cookieTexturePath.empty()) {
-            if (Texture *cookieTexture = renderer.getTexture(
-                    obj.light2D.cookieTexturePath,
-                    MaterialProperties::TextureFilter::Bilinear)) {
+            if (Texture *cookieTexture = renderer.getTexture(obj.light2D.cookieTexturePath, MaterialProperties::TextureFilter::Bilinear))
               light.cookieTextureId = cookieTexture->GetID();
-            }
           }
 
-          ImVec2 lightPos =
-              worldToScreen(glm::vec2(obj.position.x, obj.position.y));
-          light.position =
-              glm::vec2(lightPos.x - overlayPos.x, lightPos.y - overlayPos.y);
+          ImVec2 lightPos = worldToScreen(glm::vec2(obj.position.x, obj.position.y));
+          light.position = glm::vec2(lightPos.x - overlayPos.x, lightPos.y - overlayPos.y);
 
-          if (obj.light2D.type == Light2DType::Freeform ||
-              obj.light2D.type == Light2DType::Sprite) {
+          if (obj.light2D.type == Light2DType::Freeform || obj.light2D.type == Light2DType::Sprite) {
             light.polygon.reserve(obj.light2D.shapePoints.size());
             for (const glm::vec2 &point : obj.light2D.shapePoints) {
-              ImVec2 screenPoint = worldToScreen(glm::vec2(
-                  obj.position.x + point.x, obj.position.y + point.y));
-              light.polygon.emplace_back(screenPoint.x - overlayPos.x,
-                                         screenPoint.y - overlayPos.y);
+              ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
+              light.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
             }
             if (!light.polygon.empty()) {
               glm::vec2 boundsMin(FLT_MAX);
@@ -1772,20 +1326,17 @@ void Engine::renderViewport() {
               light.boundsMin = boundsMin;
               light.boundsMax = boundsMax;
             }
-          } else {
+          }
+          else {
             const float extent = std::max(light.radius, light.outerRadius);
             light.boundsMin = light.position - glm::vec2(extent);
             light.boundsMax = light.position + glm::vec2(extent);
           }
-
           lightRequest.lights.push_back(light);
         }
 
         for (const SceneObject &obj : sceneObjects) {
-          if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D ||
-              !obj.shadowCaster2D.enabled) {
-            continue;
-          }
+          if (!IsObjectEnabledInHierarchy(obj) || !obj.hasShadowCaster2D || !obj.shadowCaster2D.enabled) continue;
 
           Light2DScreenShadowCaster caster;
           caster.objectId = obj.id;
@@ -1795,37 +1346,24 @@ void Engine::renderViewport() {
           caster.shadowStrength = obj.shadowCaster2D.shadowStrength;
           caster.polygon.reserve(obj.shadowCaster2D.points.size());
           for (const glm::vec2 &point : obj.shadowCaster2D.points) {
-            ImVec2 screenPoint = worldToScreen(
-                glm::vec2(obj.position.x + point.x, obj.position.y + point.y));
-            caster.polygon.emplace_back(screenPoint.x - overlayPos.x,
-                                        screenPoint.y - overlayPos.y);
+            ImVec2 screenPoint = worldToScreen(glm::vec2(obj.position.x + point.x, obj.position.y + point.y)); caster.polygon.emplace_back(screenPoint.x - overlayPos.x, screenPoint.y - overlayPos.y);
           }
-          if (caster.polygon.size() >= 3) {
-            lightRequest.shadowCasters.push_back(std::move(caster));
-          }
+          if (caster.polygon.size() >= 3) lightRequest.shadowCasters.push_back(std::move(caster));
         }
 
-        const bool hasAmbientOnly =
-            glm::length(lightRequest.baseAmbient) > 0.0001f;
-        const bool wantsPostFxComposite =
-            Light2DHasVisiblePostFx(lightRequest.postFx);
+        const bool hasAmbientOnly = glm::length(lightRequest.baseAmbient) > 0.0001f;
+        const bool wantsPostFxComposite = Light2DHasVisiblePostFx(lightRequest.postFx);
         lightBufferHadContent = hasAmbientOnly || !lightRequest.lights.empty();
-        if (!lightRequest.sprites.empty() &&
-            (hasAmbientOnly || !lightRequest.lights.empty() ||
-             wantsPostFxComposite)) {
-          unsigned int lightTexture =
-              lighting2DRenderer.render(lightRequest, renderer);
+        if (!lightRequest.sprites.empty() && (hasAmbientOnly || !lightRequest.lights.empty() || wantsPostFxComposite)) {
+          unsigned int lightTexture = lighting2DRenderer.render(lightRequest, renderer);
           if (lightTexture != 0) {
             Camera effectCamera;
-            effectCamera.position = glm::vec3(uiWorldCamera.position.x,
-                                              uiWorldCamera.position.y, 0.0f);
+            effectCamera.position = glm::vec3(uiWorldCamera.position.x, uiWorldCamera.position.y, 0.0f);
             effectCamera.front = glm::vec3(0.0f, 0.0f, -1.0f);
             effectCamera.up = glm::vec3(0.0f, 1.0f, 0.0f);
             effectCamera.orthographic = true;
             effectCamera.pixelsPerUnit = std::max(1.0f, uiWorldCamera.zoom);
-            unsigned int presentedTexture = renderer.postProcessTexture(
-                effectCamera, sceneObjects, lightTexture, lightRequest.width,
-                lightRequest.height, false);
+            unsigned int presentedTexture = renderer.postProcessTexture( effectCamera, sceneObjects, lightTexture, lightRequest.width, lightRequest.height, false);
             ImGui::GetWindowDrawList()->AddImage(
                 (ImTextureID)(intptr_t)presentedTexture, overlayPos,
                 ImVec2(overlayPos.x + overlaySize.x,
@@ -1835,21 +1373,15 @@ void Engine::renderViewport() {
             light2DStats = lighting2DRenderer.getLastStats();
           } else {
             for (int objectId : light2DRenderedObjectIds) {
-              setLight2DRoutingReason(
-                  objectId, "Legacy path: Light2D compositor did not produce a "
-                            "valid output texture this frame.");
+              setLight2DRoutingReason(objectId, "Legacy path: Light2D compositor did not produce a " "valid output texture this frame.");
             }
             light2DRenderedObjectIds.clear();
           }
         } else {
           for (int objectId : light2DRenderedObjectIds) {
-            setLight2DRoutingReason(
-                objectId,
-                wantsPostFxComposite
-                    ? "Legacy path: the Light2D compositor was expected to run "
-                      "for 2D post FX, but no output was requested."
-                    : "Legacy path: no active Light2D or Global Light2D "
-                      "affected this frame.");
+            setLight2DRoutingReason( objectId, wantsPostFxComposite
+                    ? "Legacy path: the Light2D compositor was expected to run " "for 2D post FX, but no output was requested."
+                    : "Legacy path: no active Light2D or Global Light2D " "affected this frame.");
           }
           light2DRenderedObjectIds.clear();
         }
@@ -1858,16 +1390,11 @@ void Engine::renderViewport() {
       for (SceneObject *objPtr : uiDrawList) {
         SceneObject &obj = *objPtr;
         ImVec2 rectMin, rectMax;
-        if (!resolveUIRectWorld(obj, rectMin, rectMax))
-          continue;
+        if (!resolveUIRectWorld(obj, rectMin, rectMax)) continue;
         ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
-        if (rectSize.x <= 1.0f || rectSize.y <= 1.0f)
-          continue;
-        const bool disableCulling = obj.hasParallaxLayer2D &&
-                                    obj.parallaxLayer2D.enabled &&
-                                    obj.parallaxLayer2D.disableCulling;
-        if (!disableCulling && rectOutsideOverlay(rectMin, rectMax))
-          continue;
+        if (rectSize.x <= 1.0f || rectSize.y <= 1.0f) continue;
+        const bool disableCulling = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.disableCulling;
+        if (!disableCulling && rectOutsideOverlay(rectMin, rectMax)) continue;
         resolvedUiRects[obj.id] = ResolvedUiRect{rectMin, rectMax};
         drawnUiObjects.push_back(&obj);
 
@@ -1878,8 +1405,7 @@ void Engine::renderViewport() {
           if (const auto *preset = getUIStylePreset(obj.ui.stylePreset)) {
             ImGui::GetStyle() = preset->style;
             styleApplied = true;
-            if (ImFont *presetFont =
-                    getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
+            if (ImFont *presetFont = getUIFontForContext(preset->fontAsset, ImGui::GetCurrentContext())) {
               ImGui::PushFont(presetFont, preset->style.FontSizeBase);
               fontApplied = true;
             }
@@ -1889,24 +1415,17 @@ void Engine::renderViewport() {
         if (obj.ui.type == UIElementType::Canvas) {
           spriteBatch.flush();
           ImDrawList *dl = ImGui::GetWindowDrawList();
-          const ImU32 edgeColor = obj.ui.maskChildren
-                                      ? IM_COL32(74, 228, 255, 225)
-                                      : IM_COL32(110, 170, 255, 140);
+          const ImU32 edgeColor = obj.ui.maskChildren ? IM_COL32(74, 228, 255, 225) : IM_COL32(110, 170, 255, 140);
           const float thickness = obj.ui.maskChildren ? 2.4f : 1.5f;
           dl->AddRect(rectMin, rectMax, edgeColor, 6.0f, 0, thickness);
           if (obj.ui.maskChildren) {
             const float inset = 2.0f;
-            if ((rectMax.x - rectMin.x) > inset * 2.0f &&
-                (rectMax.y - rectMin.y) > inset * 2.0f) {
-              dl->AddRect(ImVec2(rectMin.x + inset, rectMin.y + inset),
-                          ImVec2(rectMax.x - inset, rectMax.y - inset),
-                          IM_COL32(32, 190, 230, 175), 5.0f, 0, 1.0f);
+            if ((rectMax.x - rectMin.x) > inset * 2.0f && (rectMax.y - rectMin.y) > inset * 2.0f) {
+              dl->AddRect(ImVec2(rectMin.x + inset, rectMin.y + inset), ImVec2(rectMax.x - inset, rectMax.y - inset), IM_COL32(32, 190, 230, 175), 5.0f, 0, 1.0f);
             }
           }
-          if (styleApplied)
-            ImGui::GetStyle() = savedStyle;
-          if (fontApplied)
-            ImGui::PopFont();
+          if (styleApplied) ImGui::GetStyle() = savedStyle;
+          if (fontApplied) ImGui::PopFont();
           continue;
         }
 
@@ -1923,18 +1442,14 @@ void Engine::renderViewport() {
             maskMax.x = std::min(maskMax.x, overlayPos.x + overlaySize.x);
             maskMax.y = std::min(maskMax.y, overlayPos.y + overlaySize.y);
             if (maskMax.x <= maskMin.x || maskMax.y <= maskMin.y) {
-              if (fontApplied)
-                ImGui::PopFont();
-              if (styleApplied)
-                ImGui::GetStyle() = savedStyle;
+              if (fontApplied)  ImGui::PopFont();
+              if (styleApplied) ImGui::GetStyle() = savedStyle;
               continue;
             }
             if (drawMax.x <= maskMin.x || drawMin.x >= maskMax.x ||
                 drawMax.y <= maskMin.y || drawMin.y >= maskMax.y) {
-              if (fontApplied)
-                ImGui::PopFont();
-              if (styleApplied)
-                ImGui::GetStyle() = savedStyle;
+              if (fontApplied)  ImGui::PopFont();
+              if (styleApplied) ImGui::GetStyle() = savedStyle;
               continue;
             }
             spriteBatch.flush();
@@ -1951,37 +1466,24 @@ void Engine::renderViewport() {
         }
         if (obj.ui.type == UIElementType::Image ||
             obj.ui.type == UIElementType::Sprite2D) {
-          if (light2DRenderedObjectIds.find(obj.id) !=
-              light2DRenderedObjectIds.end()) {
-            if (pushedCanvasMask) {
-              ImGui::PopClipRect();
-            }
+          if (light2DRenderedObjectIds.find(obj.id) != light2DRenderedObjectIds.end()) {
+            if (pushedCanvasMask) ImGui::PopClipRect();
             ImGui::PopID();
-            if (fontApplied)
-              ImGui::PopFont();
-            if (styleApplied)
-              ImGui::GetStyle() = savedStyle;
+            if (fontApplied)  ImGui::PopFont();
+            if (styleApplied) ImGui::GetStyle() = savedStyle;
             continue;
           }
           Texture *spriteTex = spriteTextureResolver.resolveTexture(obj);
           unsigned int texId = (spriteTex != nullptr) ? spriteTex->GetID() : 0;
           std::array<ImVec2, 4> uvQuad = buildSpriteSheetUvs(obj);
           const int frame = resolveSpriteSheetFrame(obj);
-          const ImVec2 sourceFrameSizePx =
-              ResolveUiSourceFrameSizePx(obj, frame, spriteTex);
-          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
-                      obj.ui.color.a);
+          const ImVec2 sourceFrameSizePx = ResolveUiSourceFrameSizePx(obj, frame, spriteTex);
+          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
           const ImU32 tintColor = ImGui::GetColorU32(tint);
-          bool repeatX = obj.hasParallaxLayer2D &&
-                         obj.parallaxLayer2D.enabled &&
-                         obj.parallaxLayer2D.repeatX;
-          bool repeatY = obj.hasParallaxLayer2D &&
-                         obj.parallaxLayer2D.enabled &&
-                         obj.parallaxLayer2D.repeatY;
+          bool repeatX = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatX;
+          bool repeatY = obj.hasParallaxLayer2D && obj.parallaxLayer2D.enabled && obj.parallaxLayer2D.repeatY;
           glm::vec2 spriteSizeWorld = getSpriteDisplaySize(obj);
-          glm::vec2 spacing = obj.hasParallaxLayer2D
-                                  ? obj.parallaxLayer2D.repeatSpacing
-                                  : glm::vec2(0.0f);
+          glm::vec2 spacing = obj.hasParallaxLayer2D  ? obj.parallaxLayer2D.repeatSpacing  : glm::vec2(0.0f);
           float stepX = spriteSizeWorld.x + spacing.x;
           float stepY = spriteSizeWorld.y + spacing.y;
           glm::vec2 baseWorldMin = worldViewMin;
@@ -1989,57 +1491,38 @@ void Engine::renderViewport() {
             glm::vec2 sizeWorld = spriteSizeWorld;
             ImVec2 pivotOffset = ImVec2(sizeWorld.x * 0.5f, sizeWorld.y * 0.5f);
             switch (obj.ui.anchor) {
-            case UIAnchor::TopLeft:
-              pivotOffset = ImVec2(0.0f, 0.0f);
-              break;
-            case UIAnchor::TopRight:
-              pivotOffset = ImVec2(sizeWorld.x, 0.0f);
-              break;
-            case UIAnchor::BottomLeft:
-              pivotOffset = ImVec2(0.0f, sizeWorld.y);
-              break;
-            case UIAnchor::BottomRight:
-              pivotOffset = ImVec2(sizeWorld.x, sizeWorld.y);
-              break;
-            default:
-              break;
+            case UIAnchor::TopLeft: pivotOffset = ImVec2(0.0f, 0.0f); break;
+            case UIAnchor::TopRight: pivotOffset = ImVec2(sizeWorld.x, 0.0f); break;
+            case UIAnchor::BottomLeft: pivotOffset = ImVec2(0.0f, sizeWorld.y); break;
+            case UIAnchor::BottomRight: pivotOffset = ImVec2(sizeWorld.x, sizeWorld.y); break;
+            default: break;
             }
             glm::vec2 parentOffset = uiSceneLookup.getWorldParentOffset(obj);
-            glm::vec2 worldPos =
-                parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) +
-                parallaxOffset(obj);
+            glm::vec2 worldPos = parentOffset + glm::vec2(obj.ui.position.x, obj.ui.position.y) + parallaxOffset(obj);
             baseWorldMin = worldPos - glm::vec2(pivotOffset.x, pivotOffset.y);
           }
           float angle = glm::radians(obj.ui.rotation);
           auto drawImageRect = [&](const ImVec2 &min, const ImVec2 &max) {
             ImVec2 size(max.x - min.x, max.y - min.y);
-            if (size.x <= 1.0f || size.y <= 1.0f)
-              return;
+            if (size.x <= 1.0f || size.y <= 1.0f) return;
             ImVec2 drawMinLocal(min.x, min.y);
             ImVec2 drawMaxLocal(max.x, max.y);
-            if (DrawNineSliceSprite(spriteBatch, (ImTextureID)(intptr_t)texId,
-                                    obj, drawMinLocal, drawMaxLocal, uvQuad,
-                                    sourceFrameSizePx, angle, tintColor)) {
+            if (DrawNineSliceSprite(spriteBatch, (ImTextureID)(intptr_t)texId, obj, drawMinLocal, drawMaxLocal, uvQuad, sourceFrameSizePx, angle, tintColor)) {
               return;
             }
             if (std::abs(angle) > 1e-4f) {
-              ImVec2 center((drawMinLocal.x + drawMaxLocal.x) * 0.5f,
-                            (drawMinLocal.y + drawMaxLocal.y) * 0.5f);
+              ImVec2 center((drawMinLocal.x + drawMaxLocal.x) * 0.5f, (drawMinLocal.y + drawMaxLocal.y) * 0.5f);
               ImVec2 half(size.x * 0.5f, size.y * 0.5f);
               float c = std::cos(angle);
               float s = std::sin(angle);
-              auto rotPt = [&](float x, float y) {
-                return ImVec2(center.x + x * c - y * s,
-                              center.y + x * s + y * c);
+              auto rotPt = [&](float x, float y) {return ImVec2(center.x + x * c - y * s, center.y + x * s + y * c);
               };
               ImVec2 p0 = rotPt(-half.x, -half.y);
               ImVec2 p1 = rotPt(half.x, -half.y);
               ImVec2 p2 = rotPt(half.x, half.y);
               ImVec2 p3 = rotPt(-half.x, half.y);
               if (texId != 0) {
-                spriteBatch.push((ImTextureID)(intptr_t)texId, p0, p1, p2, p3,
-                                 uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3],
-                                 tintColor);
+                spriteBatch.push((ImTextureID)(intptr_t)texId, p0, p1, p2, p3, uvQuad[0], uvQuad[1], uvQuad[2], uvQuad[3], tintColor);
               } else {
                 spriteBatch.flush();
                 ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -2048,10 +1531,8 @@ void Engine::renderViewport() {
                 dl->AddQuadFilled(p0, p1, p2, p3, fill);
                 dl->AddQuad(p0, p1, p2, p3, border, 2.0f);
                 ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-                ImVec2 textPos(center.x - textSize.x * 0.5f,
-                               center.y - textSize.y * 0.5f);
-                dl->AddText(textPos, IM_COL32(210, 210, 220, 220),
-                            obj.ui.label.c_str());
+                ImVec2 textPos(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f);
+                dl->AddText(textPos, IM_COL32(210, 210, 220, 220), obj.ui.label.c_str());
               }
             } else {
               ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -2069,60 +1550,35 @@ void Engine::renderViewport() {
                 dl->AddRectFilled(drawMinLocal, drawMaxLocal, fill, 6.0f);
                 dl->AddRect(drawMinLocal, drawMaxLocal, border, 6.0f);
                 ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-                ImVec2 textPos(drawMinLocal.x + (size.x - textSize.x) * 0.5f,
-                               drawMinLocal.y + (size.y - textSize.y) * 0.5f);
-                dl->AddText(textPos, IM_COL32(210, 210, 220, 220),
-                            obj.ui.label.c_str());
+                ImVec2 textPos(drawMinLocal.x + (size.x - textSize.x) * 0.5f, drawMinLocal.y + (size.y - textSize.y) * 0.5f);
+                dl->AddText(textPos, IM_COL32(210, 210, 220, 220), obj.ui.label.c_str());
               }
             }
           };
 
           if (repeatX || repeatY) {
-            int startX = repeatX
-                             ? static_cast<int>(std::floor(
-                                   (worldViewMin.x - baseWorldMin.x) / stepX)) -
-                                   1
-                             : 0;
-            int endX = repeatX
-                           ? static_cast<int>(std::ceil(
-                                 (worldViewMax.x - baseWorldMin.x) / stepX)) +
-                                 1
-                           : 0;
-            int startY = repeatY
-                             ? static_cast<int>(std::floor(
-                                   (worldViewMin.y - baseWorldMin.y) / stepY)) -
-                                   1
-                             : 0;
-            int endY = repeatY
-                           ? static_cast<int>(std::ceil(
-                                 (worldViewMax.y - baseWorldMin.y) / stepY)) +
-                                 1
-                           : 0;
+            int startX = repeatX ? static_cast<int>(std::floor((worldViewMin.x - baseWorldMin.x) / stepX)) - 1  : 0;
+            int endX = repeatX ? static_cast<int>(std::ceil((worldViewMax.x - baseWorldMin.x) / stepX)) + 1 : 0;
+            int startY = repeatY ? static_cast<int>(std::floor((worldViewMin.y - baseWorldMin.y) / stepY)) - 1 : 0;
+            int endY = repeatY ? static_cast<int>(std::ceil((worldViewMax.y - baseWorldMin.y) / stepY)) + 1 : 0;
             for (int ix = startX; ix <= endX; ++ix) {
               for (int iy = startY; iy <= endY; ++iy) {
                 float dx = repeatX ? (float)ix * stepX : 0.0f;
                 float dy = repeatY ? (float)iy * stepY : 0.0f;
                 glm::vec2 tileMin = baseWorldMin + glm::vec2(dx, dy);
                 ImVec2 s0 = worldToScreen(tileMin);
-                ImVec2 s1 = worldToScreen(
-                    tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
+                ImVec2 s1 = worldToScreen(tileMin + glm::vec2(spriteSizeWorld.x, spriteSizeWorld.y));
                 ImVec2 tMin(std::min(s0.x, s1.x), std::min(s0.y, s1.y));
                 ImVec2 tMax(std::max(s0.x, s1.x), std::max(s0.y, s1.y));
                 drawImageRect(tMin, tMax);
               }
             }
-          } else {
-            drawImageRect(drawMin, drawMax);
-          }
+          } else drawImageRect(drawMin, drawMax);
         } else if (obj.ui.type == UIElementType::Slider) {
           spriteBatch.flush();
-          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
-                      obj.ui.color.a);
-          const bool uiWidgetInteractive =
-              isPlaying && !uiWorldCameraActive && obj.ui.interactable;
-          if (uiWidgetInteractive) {
-            ImGui::SetCursorPos(localMin);
-          }
+          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+          const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+          if (uiWidgetInteractive) ImGui::SetCursorPos(localMin);
           const ImU32 s2SliderBg     = (obj.ui.backgroundColor.a > 0.0f) ? ImGui::GetColorU32(ImVec4(obj.ui.backgroundColor.r, obj.ui.backgroundColor.g, obj.ui.backgroundColor.b, obj.ui.backgroundColor.a)) : ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
           const ImU32 s2SliderFill   = (obj.ui.fillColor.a > 0.0f)       ? ImGui::GetColorU32(ImVec4(obj.ui.fillColor.r, obj.ui.fillColor.g, obj.ui.fillColor.b, obj.ui.fillColor.a))             : ImGui::GetColorU32(tint);
           const ImU32 s2SliderBorder = (obj.ui.borderColor.a > 0.0f)     ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a))     : ImGui::GetColorU32(brighten(tint, 0.85f));
@@ -2131,8 +1587,7 @@ void Engine::renderViewport() {
             float minValue = obj.ui.sliderMin;
             float maxValue = obj.ui.sliderMax;
             float range = (maxValue - minValue);
-            if (range <= 1e-6f)
-              range = 1.0f;
+            if (range <= 1e-6f) range = 1.0f;
             if (uiWidgetInteractive) {
               ImGui::PushItemWidth(drawSize.x);
               ImGui::PushStyleColor(ImGuiCol_FrameBg,      ImGui::ColorConvertU32ToFloat4(s2SliderBg));
@@ -2140,10 +1595,8 @@ void Engine::renderViewport() {
               ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  brighten(tint, 0.7f));
               ImGui::PushStyleColor(ImGuiCol_SliderGrab,     brighten(tint, 0.9f));
               ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-              if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue,
-                                     minValue, maxValue)) {
+              if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, minValue, maxValue))
                 projectManager.currentProject.hasUnsavedChanges = true;
-              }
               ImGui::PopStyleColor(5);
               ImGui::PopItemWidth();
             } else {
@@ -2153,13 +1606,10 @@ void Engine::renderViewport() {
               float rounding = 6.0f;
               ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
               dl->AddRectFilled(drawMin, drawMax, s2SliderBg, rounding);
-              if (fillMax.x > drawMin.x) {
-                dl->AddRectFilled(drawMin, fillMax, s2SliderFill, rounding);
-              }
+              if (fillMax.x > drawMin.x) dl->AddRectFilled(drawMin, fillMax, s2SliderFill, rounding);
               dl->AddRect(drawMin, drawMax, s2SliderBorder, rounding);
               ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-              ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
-                             drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+              ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f, drawMin.y + (drawSize.y - textSize.y) * 0.5f);
               dl->AddText(textPos, s2SliderText, obj.ui.label.c_str());
             }
           } else {
@@ -2170,17 +1620,14 @@ void Engine::renderViewport() {
             float minValue = obj.ui.sliderMin;
             float maxValue = obj.ui.sliderMax;
             float range = (maxValue - minValue);
-            if (range <= 1e-6f)
-              range = 1.0f;
+            if (range <= 1e-6f) range = 1.0f;
             bool held = false;
             if (uiWidgetInteractive) {
               ImGui::InvisibleButton("##UISlider", drawSize);
               held = ImGui::IsItemActive();
             }
-            if (held && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
-                drawSize.x > 1.0f) {
-              float mouseT =
-                  (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+            if (held && ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+              float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
               mouseT = std::clamp(mouseT, 0.0f, 1.0f);
               float newValue = minValue + mouseT * range;
               if (newValue != obj.ui.sliderValue) {
@@ -2190,9 +1637,7 @@ void Engine::renderViewport() {
             }
 
             animateValue(animState.sliderValue, obj.ui.sliderValue, held);
-            float displayValue = (uiAnimationMode == UIAnimationMode::Off)
-                                     ? obj.ui.sliderValue
-                                     : animState.sliderValue;
+            float displayValue = (uiAnimationMode == UIAnimationMode::Off) ? obj.ui.sliderValue : animState.sliderValue;
             float t = (displayValue - minValue) / range;
             t = std::clamp(t, 0.0f, 1.0f);
 
@@ -2203,26 +1648,19 @@ void Engine::renderViewport() {
           }
         } else if (obj.ui.type == UIElementType::Button) {
           spriteBatch.flush();
-          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
-                      obj.ui.color.a);
+          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
           obj.ui.buttonPressed = false;
           obj.ui.uiHovered = false;
           obj.ui.uiActive = false;
-          const bool uiWidgetInteractive =
-              isPlaying && !uiWorldCameraActive && obj.ui.interactable;
-          if (uiWidgetInteractive) {
-            ImGui::SetCursorPos(localMin);
-          }
+          const bool uiWidgetInteractive = isPlaying && !uiWorldCameraActive && obj.ui.interactable;
+          if (uiWidgetInteractive) ImGui::SetCursorPos(localMin);
           const ImU32 s2BtnText = (obj.ui.textColor.a > 0.0f) ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a)) : IM_COL32(240, 240, 245, 220);
           if (obj.ui.buttonStyle == UIButtonStyle::ImGui) {
             if (uiWidgetInteractive) {
               ImGui::PushStyleColor(ImGuiCol_Button, tint);
-              ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                                    brighten(tint, 1.1f));
-              ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                                    brighten(tint, 1.2f));
-              obj.ui.buttonPressed =
-                  ImGui::Button(obj.ui.label.c_str(), drawSize);
+              ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
+              ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
+              obj.ui.buttonPressed = ImGui::Button(obj.ui.label.c_str(), drawSize);
               obj.ui.uiHovered = ImGui::IsItemHovered();
               obj.ui.uiActive  = ImGui::IsItemActive();
               ImGui::PopStyleColor(3);
@@ -2233,8 +1671,7 @@ void Engine::renderViewport() {
               dl->AddRectFilled(drawMin, drawMax, fill, 6.0f);
               dl->AddRect(drawMin, drawMax, border, 6.0f);
               ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-              ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
-                             drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+              ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f, drawMin.y + (drawSize.y - textSize.y) * 0.5f);
               dl->AddText(textPos, s2BtnText, obj.ui.label.c_str());
             }
           } else if (obj.ui.buttonStyle == UIButtonStyle::Outline) {
@@ -2243,49 +1680,38 @@ void Engine::renderViewport() {
             bool hovered = false;
             bool active = false;
             if (uiWidgetInteractive) {
-              if (ImGui::InvisibleButton("##UIButton", drawSize)) {
-                obj.ui.buttonPressed = true;
-              }
+              if (ImGui::InvisibleButton("##UIButton", drawSize))obj.ui.buttonPressed = true;
               hovered = ImGui::IsItemHovered();
               active = ImGui::IsItemActive();
               obj.ui.uiHovered = hovered;
               obj.ui.uiActive  = active;
             }
-            float hoverT =
-                animateValue(animState.hover, hovered ? 1.0f : 0.0f, false);
-            float activeT =
-                animateValue(animState.active, active ? 1.0f : 0.0f, false);
+            float hoverT = animateValue(animState.hover, hovered ? 1.0f : 0.0f, false);
+            float activeT = animateValue(animState.active, active ? 1.0f : 0.0f, false);
             if (hoverT > 0.001f) {
               ImVec4 hoverCol = brighten(tint, 0.45f);
               hoverCol.w *= std::clamp(hoverT, 0.0f, 1.0f);
-              dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(hoverCol),
-                                6.0f);
+              dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(hoverCol), 6.0f);
             }
             if (activeT > 0.001f) {
               ImVec4 activeCol = brighten(tint, 0.65f);
               activeCol.w *= std::clamp(activeT, 0.0f, 1.0f);
-              dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(activeCol),
-                                6.0f);
+              dl->AddRectFilled(drawMin, drawMax, ImGui::GetColorU32(activeCol), 6.0f);
             }
             dl->AddRect(drawMin, drawMax, border, 6.0f, 0, 2.0f);
             ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-            ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
-                           drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+            ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f, drawMin.y + (drawSize.y - textSize.y) * 0.5f);
             dl->AddText(textPos, s2BtnText, obj.ui.label.c_str());
           }
         } else if (obj.ui.type == UIElementType::Text) {
           spriteBatch.flush();
           ImDrawList *dl = ImGui::GetWindowDrawList();
-          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
-                      obj.ui.color.a);
+          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
           float scale = std::max(0.1f, obj.ui.textScale);
-          float fontSize = ComputeViewportTextFontSize(
-              ImGui::GetFontSize(), scale, true, uiWorldCamera.zoom);
+          float fontSize = ComputeViewportTextFontSize(ImGui::GetFontSize(), scale, true, uiWorldCamera.zoom);
           const float textRotationRad = glm::radians(obj.ui.rotation);
           const bool textIsRotated = std::abs(textRotationRad) > 1e-4f;
-          if (!textIsRotated) {
-            ImGui::PushClipRect(drawMin, drawMax, true);
-          }
+          if (!textIsRotated) ImGui::PushClipRect(drawMin, drawMax, true);
           const int textVtxStart = dl->VtxBuffer.Size;
           AddUITextWithFilter(
               dl, obj.material.textureFilter, ImGui::GetFont(), fontSize,
@@ -2294,13 +1720,9 @@ void Engine::renderViewport() {
               obj.ui.textEffectFlags, obj.ui.textEffectSpeed,
               obj.ui.textEffectIntensity);
           if (textIsRotated) {
-            const ImVec2 pivot((drawMin.x + drawMax.x) * 0.5f,
-                               (drawMin.y + drawMax.y) * 0.5f);
-            ViewportRenderHelpers::RotateDrawListVertices(
-                dl, textVtxStart, dl->VtxBuffer.Size, pivot, textRotationRad);
-          } else {
-            ImGui::PopClipRect();
-          }
+            const ImVec2 pivot((drawMin.x + drawMax.x) * 0.5f, (drawMin.y + drawMax.y) * 0.5f);
+            ViewportRenderHelpers::RotateDrawListVertices(dl, textVtxStart, dl->VtxBuffer.Size, pivot, textRotationRad);
+          } else ImGui::PopClipRect();
         }
         if (pushedCanvasMask) {
           spriteBatch.flush();

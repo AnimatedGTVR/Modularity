@@ -127,6 +127,8 @@ private:
     };
 
     ma_engine engine{};
+    ma_resource_manager resourceManager{};
+    bool resourceManagerInitialized = false;
     bool initialized = false;
     std::unordered_map<int, std::unique_ptr<ActiveSound>> activeSounds;
     std::vector<std::unique_ptr<OneShotSound>> oneShotSounds;

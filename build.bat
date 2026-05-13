@@ -17,9 +17,17 @@ call :time_to_cs "%START_TIME%" START_CS
 
 set "CLEAN_BUILD=0"
 set "BUILD_TYPE=Release"
+set "PACKAGE_FORMAT=7Z"
+set "PACKAGE_EXT=7z"
 for %%A in (%*) do (
     if /I "%%~A"=="--clean" (
         set "CLEAN_BUILD=1"
+    ) else if /I "%%~A"=="--zip" (
+        set "PACKAGE_FORMAT=ZIP"
+        set "PACKAGE_EXT=zip"
+    ) else if /I "%%~A"=="--7z" (
+        set "PACKAGE_FORMAT=7Z"
+        set "PACKAGE_EXT=7z"
     ) else (
         set "ARG=%%~A"
         if /I "!ARG:~0,13!"=="--build-type=" set "BUILD_TYPE=!ARG:~13!"
@@ -113,9 +121,9 @@ if not exist "Packages\\Engine" mkdir "Packages\\Engine"
 for /r %%F in (core*.dll) do call :copy_if_not_packages "%%F" "Packages\\Engine"
 popd
 
-echo [INFO] Producing distribution archive (CPack 7z)...
+echo [INFO] Producing distribution archive (CPack %PACKAGE_FORMAT%)...
 pushd build
-cpack -C %BUILD_TYPE%
+cpack -G %PACKAGE_FORMAT% -C %BUILD_TYPE%
 set "CPACK_RESULT=%errorlevel%"
 popd
 if not "%CPACK_RESULT%"=="0" (
@@ -134,7 +142,7 @@ echo =========================================
 echo   SUCCESS! Native Windows Build Complete in !DUR_SEC!.!DUR_REM!s!
 echo   Editor:        build\%BUILD_TYPE%\Modularity.exe
 echo   Player:        build\%BUILD_TYPE%\ModularityPlayer.exe
-echo   Distribution:  build\Modularity-1.0.0-Windows.7z
+echo   Distribution:  build\Modularity-1.0.0-Windows.%PACKAGE_EXT%
 echo =========================================
 echo.
 pause

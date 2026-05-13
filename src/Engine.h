@@ -224,6 +224,8 @@ private:
     double launcherTransitionStartTime = 0.0;
     ImVec2 launcherTransitionFocus = ImVec2(0.0f, 0.0f);
     std::string launcherLoadingPreviewPath;
+    std::string launcherTransitionProjectName;
+    bool launcherWindSoundActive = false;
     bool termsPopupOpened = false;
     enum class LegacySceneSaveChoice {
         Ask = 0,

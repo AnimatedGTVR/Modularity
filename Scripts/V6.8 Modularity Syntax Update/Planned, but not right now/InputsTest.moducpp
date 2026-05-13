@@ -8,19 +8,10 @@ public class InputsTest : ModuNode {
     void Begin() to ShouldEnableAndDisable = true;
     void TickUpdate() {
         if (ShouldEnableAndDisable) {
-            if (XR.Left.Trigger(Down)) {
-                each disable.state(true);
-            }
-            else if (XR.Left.Trigger(Up)) {
-                each enable.state(true);
-            }
-
-            if (XR.Right.Trigger(Down)) {
-                each disable.state(false);
-            }
-            else if (XR.Right.Trigger(Up)) {
-                each enable.state(false);
-            }
+            if (XR.Left.Trigger(Down))     then each disable.state(true);
+            else if (XR.Left.Trigger(Up))  then each enable.state(true);
+            if (XR.Right.Trigger(Down))    then each disable.state(false);
+            else if (XR.Right.Trigger(Up)) then each enable.state(false);
         }
     }  
 }

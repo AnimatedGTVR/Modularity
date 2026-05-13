@@ -9,6 +9,12 @@
 #if MODULARITY_HAS_SNDFILE
 #include <sndfile.h>
 #endif
+#if MODULARITY_HAS_OPUSFILE
+#include <opusfile.h>
+#include <climits>
+#include <cstdio>
+#include <new>
+#endif
 
 #undef STB_VORBIS_HEADER_ONLY
 #include "../include/ThirdParty/stb_vorbis.c"
@@ -205,14 +211,252 @@ static ma_node_vtable g_reverb_node_vtable = {
     1,
     0
 };
+
+#if MODULARITY_HAS_OPUSFILE
+// ----- Ogg/Opus custom decoding backend (libopusfile) -----
+//
+// Opus playback in miniaudio via a custom ma_data_source. Also transparently
+// skips a leading ID3v2 tag if one is glued onto the front of the Ogg stream
+// (some exporters do this; libopusfile alone rejects it).
+
+struct OpusReader {
+    FILE* fp = nullptr;
+    long baseOffset = 0; // bytes to skip before the real Ogg stream begins
+    long fileSize = 0;
+};
+
+// Returns offset past an ID3v2 tag at the start of fp, or 0 if not present.
+static long sniffID3v2Prefix(FILE* fp) {
+    unsigned char header[10];
+    if (std::fread(header, 1, 10, fp) != 10) {
+        std::fseek(fp, 0, SEEK_SET);
+        return 0;
+    }
+    std::fseek(fp, 0, SEEK_SET);
+    if (header[0] != 'I' || header[1] != 'D' || header[2] != '3') return 0;
+    // Syncsafe length: 4 bytes, each holds 7 bits.
+    if ((header[6] | header[7] | header[8] | header[9]) & 0x80) return 0;
+    long size = (static_cast<long>(header[6]) << 21)
+              | (static_cast<long>(header[7]) << 14)
+              | (static_cast<long>(header[8]) << 7)
+              |  static_cast<long>(header[9]);
+    long footer = (header[5] & 0x10) ? 10 : 0; // optional footer flag
+    return 10 + size + footer;
+}
+
+static int opus_cb_read(void* stream, unsigned char* ptr, int nbytes) {
+    OpusReader* r = static_cast<OpusReader*>(stream);
+    return static_cast<int>(std::fread(ptr, 1, static_cast<size_t>(nbytes), r->fp));
+}
+
+static int opus_cb_seek(void* stream, opus_int64 offset, int whence) {
+    OpusReader* r = static_cast<OpusReader*>(stream);
+    long target = 0;
+    switch (whence) {
+        case SEEK_SET: target = r->baseOffset + static_cast<long>(offset); break;
+        case SEEK_CUR: target = std::ftell(r->fp) + static_cast<long>(offset); break;
+        case SEEK_END: target = r->fileSize + static_cast<long>(offset); break;
+        default: return -1;
+    }
+    if (target < r->baseOffset) target = r->baseOffset;
+    return std::fseek(r->fp, target, SEEK_SET);
+}
+
+static opus_int64 opus_cb_tell(void* stream) {
+    OpusReader* r = static_cast<OpusReader*>(stream);
+    long pos = std::ftell(r->fp);
+    if (pos < 0) return -1;
+    return pos - r->baseOffset;
+}
+
+static int opus_cb_close(void* stream) {
+    OpusReader* r = static_cast<OpusReader*>(stream);
+    if (r->fp) std::fclose(r->fp);
+    delete r;
+    return 0;
+}
+
+static OpusFileCallbacks g_opus_callbacks = {
+    opus_cb_read,
+    opus_cb_seek,
+    opus_cb_tell,
+    opus_cb_close
+};
+
+struct OpusDataSource {
+    ma_data_source_base base{};
+    OggOpusFile* opus = nullptr;
+    ma_uint32 channels = 2;
+    ma_uint32 sampleRate = 48000; // Opus decodes at a fixed 48kHz.
+    ma_uint64 totalFrames = 0;
+    ma_uint64 cursor = 0;
+};
+
+static ma_result opus_ds_read(ma_data_source* ds, void* framesOut, ma_uint64 frameCount, ma_uint64* framesRead) {
+    OpusDataSource* self = static_cast<OpusDataSource*>(ds);
+    float* out = static_cast<float*>(framesOut);
+    ma_uint64 total = 0;
+    while (total < frameCount) {
+        int remaining = static_cast<int>(std::min<ma_uint64>(frameCount - total, INT_MAX / static_cast<ma_uint64>(self->channels)));
+        int got = op_read_float(self->opus, out + total * self->channels, remaining * static_cast<int>(self->channels), nullptr);
+        if (got < 0) {
+            *framesRead = total;
+            return MA_ERROR;
+        }
+        if (got == 0) break; // EOF
+        total += static_cast<ma_uint64>(got);
+    }
+    self->cursor += total;
+    *framesRead = total;
+    return (total > 0 || frameCount == 0) ? MA_SUCCESS : MA_AT_END;
+}
+
+static ma_result opus_ds_seek(ma_data_source* ds, ma_uint64 frameIndex) {
+    OpusDataSource* self = static_cast<OpusDataSource*>(ds);
+    if (op_pcm_seek(self->opus, static_cast<ogg_int64_t>(frameIndex)) != 0) return MA_ERROR;
+    self->cursor = frameIndex;
+    return MA_SUCCESS;
+}
+
+static ma_result opus_ds_get_data_format(ma_data_source* ds, ma_format* format, ma_uint32* channels, ma_uint32* sampleRate, ma_channel* channelMap, size_t channelMapCap) {
+    OpusDataSource* self = static_cast<OpusDataSource*>(ds);
+    if (format) *format = ma_format_f32;
+    if (channels) *channels = self->channels;
+    if (sampleRate) *sampleRate = self->sampleRate;
+    if (channelMap && channelMapCap > 0) {
+        ma_channel_map_init_standard(ma_standard_channel_map_default, channelMap, channelMapCap, self->channels);
+    }
+    return MA_SUCCESS;
+}
+
+static ma_result opus_ds_get_cursor(ma_data_source* ds, ma_uint64* cursor) {
+    *cursor = static_cast<OpusDataSource*>(ds)->cursor;
+    return MA_SUCCESS;
+}
+
+static ma_result opus_ds_get_length(ma_data_source* ds, ma_uint64* length) {
+    *length = static_cast<OpusDataSource*>(ds)->totalFrames;
+    return MA_SUCCESS;
+}
+
+static ma_data_source_vtable g_opus_ds_vtable = {
+    opus_ds_read,
+    opus_ds_seek,
+    opus_ds_get_data_format,
+    opus_ds_get_cursor,
+    opus_ds_get_length,
+    nullptr,
+    0
+};
+
+static ma_result opus_backend_open(const char* path, ma_data_source** ppBackend, const ma_allocation_callbacks* allocationCallbacks) {
+    FILE* fp = std::fopen(path, "rb");
+    if (!fp) return MA_DOES_NOT_EXIST;
+
+    std::fseek(fp, 0, SEEK_END);
+    long fileSize = std::ftell(fp);
+    std::fseek(fp, 0, SEEK_SET);
+    long base = sniffID3v2Prefix(fp);
+    if (base > 0 && base < fileSize) {
+        std::fseek(fp, base, SEEK_SET);
+    } else {
+        base = 0;
+    }
+
+    OpusReader* reader = new (std::nothrow) OpusReader();
+    if (!reader) { std::fclose(fp); return MA_OUT_OF_MEMORY; }
+    reader->fp = fp;
+    reader->baseOffset = base;
+    reader->fileSize = fileSize;
+
+    int err = 0;
+    OggOpusFile* of = op_open_callbacks(reader, &g_opus_callbacks, nullptr, 0, &err);
+    if (!of) {
+        // op_open_callbacks calls close on failure per libopusfile contract,
+        // which routes through opus_cb_close and frees the reader+fp.
+        return MA_INVALID_FILE;
+    }
+
+    OpusDataSource* self = static_cast<OpusDataSource*>(
+        ma_malloc(sizeof(OpusDataSource), allocationCallbacks));
+    if (!self) { op_free(of); return MA_OUT_OF_MEMORY; }
+    new (self) OpusDataSource();
+    self->opus = of;
+    const OpusHead* head = op_head(of, -1);
+    self->channels = head ? static_cast<ma_uint32>(head->channel_count) : 2;
+    ogg_int64_t pcm = op_pcm_total(of, -1);
+    self->totalFrames = pcm > 0 ? static_cast<ma_uint64>(pcm) : 0;
+
+    ma_data_source_config dsConfig = ma_data_source_config_init();
+    dsConfig.vtable = &g_opus_ds_vtable;
+    ma_result r = ma_data_source_init(&dsConfig, &self->base);
+    if (r != MA_SUCCESS) {
+        op_free(of);
+        self->~OpusDataSource();
+        ma_free(self, allocationCallbacks);
+        return r;
+    }
+
+    *ppBackend = self;
+    return MA_SUCCESS;
+}
+
+static ma_result opus_backend_init_file(void* /*userData*/, const char* filePath, const ma_decoding_backend_config* /*config*/, const ma_allocation_callbacks* allocationCallbacks, ma_data_source** ppBackend) {
+    return opus_backend_open(filePath, ppBackend, allocationCallbacks);
+}
+
+static void opus_backend_uninit(void* /*userData*/, ma_data_source* pBackend, const ma_allocation_callbacks* allocationCallbacks) {
+    if (!pBackend) return;
+    OpusDataSource* self = static_cast<OpusDataSource*>(pBackend);
+    if (self->opus) op_free(self->opus);
+    ma_data_source_uninit(&self->base);
+    self->~OpusDataSource();
+    ma_free(self, allocationCallbacks);
+}
+
+static ma_decoding_backend_vtable g_opus_backend_vtable = {
+    nullptr,                  // onInit (callbacks-based)
+    opus_backend_init_file,
+    nullptr,                  // onInitFileW
+    nullptr,                  // onInitMemory
+    opus_backend_uninit
+};
+
+static ma_decoding_backend_vtable* g_custom_backend_table[] = {
+    &g_opus_backend_vtable,
+};
+#endif // MODULARITY_HAS_OPUSFILE
+
 }
 
 bool AudioSystem::init() {
     if (initialized) return true;
-    ma_result res = ma_engine_init(nullptr, &engine);
+
+    ma_engine_config engineConfig = ma_engine_config_init();
+#if MODULARITY_HAS_OPUSFILE
+    ma_resource_manager_config rmConfig = ma_resource_manager_config_init();
+    rmConfig.ppCustomDecodingBackendVTables = g_custom_backend_table;
+    rmConfig.customDecodingBackendCount = sizeof(g_custom_backend_table) / sizeof(g_custom_backend_table[0]);
+    ma_result rmRes = ma_resource_manager_init(&rmConfig, &resourceManager);
+    if (rmRes != MA_SUCCESS) {
+        std::cerr << "AudioSystem: failed to init resource manager ("
+                  << ma_result_description(rmRes) << ")\n";
+        return false;
+    }
+    resourceManagerInitialized = true;
+    engineConfig.pResourceManager = &resourceManager;
+#endif
+
+    ma_result res = ma_engine_init(&engineConfig, &engine);
     if (res != MA_SUCCESS) {
         std::cerr << "AudioSystem: failed to init miniaudio ("
                   << ma_result_description(res) << ")\n";
+#if MODULARITY_HAS_OPUSFILE
+        if (resourceManagerInitialized) {
+            ma_resource_manager_uninit(&resourceManager);
+            resourceManagerInitialized = false;
+        }
+#endif
         return false;
     }
     ma_uint32 channels = ma_engine_get_channels(&engine);
@@ -288,6 +532,12 @@ void AudioSystem::shutdown() {
         ma_engine_uninit(&engine);
         initialized = false;
     }
+#if MODULARITY_HAS_OPUSFILE
+    if (resourceManagerInitialized) {
+        ma_resource_manager_uninit(&resourceManager);
+        resourceManagerInitialized = false;
+    }
+#endif
 }
 
 void AudioSystem::destroyActiveSounds() {
@@ -1144,7 +1394,12 @@ AudioClipPreview AudioSystem::loadPreview(const std::string& path) {
     preview.path = path;
 
     ma_decoder decoder;
-    if (ma_decoder_init_file(path.c_str(), nullptr, &decoder) != MA_SUCCESS) {
+    ma_decoder_config decoderConfig = ma_decoder_config_init_default();
+#if MODULARITY_HAS_OPUSFILE
+    decoderConfig.ppCustomBackendVTables = g_custom_backend_table;
+    decoderConfig.customBackendCount = sizeof(g_custom_backend_table) / sizeof(g_custom_backend_table[0]);
+#endif
+    if (ma_decoder_init_file(path.c_str(), &decoderConfig, &decoder) != MA_SUCCESS) {
         auto decoded = decodeClipToMemory(path);
         if (!decoded) {
             return preview;
