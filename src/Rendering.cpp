@@ -4564,13 +4564,36 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     if (glfwGetCurrentContext() == nullptr) {
         return 0;
     }
+    if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+        return 0;
+    }
+
+    GLint previousFramebuffer = 0;
+    GLint previousViewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+    struct PreviewRenderStateRestore {
+        GLint framebuffer = 0;
+        GLint viewport[4] = {0, 0, 0, 0};
+        Renderer* renderer = nullptr;
+
+        ~PreviewRenderStateRestore() {
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            if (renderer) {
+                renderer->activeStats = nullptr;
+            }
+        }
+    } restore{previousFramebuffer,
+              {previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]},
+              this};
+
     resetStats(previewStats);
     activeStats = &previewStats;
     RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];
     ensureRenderTarget(target, width, height, transparentBackground, true);
     if (target.fbo == 0) {
         previewPostStats = {};
-        activeStats = nullptr;
         return 0;
     }
 
@@ -4593,11 +4616,9 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     }
     if (!applyPostFX) {
         previewPostStats = {};
-        activeStats = nullptr;
         return target.texture;
     }
     unsigned int processed = applyPostProcessing(camera, sceneObjects, target.texture, width, height, false);
-    activeStats = nullptr;
     return processed ? processed : target.texture;
 }
 

@@ -66,17 +66,48 @@ repeat_char() {
     if (( count <= 0 )); then
         return
     fi
-    printf "%${count}s" "" | tr ' ' "$char"
+    local result=""
+    local i
+    for ((i = 0; i < count; i++)); do
+        result+="${char}"
+    done
+    printf "%s" "${result}"
 }
 
-progress_prefix() {
-    local width=24
-    local filled=$((current_step * width / total_steps))
-    local empty=$((width - filled))
+if [[ -t 1 ]]; then
+    BAR_FILL_CHAR="█"
+    BAR_EMPTY_CHAR="░"
+    SEP="│"
+else
+    BAR_FILL_CHAR="#"
+    BAR_EMPTY_CHAR="-"
+    SEP="|"
+fi
 
-    printf "%s[%02d/%02d]%s [%s%s%s%s%s]" \
-        "${C_DIM}" "${current_step}" "${total_steps}" "${C_RESET}" \
-        "${C_GREEN}" "$(repeat_char "#" "${filled}")" "${C_DIM}" "$(repeat_char "-" "${empty}")" "${C_RESET}"
+progress_prefix() {
+    local icon="${1:-${ICON_INFO}}"
+    local icon_color="${2:-${C_CYAN}}"
+    local width=24
+    local filled=0
+    local empty="${width}"
+    local percent=0
+    if (( total_steps > 0 )); then
+        filled=$((current_step * width / total_steps))
+        empty=$((width - filled))
+        percent=$((current_step * 100 / total_steps))
+    fi
+    local bar_fill bar_empty
+    bar_fill="$(repeat_char "${BAR_FILL_CHAR}" "${filled}")"
+    bar_empty="$(repeat_char "${BAR_EMPTY_CHAR}" "${empty}")"
+
+    printf "%s[%s]%s %s%s%s %s%2d/%2d%s %s%s%s [%s%s%s%s%s] %s%3d%%%s %s%s%s" \
+        "${icon_color}" "${icon}" "${C_RESET}" \
+        "${C_DIM}" "${SEP}" "${C_RESET}" \
+        "${C_BOLD}" "${current_step}" "${total_steps}" "${C_RESET}" \
+        "${C_DIM}" "${SEP}" "${C_RESET}" \
+        "${C_GREEN}" "${bar_fill}" "${C_DIM}" "${bar_empty}" "${C_RESET}" \
+        "${C_BOLD}" "${percent}" "${C_RESET}" \
+        "${C_DIM}" "${SEP}" "${C_RESET}"
 }
 
 clear_status_line() {
@@ -99,10 +130,10 @@ render_status_line() {
     status_current_spinner="${spinner}"
     status_current_elapsed="${elapsed}"
 
-    printf "\r\033[2K%s %s%s%s %s %s(%ss)%s" \
-        "$(progress_prefix)" \
-        "${C_CYAN}" "${spinner}" "${C_RESET}" \
+    printf "\r\033[2K%s %s %s%s%s %s(%ss)%s" \
+        "$(progress_prefix "${spinner}" "${C_CYAN}")" \
         "${label}" \
+        "${C_DIM}" "${SEP}" "${C_RESET}" \
         "${C_DIM}" "${elapsed}" "${C_RESET}"
 
     status_line_active=1
@@ -131,6 +162,18 @@ emit_scrolling_event() {
             printf "%s\n" "${message}"
             ;;
     esac
+
+    if [[ -t 1 && "${had_status}" -eq 1 ]]; then
+        render_status_line "${status_current_label}" "${status_current_spinner}" "${status_current_elapsed}"
+    fi
+}
+
+emit_step_completion() {
+    local message="$1"
+    local had_status="${status_line_active}"
+
+    clear_status_line
+    printf "%s\n" "${message}"
 
     if [[ -t 1 && "${had_status}" -eq 1 ]]; then
         render_status_line "${status_current_label}" "${status_current_spinner}" "${status_current_elapsed}"
@@ -220,7 +263,7 @@ run_step() {
 
     advance_step "${label}"
     clear_status_line
-    printf "\n%s %s\n" "$(progress_prefix)" "${label}"
+    printf "\n%s %s\n" "$(progress_prefix "${ICON_INFO}" "${C_CYAN}")" "${label}"
 
     "$@"
 }
@@ -232,18 +275,16 @@ run_long_step() {
     advance_step "${label}"
 
     if [[ ! -t 1 ]]; then
-        printf "\n%s %s\n" "$(progress_prefix)" "${label}"
+        printf "\n%s %s\n" "$(progress_prefix "${ICON_INFO}" "${C_CYAN}")" "${label}"
         "$@"
         return
     fi
 
     local log_file
     log_file="$(mktemp "/tmp/modularity-build-step-${current_step}.XXXX.log")"
-    local start_step
-    start_step="$(date +%s)"
+    local start_step=${SECONDS}
     local spinner_frames='-\|/'
     local spinner_index=0
-    local processed_lines=0
 
     set +e
     "$@" >"${log_file}" 2>&1 &
@@ -251,19 +292,8 @@ run_long_step() {
     render_status_line "${label}" "-" 0
 
     while kill -0 "${cmd_pid}" >/dev/null 2>&1; do
-        local total_lines
-        total_lines="$(wc -l < "${log_file}" 2>/dev/null || echo 0)"
-        if (( total_lines > processed_lines )); then
-            while IFS= read -r line; do
-                process_build_output_line "${label}" "${line}"
-            done < <(sed -n "$((processed_lines + 1)),${total_lines}p" "${log_file}")
-            processed_lines="${total_lines}"
-        fi
-
-        local now elapsed frame
-        now="$(date +%s)"
-        elapsed=$((now - start_step))
-        frame="${spinner_frames:spinner_index:1}"
+        local elapsed=$((SECONDS - start_step))
+        local frame="${spinner_frames:spinner_index:1}"
         render_status_line "${label}" "${frame}" "${elapsed}"
         spinner_index=$(((spinner_index + 1) % 4))
         sleep 0.2
@@ -273,29 +303,22 @@ run_long_step() {
     local exit_code=$?
     set -e
 
-    local total_lines
-    total_lines="$(wc -l < "${log_file}" 2>/dev/null || echo 0)"
-    if (( total_lines > processed_lines )); then
-        while IFS= read -r line; do
-            process_build_output_line "${label}" "${line}"
-        done < <(sed -n "$((processed_lines + 1)),${total_lines}p" "${log_file}")
-        processed_lines="${total_lines}"
-    fi
+    while IFS= read -r line; do
+        process_build_output_line "${label}" "${line}"
+    done < "${log_file}"
 
-    local now elapsed
-    now="$(date +%s)"
-    elapsed=$((now - start_step))
+    local elapsed=$((SECONDS - start_step))
 
     if [[ "${exit_code}" -ne 0 ]]; then
         clear_status_line
         record_error "[${label}] Step failed with exit code ${exit_code}. Log: ${log_file}"
-        emit_scrolling_event "error" "$(progress_prefix) ${label} (failed)"
+        emit_step_completion "$(progress_prefix "${ICON_ERROR}" "${C_RED}") ${label} ${C_DIM}${SEP}${C_RESET} ${C_RED}failed${C_RESET} ${C_DIM}(${elapsed}s)${C_RESET}"
         log_error "Detailed log kept at: ${log_file}"
         return "${exit_code}"
     fi
 
     clear_status_line
-    emit_scrolling_event "ok" "$(progress_prefix) ${label} (done in ${elapsed}s)"
+    emit_step_completion "$(progress_prefix "${ICON_OK}" "${C_GREEN}") ${label} ${C_DIM}${SEP}${C_RESET} ${C_DIM}(${elapsed}s)${C_RESET}"
     rm -f "${log_file}"
 }
 
@@ -851,7 +874,7 @@ fi
 show_stage_hierarchy
 
 if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
-    run_step "Checking and installing system dependencies (Vulkan/OpenGL/X11/toolchain)" ensure_linux_dependencies
+    run_step "Installing Dependencies" ensure_linux_dependencies
 elif [[ "${skip_deps}" -eq 0 ]]; then
     log_warn "Auto dependency install is only implemented for native Linux builds."
 fi
@@ -859,18 +882,18 @@ fi
 configure_ccache
 
 if [[ "${clean_build}" -eq 1 ]]; then
-    run_long_step "Cleaning editor build directory" clean_editor_build
-    run_long_step "Cleaning player cache directory" clean_player_cache
+    run_long_step "Cleaning Editor" clean_editor_build
+    run_long_step "Cleaning Player" clean_player_cache
 fi
 
-run_long_step "Syncing Modularity's git submodules" sync_submodules
-run_long_step "Configuring editor build (CMake)" configure_editor_build
-run_long_step "Building editor + engine targets" build_editor_targets
-run_long_step "Installing editor artifacts" install_editor_targets
-run_long_step "Collecting editor third-party libraries" copy_third_party_libraries "${build_dir}"
-run_long_step "Collecting editor engine libraries" copy_engine_libraries "${build_dir}"
-run_long_step "Configuring player-only cache build" configure_player_build
-run_long_step "Building ModularityPlayer target" build_player_target
-run_long_step "Collecting player third-party libraries" copy_third_party_libraries "${player_cache_dir}"
-run_long_step "Collecting player engine libraries" copy_engine_libraries "${player_cache_dir}"
-run_long_step "Packaging & Finalizing artifacts and resources" finalize_packaging
+run_long_step "Syncing Submodules" sync_submodules
+run_long_step "Configuring Editor" configure_editor_build
+run_long_step "Building Editor" build_editor_targets
+run_long_step "Installing Editor" install_editor_targets
+run_long_step "Collecting Editor Libs" copy_third_party_libraries "${build_dir}"
+run_long_step "Collecting Engine Libs" copy_engine_libraries "${build_dir}"
+run_long_step "Configuring Player" configure_player_build
+run_long_step "Building Player" build_player_target
+run_long_step "Collecting Player Libs" copy_third_party_libraries "${player_cache_dir}"
+run_long_step "Collecting Player Engine Libs" copy_engine_libraries "${player_cache_dir}"
+run_long_step "Packaging Engine" finalize_packaging

@@ -2557,6 +2557,12 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
     std::string out = rewriteThenSyntax(sourceText);
 
     replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
+    // Beginner-friendly namespaces that user scripts access with `.` even on
+    // lowercase members (e.g. `Ensure.obj`). Convert ALL members of these
+    // specific namespaces — not just Pascal-cased ones.
+    replaceRegexAll(out, std::regex(R"(\bEnsure\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Ensure::$1");
+    replaceRegexAll(out, std::regex(R"(\bScene\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Scene::$1");
+    replaceRegexAll(out, std::regex(R"(\bMovement\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Movement::$1");
     // Convert Namespace.Member → Namespace::Member for enum/namespace-style access.
     // Require the match not be preceded by '.' (i.e. not a chained member like obj.UI.Foo).
     // We capture an optional non-dot boundary character before the identifier.

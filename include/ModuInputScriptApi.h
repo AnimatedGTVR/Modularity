@@ -127,10 +127,193 @@ inline bool IsKeyDown(int key) { return KeyDown(key); }
 inline bool IsKeyDown(int keyA, int keyB) { return KeyDown(keyA) || KeyDown(keyB); }
 inline bool IsKeyPressed(int key) { return KeyPressed(key); }
 
+inline bool KeyReleased(int key) {
+    const ImGuiKey imguiKey = detail::glfwToImGuiKey(key);
+    if (imguiKey != ImGuiKey_None && ImGui::IsKeyReleased(imguiKey)) return true;
+    return false;
+}
+
+inline bool IsKeyReleased(int key) { return KeyReleased(key); }
+
+namespace InputActions {
+
+struct ActionBinding {
+    std::string name;
+    std::vector<int> keys;
+};
+
+inline std::unordered_map<std::string, std::vector<int>>& Registry() {
+    static std::unordered_map<std::string, std::vector<int>> r = {
+        { "Jump",     { GLFW_KEY_SPACE } },
+        { "Sprint",   { GLFW_KEY_LEFT_SHIFT, GLFW_KEY_RIGHT_SHIFT } },
+        { "Interact", { GLFW_KEY_E } },
+        { "Throw",    { GLFW_KEY_F } },
+        { "Crouch",   { GLFW_KEY_C } },
+        { "Submit",   { GLFW_KEY_ENTER, GLFW_KEY_KP_ENTER } },
+        { "Cancel",   { GLFW_KEY_ESCAPE } },
+        { "Up",       { GLFW_KEY_W, GLFW_KEY_UP } },
+        { "Down",     { GLFW_KEY_S, GLFW_KEY_DOWN } },
+        { "Left",     { GLFW_KEY_A, GLFW_KEY_LEFT } },
+        { "Right",    { GLFW_KEY_D, GLFW_KEY_RIGHT } },
+    };
+    return r;
+}
+
+inline int lookupKeyName(const std::string& token) {
+    static const std::unordered_map<std::string, int> kNameToKey = {
+        { "Space", GLFW_KEY_SPACE }, { "Enter", GLFW_KEY_ENTER },
+        { "KeypadEnter", GLFW_KEY_KP_ENTER }, { "Escape", GLFW_KEY_ESCAPE },
+        { "LeftShift", GLFW_KEY_LEFT_SHIFT }, { "RightShift", GLFW_KEY_RIGHT_SHIFT },
+        { "LeftCtrl", GLFW_KEY_LEFT_CONTROL }, { "RightCtrl", GLFW_KEY_RIGHT_CONTROL },
+        { "Up", GLFW_KEY_UP }, { "Down", GLFW_KEY_DOWN },
+        { "Left", GLFW_KEY_LEFT }, { "Right", GLFW_KEY_RIGHT },
+        { "Tab", GLFW_KEY_TAB }, { "Backspace", GLFW_KEY_BACKSPACE },
+        { "W", GLFW_KEY_W }, { "A", GLFW_KEY_A }, { "S", GLFW_KEY_S }, { "D", GLFW_KEY_D },
+        { "E", GLFW_KEY_E }, { "F", GLFW_KEY_F }, { "Q", GLFW_KEY_Q },
+        { "R", GLFW_KEY_R }, { "T", GLFW_KEY_T }, { "C", GLFW_KEY_C },
+        { "K", GLFW_KEY_K },
+    };
+    auto it = kNameToKey.find(token);
+    if (it != kNameToKey.end()) return it->second;
+    if (token.size() == 1) {
+        char c = token[0];
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+        if (c >= 'A' && c <= 'Z') return GLFW_KEY_A + (c - 'A');
+        if (c >= '0' && c <= '9') return GLFW_KEY_0 + (c - '0');
+    }
+    return GLFW_KEY_UNKNOWN;
+}
+
+inline bool& loadedFlag() {
+    static bool loaded = false;
+    return loaded;
+}
+
+inline void parseFile(const std::string& contents) {
+    auto& registry = Registry();
+    std::string line;
+    line.reserve(128);
+    size_t i = 0;
+    while (i <= contents.size()) {
+        const char c = (i < contents.size()) ? contents[i] : '\n';
+        if (c == '\n' || c == '\r') {
+            if (!line.empty()) {
+                size_t eq = line.find('=');
+                if (eq != std::string::npos) {
+                    std::string name = line.substr(0, eq);
+                    std::string rhs  = line.substr(eq + 1);
+                    while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
+                    size_t s = 0;
+                    while (s < name.size() && (name[s] == ' ' || name[s] == '\t')) ++s;
+                    name = name.substr(s);
+                    if (!name.empty() && name[0] != '#') {
+                        std::vector<int> keys;
+                        size_t p = 0;
+                        while (p <= rhs.size()) {
+                            if (p == rhs.size() || rhs[p] == ',') {
+                                std::string tok = rhs.substr(0, p);
+                                while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+                                size_t ts = 0;
+                                while (ts < tok.size() && (tok[ts] == ' ' || tok[ts] == '\t')) ++ts;
+                                tok = tok.substr(ts);
+                                if (!tok.empty()) {
+                                    const int key = lookupKeyName(tok);
+                                    if (key != GLFW_KEY_UNKNOWN) keys.push_back(key);
+                                }
+                                rhs = rhs.substr(p + 1);
+                                p = 0;
+                                if (rhs.empty()) break;
+                                continue;
+                            }
+                            ++p;
+                        }
+                        if (!keys.empty()) registry[name] = std::move(keys);
+                    }
+                }
+                line.clear();
+            }
+        } else {
+            line.push_back(c);
+        }
+        ++i;
+    }
+}
+
+inline void ensureLoaded() {
+    if (loadedFlag()) return;
+    loadedFlag() = true;
+    if (ScriptContext* c = ctxPtr()) {
+        const std::string text = c->ReadFileText("input_actions.modu");
+        if (!text.empty()) parseFile(text);
+    }
+}
+
+inline const std::vector<int>* find(const std::string& name) {
+    ensureLoaded();
+    auto& r = Registry();
+    auto it = r.find(name);
+    if (it == r.end()) return nullptr;
+    return &it->second;
+}
+
+} // namespace InputActions
+
 namespace Input {
 inline bool IsKeyDown(int key) { return ::ModuCPP::KeyDown(key); }
 inline bool IsKeyDown(int keyA, int keyB) { return ::ModuCPP::KeyDown(keyA) || ::ModuCPP::KeyDown(keyB); }
 inline bool IsKeyPressed(int key) { return ::ModuCPP::KeyPressed(key); }
+inline bool IsKeyReleased(int key) { return ::ModuCPP::KeyReleased(key); }
+
+inline Vector2 WASDMovement() {
+    Vector2 move(0.0f);
+    if (KeyDown(GLFW_KEY_W) || KeyDown(GLFW_KEY_UP))    move.y += 1.0f;
+    if (KeyDown(GLFW_KEY_S) || KeyDown(GLFW_KEY_DOWN))  move.y -= 1.0f;
+    if (KeyDown(GLFW_KEY_D) || KeyDown(GLFW_KEY_RIGHT)) move.x += 1.0f;
+    if (KeyDown(GLFW_KEY_A) || KeyDown(GLFW_KEY_LEFT))  move.x -= 1.0f;
+    const float len = glm::length(move);
+    if (len > 1e-4f) move /= len;
+    return move;
+}
+
+inline bool ButtonHeld(const std::string& name) {
+    if (const auto* keys = InputActions::find(name)) {
+        for (int k : *keys) if (::ModuCPP::KeyDown(k)) return true;
+        return false;
+    }
+    const int key = InputActions::lookupKeyName(name);
+    return (key != GLFW_KEY_UNKNOWN) && ::ModuCPP::KeyDown(key);
+}
+
+inline bool ButtonDown(const std::string& name) {
+    if (const auto* keys = InputActions::find(name)) {
+        for (int k : *keys) if (::ModuCPP::KeyPressed(k)) return true;
+        return false;
+    }
+    const int key = InputActions::lookupKeyName(name);
+    return (key != GLFW_KEY_UNKNOWN) && ::ModuCPP::KeyPressed(key);
+}
+
+inline bool ButtonUp(const std::string& name) {
+    if (const auto* keys = InputActions::find(name)) {
+        for (int k : *keys) if (::ModuCPP::KeyReleased(k)) return true;
+        return false;
+    }
+    const int key = InputActions::lookupKeyName(name);
+    return (key != GLFW_KEY_UNKNOWN) && ::ModuCPP::KeyReleased(key);
+}
+
+inline void SetBinding(const std::string& name, int key) {
+    InputActions::Registry()[name] = { key };
+}
+
+inline void SetBinding(const std::string& name, std::initializer_list<int> keys) {
+    InputActions::Registry()[name] = std::vector<int>(keys);
+}
+
+inline void ReloadBindings() {
+    InputActions::loadedFlag() = false;
+    InputActions::ensureLoaded();
+}
 } // namespace Input
 
 inline bool IsSubmitDown() {

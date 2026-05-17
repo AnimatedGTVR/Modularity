@@ -1252,6 +1252,26 @@ bool ScriptContext::StopAudio() {
     return engine->stopAudioFromScript(object->id);
 }
 
+bool ScriptContext::PlayObjectAudio(int objectId) {
+    if (!engine) return false;
+    return engine->playAudioFromScript(objectId);
+}
+
+bool ScriptContext::StopObjectAudio(int objectId) {
+    if (!engine) return false;
+    return engine->stopAudioFromScript(objectId);
+}
+
+bool ScriptContext::SetObjectAudioLoop(int objectId, bool loop) {
+    if (!engine) return false;
+    return engine->setAudioLoopFromScript(objectId, loop);
+}
+
+bool ScriptContext::PlayObjectAudioOneShot(int objectId, const std::string& clipPath, float volumeScale) {
+    if (!engine) return false;
+    return engine->playAudioOneShotFromScript(objectId, clipPath, volumeScale);
+}
+
 bool ScriptContext::SetAudioLoop(bool loop) {
     if (!engine || !object || !object->hasAudioSource) return false;
     object->audioSource.loop = loop;

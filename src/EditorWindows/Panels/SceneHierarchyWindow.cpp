@@ -764,9 +764,11 @@ void Engine::renderHierarchyPanel() {
     hierarchyVisibleOrder.clear();
     hierarchyVisibleOrder.reserve(sceneObjects.size());
     std::vector<bool> ancestorHasNext;
+    std::unordered_set<int> renderPath;
+    renderPath.reserve(sceneObjects.size());
     for (size_t i = 0; i < rootIndices.size(); ++i) {
         const bool isLastRoot = (i + 1 == rootIndices.size());
-        renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, isLastRoot, 0, animStep);
+        renderObjectNode(sceneObjects[rootIndices[i]], filter, ancestorHasNext, renderPath, isLastRoot, 0, animStep);
     }
 
     {
@@ -932,13 +934,17 @@ void Engine::renderHierarchyPanel() {
 }
 
 void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
-                              std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep) {
+                              std::vector<bool>& ancestorHasNext, std::unordered_set<int>& renderPath,
+                              bool isLast, int depth, float animStep) {
     if (!filter.empty()) {
         std::string nameLower = obj.name;
         std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
         if (nameLower.find(filter) == std::string::npos) {
             return;
         }
+    }
+    if (depth > 256 || !renderPath.insert(obj.id).second) {
+        return;
     }
 
     hierarchyVisibleOrder.push_back(obj.id);
@@ -1343,7 +1349,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
             ancestorHasNext.push_back(!isLast);
             for (size_t i = 0; i < visibleChildren.size(); ++i) {
                 bool childLast = (i + 1 == visibleChildren.size());
-                renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, childLast, depth + 1, animStep);
+                renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, renderPath, childLast, depth + 1, animStep);
             }
             ancestorHasNext.pop_back();
 
@@ -1377,6 +1383,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     } else if (nodeOpen) {
         ImGui::TreePop();
     }
+    renderPath.erase(obj.id);
 }
 
 #pragma endregion

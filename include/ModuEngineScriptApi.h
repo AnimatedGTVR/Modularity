@@ -3,10 +3,128 @@
 #include "ModuCPPScriptApi.h"
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cstdio>
+#include <vector>
 
 namespace ModuCPP {
+
+namespace Field {
+inline float Float(const std::string& key, float fallback = 0.0f) {
+    return GetSettingFloat(key, fallback);
+}
+
+inline int Int(const std::string& key, int fallback = 0) {
+    const std::string raw = GetSetting(key, std::to_string(fallback));
+    return raw.empty() ? fallback : std::atoi(raw.c_str());
+}
+
+inline bool Bool(const std::string& key, bool fallback = false) {
+    return GetSettingBool(key, fallback);
+}
+
+inline std::string Text(const std::string& key, const std::string& fallback = "") {
+    return GetSetting(key, fallback);
+}
+
+inline int Clip(const std::string& keyPrefix, int direction, int fallback = -1) {
+    return Int(keyPrefix + std::to_string(direction), fallback);
+}
+
+inline int Clip(const std::string& keyPrefix, int direction, int frame, int fallback) {
+    return Int(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame), fallback);
+}
+
+inline void SetInt(const std::string& key, int value) {
+    SetSetting(key, std::to_string(value));
+}
+
+inline void SetClip(const std::string& keyPrefix, int direction, int value) {
+    SetInt(keyPrefix + std::to_string(direction), value);
+}
+
+inline void SetClip(const std::string& keyPrefix, int direction, int frame, int value) {
+    SetInt(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame), value);
+}
+} // namespace Field
+
+namespace Scene {
+inline SceneObject* Current() {
+    if (ScriptContext* script = ctxPtr()) return script->object;
+    return nullptr;
+}
+
+inline SceneObject* Resolve(const std::string& ref) {
+    if (ScriptContext* script = ctxPtr()) return script->ResolveObjectRef(ref);
+    return nullptr;
+}
+
+inline int Count() {
+    if (ScriptContext* script = ctxPtr()) return script->GetSceneObjectCount();
+    return 0;
+}
+
+inline const SceneObject* At(int index) {
+    if (ScriptContext* script = ctxPtr()) return script->GetSceneObjectAt(index);
+    return nullptr;
+}
+} // namespace Scene
+
+namespace Physics {
+inline bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity, bool& grounded) {
+    if (ScriptContext* script = ctxPtr()) return script->ResolveGround(capsuleHalf, probeExtra, groundSnap, verticalVelocity, nullptr, &grounded);
+    grounded = false;
+    return false;
+}
+
+inline bool RaycastClosestDetailed(const Vector3& origin, const Vector3& direction, float distance, Vector3& hitPos, Vector3& hitNormal, float& hitDistance, int& hitObjectId) {
+    if (ScriptContext* script = ctxPtr()) return script->RaycastClosestDetailed(origin, direction, distance, &hitPos, &hitNormal, &hitDistance, &hitObjectId);
+    hitObjectId = -1;
+    return false;
+}
+} // namespace Physics
+
+namespace ObjectAudio {
+inline bool PlayOneShot(const std::string& refOrPath, float volumeScale = 1.0f) {
+    if (refOrPath.empty()) return false;
+    ScriptContext* script = ctxPtr();
+    if (!script) return false;
+    SceneObject* source = script->ResolveObjectRef(refOrPath);
+    if (source && source->hasAudioSource && !source->audioSource.clipPath.empty()) return script->PlayObjectAudioOneShot(source->id, source->audioSource.clipPath, volumeScale);
+    return script->PlayAudioOneShot(refOrPath, volumeScale);
+}
+
+inline bool PlayLoop(SceneObject* source) {
+    ScriptContext* script = ctxPtr();
+    if (!script || !source || !source->hasAudioSource || !source->audioSource.enabled || source->audioSource.clipPath.empty()) return false;
+    return script->PlayObjectAudio(source->id);
+}
+
+inline void Stop(SceneObject* source) {
+    if (ScriptContext* script = ctxPtr()) {
+        if (source && source->hasAudioSource) script->StopObjectAudio(source->id);
+    }
+}
+
+inline void SetLoop(SceneObject* source, bool loop) {
+    if (ScriptContext* script = ctxPtr()) {
+        if (source && source->hasAudioSource) script->SetObjectAudioLoop(source->id, loop);
+    }
+}
+} // namespace ObjectAudio
+
+namespace CameraMath {
+inline void PlanarYawPitchVectors(float pitchDeg, float yawDeg, Vector3& forward, Vector3& right) {
+    if (ScriptContext* script = ctxPtr()) {
+        script->GetPlanarYawPitchVectors(pitchDeg, yawDeg, forward, right);
+        return;
+    }
+    const glm::quat q = glm::quat(glm::radians(glm::vec3(pitchDeg, yawDeg, 0.0f)));
+    forward = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
+    right = glm::normalize(glm::vec3(-forward.z, 0.0f, forward.x));
+}
+} // namespace CameraMath
 
 namespace detail {
 inline bool isAudioPath(const std::string& path) {
@@ -236,6 +354,11 @@ inline bool warnOnce(bool& alreadyWarned, const std::string& message,
     return false;
 }
 
+inline bool WarnOnce(bool& alreadyWarned, const std::string& message,
+                     ConsoleMessageType type = ConsoleMessageType::Warning) {
+    return warnOnce(alreadyWarned, message, type);
+}
+
 inline bool warnMissingComponentOnce(ScriptContext& ctx,
                                      bool& alreadyWarned,
                                      const char* scriptName,
@@ -353,6 +476,89 @@ struct SpriteFacade {
 
 inline const SpriteFacade sprite{};
 
+struct Sprite {
+    int clipIndex = -1;
+
+    Sprite() = default;
+    Sprite(int clip) : clipIndex(clip) {}
+    operator int() const { return clipIndex; }
+    Sprite& operator=(int clip) { clipIndex = clip; return *this; }
+    bool IsAssigned() const { return clipIndex >= 0; }
+};
+
+struct Sprite8WaySet {
+    std::array<Sprite, 8> directions{};
+
+    Sprite& At(int direction) {
+        return directions[std::clamp(direction, 0, 7)];
+    }
+    const Sprite& At(int direction) const {
+        return directions[std::clamp(direction, 0, 7)];
+    }
+    int Clip(int direction) const {
+        return At(direction).clipIndex;
+    }
+    void Set(int direction, int clipIndex) {
+        At(direction).clipIndex = clipIndex;
+    }
+
+    template <typename Array8>
+    static Sprite8WaySet FromIndexes(const Array8& clips) {
+        Sprite8WaySet set;
+        for (int i = 0; i < 8; ++i) set.directions[i] = clips[i];
+        return set;
+    }
+
+    template <typename Array8>
+    void WriteIndexes(Array8& clips) const {
+        for (int i = 0; i < 8; ++i) clips[i] = directions[i].clipIndex;
+    }
+};
+
+struct Sprite8WayFrames {
+    std::array<std::array<Sprite, 4>, 8> directions{};
+
+    Sprite& At(int direction, int frame) {
+        return directions[std::clamp(direction, 0, 7)][std::clamp(frame, 0, 3)];
+    }
+    const Sprite& At(int direction, int frame) const {
+        return directions[std::clamp(direction, 0, 7)][std::clamp(frame, 0, 3)];
+    }
+    int Clip(int direction, int frame) const {
+        return At(direction, frame).clipIndex;
+    }
+    void Set(int direction, int frame, int clipIndex) {
+        At(direction, frame).clipIndex = clipIndex;
+    }
+
+    template <typename Array8x4>
+    static Sprite8WayFrames FromIndexes(const Array8x4& clips) {
+        Sprite8WayFrames frames;
+        for (int direction = 0; direction < 8; ++direction) {
+            for (int frame = 0; frame < 4; ++frame) frames.directions[direction][frame] = clips[direction][frame];
+        }
+        return frames;
+    }
+
+    template <typename Array8x4>
+    void WriteIndexes(Array8x4& clips) const {
+        for (int direction = 0; direction < 8; ++direction) {
+            for (int frame = 0; frame < 4; ++frame) clips[direction][frame] = directions[direction][frame].clipIndex;
+        }
+    }
+};
+
+struct Sprite4WayAnimation {
+    std::array<std::vector<Sprite>, 4> directions{};
+
+    std::vector<Sprite>& At(int direction) {
+        return directions[std::clamp(direction, 0, 3)];
+    }
+    const std::vector<Sprite>& At(int direction) const {
+        return directions[std::clamp(direction, 0, 3)];
+    }
+};
+
 inline bool EditClipSelector(const char* label, int& clipIndex) {
     ScriptContext* scriptCtx = ctxPtr();
     if (!scriptCtx) return false;
@@ -462,5 +668,136 @@ inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds
 
     return changed;
 }
+
+// ---------------------------------------------------------------------------
+// Beginner-friendly Scene / Movement / Ensure helpers.
+//
+// The `obj` symbol scripts use inside Begin / Update / TickUpdate methods is
+// the local `ObjectFacade` injected by MODU_SCRIPT (see ModuCPPScriptApi.h);
+// its Rigidbody3D / Transform / Physics members read through ctxPtr().
+// ---------------------------------------------------------------------------
+
+namespace Scene {
+inline SceneObj Find(const std::string& name) {
+    ScriptContext* c = ctxPtr();
+    return SceneObj{ c ? c->FindObjectByName(name) : nullptr };
+}
+inline SceneObj FindById(int id) {
+    ScriptContext* c = ctxPtr();
+    return SceneObj{ c ? c->FindObjectById(id) : nullptr };
+}
+inline bool Exists(const std::string& name) {
+    ScriptContext* c = ctxPtr();
+    return c && c->FindObjectByName(name) != nullptr;
+}
+} // namespace Scene
+
+namespace Movement {
+
+inline Vector3 Direction(const Vector2& move, const SceneObject* reference) {
+    const float mag = glm::length(move);
+    if (mag < 1e-4f) return Vector3(0.0f);
+    Vector2 normalized = (mag > 1.0f) ? (move / mag) : move;
+
+    Vector3 forward(0.0f, 0.0f, -1.0f);
+    Vector3 right(1.0f, 0.0f, 0.0f);
+    if (reference) {
+        const glm::quat q = glm::quat(glm::radians(reference->rotation));
+        Vector3 f = q * Vector3(0.0f, 0.0f, -1.0f);
+        Vector3 r = q * Vector3(1.0f, 0.0f, 0.0f);
+        f.y = 0.0f;
+        r.y = 0.0f;
+        const float fl = glm::length(f);
+        const float rl = glm::length(r);
+        if (fl > 1e-3f) forward = f / fl;
+        if (rl > 1e-3f) right   = r / rl;
+    }
+
+    Vector3 dir = right * normalized.x + forward * normalized.y;
+    const float len = glm::length(dir);
+    if (len > 1e-4f) dir /= len;
+    return dir;
+}
+
+inline Vector3 Direction(const Vector2& move, const SceneObj& reference) {
+    return Direction(move, static_cast<const SceneObject*>(reference.ptr));
+}
+
+inline Vector3 Direction(const Vector2& move, const ObjectFacade& reference) {
+    return Direction(move, reference.raw());
+}
+
+// Public-field SceneObj declarations are stored as `std::string` (the object
+// name reference) by the ModuCPP transpiler. Resolve at call time.
+inline Vector3 Direction(const Vector2& move, const std::string& referenceName) {
+    ScriptContext* c = ctxPtr();
+    const SceneObject* ref = (c && !referenceName.empty()) ? c->FindObjectByName(referenceName) : nullptr;
+    return Direction(move, ref);
+}
+
+inline Vector3 Direction(const Vector2& move) {
+    return Direction(move, static_cast<const SceneObject*>(nullptr));
+}
+
+} // namespace Movement
+
+namespace Ensure {
+
+namespace detail {
+inline bool applyRigidbodyEnsure(SceneObject* target, bool isCurrentCtx,
+                                 bool freezeRotation, bool useGravity) {
+    ScriptContext* c = ctxPtr();
+    if (!c || !target) return false;
+    if (isCurrentCtx) {
+        const bool ok = c->EnsureRigidbody(useGravity, /*kinematic=*/false);
+        if (ok && freezeRotation && c->object) {
+            c->object->rigidbody.lockRotationX = true;
+            c->object->rigidbody.lockRotationY = true;
+            c->object->rigidbody.lockRotationZ = true;
+            c->MarkDirty();
+        }
+        return ok;
+    }
+    if (!target->hasRigidbody) {
+        target->hasRigidbody = true;
+        target->rigidbody = RigidbodyComponent{};
+    }
+    target->rigidbody.useGravity = useGravity;
+    if (freezeRotation) {
+        target->rigidbody.lockRotationX = true;
+        target->rigidbody.lockRotationY = true;
+        target->rigidbody.lockRotationZ = true;
+    }
+    c->MarkDirty();
+    return true;
+}
+} // namespace detail
+
+// Visual sentinel — `Ensure::obj;` is a no-op marker that documents intent.
+// The real "is there a current object?" check happens implicitly inside any
+// ScriptContext call that needs one.
+inline constexpr int obj = 0;
+
+inline bool Rigidbody3D(const SceneObj& target, bool freezeRotation = false, bool useGravity = true) {
+    const bool currentCtx = (ctxPtr() && target.ptr == ctxPtr()->object);
+    return detail::applyRigidbodyEnsure(target.ptr, currentCtx, freezeRotation, useGravity);
+}
+
+inline bool Rigidbody3D(const ObjectFacade&, bool freezeRotation = false, bool useGravity = true) {
+    return detail::applyRigidbodyEnsure(ctxPtr() ? ctxPtr()->object : nullptr,
+                                        /*isCurrentCtx=*/true, freezeRotation, useGravity);
+}
+
+inline bool Rigidbody3D(bool freezeRotation = false, bool useGravity = true) {
+    return detail::applyRigidbodyEnsure(ctxPtr() ? ctxPtr()->object : nullptr,
+                                        /*isCurrentCtx=*/true, freezeRotation, useGravity);
+}
+
+inline bool CapsuleCollider(float height = 1.8f, float radius = 0.4f) {
+    if (ScriptContext* c = ctxPtr()) return c->EnsureCapsuleCollider(height, radius);
+    return false;
+}
+
+} // namespace Ensure
 
 } // namespace ModuCPP

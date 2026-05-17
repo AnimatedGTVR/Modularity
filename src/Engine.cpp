@@ -3152,7 +3152,81 @@ Engine::SceneSnapshot Engine::captureSceneSnapshot() const {
     snap.objects = sceneObjects;
     snap.selectedIds = selectedObjectIds;
     snap.nextId = nextObjectId;
+    snap.meshEditMode = meshEditMode;
+    snap.meshEditLoaded = meshEditLoaded;
+    snap.meshEditDirty = meshEditDirty;
+    snap.meshEditExtrudeMode = meshEditExtrudeMode;
+    snap.meshEditAutoUV = meshEditAutoUV;
+    snap.meshEditTriangleSelection = meshEditTriangleSelection;
+    snap.meshEditAutoObjectId = meshEditAutoObjectId;
+    snap.meshEditPath = meshEditPath;
+    snap.meshEditAsset = meshEditAsset;
+    snap.meshEditSelectedVertices = meshEditSelectedVertices;
+    snap.meshEditSelectedEdges = meshEditSelectedEdges;
+    snap.meshEditSelectedFaces = meshEditSelectedFaces;
+    snap.meshEditActiveMaterialSlot = meshEditActiveMaterialSlot;
+    snap.meshEditSelectionMode = static_cast<int>(meshEditSelectionMode);
     return snap;
+}
+
+void Engine::restoreSceneSnapshot(SceneSnapshot snap) {
+    sceneObjects = std::move(snap.objects);
+    selectedObjectIds = std::move(snap.selectedIds);
+    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
+    nextObjectId = snap.nextId;
+    meshEditMode = snap.meshEditMode;
+    meshEditLoaded = snap.meshEditLoaded;
+    meshEditDirty = snap.meshEditDirty;
+    meshEditExtrudeMode = snap.meshEditExtrudeMode;
+    meshEditAutoUV = snap.meshEditAutoUV;
+    meshEditTriangleSelection = snap.meshEditTriangleSelection;
+    meshEditAutoObjectId = snap.meshEditAutoObjectId;
+    meshEditPath = std::move(snap.meshEditPath);
+    meshEditAsset = std::move(snap.meshEditAsset);
+    meshEditSelectedVertices = std::move(snap.meshEditSelectedVertices);
+    meshEditSelectedEdges = std::move(snap.meshEditSelectedEdges);
+    meshEditSelectedFaces = std::move(snap.meshEditSelectedFaces);
+    meshEditActiveMaterialSlot = snap.meshEditActiveMaterialSlot;
+    if (snap.meshEditSelectionMode < static_cast<int>(MeshEditSelectionMode::Object) ||
+        snap.meshEditSelectionMode > static_cast<int>(MeshEditSelectionMode::UV)) {
+        meshEditSelectionMode = MeshEditSelectionMode::Object;
+    } else {
+        meshEditSelectionMode = static_cast<MeshEditSelectionMode>(snap.meshEditSelectionMode);
+    }
+    if (meshEditLoaded && !meshEditPath.empty()) {
+        SceneObject* meshTarget = getSelectedObject();
+        if (!meshTarget || !IsRawMeshPath(meshTarget->meshPath) ||
+            meshTarget->meshPath != meshEditPath) {
+            meshTarget = nullptr;
+            for (SceneObject& obj : sceneObjects) {
+                if (IsRawMeshPath(obj.meshPath) && obj.meshPath == meshEditPath) {
+                    meshTarget = &obj;
+                    break;
+                }
+            }
+        }
+        if (meshTarget) {
+            syncMeshEditToGPU(meshTarget);
+        }
+    }
+
+    sceneObjectIndexById.clear();
+    sceneObjectIndexData = nullptr;
+    sceneObjectIndexCount = 0;
+    markRuntimeScriptBindingsDirty();
+    aiAgentRuntimeStates.clear();
+    activePlayerId = -1;
+    playerControllerGroundProbeDebug = {};
+    updateHierarchyWorldTransforms();
+    gizmoHistoryCaptured = false;
+    worldUiGizmoHistoryCaptured = false;
+    gameUiGizmoHistoryCaptured = false;
+    worldUiRectGizmoSnapshots.clear();
+    gameUiRectGizmoSnapshots.clear();
+    worldUiRectGizmoModel = glm::mat4(1.0f);
+    gameUiRectGizmoModel = glm::mat4(1.0f);
+    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
 }
 
 void Engine::pushUndoSnapshot(SceneSnapshot snap, const char* /*reason*/) {
@@ -3168,9 +3242,7 @@ void Engine::recordState(const char* reason) {
 }
 
 void Engine::capturePlayModeSnapshot() {
-    playModeSnapshot.scene.objects = sceneObjects;
-    playModeSnapshot.scene.selectedIds = selectedObjectIds;
-    playModeSnapshot.scene.nextId = nextObjectId;
+    playModeSnapshot.scene = captureSceneSnapshot();
     playModeSnapshot.hadUnsavedChanges = projectManager.currentProject.hasUnsavedChanges;
     playModeSnapshot.valid = true;
 }
@@ -3202,30 +3274,9 @@ void Engine::restorePlayModeSnapshot() {
         return;
     }
 
-    sceneObjects = playModeSnapshot.scene.objects;
+    restoreSceneSnapshot(std::move(playModeSnapshot.scene));
     ResetParticleSystem2DRuntimes(sceneObjects);
-    selectedObjectIds = playModeSnapshot.scene.selectedIds;
-    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
-    nextObjectId = playModeSnapshot.scene.nextId;
     projectManager.currentProject.hasUnsavedChanges = playModeSnapshot.hadUnsavedChanges;
-
-    sceneObjectIndexById.clear();
-    sceneObjectIndexData = nullptr;
-    sceneObjectIndexCount = 0;
-    markRuntimeScriptBindingsDirty();
-    aiAgentRuntimeStates.clear();
-    activePlayerId = -1;
-    playerControllerGroundProbeDebug = {};
-    updateHierarchyWorldTransforms();
-    gizmoHistoryCaptured = false;
-    worldUiGizmoHistoryCaptured = false;
-    gameUiGizmoHistoryCaptured = false;
-    worldUiRectGizmoSnapshots.clear();
-    gameUiRectGizmoSnapshots.clear();
-    worldUiRectGizmoModel = glm::mat4(1.0f);
-    gameUiRectGizmoModel = glm::mat4(1.0f);
-    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
-    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
 
     playModeSnapshot = {};
 }
@@ -3233,72 +3284,26 @@ void Engine::restorePlayModeSnapshot() {
 void Engine::undo() {
     if (undoStack.empty()) return;
 
-    SceneSnapshot current;
-    current.objects = sceneObjects;
-    current.selectedIds = selectedObjectIds;
-    current.nextId = nextObjectId;
+    SceneSnapshot current = captureSceneSnapshot();
 
     SceneSnapshot snap = undoStack.back();
     undoStack.pop_back();
 
     redoStack.push_back(std::move(current));
-    sceneObjects = std::move(snap.objects);
-    selectedObjectIds = snap.selectedIds;
-    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
-    nextObjectId = snap.nextId;
-    sceneObjectIndexById.clear();
-    sceneObjectIndexData = nullptr;
-    sceneObjectIndexCount = 0;
-    markRuntimeScriptBindingsDirty();
-    aiAgentRuntimeStates.clear();
-    activePlayerId = -1;
-    playerControllerGroundProbeDebug = {};
-    updateHierarchyWorldTransforms();
-    gizmoHistoryCaptured = false;
-    worldUiGizmoHistoryCaptured = false;
-    gameUiGizmoHistoryCaptured = false;
-    worldUiRectGizmoSnapshots.clear();
-    gameUiRectGizmoSnapshots.clear();
-    worldUiRectGizmoModel = glm::mat4(1.0f);
-    gameUiRectGizmoModel = glm::mat4(1.0f);
-    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
-    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    restoreSceneSnapshot(std::move(snap));
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 
 void Engine::redo() {
     if (redoStack.empty()) return;
 
-    SceneSnapshot current;
-    current.objects = sceneObjects;
-    current.selectedIds = selectedObjectIds;
-    current.nextId = nextObjectId;
+    SceneSnapshot current = captureSceneSnapshot();
 
     SceneSnapshot snap = redoStack.back();
     redoStack.pop_back();
 
     undoStack.push_back(std::move(current));
-    sceneObjects = std::move(snap.objects);
-    selectedObjectIds = snap.selectedIds;
-    selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
-    nextObjectId = snap.nextId;
-    sceneObjectIndexById.clear();
-    sceneObjectIndexData = nullptr;
-    sceneObjectIndexCount = 0;
-    markRuntimeScriptBindingsDirty();
-    aiAgentRuntimeStates.clear();
-    activePlayerId = -1;
-    playerControllerGroundProbeDebug = {};
-    updateHierarchyWorldTransforms();
-    gizmoHistoryCaptured = false;
-    worldUiGizmoHistoryCaptured = false;
-    gameUiGizmoHistoryCaptured = false;
-    worldUiRectGizmoSnapshots.clear();
-    gameUiRectGizmoSnapshots.clear();
-    worldUiRectGizmoModel = glm::mat4(1.0f);
-    gameUiRectGizmoModel = glm::mat4(1.0f);
-    worldUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
-    gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+    restoreSceneSnapshot(std::move(snap));
     projectManager.currentProject.hasUnsavedChanges = true;
 }
 #pragma endregion
@@ -5205,6 +5210,20 @@ bool Engine::saveMeshEditAsset(std::string& error) {
     }
     meshEditDirty = false;
     fileBrowser.needsRefresh = true;
+    return true;
+}
+
+bool Engine::saveDirtyMeshEditAssetForSceneSave() {
+    if (!meshEditLoaded || !meshEditDirty) {
+        return true;
+    }
+    std::string error;
+    if (!saveMeshEditAsset(error)) {
+        addConsoleMessage("Error: Failed to save edited RMesh before scene save: " + error,
+                          ConsoleMessageType::Error);
+        return false;
+    }
+    addConsoleMessage("Saved edited RMesh: " + meshEditPath, ConsoleMessageType::Success);
     return true;
 }
 #pragma endregion
@@ -9575,6 +9594,14 @@ bool Engine::executeSceneSave(const std::string& destinationSceneName,
     options.preference = preference;
     options.metadata = &currentSceneSerialization;
 
+    if (!saveDirtyMeshEditAssetForSceneSave()) {
+        if (!movedLegacyPath.empty()) {
+            addConsoleMessage("Compatibility backup preserved at: " + movedLegacyPath.string(),
+                              ConsoleMessageType::Warning);
+        }
+        return false;
+    }
+
     const float timeOfDay = getSceneTimeOfDay();
     if (!SceneSerializer::saveScene(scenePath,
                                     sceneObjects,
@@ -10115,8 +10142,11 @@ void Engine::setParent(int childId, int parentId, int beforeSiblingId) {
 
     if (parentId != -1) {
         int current = parentId;
+        std::unordered_set<int> visitedAncestors;
+        visitedAncestors.reserve(sceneObjects.size());
         while (current != -1) {
             if (current == childId) return;
+            if (!visitedAncestors.insert(current).second) return;
             SceneObject* ancestor = findObjectById(current);
             current = ancestor ? ancestor->parentId : -1;
         }
