@@ -20,11 +20,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-<<<<<<< HEAD
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 12
-=======
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 21
->>>>>>> 7df6343905b8f62fdb5d5cd3b60ddaef01c454d8
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 22
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
