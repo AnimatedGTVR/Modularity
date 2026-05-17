@@ -34,61 +34,41 @@ namespace FileIcons {
                 case FileCategory::Folder:
                     iconPath = folderHasItems
                         ? "Resources/Engine-Root/File Explorer/Folder Full.png"
-                        : "Resources/Engine-Root/File Explorer/Folder Empty.png";
-                    break;
+                        : "Resources/Engine-Root/File Explorer/Folder Empty.png";                    break;
                 case FileCategory::Script:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Script.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Script.png";           break;
                 case FileCategory::Scene:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Scenes.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Scenes.png";           break;
                 case FileCategory::Material:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Material.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Material.png";         break;
                 case FileCategory::Video:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Video File.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Video File.png";       break;
                 case FileCategory::Audio:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Audio File.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Audio File.png";       break;
                 case FileCategory::Text:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";             break;
                 case FileCategory::Shader:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Text.png";             break;
                 case FileCategory::Model:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Model.png";
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Model.png";            break;
                 case FileCategory::Unknown:
-                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png";
-                    break;
-                default:
-                    break;
+                    iconPath = "Resources/Engine-Root/File Explorer/File Icon Unknown or empty.png"; break;
+                default: break;
             }
-
-            if (!iconPath) {
-                return nullptr;
-            }
+            if (!iconPath) return nullptr;
             return renderer.getTexture(iconPath);
         }
 
-        bool DrawTexturedIcon(Renderer& renderer, ImDrawList* drawList, FileCategory category,
-                              ImVec2 pos, float size, bool folderHasItems) {
+        bool DrawTexturedIcon(Renderer& renderer, ImDrawList* drawList, FileCategory category, ImVec2 pos, float size, bool folderHasItems) {
             Texture* tex = GetCategoryIconTexture(renderer, category, folderHasItems);
-            if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) {
-                return false;
-            }
-
+            if (!tex || tex->GetID() == 0 || tex->GetWidth() <= 0 || tex->GetHeight() <= 0) return false;
             const float availW = size;
             const float availH = size;
-            const float scale = std::min(availW / static_cast<float>(tex->GetWidth()),
-                                         availH / static_cast<float>(tex->GetHeight()));
+            const float scale = std::min(availW / static_cast<float>(tex->GetWidth()), availH / static_cast<float>(tex->GetHeight()));
             const float drawW = static_cast<float>(tex->GetWidth()) * scale;
             const float drawH = static_cast<float>(tex->GetHeight()) * scale;
             const ImVec2 imgMin(pos.x + (availW - drawW) * 0.5f, pos.y + (availH - drawH) * 0.5f);
             const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
-
             drawList->AddImage((ImTextureID)(intptr_t)tex->GetID(), imgMin, imgMax, ImVec2(0, 1), ImVec2(1, 0));
             return true;
         }
@@ -2370,9 +2350,9 @@ void Engine::renderFileBrowserPanel() {
         float baseIconSize = 56.0f;
         float iconSize = baseIconSize * fileBrowserIconScale;
         float padding = 6.0f * fileBrowserIconScale;
-        float textHeight = 24.0f;
+        float textHeight = 17.0f;
         float cellWidth = iconSize + padding * 2;
-        float cellHeight = iconSize + padding * 2 + textHeight;
+        float cellHeight = iconSize + padding * 1 + textHeight;
 
         float windowWidth = ImGui::GetContentRegionAvail().x;
         int columns = std::max(1, (int)((windowWidth + padding) / (cellWidth + padding)));

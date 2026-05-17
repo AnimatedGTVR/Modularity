@@ -141,6 +141,20 @@ private:
         std::vector<SceneObject> objects;
         std::vector<int> selectedIds;
         int nextId = 0;
+        bool meshEditMode = false;
+        bool meshEditLoaded = false;
+        bool meshEditDirty = false;
+        bool meshEditExtrudeMode = false;
+        bool meshEditAutoUV = true;
+        bool meshEditTriangleSelection = false;
+        int meshEditAutoObjectId = -1;
+        std::string meshEditPath;
+        RawMeshAsset meshEditAsset;
+        std::vector<int> meshEditSelectedVertices;
+        std::vector<int> meshEditSelectedEdges;
+        std::vector<int> meshEditSelectedFaces;
+        int meshEditActiveMaterialSlot = 0;
+        int meshEditSelectionMode = 0;
     };
     struct PlayModeSnapshot {
         SceneSnapshot scene;
@@ -562,6 +576,7 @@ private:
     bool meshEditExtrudeMode = false;
     bool meshEditAutoUV = true;
     bool meshEditTriangleSelection = false;
+    int meshEditAutoObjectId = -1;
     std::string meshEditPath;
     RawMeshAsset meshEditAsset;
     std::vector<int> meshEditSelectedVertices;
@@ -952,7 +967,8 @@ private:
     void renderVisualScriptingWindow();
     void renderHierarchyPanel();
     void renderObjectNode(SceneObject& obj, const std::string& filter,
-                          std::vector<bool>& ancestorHasNext, bool isLast, int depth, float animStep);
+                          std::vector<bool>& ancestorHasNext, std::unordered_set<int>& renderPath,
+                          bool isLast, int depth, float animStep);
     void renderFileBrowserPanel();
     void renderMeshBuilderPanel();
     void renderInspectorPanel();
@@ -1132,8 +1148,10 @@ private:
     void loadMaterialFromFile(SceneObject& obj);
     void saveMaterialToFile(const SceneObject& obj);
     SceneSnapshot captureSceneSnapshot() const;
+    void restoreSceneSnapshot(SceneSnapshot snap);
     void pushUndoSnapshot(SceneSnapshot snap, const char* reason = "");
     void recordState(const char* reason = "");
+    bool saveDirtyMeshEditAssetForSceneSave();
     void capturePlayModeSnapshot();
     void restorePlayModeSnapshot();
     void undo();

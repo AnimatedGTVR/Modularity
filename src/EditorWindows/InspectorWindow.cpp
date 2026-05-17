@@ -553,7 +553,7 @@ void Engine::renderInspectorPanel() {
             return {};
         }
         if (rendererInitialized) {
-            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Point);
                 icon && icon->GetID()) {
                 return { static_cast<ImTextureID>(icon->GetID()), true };
             }
@@ -567,29 +567,33 @@ void Engine::renderInspectorPanel() {
         return {};
     };
 
-    // Resolve an inspector UI icon (OpenGL or Vulkan, no Y-flip needed for UI icons).
-    auto resolveInspectorIcon = [&](const char* iconPath) -> ImTextureID {
-        if (!iconPath || !*iconPath) return static_cast<ImTextureID>(0);
+    struct InspectorUiIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
+    };
+
+    auto resolveInspectorIcon = [&](const char* iconPath) -> InspectorUiIcon {
+        if (!iconPath || !*iconPath) return {};
         if (rendererInitialized) {
-            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Point);
                 icon && icon->GetID()) {
-                return static_cast<ImTextureID>(icon->GetID());
+                return { static_cast<ImTextureID>(icon->GetID()), true };
             }
         }
         if (hasVulkanUiImages && vulkanRenderer) {
             ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
-            if (icon != static_cast<ImTextureID>(0)) return icon;
+            if (icon != static_cast<ImTextureID>(0)) return { icon, false };
         }
-        return static_cast<ImTextureID>(0);
+        return {};
     };
 
-    const ImTextureID iconGameObject  = resolveInspectorIcon("Resources/Engine-Root/Inspector/GameObject Icon.png");
-    const ImTextureID iconTransform   = resolveInspectorIcon("Resources/Engine-Root/Inspector/Transform Component Icon.png");
-    const ImTextureID iconScript      = resolveInspectorIcon("Resources/Engine-Root/Inspector/Script Icon.png");
-    const ImTextureID iconActionsMenu = resolveInspectorIcon("Resources/Engine-Root/Inspector/Tab Area/Actions (... menu).png");
-    const ImTextureID iconTextureSelect = resolveInspectorIcon(
+    const InspectorUiIcon iconGameObject  = resolveInspectorIcon("Resources/Engine-Root/Inspector/GameObject Icon.png");
+    const InspectorUiIcon iconTransform   = resolveInspectorIcon("Resources/Engine-Root/Inspector/Transform Component Icon.png");
+    const InspectorUiIcon iconScript      = resolveInspectorIcon("Resources/Engine-Root/Inspector/Script Icon.png");
+    const InspectorUiIcon iconActionsMenu = resolveInspectorIcon("Resources/Engine-Root/Inspector/Tab Area/Actions (... menu).png");
+    const InspectorUiIcon iconTextureSelect = resolveInspectorIcon(
         "Resources/Engine-Root/Inspector/Materials and texturing/Select Texture list icon.png");
-    const ImTextureID iconColorPicker = resolveInspectorIcon(
+    const InspectorUiIcon iconColorPicker = resolveInspectorIcon(
         "Resources/Engine-Root/Inspector/Materials and texturing/Color Picker Icon.png");
     (void)iconTransform;
 
@@ -1234,17 +1238,18 @@ void Engine::renderInspectorPanel() {
     };
 
     auto drawInspectorIconButton = [&](const char* id,
-                                       ImTextureID icon,
+                                       const InspectorUiIcon& icon,
                                        const char* fallbackLabel,
                                        const char* tooltip,
-                                       bool flipY = false) {
+                                       bool flipYOverride = false) {
         bool clicked = false;
         const float buttonSize = std::max(18.0f, ImGui::GetFrameHeight() - 2.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 2.0f));
-        if (icon != static_cast<ImTextureID>(0)) {
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            const bool flipY = icon.flipY || flipYOverride;
             const ImVec2 uvMin = flipY ? ImVec2(0, 1) : ImVec2(0, 0);
             const ImVec2 uvMax = flipY ? ImVec2(1, 0) : ImVec2(1, 1);
-            clicked = ImGui::ImageButton(id, icon, ImVec2(buttonSize, buttonSize), uvMin, uvMax);
+            clicked = ImGui::ImageButton(id, icon.id, ImVec2(buttonSize, buttonSize), uvMin, uvMax);
         } else {
             clicked = ImGui::SmallButton(fallbackLabel);
         }
@@ -3064,7 +3069,7 @@ void Engine::renderInspectorPanel() {
                                    bool* enabled,
                                    bool defaultOpen,
                                    const std::function<void()>& menuFn,
-                                   ImTextureID iconTex = static_cast<ImTextureID>(0)) -> ComponentHeaderState {
+                                   const InspectorUiIcon& icon = {}) -> ComponentHeaderState {
         ComponentHeaderState state;
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_SpanAvailWidth;
         if (defaultOpen) {
@@ -3126,9 +3131,11 @@ void Engine::renderInspectorPanel() {
             ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.0f, 1.0f, 1.0f, 0.25f));
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
             bool menuClicked = false;
-            if (iconActionsMenu != static_cast<ImTextureID>(0)) {
+            if (iconActionsMenu.id != static_cast<ImTextureID>(0)) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
-                menuClicked = ImGui::ImageButton("##menu", iconActionsMenu, ImVec2(controlSize - 2.0f, controlSize - 2.0f));
+                const ImVec2 uvMin = iconActionsMenu.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                const ImVec2 uvMax = iconActionsMenu.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                menuClicked = ImGui::ImageButton("##menu", iconActionsMenu.id, ImVec2(controlSize - 2.0f, controlSize - 2.0f), uvMin, uvMax);
                 ImGui::PopStyleVar();
             } else {
                 menuClicked = ImGui::Button("...", ImVec2(controlSize, controlSize));
@@ -3156,16 +3163,18 @@ void Engine::renderInspectorPanel() {
         // The label is placed by ImGui at ~arrowWidth + FramePadding.x from the left edge,
         // so keeping iconSize smaller than that gap prevents overlap.
         // Okay yeah, i completely forgot to do that when redesigning it lmfao.
-        if (iconTex != static_cast<ImTextureID>(0)) {
+        if (icon.id != static_cast<ImTextureID>(0)) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const float iconSize = headerHeight - 9.0f;
             const float arrowWidth = headerHeight;
             const float iconX = headerMin.x + arrowWidth + 2.0f;
             const float iconY = headerMin.y + (headerHeight - iconSize) * 0.5f;
-            dl->AddImage(iconTex,
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            dl->AddImage(icon.id,
                 ImVec2(iconX, iconY),
                 ImVec2(iconX + iconSize, iconY + iconSize),
-                ImVec2(0, 0), ImVec2(1, 1),
+                uvMin, uvMax,
                 IM_COL32(255, 255, 255, 210));
         }
 
@@ -3546,7 +3555,7 @@ void Engine::renderInspectorPanel() {
 
     if (ImGui::BeginTable("##ObjectMetaTopTable", 4, ImGuiTableFlags_SizingStretchProp))
     {
-        const float objIconSize = ImGui::GetFrameHeight();
+        const float objIconSize = ImGui::GetFrameHeight() + 4.0f;
         ImGui::TableSetupColumn("IconColumn",      ImGuiTableColumnFlags_WidthFixed, objIconSize);
         ImGui::TableSetupColumn("EnableColumn",    ImGuiTableColumnFlags_WidthFixed, 18.0f);
         ImGui::TableSetupColumn("NameColumn",      ImGuiTableColumnFlags_WidthStretch, 1.0f);
@@ -3555,8 +3564,13 @@ void Engine::renderInspectorPanel() {
         ImGui::TableNextRow();
 
         ImGui::TableSetColumnIndex(0);
-        if (iconGameObject != static_cast<ImTextureID>(0)) {
-            ImGui::Image(iconGameObject, ImVec2(objIconSize, objIconSize));
+        if (iconGameObject.id != static_cast<ImTextureID>(0)) {
+            const ImVec2 uvMin = iconGameObject.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = iconGameObject.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            const ImVec2 iconMin = ImGui::GetCursorScreenPos();
+            const ImVec2 iconMax(iconMin.x + objIconSize, iconMin.y + objIconSize);
+            ImGui::GetWindowDrawList()->AddImage(iconGameObject.id, iconMin, iconMax, uvMin, uvMax);
+            ImGui::Dummy(ImVec2(objIconSize, objIconSize));
         } else {
             ImGui::Dummy(ImVec2(objIconSize, objIconSize));
         }
@@ -3654,8 +3668,10 @@ void Engine::renderInspectorPanel() {
         ImGui::EndTable();
         /*{
             const float iconSz = ImGui::GetFrameHeight();
-            if (iconTransform != static_cast<ImTextureID>(0)) {
-                ImGui::Image(iconTransform, ImVec2(iconSz, iconSz));
+            if (iconTransform.id != static_cast<ImTextureID>(0)) {
+                const ImVec2 uvMin = iconTransform.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                const ImVec2 uvMax = iconTransform.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                ImGui::Image(iconTransform.id, ImVec2(iconSz, iconSz), uvMin, uvMax);
                 ImGui::SameLine(0.0f, 4.0f);
             }
             ImGui::AlignTextToFramePadding();

@@ -106,6 +106,8 @@ void Engine::renderViewport() {
   const bool worldUiEditing = is2DWorldEditingEnabled();
   const bool hasVulkanSceneTexture =
       usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
+  static bool meshEditActionsPopupRequested = false;
+  static ImVec2 meshEditActionsPopupPos(0.0f, 0.0f);
 
   auto collectSelectionRoots = [&](const std::vector<int> &ids) {
     std::vector<int> roots;
@@ -2641,6 +2643,52 @@ void Engine::renderViewport() {
                                 selectedObj->ui.renderIn3D;
     const bool selectedIsSprite25D =
         selectedObj && selectedObj->type == ObjectType::Sprite25D;
+    const bool selectedRMeshObject =
+        selectedObj && IsRawMeshPath(selectedObj->meshPath);
+    const ImVec2 rmeshModeButtonSize(34.0f, 30.0f);
+    const ImVec2 rmeshActionsButtonSize(42.0f, 15.0f);
+    const float rmeshModePadding = 6.0f;
+    const float rmeshModeSpacing = 5.0f;
+    const ImVec2 rmeshModeToolbarSize(
+        rmeshModePadding * 2.0f + rmeshModeButtonSize.x * 5.0f +
+            rmeshModeSpacing * 4.0f,
+        rmeshModePadding * 2.0f + rmeshModeButtonSize.y +
+            rmeshActionsButtonSize.y + 3.0f);
+    auto computeRMeshModeToolbarMin = [&]() {
+      ImVec2 toolbarMin(
+          imageMin.x +
+              (imageMax.x - imageMin.x - rmeshModeToolbarSize.x) * 0.5f,
+          imageMin.y + toolbarInsetY);
+      const float minX = imageMin.x + 6.0f;
+      const float maxX =
+          std::max(minX, imageMax.x - rmeshModeToolbarSize.x - 6.0f);
+      const float minY = imageMin.y + 6.0f;
+      const float maxY =
+          std::max(minY, imageMax.y - rmeshModeToolbarSize.y - 6.0f);
+      toolbarMin.x = std::clamp(toolbarMin.x, minX, maxX);
+      toolbarMin.y = std::clamp(toolbarMin.y, minY, maxY);
+      return toolbarMin;
+    };
+    auto pointInExpandedRect = [](const ImVec2 &p, const ImVec2 &min,
+                                  const ImVec2 &max, float expand) {
+      return p.x >= min.x - expand && p.x <= max.x + expand &&
+             p.y >= min.y - expand && p.y <= max.y + expand;
+    };
+    const ImVec2 rmeshModeToolbarMin = computeRMeshModeToolbarMin();
+    const ImVec2 rmeshModeToolbarMax(
+        rmeshModeToolbarMin.x + rmeshModeToolbarSize.x,
+        rmeshModeToolbarMin.y + rmeshModeToolbarSize.y);
+    const ImVec2 rmeshMouse = ImGui::GetIO().MousePos;
+    const bool mouseOverRMeshModeToolbar =
+        selectedRMeshObject &&
+        pointInExpandedRect(rmeshMouse, rmeshModeToolbarMin,
+                            rmeshModeToolbarMax, 6.0f);
+    const bool mouseOverRMeshActionsPopup =
+        selectedRMeshObject &&
+        ImGui::IsPopupOpen("##mesh_edit_context_menu", ImGuiPopupFlags_None);
+    if (mouseOverRMeshModeToolbar || mouseOverRMeshActionsPopup) {
+      blockSelection = true;
+    }
     if (!worldUiEditing && selectedObj && IsObjectEnabledInHierarchy(*selectedObj) &&
         !selectedObj->hasPostFX &&
         (!HasUIComponent(*selectedObj) || selectedIsUiCanvas3D ||
@@ -2730,10 +2778,12 @@ void Engine::renderViewport() {
                                                                    : 10.0f;
         ImVec2 mouse = ImGui::GetIO().MousePos;
         bool clicked = mouseOverViewportImage && ImGui::IsMouseClicked(0) &&
-                       !ImGuizmo::IsUsing() && !ImGuizmo::IsOver();
+                       !ImGuizmo::IsUsing() && !ImGuizmo::IsOver() &&
+                       !blockSelection;
         bool doubleClicked = mouseOverViewportImage &&
                              ImGui::IsMouseDoubleClicked(0) &&
-                             !ImGuizmo::IsUsing() && !ImGuizmo::IsOver();
+                             !ImGuizmo::IsUsing() && !ImGuizmo::IsOver() &&
+                             !blockSelection;
         bool additiveClick = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
         bool meshSelectionChangedThisFrame = false;
 
@@ -3518,7 +3568,15 @@ void Engine::renderViewport() {
           remapSelection(meshEditSelectedVertices);
         };
 
+        SceneSnapshot meshEditCommandSnapshot;
+        bool meshEditCommandSnapshotValid = false;
         auto commitMeshEdit = [&](const char *actionName) {
+          if (meshEditCommandSnapshotValid) {
+            pushUndoSnapshot(std::move(meshEditCommandSnapshot), actionName);
+            meshEditCommandSnapshotValid = false;
+          } else {
+            recordState(actionName ? actionName : "meshEdit");
+          }
           compactMesh();
           ensureFaceMaterials();
           recalcMesh();
@@ -3550,18 +3608,14 @@ void Engine::renderViewport() {
           meshEditAsset.faceMaterialIndices.push_back(matIdx);
         };
 
-        static bool meshEditContextRightClickLatched = false;
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-          meshEditContextRightClickLatched = false;
-        }
-        if (mouseOverViewportImage &&
-            ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-            !meshEditContextRightClickLatched && !ImGuizmo::IsUsing() &&
-            !ImGuizmo::IsOver()) {
+        if (meshEditActionsPopupRequested) {
+          ImGui::SetNextWindowPos(meshEditActionsPopupPos, ImGuiCond_Always);
           ImGui::OpenPopup("##mesh_edit_context_menu");
-          meshEditContextRightClickLatched = true;
+          meshEditActionsPopupRequested = false;
         }
 
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 5.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 7.0f));
         if (ImGui::BeginPopup("##mesh_edit_context_menu")) {
           ensureFaceMaterials();
 
@@ -4605,6 +4659,8 @@ void Engine::renderViewport() {
           };
 
           bool changed = false;
+          meshEditCommandSnapshot = captureSceneSnapshot();
+          meshEditCommandSnapshotValid = true;
           if (meshEditSelectionMode == MeshEditSelectionMode::Face) {
             if (ImGui::MenuItem("Extrude")) {
               changed = extrudeSelectedFaces(
@@ -4789,6 +4845,7 @@ void Engine::renderViewport() {
 
           ImGui::EndPopup();
         }
+        ImGui::PopStyleVar(2);
 
         static bool meshEditHistoryCaptured = false;
         static bool meshEditWasUsing = false;
@@ -4832,6 +4889,10 @@ void Engine::renderViewport() {
                               ? false
                               : ImGuizmo::IsUsing();
           if (usingNow && !meshEditWasUsing) {
+            if (!meshEditHistoryCaptured) {
+              recordState("meshEdit");
+              meshEditHistoryCaptured = true;
+            }
             ensureFaceMaterials();
             bool wantsExtrude = meshEditExtrudeMode || ImGui::GetIO().KeyShift;
             bool seams = ImGui::GetIO().KeyShift && ImGui::GetIO().KeyCtrl;
@@ -5279,10 +5340,6 @@ void Engine::renderViewport() {
           }
 
           if (usingNow) {
-            if (!meshEditHistoryCaptured) {
-              recordState("meshEdit");
-              meshEditHistoryCaptured = true;
-            }
             glm::vec3 deltaWorld = glm::vec3(gizmoMat[3]) - pivotWorld;
             for (int idx : affectedVerts) {
               glm::vec3 wp = glm::vec3(
@@ -6607,6 +6664,43 @@ void Engine::renderViewport() {
       drawPlayerControllerGroundProbe();
     }
 
+    auto clearMeshEditSelection = [&]() {
+      meshEditSelectedVertices.clear();
+      meshEditSelectedEdges.clear();
+      meshEditSelectedFaces.clear();
+    };
+    auto leaveMeshEditMode = [&]() {
+      meshEditMode = false;
+      meshEditLoaded = false;
+      meshEditPath.clear();
+      meshEditDirty = false;
+      meshEditExtrudeMode = false;
+      meshEditSelectionMode = MeshEditSelectionMode::Object;
+      meshEditTriangleSelection = false;
+      clearMeshEditSelection();
+      meshEditAutoObjectId = -1;
+    };
+
+    if (worldUiEditing) {
+      if (meshEditMode) {
+        leaveMeshEditMode();
+      }
+    } else if (selectedRMeshObject) {
+      if (meshEditAutoObjectId != selectedObj->id) {
+        meshEditLoaded = false;
+        meshEditPath.clear();
+        meshEditDirty = false;
+        meshEditExtrudeMode = false;
+        meshEditSelectionMode = MeshEditSelectionMode::Object;
+        meshEditTriangleSelection = false;
+        clearMeshEditSelection();
+        meshEditAutoObjectId = selectedObj->id;
+      }
+      meshEditMode = true;
+    } else if (meshEditMode || meshEditAutoObjectId != -1) {
+      leaveMeshEditMode();
+    }
+
     viewportDrawList->PopClipRect();
 
     const ImGuiStyle &style = ImGui::GetStyle();
@@ -6707,78 +6801,12 @@ void Engine::renderViewport() {
       }
       if (!use2DGizmos) {
         ImGui::SameLine(0.0f, toolbarSpacing);
-        // In-viewport RMesh editing is not tied to the legacy Mesh Builder
-        // package.
-        bool canMeshEdit = selectedObj && IsRawMeshPath(selectedObj->meshPath);
-        ImGui::BeginDisabled(!canMeshEdit);
-        if (GizmoToolbar::IconButton("##gizmo_mesh_edit",
-                                     GizmoToolbar::Icon::Mesh, meshEditMode,
-                                     gizmoIconButtonSize, baseBtn, hoverBtn,
-                                     activeBtn, accent, iconColor)) {
-          meshEditMode = !meshEditMode;
-          if (!meshEditMode) {
-            meshEditLoaded = false;
-            meshEditPath.clear();
-            meshEditDirty = false;
-            meshEditExtrudeMode = false;
-            meshEditSelectedVertices.clear();
-            meshEditSelectedEdges.clear();
-            meshEditSelectedFaces.clear();
-            meshEditSelectionMode = MeshEditSelectionMode::Object;
-          }
-        }
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Toggle RMesh edit mode");
-        ImGui::EndDisabled();
         if (meshEditMode) {
-          ImGui::SameLine(0.0f, toolbarSpacing);
-          if (GizmoToolbar::ModeButton(
-                  "Obj", meshEditSelectionMode == MeshEditSelectionMode::Object,
-                  ImVec2(44, 24), baseCol, accentCol, textCol)) {
-            meshEditSelectionMode = MeshEditSelectionMode::Object;
-            meshEditSelectedVertices.clear();
-            meshEditSelectedEdges.clear();
-            meshEditSelectedFaces.clear();
-          }
-          ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-          if (GizmoToolbar::ModeButton(
-                  "Verts",
-                  meshEditSelectionMode == MeshEditSelectionMode::Vertex,
-                  ImVec2(50, 24), baseCol, accentCol, textCol)) {
-            meshEditSelectionMode = MeshEditSelectionMode::Vertex;
-          }
-          ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-          if (GizmoToolbar::ModeButton(
-                  "Edges", meshEditSelectionMode == MeshEditSelectionMode::Edge,
-                  ImVec2(50, 24), baseCol, accentCol, textCol)) {
-            meshEditSelectionMode = MeshEditSelectionMode::Edge;
-          }
-          ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-          if (GizmoToolbar::ModeButton(
-                  "Faces", meshEditSelectionMode == MeshEditSelectionMode::Face,
-                  ImVec2(50, 24), baseCol, accentCol, textCol)) {
-            meshEditSelectionMode = MeshEditSelectionMode::Face;
-          }
-          if (meshEditSelectionMode == MeshEditSelectionMode::Face ||
-              meshEditSelectionMode == MeshEditSelectionMode::UV) {
-            ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
-            if (GizmoToolbar::ModeButton("Tri", meshEditTriangleSelection,
-                                         ImVec2(38, 24), baseCol, accentCol,
-                                         textCol)) {
-              meshEditTriangleSelection = !meshEditTriangleSelection;
-            }
-            if (ImGui::IsItemHovered()) {
-              ImGui::SetTooltip(
-                  meshEditTriangleSelection
-                      ? "Triangle selection: select individual triangles"
-                      : "Logical face selection: pair compatible triangles");
-            }
-          }
-          ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
           if (GizmoToolbar::ModeButton(
                   "UV", meshEditSelectionMode == MeshEditSelectionMode::UV,
                   ImVec2(38, 24), baseCol, accentCol, textCol)) {
             meshEditSelectionMode = MeshEditSelectionMode::UV;
+            meshEditTriangleSelection = false;
           }
           ImGui::SameLine(0.0f, toolbarSpacing * 0.6f);
           if (GizmoToolbar::ModeButton("Extrude", meshEditExtrudeMode,
@@ -7187,6 +7215,201 @@ void Engine::renderViewport() {
       ImGui::PopStyleVar();
       ImGui::EndChild();
       ImGui::PopStyleVar();
+    }
+
+    if (toolbarAllowed && selectedRMeshObject) {
+      struct RMeshModeIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
+      };
+      auto resolveRMeshModeIcon = [&](const char *iconPath) -> RMeshModeIcon {
+        if (!iconPath || !*iconPath) {
+          return {};
+        }
+        if (rendererInitialized) {
+          if (Texture *icon = renderer.getTexture(
+                  iconPath, MaterialProperties::TextureFilter::Point);
+              icon && icon->GetID()) {
+            return {static_cast<ImTextureID>(icon->GetID()), true};
+          }
+        }
+        if (hasVulkanSceneTexture && vulkanRenderer) {
+          ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+          if (icon != static_cast<ImTextureID>(0)) {
+            return {icon, false};
+          }
+        }
+        return {};
+      };
+
+      const ImVec2 modeButtonSize = rmeshModeButtonSize;
+      const ImVec2 actionsButtonSize = rmeshActionsButtonSize;
+      const float modePadding = rmeshModePadding;
+      const float modeSpacing = rmeshModeSpacing;
+      const ImVec2 modeToolbarSize = rmeshModeToolbarSize;
+      const ImVec2 modeToolbarMin = rmeshModeToolbarMin;
+      const ImGuiWindowFlags modeToolbarWindowFlags =
+          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+          ImGuiWindowFlags_NoScrollWithMouse |
+          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground |
+          ImGuiWindowFlags_NoNav;
+
+      ImGui::SetCursorScreenPos(modeToolbarMin);
+      ImGui::BeginChild("##SceneViewportRMeshModeToolbar", modeToolbarSize,
+                        false, modeToolbarWindowFlags);
+      ImDrawList *modeDrawList = ImGui::GetWindowDrawList();
+      const ImVec2 modeBgMin = modeToolbarMin;
+      const ImVec2 modeBgMax(modeToolbarMin.x + modeToolbarSize.x,
+                             modeToolbarMin.y + modeToolbarSize.y);
+      modeDrawList->AddRectFilled(modeBgMin, modeBgMax, toolbarBg, 10.0f,
+                                  ImDrawFlags_RoundCornersAll);
+      modeDrawList->AddRect(modeBgMin, modeBgMax, toolbarOutline, 10.0f,
+                            ImDrawFlags_RoundCornersAll, 1.5f);
+
+      auto drawRMeshModeButton =
+          [&](const char *id, const char *iconPath, const char *fallback,
+              const char *tooltip, bool active) -> bool {
+        ImGui::PushID(id);
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##btn", modeButtonSize);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool pressed = ImGui::IsItemClicked();
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+
+        const ImU32 bg = active ? activeBtn : (hovered ? hoverBtn : baseBtn);
+        const ImVec4 bgFloat = ImGui::ColorConvertU32ToFloat4(bg);
+        const ImU32 top =
+            ImGui::GetColorU32(GizmoToolbar::ScaleColor(bgFloat, 1.06f));
+        const ImU32 bottom =
+            ImGui::GetColorU32(GizmoToolbar::ScaleColor(bgFloat, 0.94f));
+        modeDrawList->AddRectFilledMultiColor(min, max, top, top, bottom,
+                                              bottom);
+        modeDrawList->AddRect(
+            min, max,
+            ImGui::GetColorU32(
+                ImVec4(1.0f, 1.0f, 1.0f, active ? 0.35f : 0.18f)),
+            8.0f);
+
+        const RMeshModeIcon icon = resolveRMeshModeIcon(iconPath);
+        const float iconInset = 5.0f;
+        const ImVec2 iconMin(min.x + iconInset, min.y + iconInset);
+        const ImVec2 iconMax(max.x - iconInset, max.y - iconInset);
+        const int alpha = active ? 255 : hovered ? 240 : 218;
+        if (icon.id != static_cast<ImTextureID>(0)) {
+          const ImVec2 uvMin =
+              icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+          const ImVec2 uvMax =
+              icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+          modeDrawList->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax,
+                                 IM_COL32(255, 255, 255, alpha));
+        } else if (fallback && *fallback) {
+          const ImVec2 textSize = ImGui::CalcTextSize(fallback);
+          modeDrawList->AddText(
+              ImVec2(min.x + (modeButtonSize.x - textSize.x) * 0.5f,
+                     min.y + (modeButtonSize.y - textSize.y) * 0.5f),
+              IM_COL32(255, 255, 255, alpha), fallback);
+        }
+        if (hovered && tooltip && *tooltip) {
+          ImGui::SetTooltip("%s", tooltip);
+        }
+        ImGui::PopID();
+        return pressed;
+      };
+
+      auto selectRMeshMode = [&](MeshEditSelectionMode mode,
+                                 bool triangleSelection) {
+        meshEditSelectionMode = mode;
+        meshEditTriangleSelection = triangleSelection;
+        if (mode == MeshEditSelectionMode::Object) {
+          clearMeshEditSelection();
+        }
+      };
+
+      ImGui::SetCursorScreenPos(ImVec2(modeToolbarMin.x + modePadding,
+                                       modeToolbarMin.y + modePadding));
+      if (drawRMeshModeButton(
+              "##rmesh_select_object",
+              "Resources/Engine-Root/RMesh Builder/Object Selection.png", "O",
+              "Object Selection", meshEditSelectionMode ==
+                                      MeshEditSelectionMode::Object)) {
+        selectRMeshMode(MeshEditSelectionMode::Object, false);
+      }
+      ImGui::SameLine(0.0f, modeSpacing);
+      if (drawRMeshModeButton(
+              "##rmesh_select_vertex",
+              "Resources/Engine-Root/RMesh Builder/Vertex Selection.png", "V",
+              "Vertex Selection", meshEditSelectionMode ==
+                                      MeshEditSelectionMode::Vertex)) {
+        selectRMeshMode(MeshEditSelectionMode::Vertex, false);
+      }
+      ImGui::SameLine(0.0f, modeSpacing);
+      if (drawRMeshModeButton(
+              "##rmesh_select_edge",
+              "Resources/Engine-Root/RMesh Builder/Edge Selection.png", "E",
+              "Edge Selection", meshEditSelectionMode ==
+                                    MeshEditSelectionMode::Edge)) {
+        selectRMeshMode(MeshEditSelectionMode::Edge, false);
+      }
+      ImGui::SameLine(0.0f, modeSpacing);
+      if (drawRMeshModeButton(
+              "##rmesh_select_face",
+              "Resources/Engine-Root/RMesh Builder/Face Selection.png", "F",
+              "Face Selection",
+              meshEditSelectionMode == MeshEditSelectionMode::Face &&
+                  !meshEditTriangleSelection)) {
+        selectRMeshMode(MeshEditSelectionMode::Face, false);
+      }
+      ImGui::SameLine(0.0f, modeSpacing);
+      if (drawRMeshModeButton(
+              "##rmesh_select_triangle",
+              "Resources/Engine-Root/RMesh Builder/Tri Selection.png", "T",
+              "Triangle Selection",
+              meshEditSelectionMode == MeshEditSelectionMode::Face &&
+                  meshEditTriangleSelection)) {
+        selectRMeshMode(MeshEditSelectionMode::Face, true);
+      }
+
+      const ImVec2 actionsButtonPos(
+          modeToolbarMin.x + (modeToolbarSize.x - actionsButtonSize.x) * 0.5f,
+          modeToolbarMin.y + modePadding + modeButtonSize.y + 3.0f);
+      ImGui::SetCursorScreenPos(actionsButtonPos);
+      ImGui::PushID("##rmesh_actions_dropdown");
+      ImGui::SetNextItemAllowOverlap();
+      ImGui::InvisibleButton("##btn", actionsButtonSize);
+      const bool actionsHovered = ImGui::IsItemHovered();
+      const bool actionsPressed = ImGui::IsItemClicked();
+      const ImVec2 actionsMin = ImGui::GetItemRectMin();
+      const ImVec2 actionsMax = ImGui::GetItemRectMax();
+      const ImU32 actionsBg =
+          actionsHovered ? hoverBtn : ImGui::GetColorU32(baseCol);
+      modeDrawList->AddRectFilled(actionsMin, actionsMax, actionsBg, 6.0f);
+      modeDrawList->AddRect(
+          actionsMin, actionsMax,
+          ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.16f)), 6.0f);
+      const ImVec2 arrowCenter((actionsMin.x + actionsMax.x) * 0.5f,
+                               (actionsMin.y + actionsMax.y) * 0.5f + 1.0f);
+      modeDrawList->AddTriangleFilled(
+          ImVec2(arrowCenter.x - 5.0f, arrowCenter.y - 2.0f),
+          ImVec2(arrowCenter.x + 5.0f, arrowCenter.y - 2.0f),
+          ImVec2(arrowCenter.x, arrowCenter.y + 4.0f), iconColor);
+      if (actionsHovered) {
+        ImGui::SetTooltip("Mesh edit actions");
+      }
+      if (actionsPressed) {
+        meshEditActionsPopupPos =
+            ImVec2(actionsMin.x, actionsMax.y + 5.0f);
+        meshEditActionsPopupRequested = true;
+      }
+      ImGui::PopID();
+
+      const bool modeToolbarHovered = ImGui::IsWindowHovered(
+          ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+      if (modeToolbarHovered) {
+        blockSelection = true;
+      }
+      ImGui::EndChild();
     }
 
     if (worldUiEditing) {

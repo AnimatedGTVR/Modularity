@@ -328,11 +328,7 @@ inline bool PlayOneShot(const std::string& refOrPath, float volumeScale = 1.0f) 
     if (!c || refOrPath.empty()) return false;
     if (SceneObject* source = SmartResolveRef(refOrPath)) {
         if (source->hasAudioSource && !source->audioSource.clipPath.empty()) {
-            SceneObject* prev = c->object;
-            c->object = source;
-            const bool ok = c->PlayAudioOneShot(source->audioSource.clipPath, volumeScale);
-            c->object = prev;
-            return ok;
+            return c->PlayObjectAudioOneShot(source->id, source->audioSource.clipPath, volumeScale);
         }
     }
     return c->PlayAudioOneShot(refOrPath, volumeScale);
@@ -694,10 +690,130 @@ struct UILabelProxy {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Per-component access proxies used by SceneObj, ObjectFacade (the local
+// `obj` injected by MODU_SCRIPT) and any user SceneObj-typed value. Each
+// proxy resolves the underlying SceneObject* either from a stored
+// pointer-to-pointer (when bound to a SceneObj's `ptr` field) or, when the
+// pointer is nullptr, by reading the current thread-local ScriptContext's
+// active object. This gives `obj.Rigidbody3D.velocity` and
+// `someObj.Rigidbody3D.velocity` an identical surface.
+// ---------------------------------------------------------------------------
+
+namespace detail {
+inline SceneObject* resolveAccessTarget(SceneObject* const* pp) {
+    if (pp) return *pp;
+    if (ScriptContext* c = ctxPtr()) return c->object;
+    return nullptr;
+}
+inline bool isAccessTargetCurrentCtx(SceneObject* const* pp) {
+    if (!pp) return true;
+    if (ScriptContext* c = ctxPtr()) return *pp == c->object;
+    return false;
+}
+} // namespace detail
+
+struct Rigidbody3DAccess {
+    SceneObject* const* pp = nullptr;
+
+    struct Velocity {
+        SceneObject* const* pp = nullptr;
+        Vector3 get() const;
+        void set(const Vector3& v) const;
+        operator Vector3() const { return get(); }
+        Velocity& operator=(const Vector3& v) { set(v); return *this; }
+        Velocity& operator+=(const Vector3& v) { set(get() + v); return *this; }
+        Velocity& operator-=(const Vector3& v) { set(get() - v); return *this; }
+    };
+
+    struct VelocityYProxy {
+        SceneObject* const* pp = nullptr;
+        float get() const;
+        void set(float v) const;
+        operator float() const { return get(); }
+        VelocityYProxy& operator=(float v) { set(v); return *this; }
+        VelocityYProxy& operator+=(float v) { set(get() + v); return *this; }
+        VelocityYProxy& operator-=(float v) { set(get() - v); return *this; }
+    };
+
+    Velocity velocity{};
+    VelocityYProxy VelocityY{};
+
+    Rigidbody3DAccess() = default;
+    explicit Rigidbody3DAccess(SceneObject* const* p) : pp(p), velocity{p}, VelocityY{p} {}
+    Rigidbody3DAccess(const Rigidbody3DAccess& o) : pp(o.pp), velocity{o.pp}, VelocityY{o.pp} {}
+    Rigidbody3DAccess& operator=(const Rigidbody3DAccess& o) {
+        pp = o.pp; velocity.pp = o.pp; VelocityY.pp = o.pp; return *this;
+    }
+
+    SceneObject* target() const { return detail::resolveAccessTarget(pp); }
+    int targetId() const { auto* t = target(); return t ? t->id : -1; }
+    bool Exists() const;
+    void Accelerate(const Vector3& direction, float targetSpeed,
+                    float acceleration, float deceleration) const;
+    void FlattenY() const;
+    void AddVelocityY(float y) const;
+    void AddForce(const Vector3& force) const;
+    void AddImpulse(const Vector3& impulse) const;
+};
+
+struct TransformAccess {
+    SceneObject* const* pp = nullptr;
+
+    struct PositionProxy {
+        SceneObject* const* pp = nullptr;
+        Vector3 get() const;
+        void set(const Vector3& v) const;
+        operator Vector3() const { return get(); }
+        PositionProxy& operator=(const Vector3& v) { set(v); return *this; }
+        PositionProxy& operator+=(const Vector3& v) { set(get() + v); return *this; }
+    };
+
+    struct RotationProxy {
+        SceneObject* const* pp = nullptr;
+        Vector3 get() const;
+        void set(const Vector3& v) const;
+        operator Vector3() const { return get(); }
+        RotationProxy& operator=(const Vector3& v) { set(v); return *this; }
+    };
+
+    PositionProxy position{};
+    RotationProxy rotation{};
+
+    TransformAccess() = default;
+    explicit TransformAccess(SceneObject* const* p) : pp(p), position{p}, rotation{p} {}
+    TransformAccess(const TransformAccess& o) : pp(o.pp), position{o.pp}, rotation{o.pp} {}
+    TransformAccess& operator=(const TransformAccess& o) {
+        pp = o.pp; position.pp = o.pp; rotation.pp = o.pp; return *this;
+    }
+
+    SceneObject* target() const { return detail::resolveAccessTarget(pp); }
+    void Face(const Vector3& direction) const;
+    void RotateToward(const Vector3& direction, float degreesPerSecond) const;
+    Vector3 Forward() const;
+    Vector3 Right() const;
+};
+
+struct PhysicsAccess {
+    SceneObject* const* pp = nullptr;
+
+    PhysicsAccess() = default;
+    explicit PhysicsAccess(SceneObject* const* p) : pp(p) {}
+
+    SceneObject* target() const { return detail::resolveAccessTarget(pp); }
+    bool IsGrounded(float distance = 0.1f) const;
+    bool Raycast(const Vector3& direction, float distance) const;
+    bool RaycastHit(const Vector3& direction, float distance,
+                    Vector3& outHitPos, Vector3& outHitNormal) const;
+};
+
 struct ObjectFacade {
     ScriptContext* scriptCtx = nullptr;
     UILabelProxy UILabel{};
     UIProxy UI;
+    Rigidbody3DAccess Rigidbody3D{};
+    TransformAccess   Transform{};
+    PhysicsAccess     Physics{};
 
     explicit ObjectFacade(ScriptContext& ctx)
         : scriptCtx(&ctx), UILabel{ &ctx },
@@ -750,22 +866,264 @@ inline void AddLog(const char* message, ConsoleMessageType type = ConsoleMessage
 struct SceneObj {
     SceneObject* ptr = nullptr;
 
-    constexpr SceneObj() = default;
-    constexpr SceneObj(SceneObject* p) : ptr(p) {}
-    constexpr SceneObj(std::nullptr_t) : ptr(nullptr) {}
+    Rigidbody3DAccess Rigidbody3D{&ptr};
+    TransformAccess   Transform{&ptr};
+    PhysicsAccess     Physics{&ptr};
 
-    explicit constexpr operator bool() const { return ptr != nullptr; }
-    constexpr bool operator!() const { return ptr == nullptr; }
+    SceneObj() = default;
+    SceneObj(SceneObject* p) : ptr(p) {}
+    SceneObj(std::nullptr_t) : ptr(nullptr) {}
+
+    SceneObj(const SceneObj& o)
+        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr) {}
+    SceneObj& operator=(const SceneObj& o) {
+        ptr = o.ptr;
+        return *this;
+    }
+    SceneObj(SceneObj&& o) noexcept
+        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr) {}
+    SceneObj& operator=(SceneObj&& o) noexcept {
+        ptr = o.ptr;
+        return *this;
+    }
+    SceneObj& operator=(SceneObject* p) { ptr = p; return *this; }
+    SceneObj& operator=(std::nullptr_t) { ptr = nullptr; return *this; }
+
+    explicit operator bool() const { return ptr != nullptr; }
+    bool operator!() const { return ptr == nullptr; }
 
     SceneObject* operator->() const { return ptr; }
     SceneObject& operator*() const { return *ptr; }
-    constexpr operator SceneObject*() const { return ptr; }
+    operator SceneObject*() const { return ptr; }
 
-    friend constexpr bool operator==(SceneObj a, SceneObj b) { return a.ptr == b.ptr; }
-    friend constexpr bool operator!=(SceneObj a, SceneObj b) { return a.ptr != b.ptr; }
-    friend constexpr bool operator==(SceneObj a, std::nullptr_t) { return a.ptr == nullptr; }
-    friend constexpr bool operator!=(SceneObj a, std::nullptr_t) { return a.ptr != nullptr; }
+    friend bool operator==(const SceneObj& a, const SceneObj& b) { return a.ptr == b.ptr; }
+    friend bool operator!=(const SceneObj& a, const SceneObj& b) { return a.ptr != b.ptr; }
+    friend bool operator==(const SceneObj& a, std::nullptr_t) { return a.ptr == nullptr; }
+    friend bool operator!=(const SceneObj& a, std::nullptr_t) { return a.ptr != nullptr; }
 };
+
+// --- Access proxy implementations -----------------------------------------
+
+inline Vector3 Rigidbody3DAccess::Velocity::get() const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return Vector3(0.0f);
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    if (!t) return Vector3(0.0f);
+    Vector3 v(0.0f);
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->GetRigidbodyVelocity(v);
+    } else {
+        c->GetObjectRigidbodyVelocity(t->id, v);
+    }
+    return v;
+}
+
+inline void Rigidbody3DAccess::Velocity::set(const Vector3& v) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    if (!t) return;
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->SetRigidbodyVelocity(v);
+    } else {
+        c->SetObjectRigidbodyVelocity(t->id, v);
+    }
+}
+
+inline float Rigidbody3DAccess::VelocityYProxy::get() const {
+    return Rigidbody3DAccess::Velocity{pp}.get().y;
+}
+
+inline void Rigidbody3DAccess::VelocityYProxy::set(float y) const {
+    Rigidbody3DAccess::Velocity p{pp};
+    Vector3 v = p.get();
+    v.y = y;
+    p.set(v);
+}
+
+inline bool Rigidbody3DAccess::Exists() const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return false;
+    SceneObject* t = target();
+    if (!t) return false;
+    if (detail::isAccessTargetCurrentCtx(pp)) return c->HasRigidbody();
+    return t->hasRigidbody;
+}
+
+inline void Rigidbody3DAccess::AddVelocityY(float y) const {
+    Velocity p{pp};
+    Vector3 v = p.get();
+    v.y += y;
+    p.set(v);
+}
+
+inline void Rigidbody3DAccess::FlattenY() const {
+    Velocity p{pp};
+    Vector3 v = p.get();
+    v.y = 0.0f;
+    p.set(v);
+}
+
+inline void Rigidbody3DAccess::Accelerate(const Vector3& direction, float targetSpeed,
+                                          float acceleration, float deceleration) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    const float dt = detail::gFrameDeltaTime;
+    if (dt <= 0.0f) return;
+
+    Velocity proxy{pp};
+    Vector3 current = proxy.get();
+    Vector3 planar(current.x, 0.0f, current.z);
+    Vector3 dirPlanar(direction.x, 0.0f, direction.z);
+    const float dirLen = glm::length(dirPlanar);
+    if (dirLen > 1e-4f) dirPlanar /= dirLen; else dirPlanar = Vector3(0.0f);
+
+    Vector3 targetVel = dirPlanar * targetSpeed;
+    const float planarMag = glm::length(planar);
+    const float targetMag = glm::length(targetVel);
+    const float rate = (targetMag >= planarMag - 1e-4f) ? acceleration : deceleration;
+    const float maxStep = std::max(0.0f, rate * dt);
+
+    Vector3 delta = targetVel - planar;
+    const float deltaLen = glm::length(delta);
+    Vector3 newPlanar = (deltaLen <= maxStep || deltaLen <= 1e-6f)
+        ? targetVel
+        : planar + (delta / deltaLen) * maxStep;
+
+    proxy.set(Vector3(newPlanar.x, current.y, newPlanar.z));
+}
+
+inline void Rigidbody3DAccess::AddForce(const Vector3& force) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    SceneObject* t = target();
+    if (!t) return;
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->AddRigidbodyForce(force);
+    } else {
+        c->AddObjectRigidbodyImpulse(t->id, force * detail::gFrameDeltaTime);
+    }
+}
+
+inline void Rigidbody3DAccess::AddImpulse(const Vector3& impulse) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    SceneObject* t = target();
+    if (!t) return;
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->AddRigidbodyImpulse(impulse);
+    } else {
+        c->AddObjectRigidbodyImpulse(t->id, impulse);
+    }
+}
+
+inline Vector3 TransformAccess::PositionProxy::get() const {
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    return t ? t->position : Vector3(0.0f);
+}
+
+inline void TransformAccess::PositionProxy::set(const Vector3& v) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    if (!t) return;
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->SetPosition(v);
+    } else {
+        t->position = v;
+        c->TeleportObjectRigidbody(t->id, v, t->rotation);
+    }
+}
+
+inline Vector3 TransformAccess::RotationProxy::get() const {
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    return t ? t->rotation : Vector3(0.0f);
+}
+
+inline void TransformAccess::RotationProxy::set(const Vector3& v) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return;
+    SceneObject* t = detail::resolveAccessTarget(pp);
+    if (!t) return;
+    if (detail::isAccessTargetCurrentCtx(pp)) {
+        c->SetRotation(v);
+    } else {
+        t->rotation = v;
+        c->TeleportObjectRigidbody(t->id, t->position, v);
+    }
+}
+
+inline void TransformAccess::Face(const Vector3& direction) const {
+    SceneObject* t = target();
+    if (!t) return;
+    Vector3 planar(direction.x, 0.0f, direction.z);
+    if (glm::length(planar) < 1e-4f) return;
+    const float yawRadians = std::atan2(planar.x, -planar.z);
+    Vector3 rot = t->rotation;
+    rot.y = glm::degrees(yawRadians);
+    rotation.set(rot);
+}
+
+inline void TransformAccess::RotateToward(const Vector3& direction, float degreesPerSecond) const {
+    SceneObject* t = target();
+    if (!t) return;
+    Vector3 planar(direction.x, 0.0f, direction.z);
+    if (glm::length(planar) < 1e-4f) return;
+    const float targetYaw = glm::degrees(std::atan2(planar.x, -planar.z));
+    float currentYaw = t->rotation.y;
+    float delta = targetYaw - currentYaw;
+    while (delta > 180.0f) delta -= 360.0f;
+    while (delta < -180.0f) delta += 360.0f;
+    const float maxStep = degreesPerSecond * detail::gFrameDeltaTime;
+    if (std::abs(delta) > maxStep) delta = (delta > 0.0f) ? maxStep : -maxStep;
+    Vector3 rot = t->rotation;
+    rot.y = currentYaw + delta;
+    rotation.set(rot);
+}
+
+inline Vector3 TransformAccess::Forward() const {
+    SceneObject* t = target();
+    if (!t) return Vector3(0.0f, 0.0f, -1.0f);
+    const glm::quat q = glm::quat(glm::radians(t->rotation));
+    return glm::normalize(q * Vector3(0.0f, 0.0f, -1.0f));
+}
+
+inline Vector3 TransformAccess::Right() const {
+    SceneObject* t = target();
+    if (!t) return Vector3(1.0f, 0.0f, 0.0f);
+    const glm::quat q = glm::quat(glm::radians(t->rotation));
+    return glm::normalize(q * Vector3(1.0f, 0.0f, 0.0f));
+}
+
+inline bool PhysicsAccess::IsGrounded(float distance) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return false;
+    SceneObject* t = target();
+    if (!t) return false;
+    const Vector3 origin = t->position;
+    const Vector3 down(0.0f, -1.0f, 0.0f);
+    const float probe = std::max(0.0f, distance) + 0.0001f;
+    float hitDist = 0.0f;
+    if (!c->RaycastClosest(origin, down, probe, nullptr, nullptr, &hitDist)) return false;
+    return hitDist <= distance + 1e-4f;
+}
+
+inline bool PhysicsAccess::Raycast(const Vector3& direction, float distance) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return false;
+    SceneObject* t = target();
+    if (!t) return false;
+    return c->RaycastClosest(t->position, direction, distance, nullptr, nullptr, nullptr);
+}
+
+inline bool PhysicsAccess::RaycastHit(const Vector3& direction, float distance,
+                                      Vector3& outHitPos, Vector3& outHitNormal) const {
+    ScriptContext* c = ctxPtr();
+    if (!c) return false;
+    SceneObject* t = target();
+    if (!t) return false;
+    return c->RaycastClosest(t->position, direction, distance, &outHitPos, &outHitNormal, nullptr);
+}
 
 inline SceneObj CurrentObject() {
     ScriptContext* c = ctxPtr();
@@ -801,11 +1159,7 @@ inline bool PlaySound(const std::string& objectRef, float volumeScale = 1.0f) {
     if (!c) return false;
     SceneObject* source = c->ResolveObjectRef(objectRef);
     if (!source || !source->hasAudioSource || source->audioSource.clipPath.empty()) return false;
-    SceneObject* original = c->object;
-    c->object = source;
-    const bool ok = c->PlayAudioOneShot(source->audioSource.clipPath, volumeScale);
-    c->object = original;
-    return ok;
+    return c->PlayObjectAudioOneShot(source->id, source->audioSource.clipPath, volumeScale);
 }
 
 inline void MarkDirty() {
