@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <regex>
@@ -90,6 +91,12 @@ struct ClassSpec {
     std::string passthroughCode;
 };
 
+struct ModuClassMatch {
+    std::string name;
+    size_t position = std::string::npos;
+    size_t end = std::string::npos;
+};
+
 size_t findTopLevelChar(const std::string& text, char needle);
 bool isVoidReturnType(const std::string& returnType);
 
@@ -120,6 +127,65 @@ size_t skipWhitespace(const std::string& text, size_t pos) {
         ++pos;
     }
     return pos;
+}
+
+std::optional<ModuClassMatch> findModuClassDeclaration(const std::string& text) {
+    size_t cursor = 0;
+    while (cursor < text.size()) {
+        const size_t publicPos = text.find("public", cursor);
+        if (publicPos == std::string::npos) {
+            return std::nullopt;
+        }
+
+        const bool publicHasLeftBoundary =
+            publicPos == 0 || !isIdentifierChar(text[publicPos - 1]);
+        const size_t publicEnd = publicPos + 6;
+        const bool publicHasRightBoundary =
+            publicEnd >= text.size() || !isIdentifierChar(text[publicEnd]);
+        if (!publicHasLeftBoundary || !publicHasRightBoundary) {
+            cursor = publicEnd;
+            continue;
+        }
+
+        size_t pos = skipWhitespace(text, publicEnd);
+        if (text.compare(pos, 5, "class") != 0 ||
+            (pos + 5 < text.size() && isIdentifierChar(text[pos + 5]))) {
+            cursor = publicEnd;
+            continue;
+        }
+
+        pos = skipWhitespace(text, pos + 5);
+        if (pos >= text.size() || !isIdentifierStartChar(text[pos])) {
+            cursor = publicEnd;
+            continue;
+        }
+
+        const size_t nameStart = pos++;
+        while (pos < text.size() && isIdentifierChar(text[pos])) {
+            ++pos;
+        }
+        const std::string className = text.substr(nameStart, pos - nameStart);
+
+        pos = skipWhitespace(text, pos);
+        if (pos >= text.size() || text[pos] != ':') {
+            cursor = publicEnd;
+            continue;
+        }
+
+        pos = skipWhitespace(text, pos + 1);
+        const char* bases[] = {"ModuBehaviour", "ModuNode"};
+        for (const char* base : bases) {
+            const size_t baseLen = std::strlen(base);
+            if (text.compare(pos, baseLen, base) == 0 &&
+                (pos + baseLen >= text.size() || !isIdentifierChar(text[pos + baseLen]))) {
+                return ModuClassMatch{className, publicPos, pos + baseLen};
+            }
+        }
+
+        cursor = publicEnd;
+    }
+
+    return std::nullopt;
 }
 
 size_t lineStartFromOffset(const std::string& text, size_t offset) {
@@ -1700,6 +1766,8 @@ std::string transformObjectRefAccess(const std::string& body,
     if (objectRefFields.empty()) return body;
     std::string out = body;
     for (const std::string& field : objectRefFields) {
+        if (out.find(field) == std::string::npos) continue;
+
         const std::string esc = regexEscape(field);
 
         // 1. UI assignments (must run BEFORE the UI read rewrites so we don't
@@ -1749,9 +1817,13 @@ std::string transformObjectRefAccess(const std::string& body,
 // without `then` this pattern can never match. Called from the method-body
 // pipeline before cachedRewriteSurfaceSyntax.
 std::string lowerEachInSyntax(const std::string& body) {
+    if (body.find("each") == std::string::npos) return body;
+
     static const std::regex eachInPattern(
         R"(each\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+then\s+\1\s*\.\s*[Ss]tate\s*\(\s*([^\)]+?)\s*\)\s*;)");
-    return std::regex_replace(body, eachInPattern, "each $2.state($3);");
+    std::string out = body;
+    replaceRegexAll(out, eachInPattern, "each $2.state($3);");
+    return out;
 }
 
 std::string transformEachSyntax(const std::string& body,
@@ -1759,25 +1831,81 @@ std::string transformEachSyntax(const std::string& body,
                                 const std::string& supportNamespace,
                                 bool hasContext,
                                 std::string& error) {
+    if (body.find("each") == std::string::npos) return body;
 
-    // The inner `(?!...)` keeps the dotted-path capture from greedily eating
-    // the trailing `.state(` segment that the next part of the regex needs.
-    static const std::regex eachPattern(
-        R"(each\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*(?![Ss]tate\s*\()[A-Za-z_][A-Za-z0-9_]*)*)\s*\.\s*[Ss]tate\s*\(\s*([^\)]+?)\s*\)\s*;)");
+    auto startsWithWord = [&](size_t pos, const std::string& word) {
+        if (pos + word.size() > body.size()) return false;
+        for (size_t i = 0; i < word.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(body[pos + i])) !=
+                std::tolower(static_cast<unsigned char>(word[i]))) {
+                return false;
+            }
+        }
+        return pos + word.size() >= body.size() || !isIdentifierChar(body[pos + word.size()]);
+    };
 
     std::string out;
     size_t cursor = 0;
-    std::smatch match;
-    const std::string& body_ref = body;
-    while (std::regex_search(body_ref.cbegin() + static_cast<std::ptrdiff_t>(cursor), body_ref.cend(), match, eachPattern)) {
-        const size_t relPos = static_cast<size_t>(match.position());
-        const size_t matchPos = cursor + relPos;
-        const size_t matchLen = static_cast<size_t>(match.length());
+    size_t searchPos = 0;
+    while (searchPos < body.size()) {
+        const size_t matchPos = body.find("each", searchPos);
+        if (matchPos == std::string::npos) break;
+        const size_t eachEnd = matchPos + 4;
+        if ((matchPos > 0 && isIdentifierChar(body[matchPos - 1])) ||
+            (eachEnd < body.size() && isIdentifierChar(body[eachEnd]))) {
+            searchPos = eachEnd;
+            continue;
+        }
 
-        out += body_ref.substr(cursor, matchPos - cursor);
+        size_t pos = skipWhitespace(body, eachEnd);
+        if (pos >= body.size() || !isIdentifierStartChar(body[pos])) {
+            searchPos = eachEnd;
+            continue;
+        }
 
-        const std::string listName = match[1].str();
-        const std::string enabledExpr = trimCopy(match[2].str());
+        const size_t listStart = pos;
+        size_t listEnd = std::string::npos;
+        while (pos < body.size()) {
+            if (!isIdentifierStartChar(body[pos])) break;
+            ++pos;
+            while (pos < body.size() && isIdentifierChar(body[pos])) {
+                ++pos;
+            }
+
+            const size_t dotPos = skipWhitespace(body, pos);
+            if (dotPos >= body.size() || body[dotPos] != '.') break;
+
+            const size_t afterDot = skipWhitespace(body, dotPos + 1);
+            if (startsWithWord(afterDot, "state")) {
+                const size_t openParen = skipWhitespace(body, afterDot + 5);
+                if (openParen >= body.size() || body[openParen] != '(') break;
+                const size_t closeParen = findMatchingParen(body, openParen);
+                if (closeParen == std::string::npos) break;
+                const size_t semiPos = skipWhitespace(body, closeParen + 1);
+                if (semiPos >= body.size() || body[semiPos] != ';') break;
+                listEnd = dotPos;
+                pos = semiPos + 1;
+                break;
+            }
+
+            if (afterDot >= body.size() || !isIdentifierStartChar(body[afterDot])) break;
+            pos = afterDot;
+        }
+
+        if (listEnd == std::string::npos) {
+            searchPos = eachEnd;
+            continue;
+        }
+
+        out += body.substr(cursor, matchPos - cursor);
+
+        std::string listName = body.substr(listStart, listEnd - listStart);
+        listName.erase(std::remove_if(listName.begin(), listName.end(),
+                                      [](unsigned char c) { return std::isspace(c) != 0; }),
+                       listName.end());
+        const size_t openParen = body.find('(', listEnd);
+        const size_t closeParen = findMatchingParen(body, openParen);
+        const std::string enabledExpr = trimCopy(body.substr(openParen + 1, closeParen - openParen - 1));
         // For dotted accesses (e.g. action.disable from a SubScript), skip the
         // listFields registry check — the enclosing class doesn't own that name.
         // The C++ expression is still type-checked at compile time.
@@ -1786,14 +1914,14 @@ std::string transformEachSyntax(const std::string& body,
             error = "Unknown list field in each-expression: " + listName;
             return {};
         }
-        const size_t lineStartPos = body_ref.rfind('\n', matchPos);
+        const size_t lineStartPos = body.rfind('\n', matchPos);
         const size_t indentStart = (lineStartPos == std::string::npos) ? 0 : lineStartPos + 1;
         size_t indentEnd = indentStart;
         while (indentEnd < matchPos &&
-               (body_ref[indentEnd] == ' ' || body_ref[indentEnd] == '\t')) {
+               (body[indentEnd] == ' ' || body[indentEnd] == '\t')) {
             ++indentEnd;
         }
-        const std::string indent = body_ref.substr(indentStart, indentEnd - indentStart);
+        const std::string indent = body.substr(indentStart, indentEnd - indentStart);
 
         if (hasContext) {
             // Method has a ctx parameter — use it directly.
@@ -1816,10 +1944,11 @@ std::string transformEachSyntax(const std::string& body,
             out += indent + "}\n";
         }
 
-        cursor = matchPos + matchLen;
+        cursor = pos;
+        searchPos = pos;
     }
 
-    out += body_ref.substr(cursor);
+    out += body.substr(cursor);
     return out;
 }
 
@@ -2427,7 +2556,35 @@ std::string normalizeModuSource(const std::string& sourceText) {
 }
 
 void replaceRegexAll(std::string& text, const std::regex& pattern, const std::string& replacement) {
-    text = std::regex_replace(text, pattern, replacement);
+    try {
+        text = std::regex_replace(text, pattern, replacement);
+        return;
+    } catch (const std::regex_error& e) {
+        if (e.code() != std::regex_constants::error_stack) {
+            throw;
+        }
+    }
+
+    std::string rebuilt;
+    rebuilt.reserve(text.size());
+
+    constexpr size_t maxChunkSize = 4096;
+    size_t chunkStart = 0;
+    while (chunkStart < text.size()) {
+        size_t chunkEnd = std::min(text.size(), chunkStart + maxChunkSize);
+        if (chunkEnd < text.size()) {
+            const size_t delimiter = text.find_last_of(";\n{}", chunkEnd);
+            if (delimiter != std::string::npos && delimiter >= chunkStart) {
+                chunkEnd = delimiter + 1;
+            }
+        }
+
+        const std::string chunk = text.substr(chunkStart, chunkEnd - chunkStart);
+        rebuilt += std::regex_replace(chunk, pattern, replacement);
+        chunkStart = chunkEnd;
+    }
+
+    text.swap(rebuilt);
 }
 
 std::string statementFromActionGroupItem(const std::string& item) {
@@ -2672,6 +2829,10 @@ std::string rewriteSurfaceSyntax(const std::string& sourceText) {
     }
     out.swap(timerRewritten);
 
+    if (out.find('[') == std::string::npos) {
+        return out;
+    }
+
     static const std::regex arrayDeclPattern(
         R"((^|[;{}\n]\s*)([A-Za-z_][A-Za-z0-9_:.<>]*)\s*((?:\[[^\]]*\])+)\s+([A-Za-z_][A-Za-z0-9_]*))");
     std::string rebuilt;
@@ -2726,16 +2887,15 @@ bool parseClass(const std::string& sourceText, ClassSpec& outClass, std::string&
     }
 
     const std::string stripped = stripCommentsPreserveLayout(sourceText);
-    std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*Modu(?:Behaviour|Node)\b)");
-    std::smatch classMatch;
-    if (!std::regex_search(stripped, classMatch, classPattern)) {
+    const std::optional<ModuClassMatch> classMatch = findModuClassDeclaration(stripped);
+    if (!classMatch) {
         error = "No ModuCPP class found. Expected: public class <Name> : ModuNode or ModuBehaviour";
         return false;
     }
 
-    outClass.name = classMatch[1].str();
-    const size_t classDeclPos = static_cast<size_t>(classMatch.position());
-    const size_t classDeclEnd = classDeclPos + static_cast<size_t>(classMatch.length());
+    outClass.name = classMatch->name;
+    const size_t classDeclPos = classMatch->position;
+    const size_t classDeclEnd = classMatch->end;
     const size_t classOpenBrace = stripped.find('{', classDeclEnd);
     if (classOpenBrace == std::string::npos) {
         error = "ModuCPP class body is missing '{'.";
@@ -4932,9 +5092,8 @@ bool ModuCPPTranspiler::shouldTranspile(const fs::path& sourcePath, const std::s
     }
 
     // Allow high-level ModuCPP syntax in .cpp-like files without impacting normal C++ scripts.
-    std::regex classPattern(R"(\bpublic\s+class\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*Modu(?:Behaviour|Node)\b)");
     const std::string stripped = stripCommentsPreserveLayout(sourceText);
-    return std::regex_search(stripped, classPattern);
+    return findModuClassDeclaration(stripped).has_value();
 }
 
 bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string& sourceText,
@@ -4945,8 +5104,7 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     const std::string ext = toLowerCopy(sourcePath.extension().string());
     const std::string normalizedSource = normalizeModuSource(preprocessDollarStrings(sourceText));
     const std::string stripped = stripCommentsPreserveLayout(normalizedSource);
-    const std::regex classPattern(R"(\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*Modu(?:Behaviour|Node)\b)");
-    const bool hasHighLevelClass = std::regex_search(stripped, classPattern);
+    const bool hasHighLevelClass = findModuClassDeclaration(stripped).has_value();
 
     // Allow .moducpp as a thin frontend type for legacy/native C++ scripts during migration.
     // When high-level class syntax is absent, pass the source through unchanged.

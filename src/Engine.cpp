@@ -21,6 +21,7 @@
 #include <cctype>
 #include <cstring>
 #include <ctime>
+#include <regex>
 #include <sstream>
 #if defined(_WIN32)
 #include <winhttp.h>
@@ -11428,55 +11429,89 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         };
         ScriptCompileJobResult result;
         result.scriptPath = scriptPath;
-        std::string error;
-        ScriptBuildConfig config;
-        if (!scriptCompiler.loadConfig(configPath, config, error)) {
-            result.error = error;
-        } else {
-            packageManager.applyToBuildConfig(config);
-            ScriptBuildCommands commands;
-            if (!scriptCompiler.makeCommands(config, scriptPath, commands, error)) {
+        std::string compileWorkerStage = "Starting";
+        try {
+            std::string error;
+            ScriptBuildConfig config;
+            compileWorkerStage = "Loading scripts config";
+            if (!scriptCompiler.loadConfig(configPath, config, error)) {
                 result.error = error;
             } else {
-                setProgress(0.15f, "Compiling");
-                ScriptCompileOutput output;
-                if (!scriptCompiler.compile(commands, output, error)) {
-                    result.compileLog = output.compileLog;
-                    result.linkLog = output.linkLog;
+                compileWorkerStage = "Applying package build config";
+                packageManager.applyToBuildConfig(config);
+                ScriptBuildCommands commands;
+                compileWorkerStage = "Preparing native script commands";
+                bool commandsReady = false;
+                try {
+                    commandsReady = scriptCompiler.makeCommands(config, scriptPath, commands, error);
+                } catch (const std::regex_error& e) {
+                    error = std::string("Preparing native script commands failed in regex processing: ") + e.what();
+                }
+                if (!commandsReady) {
                     result.error = error;
-                    setProgress(0.9f, "Finalizing");
                 } else {
-                    result.success = true;
-                    result.compileLog = output.compileLog;
-                    result.linkLog = output.linkLog;
-                    result.binaryPath = commands.binaryPath;
-                    result.stagedBinaryPath = output.producedBinaryPath;
+                    setProgress(0.15f, "Compiling");
+                    compileWorkerStage = "Running native script compiler";
+                    ScriptCompileOutput output;
+                    if (!scriptCompiler.compile(commands, output, error)) {
+                        result.compileLog = output.compileLog;
+                        result.linkLog = output.linkLog;
+                        result.error = error;
+                        setProgress(0.9f, "Finalizing");
+                    } else {
+                        compileWorkerStage = "Resolving compiled script path";
+                        result.success = true;
+                        result.compileLog = output.compileLog;
+                        result.linkLog = output.linkLog;
+                        result.binaryPath = commands.binaryPath;
+                        result.stagedBinaryPath = output.producedBinaryPath;
 
-                    fs::path compiledSourcePath = scriptPath;
-                    if (compiledSourcePath.is_relative()) {
-                        std::error_code projectEc;
-                        fs::path projectCandidate = projectRoot / compiledSourcePath;
-                        if (fs::exists(projectCandidate, projectEc) && !projectEc) {
-                            compiledSourcePath = projectCandidate;
+                        fs::path compiledSourcePath = scriptPath;
+                        if (compiledSourcePath.is_relative()) {
+                            std::error_code projectEc;
+                            fs::path projectCandidate = projectRoot / compiledSourcePath;
+                            if (fs::exists(projectCandidate, projectEc) && !projectEc) {
+                                compiledSourcePath = projectCandidate;
+                            }
                         }
-                    }
 
-                    std::error_code sourceEc;
-                    fs::path sourceAbs = fs::absolute(compiledSourcePath, sourceEc);
-                    if (sourceEc) sourceAbs = compiledSourcePath;
-                    fs::path sourceCanonical = fs::weakly_canonical(sourceAbs, sourceEc);
-                    if (!sourceEc) sourceAbs = sourceCanonical;
-                    result.compiledSource = sourceAbs.lexically_normal().string();
-                    setProgress(0.85f, "Reloading");
+                        std::error_code sourceEc;
+                        fs::path sourceAbs = fs::absolute(compiledSourcePath, sourceEc);
+                        if (sourceEc) sourceAbs = compiledSourcePath;
+                        fs::path sourceCanonical = fs::weakly_canonical(sourceAbs, sourceEc);
+                        if (!sourceEc) sourceAbs = sourceCanonical;
+                        result.compiledSource = sourceAbs.lexically_normal().string();
+                        setProgress(0.85f, "Reloading");
+                    }
                 }
             }
+            compileWorkerStage = "Collecting script diagnostics";
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
+        } catch (const std::exception& e) {
+            result.success = false;
+            result.error = "Script compile worker failed during " + compileWorkerStage + ": " + e.what();
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
+        } catch (...) {
+            result.success = false;
+            result.error = "Script compile worker failed during " + compileWorkerStage +
+                           " with an unknown exception.";
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
         }
-        result.diagnostics = Modularity::collectScriptDiagnostics(
-            result.scriptPath,
-            result.error,
-            result.compileLog,
-            result.linkLog,
-            result.isManaged);
 
         std::lock_guard<std::mutex> lock(compileMutex);
         compileResult = std::move(result);
@@ -11591,51 +11626,71 @@ void Engine::compileManagedScripts() {
         result.isManaged = true;
         result.scriptPath = managedProject;
 
-        setProgress(0.2f, "Building");
+        try {
+            setProgress(0.2f, "Building");
 
-        std::string command = "dotnet build \"" + managedProject.string() + "\" -c Debug 2>&1";
-        std::string output;
-        int exitCode = -1;
+            std::string command = "dotnet build \"" + managedProject.string() + "\" -c Debug 2>&1";
+            std::string output;
+            int exitCode = -1;
 
-        auto runCommand = [&]() -> bool {
+            auto runCommand = [&]() -> bool {
 #if defined(_WIN32)
-            FILE* pipe = _popen(command.c_str(), "r");
+                FILE* pipe = _popen(command.c_str(), "r");
 #else
-            FILE* pipe = popen(command.c_str(), "r");
+                FILE* pipe = popen(command.c_str(), "r");
 #endif
-            if (!pipe) return false;
-            char buffer[256];
-            while (fgets(buffer, sizeof(buffer), pipe)) {
-                output += buffer;
+                if (!pipe) return false;
+                char buffer[256];
+                while (fgets(buffer, sizeof(buffer), pipe)) {
+                    output += buffer;
+                }
+#if defined(_WIN32)
+                exitCode = _pclose(pipe);
+#else
+                exitCode = pclose(pipe);
+#endif
+                return true;
+            };
+
+            if (!runCommand()) {
+                result.error = "Failed to launch dotnet build";
+                result.compileLog = output;
+            } else if (exitCode != 0) {
+                result.error = "dotnet build failed";
+                result.compileLog = output;
+            } else {
+                result.success = true;
+                result.compileLog = output;
+                result.binaryPath = managedOutputPathFromProject(managedProject);
+                result.compiledSource = managedProject.string();
+                setProgress(0.85f, "Reloading");
             }
-#if defined(_WIN32)
-            exitCode = _pclose(pipe);
-#else
-            exitCode = pclose(pipe);
-#endif
-            return true;
-        };
 
-        if (!runCommand()) {
-            result.error = "Failed to launch dotnet build";
-            result.compileLog = output;
-        } else if (exitCode != 0) {
-            result.error = "dotnet build failed";
-            result.compileLog = output;
-        } else {
-            result.success = true;
-            result.compileLog = output;
-            result.binaryPath = managedOutputPathFromProject(managedProject);
-            result.compiledSource = managedProject.string();
-            setProgress(0.85f, "Reloading");
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
+        } catch (const std::exception& e) {
+            result.success = false;
+            result.error = std::string("Managed compile worker failed: ") + e.what();
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
+        } catch (...) {
+            result.success = false;
+            result.error = "Managed compile worker failed with an unknown exception.";
+            result.diagnostics = Modularity::collectScriptDiagnostics(
+                result.scriptPath,
+                result.error,
+                result.compileLog,
+                result.linkLog,
+                result.isManaged);
         }
-
-        result.diagnostics = Modularity::collectScriptDiagnostics(
-            result.scriptPath,
-            result.error,
-            result.compileLog,
-            result.linkLog,
-            result.isManaged);
 
         std::lock_guard<std::mutex> lock(compileMutex);
         compileResult = std::move(result);

@@ -9,8 +9,8 @@
 #include <cstdio>
 #include <fstream>
 #include <optional>
-#include <sstream>
 #include <regex>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -467,10 +467,15 @@ namespace {
             return false;
         }
 
+        HANDLE stdinHandle = GetStdHandle(STD_INPUT_HANDLE);
+        if (stdinHandle == INVALID_HANDLE_VALUE) {
+            stdinHandle = nullptr;
+        }
+
         STARTUPINFOW si{};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdInput = stdinHandle;
         si.hStdOutput = writePipe;
         si.hStdError = writePipe;
 
@@ -502,7 +507,11 @@ namespace {
         writePipe = nullptr;
 
         if (!launched) {
+            DWORD lastError = GetLastError();
             CloseHandle(readPipe);
+            std::ostringstream ss;
+            ss << "CreateProcessW failed with Windows error " << lastError << ": " << command;
+            output = ss.str();
             return false;
         }
 
@@ -910,37 +919,164 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         bool takesContext = false;
     };
 
-    auto detectFunction = [](const std::string& source, const std::string& name,
-                             const std::string& contextPattern) -> FunctionSpec {
-        FunctionSpec spec;
-        try {
-            const std::string prefix = "\\bvoid\\s+(?:IEnum\\s+)?";
-            std::regex ctxDeltaPattern(prefix + name + "\\s*\\(\\s*" + contextPattern + "\\s*[^,\\)]*,[^\\)]*(float|double)[^\\)]*\\)");
-            std::regex ctxOnlyPattern(prefix + name + "\\s*\\(\\s*" + contextPattern + "\\s*[^\\)]*\\)");
-            std::regex deltaPattern(prefix + name + "\\s*\\(\\s*(float|double)[^\\)]*\\)");
-            std::regex basicPattern(prefix + name + "\\s*\\(\\s*\\)");
+    auto isIdentifierChar = [](char c) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        return std::isalnum(uc) != 0 || c == '_';
+    };
+    auto skipWhitespace = [](const std::string& text, size_t pos) {
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+            ++pos;
+        }
+        return pos;
+    };
+    auto trimLocal = [](const std::string& value) {
+        size_t start = 0;
+        while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+            ++start;
+        }
+        size_t end = value.size();
+        while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+            --end;
+        }
+        return value.substr(start, end - start);
+    };
+    auto findMatchingParenLocal = [](const std::string& text, size_t openPos) {
+        if (openPos >= text.size() || text[openPos] != '(') return std::string::npos;
+        int depth = 0;
+        bool inString = false;
+        bool inChar = false;
+        bool escaped = false;
+        for (size_t i = openPos; i < text.size(); ++i) {
+            const char c = text[i];
+            if (inString || inChar) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if ((inString && c == '"') || (inChar && c == '\'')) {
+                    inString = false;
+                    inChar = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                continue;
+            }
+            if (c == '(') {
+                ++depth;
+                continue;
+            }
+            if (c == ')') {
+                --depth;
+                if (depth == 0) return i;
+            }
+        }
+        return std::string::npos;
+    };
+    auto splitTopLevelCommas = [&](const std::string& text) {
+        std::vector<std::string> parts;
+        size_t start = 0;
+        int parenDepth = 0;
+        int angleDepth = 0;
+        int bracketDepth = 0;
+        bool inString = false;
+        bool inChar = false;
+        bool escaped = false;
+        for (size_t i = 0; i < text.size(); ++i) {
+            const char c = text[i];
+            if (inString || inChar) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if ((inString && c == '"') || (inChar && c == '\'')) {
+                    inString = false;
+                    inChar = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                continue;
+            }
+            if (c == '(') ++parenDepth;
+            else if (c == ')') parenDepth = std::max(0, parenDepth - 1);
+            else if (c == '[') ++bracketDepth;
+            else if (c == ']') bracketDepth = std::max(0, bracketDepth - 1);
+            else if (c == '<') ++angleDepth;
+            else if (c == '>') angleDepth = std::max(0, angleDepth - 1);
+            else if (c == ',' && parenDepth == 0 && angleDepth == 0 && bracketDepth == 0) {
+                parts.push_back(trimLocal(text.substr(start, i - start)));
+                start = i + 1;
+            }
+        }
+        parts.push_back(trimLocal(text.substr(start)));
+        return parts;
+    };
 
-            if (std::regex_search(source, ctxDeltaPattern)) {
-                spec.present = true;
-                spec.takesDelta = true;
-                spec.takesContext = true;
-                return spec;
+    auto detectFunction = [&](const std::string& source, const std::string& name,
+                              const std::string& contextPattern) -> FunctionSpec {
+        FunctionSpec spec;
+        const std::string contextType =
+            contextPattern.find("ModuScriptContext") != std::string::npos
+                ? "ModuScriptContext"
+                : "ScriptContext";
+
+        size_t cursor = 0;
+        while (cursor < source.size()) {
+            const size_t namePos = source.find(name, cursor);
+            if (namePos == std::string::npos) break;
+            const size_t nameEnd = namePos + name.size();
+            if ((namePos > 0 && isIdentifierChar(source[namePos - 1])) ||
+                (nameEnd < source.size() && isIdentifierChar(source[nameEnd]))) {
+                cursor = nameEnd;
+                continue;
             }
-            if (std::regex_search(source, ctxOnlyPattern)) {
-                spec.present = true;
-                spec.takesContext = true;
-                return spec;
+
+            const size_t openParen = skipWhitespace(source, nameEnd);
+            if (openParen >= source.size() || source[openParen] != '(') {
+                cursor = nameEnd;
+                continue;
             }
-            if (std::regex_search(source, deltaPattern)) {
-                spec.present = true;
-                spec.takesDelta = true;
-                return spec;
+
+            const size_t lineStart = source.rfind('\n', namePos);
+            const size_t prefixStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+            const std::string beforeName = trimLocal(source.substr(prefixStart, namePos - prefixStart));
+            if (beforeName != "void" && beforeName != "void IEnum") {
+                cursor = nameEnd;
+                continue;
             }
-            if (std::regex_search(source, basicPattern)) {
-                spec.present = true;
+
+            const size_t closeParen = findMatchingParenLocal(source, openParen);
+            if (closeParen == std::string::npos) {
+                cursor = nameEnd;
+                continue;
             }
-        } catch (...) {
-            // If regex throws for any reason, fall through and treat as not present.
+
+            FunctionSpec candidate;
+            candidate.present = true;
+            const std::string paramsText = source.substr(openParen + 1, closeParen - openParen - 1);
+            for (const std::string& param : splitTopLevelCommas(paramsText)) {
+                if (param.empty()) continue;
+                if (param.find(contextType) != std::string::npos &&
+                    (param.find('&') != std::string::npos || param.find('*') != std::string::npos)) {
+                    candidate.takesContext = true;
+                }
+                if (param.find("float") != std::string::npos ||
+                    param.find("double") != std::string::npos) {
+                    candidate.takesDelta = true;
+                }
+            }
+            return candidate;
         }
         return spec;
     };
@@ -956,7 +1092,14 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     if (ModuCPPTranspiler::shouldTranspile(scriptAbs, scriptSource)) {
         ModuCPPTranspileResult transpiled;
         ModuCPPTranspiler transpiler;
-        if (!transpiler.transpile(scriptAbs, scriptSource, transpiled, error)) {
+        bool transpileOk = false;
+        try {
+            transpileOk = transpiler.transpile(scriptAbs, scriptSource, transpiled, error);
+        } catch (const std::regex_error& e) {
+            error = std::string("ModuCPP transpile failed in regex processing: ") + e.what();
+            return false;
+        }
+        if (!transpileOk) {
             error = "ModuCPP transpile failed: " + error;
             return false;
         }
@@ -1893,7 +2036,12 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     }
 
     if (needsCompile) {
-        if (!runCommand(commands.compile + " 2>&1", output.compileLog)) {
+#if defined(_WIN32)
+        const std::string compileCommand = commands.compile;
+#else
+        const std::string compileCommand = commands.compile + " 2>&1";
+#endif
+        if (!runCommand(compileCommand, output.compileLog)) {
             error = "Compile failed";
             return false;
         }
@@ -1901,7 +2049,12 @@ bool ScriptCompiler::compile(const ScriptBuildCommands& commands, ScriptCompileO
     }
 
     if (needsLink) {
-        if (!runCommand(commands.link + " 2>&1", output.linkLog)) {
+#if defined(_WIN32)
+        const std::string linkCommand = commands.link;
+#else
+        const std::string linkCommand = commands.link + " 2>&1";
+#endif
+        if (!runCommand(linkCommand, output.linkLog)) {
             error = "Link failed";
             return false;
         }
