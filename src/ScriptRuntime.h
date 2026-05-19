@@ -2,6 +2,7 @@
 
 #include "ScriptSdkCommon.h"
 #include "SceneObject.h"
+#include <unordered_map>
 #include <unordered_set>
 
 class Engine;
@@ -20,7 +21,7 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 22
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 23
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;

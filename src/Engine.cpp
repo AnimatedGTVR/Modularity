@@ -4162,6 +4162,7 @@ void Engine::run() {
                     if (showPixelSpriteEditorWindow && hasSpriteEditorPackage()) MODU_TIME_PANEL("PixelSprite", renderPixelSpriteEditorWindow());
                     if (showVisualScriptingWindow) MODU_TIME_PANEL("VisualScript", renderVisualScriptingWindow());
                     if (showProjectBrowser) MODU_TIME_PANEL("ProjectBrowser", renderProjectBrowserPanel());
+                    if (showGameProfilerWindow) MODU_TIME_PANEL("Profiler", renderGameProfilerWindow());
                     if (showRegistryPackagesWindow) MODU_TIME_PANEL("Registry", renderRegistryPackagesWindow());
                 }
 
@@ -5292,6 +5293,93 @@ bool Engine::saveMaterialData(const std::string& path, const MaterialProperties&
     data.vertexShader = vertexShader;
     data.fragmentShader = fragmentShader;
     return writeMaterialFile(data, path);
+}
+
+bool Engine::applyTextureAssetToObject(SceneObject& obj, const fs::path& texturePath) {
+    if (texturePath.empty()) return false;
+
+    std::error_code ec;
+    fs::directory_entry entry(texturePath, ec);
+    if (ec || fileBrowser.getFileCategory(entry) != FileCategory::Texture) {
+        return false;
+    }
+
+    std::string stem = texturePath.stem().string();
+    std::string lowerStem = stem;
+    std::transform(lowerStem.begin(), lowerStem.end(), lowerStem.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    enum class TextureSlot { Albedo, Normal, Roughness, Metallic };
+    TextureSlot slot = TextureSlot::Albedo;
+    if (lowerStem.find("_normal") != std::string::npos ||
+        lowerStem.find("-normal") != std::string::npos ||
+        lowerStem.find(" normal") != std::string::npos ||
+        lowerStem.find("_nrm") != std::string::npos) {
+        slot = TextureSlot::Normal;
+    } else if (lowerStem.find("_roughness") != std::string::npos ||
+               lowerStem.find("-roughness") != std::string::npos ||
+               lowerStem.find("_rough") != std::string::npos) {
+        slot = TextureSlot::Roughness;
+    } else if (lowerStem.find("_metallic") != std::string::npos ||
+               lowerStem.find("-metallic") != std::string::npos ||
+               lowerStem.find("_metalness") != std::string::npos) {
+        slot = TextureSlot::Metallic;
+    }
+
+    const std::string textureString = texturePath.string();
+    if ((slot == TextureSlot::Albedo && obj.albedoTexturePath == textureString) ||
+        (slot == TextureSlot::Normal && obj.normalMapPath == textureString)) {
+        return false;
+    }
+
+    fs::path materialsDir = projectManager.currentProject.assetsPath / "Materials";
+    fs::create_directories(materialsDir, ec);
+    if (ec) {
+        addConsoleMessage("Failed to create Materials folder: " + ec.message(), ConsoleMessageType::Error);
+        return false;
+    }
+
+    fs::path materialPath = obj.materialPath.empty()
+        ? materialsDir / (obj.name + "_" + texturePath.stem().string() + ".mat")
+        : fs::path(obj.materialPath);
+
+    if (!obj.materialPath.empty()) {
+        const bool sameGeneratedMaterial =
+            materialPath.parent_path() == materialsDir &&
+            materialPath.stem().string().find(obj.name + "_") == 0;
+        if (!sameGeneratedMaterial) {
+            fs::path instancePath = materialsDir / (obj.name + "_" + texturePath.stem().string() + ".mat");
+            int suffix = 1;
+            while (fs::exists(instancePath) && instancePath != materialPath) {
+                instancePath = materialsDir / (obj.name + "_" + texturePath.stem().string() + "_" + std::to_string(suffix++) + ".mat");
+            }
+            materialPath = instancePath;
+        }
+    }
+
+    if (slot == TextureSlot::Albedo) {
+        obj.albedoTexturePath = textureString;
+    } else if (slot == TextureSlot::Normal) {
+        obj.normalMapPath = textureString;
+        obj.material.normalMapIntensity = std::max(0.01f, obj.material.normalMapIntensity);
+    } else if (slot == TextureSlot::Roughness) {
+        obj.material.shininess = 16.0f;
+    } else if (slot == TextureSlot::Metallic) {
+        obj.material.specularStrength = 1.0f;
+    }
+
+    obj.materialPath = materialPath.string();
+    if (!saveMaterialData(obj.materialPath, obj.material, obj.albedoTexturePath, obj.overlayTexturePath,
+                          obj.normalMapPath, obj.useOverlay, obj.shaderPackPath,
+                          obj.vertexShaderPath, obj.fragmentShaderPath)) {
+        addConsoleMessage("Failed to save generated material: " + obj.materialPath, ConsoleMessageType::Error);
+        return false;
+    }
+
+    projectManager.currentProject.hasUnsavedChanges = true;
+    addConsoleMessage("Applied texture to " + obj.name + " using material " + materialPath.filename().string(),
+                      ConsoleMessageType::Success);
+    return true;
 }
 
 void Engine::saveMaterialToFile(const SceneObject& obj) {
@@ -12796,8 +12884,14 @@ void Engine::loadEditorUserSettings() {
             showPixelSpriteEditorWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showProjectBrowser") {
             showProjectBrowser = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "projectSettingsCompactSidebar") {
+            projectSettingsCompactSidebar = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showRegistryPackagesWindow") {
             showRegistryPackagesWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showGameProfilerWindow") {
+            showGameProfilerWindow = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "hierarchyShowTexturePreview") {
+            hierarchyShowTexturePreview = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showSceneGizmos") {
             showSceneGizmos = (value == "1" || value == "true" || value == "yes");
         } else if (key == "gizmoShowCameraOverlays") {
@@ -13180,7 +13274,10 @@ void Engine::saveEditorUserSettings() const {
     file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
     file << "showPixelSpriteEditorWindow=" << (showPixelSpriteEditorWindow ? "1" : "0") << "\n";
     file << "showProjectBrowser=" << (showProjectBrowser ? "1" : "0") << "\n";
+    file << "projectSettingsCompactSidebar=" << (projectSettingsCompactSidebar ? "1" : "0") << "\n";
     file << "showRegistryPackagesWindow=" << (showRegistryPackagesWindow ? "1" : "0") << "\n";
+    file << "showGameProfilerWindow=" << (showGameProfilerWindow ? "1" : "0") << "\n";
+    file << "hierarchyShowTexturePreview=" << (hierarchyShowTexturePreview ? "1" : "0") << "\n";
     file << "showSceneGizmos=" << (showSceneGizmos ? "1" : "0") << "\n";
     file << "gizmoShowCameraOverlays=" << (gizmoShowCameraOverlays ? "1" : "0") << "\n";
     file << "gizmoShowCameraFrustumLabels=" << (gizmoShowCameraFrustumLabels ? "1" : "0") << "\n";

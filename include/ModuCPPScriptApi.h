@@ -156,9 +156,15 @@ inline std::string operator+(const ScriptFloat& lhs, const char* rhs) {
 }
 
 namespace detail {
+#if __cplusplus >= 201703L
 inline thread_local ScriptContext* gCtx = nullptr;
 inline thread_local float gFrameDeltaTime = 0.0f;
 inline thread_local float gFrameFps = 0.0f;
+#else
+static thread_local ScriptContext* gCtx = nullptr;
+static thread_local float gFrameDeltaTime = 0.0f;
+static thread_local float gFrameFps = 0.0f;
+#endif
 
 inline std::string settingKeyFromLabel(const char* label) {
     if (!label || !*label) return "value";
@@ -845,10 +851,17 @@ inline ObjectFacade MakeObjectFacade(ScriptContext& ctx) {
 }
 
 namespace Type {
+#if __cplusplus >= 201703L
 inline constexpr ConsoleMessageType Info = ConsoleMessageType::Info;
 inline constexpr ConsoleMessageType Warning = ConsoleMessageType::Warning;
 inline constexpr ConsoleMessageType Error = ConsoleMessageType::Error;
 inline constexpr ConsoleMessageType Success = ConsoleMessageType::Success;
+#else
+static constexpr ConsoleMessageType Info = ConsoleMessageType::Info;
+static constexpr ConsoleMessageType Warning = ConsoleMessageType::Warning;
+static constexpr ConsoleMessageType Error = ConsoleMessageType::Error;
+static constexpr ConsoleMessageType Success = ConsoleMessageType::Success;
+#endif
 } // namespace Type
 
 inline void AddLog(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info) {

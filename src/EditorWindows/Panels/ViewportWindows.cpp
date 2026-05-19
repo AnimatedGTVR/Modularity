@@ -451,9 +451,21 @@ void Engine::renderViewport() {
     auto importDroppedModel = [&](const fs::path &path) {
       std::error_code ec;
       fs::directory_entry entry(path, ec);
-      if (ec || !fileBrowser.isModelFile(entry)) return;
-      if (fileBrowser.isOBJFile(entry)) {importOBJToScene(path.string(), "");}
-      else                              {importModelToScene(path.string(), "");}
+      if (ec) return;
+      if (fileBrowser.isModelFile(entry)) {
+        if (fileBrowser.isOBJFile(entry)) {importOBJToScene(path.string(), "");}
+        else                              {importModelToScene(path.string(), "");}
+        return;
+      }
+      if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+        SceneObject* target = getSelectedObject();
+        if (target && target->hasRenderer) {
+          applyTextureAssetToObject(*target, entry.path());
+        } else {
+          addConsoleMessage("Select a renderable object before dropping a texture in Scene View.",
+                            ConsoleMessageType::Warning);
+        }
+      }
     };
 
     if (ImGui::BeginDragDropTarget()) {

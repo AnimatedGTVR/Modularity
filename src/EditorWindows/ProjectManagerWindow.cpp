@@ -411,6 +411,27 @@ static bool ProjectSettingsMatchesSearch(const char* query,
     return ProjectSettingsLowerCopy(haystack).find(needle) != std::string::npos;
 }
 
+static bool IsValidProjectNameToken(const std::string& value) {
+    if (TrimCopy(value).empty()) return false;
+    for (unsigned char c : value) {
+        if (std::isalnum(c) || c == ' ' || c == '_' || c == '-') continue;
+        return false;
+    }
+    return true;
+}
+
+static bool HasDuplicateProjectNameToken(const std::vector<std::string>& values,
+                                         const std::string& candidate,
+                                         size_t selfIndex) {
+    const std::string lowered = ProjectSettingsLowerCopy(TrimCopy(candidate));
+    if (lowered.empty()) return false;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i == selfIndex) continue;
+        if (ProjectSettingsLowerCopy(TrimCopy(values[i])) == lowered) return true;
+    }
+    return false;
+}
+
 static void DrawHelpText(const char* text) {
     if (!text || !*text) {
         return;
@@ -833,7 +854,7 @@ Forks or modified versions must clearly acknowledge that they are based on the M
 7. Attribution
 Software distributed using the Engine must include visible attribution to Modularity in at least one of the following locations:
 - Software credits
-- Documentation
+- Engine Handbook
 - An About section
 - A similar visible acknowledgment
 
@@ -1415,7 +1436,7 @@ void Engine::renderLauncher() {
         struct LinkDef { const char* label; const char* url; };
         const LinkDef rightLinks[] = {
             {"Website", "https://moduengine.xyz"},
-            {"Docs",    "https://moduengine.xyz/docs"}
+            {"Handbook",    "https://moduengine.xyz/docs"}
         };
         const int rightLinkCount = (int)(sizeof(rightLinks) / sizeof(rightLinks[0]));
         const float linkHPad = 14.0f * uiScale;
@@ -3444,14 +3465,11 @@ void Engine::renderProjectBrowserPanel() {
         return;
     }
 
-    ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "%s", projectManager.currentProject.name.c_str());
+    ImGui::TextColored(ImVec4(0.4f, 0.7f, 0.95f, 1.0f), "Project Name: %s", projectManager.currentProject.name.c_str());
     if (projectManager.currentProject.hasUnsavedChanges) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "*");
     }
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Packages are managed in Modupak Manager.");
     ImGui::SameLine();
     if (ImGui::SmallButton("Open Modupak Manager")) {
         showRegistryPackagesWindow = true;
@@ -3492,6 +3510,12 @@ void Engine::renderProjectBrowserPanel() {
         { "Scenes", "Resources/Engine-Root/Project Settings/Tabs/Scenes.png", "S" },
         { "Assets", "Resources/Engine-Root/Project Settings/Tabs/Assets.png", "A" },
         { "Input Manager", "Resources/Engine-Root/Project Settings/Tabs/Input Manager.png", "I" },
+        { "Physics Manager", "Resources/Engine-Root/Project Settings/Tabs/Physics Manager.png", "P" },
+        { "Graphics Manager", "Resources/Engine-Root/Project Settings/Tabs/Graphics.png", "G" },
+        { "Tags & Layers", "Resources/Engine-Root/Project Settings/Tabs/Tags And Layers.png", "T" },
+        { "Console Config", "Resources/Engine-Root/Project Settings/Tabs/Console Config.png", "C" },
+        { "Audio Config", "Resources/Engine-Root/Project Settings/Tabs/Audio.png", "A" },
+        { "Player Config", "Resources/Engine-Root/Project Settings/Tabs/Player Config.png", "P" },
         { "Editor", "Resources/Engine-Root/Project Settings/Tabs/Editor.png", "E" },
         { "Build", "Resources/Engine-Root/Project Settings/Tabs/Build.png", "B" },
         { "Compilation", "Resources/Engine-Root/Project Settings/Tabs/Compilation.png", "C" },
@@ -3499,10 +3523,16 @@ void Engine::renderProjectBrowserPanel() {
     };
 
     static constexpr int kInputManagerTab = 2;
-    static constexpr int kEditorTab = 3;
-    static constexpr int kBuildTab = 4;
-    static constexpr int kCompilationTab = 5;
-    static constexpr int kOpenXRTab = 6;
+    static constexpr int kPhysicsManagerTab = 3;
+    static constexpr int kGraphicsManagerTab = 4;
+    static constexpr int kTagsLayersTab = 5;
+    static constexpr int kConsoleConfigTab = 6;
+    static constexpr int kAudioConfigTab = 7;
+    static constexpr int kPlayerConfigTab = 8;
+    static constexpr int kEditorTab = 9;
+    static constexpr int kBuildTab = 10;
+    static constexpr int kCompilationTab = 11;
+    static constexpr int kOpenXRTab = 12;
 
     static int selectedTab = 0;
     constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
@@ -3519,7 +3549,7 @@ void Engine::renderProjectBrowserPanel() {
         tabSelectionAnim[i] = ImLerp(tabSelectionAnim[i], target, lerpT);
     }
 
-    auto drawProjectSettingsTab = [&](int index) {
+    auto drawProjectSettingsTab = [&](int index, bool compactSidebar) {
         const ProjectSettingsTabInfo& tab = tabs[index];
         const bool isCurrentSelection = (selectedTab == index);
         const float selectedBlend = tabSelectionAnim[index];
@@ -3528,7 +3558,10 @@ void Engine::renderProjectBrowserPanel() {
         const float darken = std::max(0.0f, -pulse) * selectedBlend;
 
         const ImVec2 slotPos = ImGui::GetCursorScreenPos();
-        const ImVec2 slotSize(ImGui::GetContentRegionAvail().x, 38.0f);
+        const float compactButtonSize = 44.0f;
+        const ImVec2 slotSize = compactSidebar
+            ? ImVec2(compactButtonSize, compactButtonSize)
+            : ImVec2(ImGui::GetContentRegionAvail().x, 44.0f);
         ImGui::PushID(index);
         const bool pressed = ImGui::InvisibleButton("##ProjectSettingsNavTab", slotSize);
         const bool hovered = ImGui::IsItemHovered();
@@ -3540,7 +3573,7 @@ void Engine::renderProjectBrowserPanel() {
         const float expand = isCurrentSelection
             ? selectedBlend * (0.75f + brighten * 1.35f - darken * 0.55f)
             : selectedBlend * 0.2f;
-        const float insetX = std::max(3.0f, 5.0f - expand);
+        const float insetX = compactSidebar ? std::max(1.5f, 2.5f - expand * 0.45f) : std::max(3.0f, 5.0f - expand);
         const float insetY = std::max(1.5f, 2.5f - expand * 0.45f);
         const ImVec2 cardMin(slot.Min.x + insetX, slot.Min.y + insetY);
         const ImVec2 cardMax(slot.Max.x - insetX, slot.Max.y - insetY);
@@ -3584,18 +3617,33 @@ void Engine::renderProjectBrowserPanel() {
         drawList->AddRect(cardMin, cardMax, ImGui::GetColorU32(border), rounding, 0, 1.0f + selectedBlend);
         if (selectedBlend > 0.02f) {
             const float stripeWidth = isCurrentSelection ? 3.0f + brighten * 1.4f : 2.0f;
-            drawList->AddRectFilled(
-                ImVec2(cardMin.x, cardMin.y + 7.0f),
-                ImVec2(cardMin.x + stripeWidth, cardMax.y - 7.0f),
-                ImGui::GetColorU32(accent),
-                4.0f);
+            if (compactSidebar) {
+                drawList->AddRectFilled(
+                    ImVec2(cardMin.x + 8.0f, cardMax.y - stripeWidth),
+                    ImVec2(cardMax.x - 8.0f, cardMax.y),
+                    ImGui::GetColorU32(accent),
+                    4.0f);
+            } else {
+                drawList->AddRectFilled(
+                    ImVec2(cardMin.x, cardMin.y + 7.0f),
+                    ImVec2(cardMin.x + stripeWidth, cardMax.y - 7.0f),
+                    ImGui::GetColorU32(accent),
+                    4.0f);
+            }
         }
 
         const ProjectSettingsUiIcon icon = resolveProjectSettingsIcon(tab.iconPath);
+        const float cardHeight = cardMax.y - cardMin.y;
+        const float baseIconSize = compactSidebar
+            ? std::max(24.0f, cardHeight - 11.0f)
+            : std::max(24.0f, cardHeight - 9.0f);
         const float iconSize = isCurrentSelection
-            ? 18.0f + selectedBlend * (2.2f + brighten * 1.5f - darken * 0.6f)
-            : 18.0f + selectedBlend * 0.4f;
-        const ImVec2 iconMin(cardMin.x + 14.0f, cardMin.y + (cardMax.y - cardMin.y - iconSize) * 0.5f);
+            ? baseIconSize + selectedBlend * (2.0f + brighten * 1.2f - darken * 0.5f)
+            : baseIconSize + selectedBlend * 0.4f;
+        const float iconX = compactSidebar
+            ? cardMin.x + (cardMax.x - cardMin.x - iconSize) * 0.5f
+            : cardMin.x + 10.0f;
+        const ImVec2 iconMin(iconX, cardMin.y + (cardMax.y - cardMin.y - iconSize) * 0.5f);
         const ImVec2 iconMax(iconMin.x + iconSize, iconMin.y + iconSize);
         const int iconAlpha = selectedBlend > 0.05f ? 255 : hovered ? 235 : 214;
         if (icon.id != static_cast<ImTextureID>(0)) {
@@ -3604,40 +3652,77 @@ void Engine::renderProjectBrowserPanel() {
             drawList->AddImage(icon.id, iconMin, iconMax, uvMin, uvMax, IM_COL32(255, 255, 255, iconAlpha));
         } else {
             drawList->AddText(
-                ImVec2(cardMin.x + 16.0f, cardMin.y + (cardMax.y - cardMin.y - ImGui::GetTextLineHeight()) * 0.5f),
+                ImVec2(cardMin.x + 13.0f, cardMin.y + (cardMax.y - cardMin.y - ImGui::GetTextLineHeight()) * 0.5f),
                 IM_COL32(255, 255, 255, iconAlpha),
                 tab.fallback);
         }
 
-        const ImVec2 textSize = ImGui::CalcTextSize(tab.label);
-        const float textX = iconMax.x + 12.0f;
-        const float textY = cardMin.y + (cardMax.y - cardMin.y - textSize.y) * 0.5f;
-        const ImU32 textColor = ImGui::GetColorU32(
-            selectedBlend > 0.05f
-                ? ImVec4(0.95f, 0.98f, 1.0f, 1.0f)
-                : hovered
-                    ? ImVec4(0.90f, 0.94f, 0.98f, 1.0f)
-                    : ImVec4(0.78f, 0.83f, 0.89f, 1.0f));
-        drawList->AddText(ImVec2(textX, textY), textColor, tab.label);
+        if (compactSidebar) {
+            if (hovered) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tab.label);
+                ImGui::EndTooltip();
+            }
+        } else {
+            const ImVec2 textSize = ImGui::CalcTextSize(tab.label);
+            const float textX = iconMax.x + 10.0f;
+            const float textY = cardMin.y + (cardMax.y - cardMin.y - textSize.y) * 0.5f;
+            const ImU32 textColor = ImGui::GetColorU32(
+                selectedBlend > 0.05f
+                    ? ImVec4(0.95f, 0.98f, 1.0f, 1.0f)
+                    : hovered
+                        ? ImVec4(0.90f, 0.94f, 0.98f, 1.0f)
+                        : ImVec4(0.78f, 0.83f, 0.89f, 1.0f));
+            drawList->AddText(ImVec2(textX, textY), textColor, tab.label);
+        }
         return pressed;
     };
 
-    ImGui::BeginChild("SettingsNav", ImVec2(214.0f, 0), true);
-    for (int i = 0; i < tabCount; ++i) {
-        if (drawProjectSettingsTab(i)) {
-            if (selectedTab != i) {
-                selectedTab = i;
-                playEditorFeedbackPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
+    auto selectProjectSettingsTab = [&](int index) {
+        if (selectedTab != index) {
+            selectedTab = index;
+            playEditorFeedbackPreview("Resources/Sounds/Selection Tick Main Editor.mp3", 0.95f, false, EditorFeedbackSoundCategory::Click);
+        }
+    };
+    if (projectSettingsCompactSidebar) {
+        ImGui::BeginGroup();
+        for (int i = 0; i < tabCount; ++i) {
+            if (drawProjectSettingsTab(i, true)) {
+                selectProjectSettingsTab(i);
+            }
+            if (i + 1 < tabCount) {
+                const float spacing = (i == 1 || i == kAudioConfigTab || i == kBuildTab) ? 6.0f : 2.0f;
+                ImGui::SameLine(0.0f, spacing);
             }
         }
-        if (i + 1 < tabCount) {
-            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        ImGui::EndGroup();
+        ImGui::Spacing();
+        ImGui::BeginChild("SettingsBody", ImVec2(0, 0), false);
+    } else {
+        ImGui::BeginChild("SettingsNav", ImVec2(214.0f, 0), true);
+        if (ImGui::SmallButton("<")) {
+            projectSettingsCompactSidebar = true;
+            saveEditorUserSettings();
         }
-    }
-    ImGui::EndChild();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("Compact settings categories");
+            ImGui::EndTooltip();
+        }
+        ImGui::Separator();
+        for (int i = 0; i < tabCount; ++i) {
+            if (drawProjectSettingsTab(i, false)) {
+                selectProjectSettingsTab(i);
+            }
+            if (i + 1 < tabCount) {
+                ImGui::Dummy(ImVec2(0.0f, 0.0f));
+            }
+        }
+        ImGui::EndChild();
 
-    ImGui::SameLine();
-    ImGui::BeginChild("SettingsBody", ImVec2(0, 0), false);
+        ImGui::SameLine();
+        ImGui::BeginChild("SettingsBody", ImVec2(0, 0), false);
+    }
 
     static char settingsSearch[160] = "";
     static int settingsModeIndex = 0;
@@ -4016,6 +4101,489 @@ void Engine::renderProjectBrowserPanel() {
             ImGui::TextDisabled("Select an action to edit its properties.");
         }
         ImGui::EndChild();
+    } else if (selectedTab == kPhysicsManagerTab) {
+        ProjectPhysicsSettings& physicsSettings = projectManager.currentProject.physicsSettings;
+        bool changed = false;
+
+        if (DrawSettingSection("[G]", "Global Simulation", "Project-wide gravity, timing, and solver defaults.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Global Simulation", "Global Gravity", "gravity physics")) {
+                changed |= DrawSettingRow("Global Gravity", "3D and 2D runtime gravity use this project-wide multiplier.", [&]() {
+                    if (ImGui::DragFloat("##PhysicsGlobalGravity", &physicsSettings.globalGravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                        physicsSettings.globalGravityScale = std::clamp(physicsSettings.globalGravityScale, 0.0f, 10.0f);
+                        physics.setProjectSettings(physicsSettings);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Global Simulation", "Physics Timestep", "fixed timestep")) {
+                changed |= DrawSettingRow("Physics Timestep", "Fixed simulation step used by project physics.", [&]() {
+                    if (ImGui::DragFloat("##PhysicsTimestep", &physicsSettings.fixedTimestep, 0.001f, 0.001f, 0.1f, "%.4f s")) {
+                        physicsSettings.fixedTimestep = std::clamp(physicsSettings.fixedTimestep, 0.001f, 0.1f);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Global Simulation", "Solver Iterations", "stability constraint solver")) {
+                changed |= DrawSettingRow("Solver Iterations", "More iterations improve stability at a CPU cost.", [&]() {
+                    if (ImGui::DragInt("##PhysicsSolverIterations", &physicsSettings.solverIterations, 1.0f, 1, 64)) {
+                        physicsSettings.solverIterations = std::clamp(physicsSettings.solverIterations, 1, 64);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Global Simulation", "Physics Modes", "2d 3d toggles")) {
+                changed |= DrawSettingRow("Physics Modes", "Enable the physics systems this project expects to use.", [&]() {
+                    bool rowChanged = ImGui::Checkbox("3D##Physics3D", &physicsSettings.enable3DPhysics);
+                    ImGui::SameLine();
+                    rowChanged |= ImGui::Checkbox("2D##Physics2D", &physicsSettings.enable2DPhysics);
+                    return rowChanged;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[R]", "Raycasts", "Default raycast behavior for project tools and runtime helpers.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Raycasts", "Default Distance", "raycast distance")) {
+                changed |= DrawSettingRow("Default Distance", "Fallback max distance for raycast-style project defaults.", [&]() {
+                    if (ImGui::DragFloat("##DefaultRaycastDistance", &physicsSettings.defaultRaycastDistance, 1.0f, 0.01f, 100000.0f, "%.1f")) {
+                        physicsSettings.defaultRaycastDistance = std::max(0.01f, physicsSettings.defaultRaycastDistance);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Raycasts", "Hit Triggers", "trigger colliders")) {
+                changed |= DrawSettingRow("Hit Triggers", "Whether default raycasts should include trigger-style colliders.", [&]() {
+                    return ImGui::Checkbox("##RaycastHitTriggers", &physicsSettings.raycastHitTriggers);
+                });
+            }
+        }
+
+        if (DrawSettingSection("[B]", "Rigidbody Defaults", "Default values used when new rigidbodies are added.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Rigidbody Defaults", "Default Mass", "mass rigidbody")) {
+                changed |= DrawSettingRow("Default Mass", "New Rigidbody mass before per-object edits.", [&]() {
+                    if (ImGui::DragFloat("##DefaultRigidbodyMass", &physicsSettings.defaultRigidbodyMass, 0.05f, 0.0001f, 10000.0f, "%.3f")) {
+                        physicsSettings.defaultRigidbodyMass = std::max(0.0001f, physicsSettings.defaultRigidbodyMass);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rigidbody Defaults", "Default Drag", "drag damping")) {
+                changed |= DrawSettingRow("Default Drag", "New Rigidbody linear drag before per-object edits.", [&]() {
+                    if (ImGui::DragFloat("##DefaultRigidbodyDrag", &physicsSettings.defaultRigidbodyDrag, 0.01f, 0.0f, 100.0f, "%.3f")) {
+                        physicsSettings.defaultRigidbodyDrag = std::max(0.0f, physicsSettings.defaultRigidbodyDrag);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rigidbody Defaults", "Mass Units", "kilograms grams pounds ounces")) {
+                changed |= DrawSettingRow("Mass Units", "Changes how Rigidbody mass values are shown and converted.", [&]() {
+                    int massUnitIndex = static_cast<int>(physicsSettings.massUnit);
+                    const char* massUnitOptions[] = { "Kilograms (kg)", "Grams (g)", "Pounds (lb)", "Ounces (oz)" };
+                    if (ImGui::Combo("##PhysicsMassUnitsManager", &massUnitIndex, massUnitOptions, IM_ARRAYSIZE(massUnitOptions))) {
+                        physicsSettings.massUnit = static_cast<ProjectMassUnit>(
+                            std::clamp(massUnitIndex, 0, static_cast<int>(IM_ARRAYSIZE(massUnitOptions)) - 1));
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[M]", "Default Physics Material", "Surface behavior used by newly authored physics materials.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Default Physics Material", "Friction", "material friction")) {
+                changed |= DrawSettingRow("Friction", "Default surface friction.", [&]() {
+                    if (ImGui::SliderFloat("##DefaultMaterialFriction", &physicsSettings.defaultMaterialFriction, 0.0f, 1.0f, "%.2f")) {
+                        physicsSettings.defaultMaterialFriction = std::clamp(physicsSettings.defaultMaterialFriction, 0.0f, 1.0f);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Default Physics Material", "Bounciness", "restitution")) {
+                changed |= DrawSettingRow("Bounciness", "Default restitution for new physics materials.", [&]() {
+                    if (ImGui::SliderFloat("##DefaultMaterialBounciness", &physicsSettings.defaultMaterialBounciness, 0.0f, 1.0f, "%.2f")) {
+                        physicsSettings.defaultMaterialBounciness = std::clamp(physicsSettings.defaultMaterialBounciness, 0.0f, 1.0f);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (changed) {
+            projectManager.currentProject.saveProjectFile();
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+    } else if (selectedTab == kGraphicsManagerTab) {
+        ProjectGraphicsSettings& graphics = projectManager.currentProject.graphicsSettings;
+        bool changed = false;
+        bool buildSettingsChanged = false;
+
+        if (DrawSettingSection("[B]", "Renderer Backend", "Renderer API and OpenGL renderer controls.")) {
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Renderer Backend", "Renderer API", "opengl vulkan backend")) {
+                changed |= DrawSettingRow("Renderer API", "Changing this may require an editor restart.", [&]() {
+                    int rendererIndex = (projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
+                    const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
+                    if (ImGui::Combo("##ProjectRendererApiGraphics", &rendererIndex, rendererOptions, IM_ARRAYSIZE(rendererOptions))) {
+#if !MODULARITY_HAS_VULKAN
+                        if (rendererIndex == 1) {
+                            rendererIndex = 0;
+                            addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
+                                              ConsoleMessageType::Warning);
+                        }
+#else
+                        if (rendererIndex == 1 && !hasVulkanPipelinePackage()) {
+                            rendererIndex = 0;
+                            addConsoleMessage("Install moduengine.vulkan-pipeline to enable Vulkan. Keeping OpenGL.",
+                                              ConsoleMessageType::Warning);
+                        }
+#endif
+                        projectManager.currentProject.rendererBackend =
+                            (rendererIndex == 1) ? Modularity::GraphicsBackend::Vulkan : Modularity::GraphicsBackend::OpenGL;
+                        return true;
+                    }
+                    return false;
+                });
+                if (projectManager.currentProject.rendererBackend != graphicsBackend) {
+                    DrawHelpText("Current session uses a different renderer. Restart editor to apply this project renderer.");
+                }
+            }
+
+            const bool openGlSettingsAvailable = rendererInitialized && !usingVulkan();
+            if (!openGlSettingsAvailable && IsSettingVisibleForMode(settingsMode, ProjectSettingsVisibilityMode::Advanced)) {
+                DrawHelpText("OpenGL renderer settings are editable only in OpenGL sessions.");
+            }
+            ImGui::BeginDisabled(!openGlSettingsAvailable);
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Renderer Backend", "Ambient Color", "light color")) {
+                buildSettingsChanged |= DrawSettingRow("Ambient Color", "Base light color used by the OpenGL renderer.", [&]() {
+                    glm::vec3 ambient = renderer.getAmbientColor();
+                    if (ImGui::ColorEdit3("##RendererAmbientColorGraphics", &ambient.x)) {
+                        renderer.setAmbientColor(ambient);
+                        buildSettings.rendererAmbientColor = ambient;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Renderer Backend", "Shadow Resolution", "shadow map quality")) {
+                buildSettingsChanged |= DrawSettingRow("Shadow Resolution", "Higher values can look sharper but cost more GPU memory.", [&]() {
+                    int shadowResolution = renderer.getShadowMapResolution();
+                    if (ImGui::SliderInt("##RendererShadowResolutionGraphics", &shadowResolution, 128, 4096)) {
+                        renderer.setShadowMapResolution(shadowResolution);
+                        buildSettings.rendererShadowResolution = renderer.getShadowMapResolution();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Renderer Backend", "Auto Reload Shaders", "developer shader hot reload")) {
+                buildSettingsChanged |= DrawSettingRow("Auto Reload Shaders", "Reloads shaders while editing. Useful for shader development.", [&]() {
+                    bool shaderAutoReload = renderer.isShaderAutoReloadEnabled();
+                    if (ImGui::Checkbox("##RendererAutoReloadShadersGraphics", &shaderAutoReload)) {
+                        renderer.setShaderAutoReload(shaderAutoReload);
+                        buildSettings.rendererAutoReloadShaders = shaderAutoReload;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (DrawSettingSection("[R]", "Runtime Graphics", "Startup graphics behavior for the player.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Runtime Graphics", "VSync", "sync")) {
+                changed |= DrawSettingRow("VSync", "Synchronize presentation to the display refresh.", [&]() {
+                    return ImGui::Checkbox("##GraphicsVSync", &graphics.vsync);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Runtime Graphics", "Target FPS", "frame cap")) {
+                changed |= DrawSettingRow("Target FPS", "Runtime frame-rate target when VSync is not controlling presentation.", [&]() {
+                    return ImGui::DragInt("##GraphicsTargetFps", &graphics.targetFps, 1.0f, 1, 500);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Runtime Graphics", "Startup Mode", "fullscreen windowed")) {
+                changed |= DrawSettingRow("Startup Mode", "Default player window mode.", [&]() {
+                    int mode = graphics.fullscreenStartup ? 1 : 0;
+                    const char* modes[] = { "Windowed", "Fullscreen" };
+                    if (ImGui::Combo("##GraphicsStartupMode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                        graphics.fullscreenStartup = (mode == 1);
+                        projectManager.currentProject.playerSettings.fullscreenStartup = graphics.fullscreenStartup;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[Q]", "Quality", "Renderer quality defaults.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "Shadow Quality", "shadow resolution")) {
+                changed |= DrawSettingRow("Shadow Quality", "Preset for shadow-map quality.", [&]() {
+                    const char* quality[] = { "Off", "Low", "Medium", "High" };
+                    return ImGui::Combo("##ShadowQuality", &graphics.shadowQuality, quality, IM_ARRAYSIZE(quality));
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Quality", "Render Resolution Scale", "resolution scale")) {
+                changed |= DrawSettingRow("Render Resolution Scale", "Scales internal render resolution for performance or supersampling.", [&]() {
+                    return ImGui::SliderFloat("##RenderResolutionScale", &graphics.renderResolutionScale, 0.25f, 2.0f, "%.2fx");
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "Texture Filtering", "point bilinear trilinear")) {
+                changed |= DrawSettingRow("Texture Filtering", "Default sampling mode for newly authored materials.", [&]() {
+                    int filter = static_cast<int>(graphics.textureFiltering);
+                    const char* filters[] = { "Bilinear", "Point", "Trilinear" };
+                    if (ImGui::Combo("##TextureFiltering", &filter, filters, IM_ARRAYSIZE(filters))) {
+                        graphics.textureFiltering = static_cast<ProjectTextureFiltering>(std::clamp(filter, 0, 2));
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Quality", "Anti-aliasing", "msaa")) {
+                changed |= DrawSettingRow("Anti-aliasing", "Default anti-aliasing level for player rendering.", [&]() {
+                    int aa = static_cast<int>(graphics.antiAliasing);
+                    const char* aaOptions[] = { "Off", "MSAA 2x", "MSAA 4x", "MSAA 8x" };
+                    if (ImGui::Combo("##AntiAliasing", &aa, aaOptions, IM_ARRAYSIZE(aaOptions))) {
+                        graphics.antiAliasing = static_cast<ProjectAntiAliasing>(std::clamp(aa, 0, 3));
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[P]", "Preview Overrides", "Editor and game preview graphics overrides.")) {
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Preview Overrides", "Editor Preview Overrides", "editor preview")) {
+                changed |= DrawSettingRow("Editor Preview Overrides", "Allow editor previews to use editor-specific graphics settings.", [&]() {
+                    return ImGui::Checkbox("##EditorPreviewGraphicsOverrides", &graphics.editorPreviewOverrides);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Preview Overrides", "Game Preview Overrides", "game preview")) {
+                changed |= DrawSettingRow("Game Preview Overrides", "Allow the Game View to override runtime graphics defaults.", [&]() {
+                    return ImGui::Checkbox("##GamePreviewGraphicsOverrides", &graphics.gamePreviewOverrides);
+                });
+            }
+        }
+
+        if (changed) {
+            graphics.targetFps = std::clamp(graphics.targetFps, 1, 500);
+            graphics.shadowQuality = std::clamp(graphics.shadowQuality, 0, 3);
+            graphics.renderResolutionScale = std::clamp(graphics.renderResolutionScale, 0.25f, 2.0f);
+            projectManager.currentProject.saveProjectFile();
+        }
+        if (buildSettingsChanged) {
+            saveBuildSettings();
+        }
+    } else if (selectedTab == kTagsLayersTab) {
+        auto drawNameList = [&](const char* section, std::vector<std::string>& values, const char* defaultName, int maxCount) {
+            bool changed = false;
+            if (values.empty()) values.push_back(defaultName);
+            if (values[0].empty()) values[0] = defaultName;
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (!ProjectSettingsMatchesSearch(settingsSearch, section, values[i].c_str(), "tags layers names")) continue;
+                ++visibleSettingCount;
+                ImGui::PushID(static_cast<int>(i));
+                char buffer[128];
+                std::snprintf(buffer, sizeof(buffer), "%s", values[i].c_str());
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150.0f);
+                if (ImGui::InputText("##Name", buffer, sizeof(buffer))) {
+                    std::string next = TrimCopy(buffer);
+                    if (IsValidProjectNameToken(next) && !HasDuplicateProjectNameToken(values, next, i)) {
+                        values[i] = next;
+                        changed = true;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("#%zu", i);
+                ImGui::SameLine();
+                ImGui::BeginDisabled(i == 0);
+                if (ImGui::SmallButton("Up") && i > 1) {
+                    std::swap(values[i], values[i - 1]);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Down") && i + 1 < values.size()) {
+                    std::swap(values[i], values[i + 1]);
+                    changed = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Remove") && i != 0) {
+                    values.erase(values.begin() + static_cast<std::ptrdiff_t>(i));
+                    changed = true;
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    break;
+                }
+                ImGui::EndDisabled();
+                if (!IsValidProjectNameToken(values[i]) || HasDuplicateProjectNameToken(values, values[i], i)) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Invalid");
+                }
+                ImGui::PopID();
+            }
+            ImGui::BeginDisabled(static_cast<int>(values.size()) >= maxCount);
+            if (ImGui::Button((std::string("+ Add ") + section).c_str())) {
+                std::string base = std::string(section) + " " + std::to_string(values.size());
+                int suffix = static_cast<int>(values.size());
+                while (HasDuplicateProjectNameToken(values, base, SIZE_MAX)) {
+                    base = std::string(section) + " " + std::to_string(++suffix);
+                }
+                values.push_back(base);
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            return changed;
+        };
+
+        bool changed = false;
+        if (DrawSettingSection("[L]", "Layers", "Name-based layers with stable internal numeric indices.")) {
+            DrawHelpText("Layer references keep serializing as numbers internally. Names only make the editor safer to read.");
+            changed |= drawNameList("Layer", projectManager.currentProject.physicsSettings.collisionLayers, "Default", 32);
+        }
+        if (DrawSettingSection("[T]", "Tags", "Reusable object tags with validation.")) {
+            changed |= drawNameList("Tag", projectManager.currentProject.tags, "Untagged", 256);
+        }
+        if (changed) {
+            projectManager.currentProject.saveProjectFile();
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+    } else if (selectedTab == kConsoleConfigTab) {
+        ProjectConsoleSettings& consoleConfig = projectManager.currentProject.consoleSettings;
+        bool changed = false;
+        if (DrawSettingSection("[C]", "Console Behavior", "How the console appears while editing and testing.")) {
+            changed |= DrawSettingRow("Console Mode", "Choose how the console should appear by default.", [&]() {
+                int mode = static_cast<int>(consoleConfig.mode);
+                const char* modes[] = { "Docked mini-button", "Floating window" };
+                if (ImGui::Combo("##ConsoleMode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    consoleConfig.mode = static_cast<ProjectConsoleMode>(std::clamp(mode, 0, 1));
+                    return true;
+                }
+                return false;
+            });
+            changed |= DrawSettingRow("Always Open on Launch", "Show the console automatically when the editor opens this project.", [&]() {
+                return ImGui::Checkbox("##ConsoleAlwaysOpenOnLaunch", &consoleConfig.alwaysOpenOnLaunch);
+            });
+            changed |= DrawSettingRow("Open Only on Errors", "Keep the console quiet until errors happen.", [&]() {
+                return ImGui::Checkbox("##ConsoleOpenOnlyOnErrors", &consoleConfig.openOnlyOnErrors);
+            });
+            changed |= DrawSettingRow("Console Tone", "Choose expressive or professional console message wording.", [&]() {
+                int tone = static_cast<int>(consoleConfig.tone);
+                const char* tones[] = { "Fun", "Concise" };
+                if (ImGui::Combo("##ConsoleTone", &tone, tones, IM_ARRAYSIZE(tones))) {
+                    consoleConfig.tone = static_cast<ProjectConsoleTone>(std::clamp(tone, 0, 1));
+                    return true;
+                }
+                return false;
+            });
+        }
+        if (changed) projectManager.currentProject.saveProjectFile();
+    } else if (selectedTab == kAudioConfigTab) {
+        bool editorSettingsChanged = false;
+
+        if (sectionVisible("Audio", ProjectSettingsVisibilityMode::Simple) &&
+            DrawSettingSection("[A]", "Audio", "Editor preview and feedback sounds.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Audio", "Feedback Sounds", "click error editor sounds")) {
+                editorSettingsChanged |= DrawSettingRow("Feedback Sounds", "Plays short editor sounds for clicks and status feedback.", [&]() {
+                    return ImGui::Checkbox("##FeedbackSounds", &feedbackSoundsEnabled);
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Audio", "Preview Volume", "asset browser audio")) {
+                editorSettingsChanged |= DrawSettingRow("Preview Volume", "Volume for audio previews in editor tools.", [&]() {
+                    return ImGui::SliderFloat("##AudioPreviewVolume", &audioPreviewVolume, 0.0f, 2.0f, "%.2f");
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Developer, "Audio", "Sound Categories", "click error other feedback")) {
+                editorSettingsChanged |= DrawSettingRow("Sound Categories", "Developer toggles for individual editor sound groups.", [&]() {
+                    bool changed = false;
+                    changed |= ImGui::Checkbox("Click##FeedbackClickSounds", &feedbackClickSoundsEnabled);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Error##FeedbackErrorSounds", &feedbackErrorSoundsEnabled);
+                    ImGui::SameLine();
+                    changed |= ImGui::Checkbox("Other##FeedbackOtherSounds", &feedbackOtherSoundsEnabled);
+                    return changed;
+                });
+            }
+        }
+
+        if (settingsSearch[0] != '\0' && visibleSettingCount == 0) {
+            ImGui::TextDisabled("No audio settings match this search.");
+        }
+
+        if (editorSettingsChanged) {
+            saveEditorUserSettings();
+        }
+    } else if (selectedTab == kPlayerConfigTab) {
+        ProjectPlayerSettings& player = projectManager.currentProject.playerSettings;
+        bool changed = false;
+        auto drawStringSetting = [&](const char* label, const char* helper, std::string& value, size_t bufferSize = 256) {
+            return DrawSettingRow(label, helper, [&]() {
+                std::vector<char> buffer(bufferSize, '\0');
+                std::snprintf(buffer.data(), buffer.size(), "%s", value.c_str());
+                if (ImGui::InputText("##Text", buffer.data(), buffer.size())) {
+                    value = TrimCopy(buffer.data());
+                    return true;
+                }
+                return false;
+            });
+        };
+        if (DrawSettingSection("[A]", "Application", "Player identity and startup scene.")) {
+            changed |= drawStringSetting("Product Name", "Name shown for exported players.", player.productName);
+            changed |= drawStringSetting("Company Name", "Company or studio name used by builds and save paths.", player.companyName);
+            changed |= DrawSettingRow("Default Scene", "Scene loaded first by the player.", [&]() {
+                auto scenes = projectManager.currentProject.getSceneList();
+                std::vector<const char*> sceneNames;
+                sceneNames.reserve(scenes.size());
+                int current = 0;
+                for (size_t i = 0; i < scenes.size(); ++i) {
+                    sceneNames.push_back(scenes[i].c_str());
+                    if (scenes[i] == player.defaultScene) current = static_cast<int>(i);
+                }
+                if (sceneNames.empty()) {
+                    ImGui::TextDisabled("No scenes available");
+                    return false;
+                }
+                if (ImGui::Combo("##DefaultScene", &current, sceneNames.data(), static_cast<int>(sceneNames.size()))) {
+                    player.defaultScene = scenes[static_cast<size_t>(current)];
+                    projectManager.currentProject.currentSceneName = player.defaultScene;
+                    return true;
+                }
+                return false;
+            });
+            changed |= drawStringSetting("Application Icon", "Path to the icon asset used by supported build targets.", player.applicationIconPath, 512);
+        }
+        if (DrawSettingSection("[W]", "Window and Cursor", "Startup resolution, fullscreen mode, and cursor defaults.")) {
+            changed |= DrawSettingRow("Startup Resolution", "Default player window size.", [&]() {
+                bool rowChanged = ImGui::DragInt("Width##PlayerStartupWidth", &player.startupWidth, 1.0f, 64, 8192);
+                rowChanged |= ImGui::DragInt("Height##PlayerStartupHeight", &player.startupHeight, 1.0f, 64, 8192);
+                if (rowChanged) {
+                    player.startupWidth = std::clamp(player.startupWidth, 64, 8192);
+                    player.startupHeight = std::clamp(player.startupHeight, 64, 8192);
+                }
+                return rowChanged;
+            });
+            changed |= DrawSettingRow("Fullscreen Startup", "Launch the player fullscreen by default.", [&]() {
+                return ImGui::Checkbox("##PlayerFullscreenStartup", &player.fullscreenStartup);
+            });
+            changed |= DrawSettingRow("Cursor Defaults", "Initial cursor lock and visibility.", [&]() {
+                bool rowChanged = ImGui::Checkbox("Locked##CursorLocked", &player.cursorLocked);
+                ImGui::SameLine();
+                rowChanged |= ImGui::Checkbox("Visible##CursorVisible", &player.cursorVisible);
+                return rowChanged;
+            });
+        }
+        if (DrawSettingSection("[B]", "Build Defaults", "Default target and save-data behavior for player builds.")) {
+            changed |= drawStringSetting("Build Target", "Default build target used when opening build settings.", player.buildTarget);
+            changed |= drawStringSetting("Save Data Path", "How the runtime groups persistent save data.", player.saveDataPathBehavior);
+        }
+        if (changed) {
+            if (player.productName.empty()) player.productName = projectManager.currentProject.name;
+            if (player.companyName.empty()) player.companyName = "DefaultCompany";
+            projectManager.currentProject.saveProjectFile();
+        }
     } else if (selectedTab == kEditorTab) {
         bool editorSettingsChanged = false;
         bool buildSettingsChanged = false;
@@ -4052,126 +4620,6 @@ void Engine::renderProjectBrowserPanel() {
                     ImGui::EndDisabled();
                     if (changed) pixelGridSnapStep = std::clamp(pixelGridSnapStep, 1, 64);
                     return changed;
-                });
-            }
-        }
-
-        if (sectionVisible("Rendering", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[R]", "Rendering", "Renderer and visual quality controls.")) {
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rendering", "Renderer API", "opengl vulkan backend")) {
-                DrawSettingRow("Renderer API", "Changing this may require an editor restart.", [&]() {
-                    int rendererIndex = (projectManager.currentProject.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
-                    const char* rendererOptions[] = { "OpenGL", "Vulkan (Experimental)" };
-                    if (ImGui::Combo("##ProjectRendererApi", &rendererIndex, rendererOptions, IM_ARRAYSIZE(rendererOptions))) {
-#if !MODULARITY_HAS_VULKAN
-                        if (rendererIndex == 1) {
-                            rendererIndex = 0;
-                            addConsoleMessage("Vulkan renderer is unavailable in this build. Keeping OpenGL.",
-                                              ConsoleMessageType::Warning);
-                        }
-#else
-                        if (rendererIndex == 1 && !hasVulkanPipelinePackage()) {
-                            rendererIndex = 0;
-                            addConsoleMessage("Install moduengine.vulkan-pipeline to enable Vulkan. Keeping OpenGL.",
-                                              ConsoleMessageType::Warning);
-                        }
-#endif
-                        projectManager.currentProject.rendererBackend =
-                            (rendererIndex == 1) ? Modularity::GraphicsBackend::Vulkan : Modularity::GraphicsBackend::OpenGL;
-                        projectManager.currentProject.saveProjectFile();
-                        return true;
-                    }
-                    return false;
-                });
-                if (projectManager.currentProject.rendererBackend != graphicsBackend) {
-                    DrawHelpText("Current session uses a different renderer. Restart editor to apply this project renderer.");
-                }
-            }
-
-            const bool openGlSettingsAvailable = rendererInitialized && !usingVulkan();
-            if (!openGlSettingsAvailable && IsSettingVisibleForMode(settingsMode, ProjectSettingsVisibilityMode::Advanced)) {
-                DrawHelpText("OpenGL renderer settings are editable only in OpenGL sessions.");
-            }
-            ImGui::BeginDisabled(!openGlSettingsAvailable);
-            if (visible(ProjectSettingsVisibilityMode::Simple, "Rendering", "Ambient Color", "light color")) {
-                buildSettingsChanged |= DrawSettingRow("Ambient Color", "Base light color used by the OpenGL renderer.", [&]() {
-                    glm::vec3 ambient = renderer.getAmbientColor();
-                    if (ImGui::ColorEdit3("##RendererAmbientColor", &ambient.x)) {
-                        renderer.setAmbientColor(ambient);
-                        buildSettings.rendererAmbientColor = ambient;
-                        return true;
-                    }
-                    return false;
-                });
-            }
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Rendering", "Shadow Resolution", "shadow map quality")) {
-                buildSettingsChanged |= DrawSettingRow("Shadow Resolution", "Higher values can look sharper but cost more GPU memory.", [&]() {
-                    int shadowResolution = renderer.getShadowMapResolution();
-                    if (ImGui::SliderInt("##RendererShadowResolution", &shadowResolution, 128, 4096)) {
-                        renderer.setShadowMapResolution(shadowResolution);
-                        buildSettings.rendererShadowResolution = renderer.getShadowMapResolution();
-                        return true;
-                    }
-                    return false;
-                });
-            }
-            if (visible(ProjectSettingsVisibilityMode::Developer, "Rendering", "Auto Reload Shaders", "developer shader hot reload")) {
-                buildSettingsChanged |= DrawSettingRow("Auto Reload Shaders", "Reloads shaders while editing. Useful for shader development.", [&]() {
-                    bool shaderAutoReload = renderer.isShaderAutoReloadEnabled();
-                    if (ImGui::Checkbox("##RendererAutoReloadShaders", &shaderAutoReload)) {
-                        renderer.setShaderAutoReload(shaderAutoReload);
-                        buildSettings.rendererAutoReloadShaders = shaderAutoReload;
-                        return true;
-                    }
-                    return false;
-                });
-            }
-            ImGui::EndDisabled();
-        }
-
-        if (sectionVisible("Physics", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[F]", "Physics", "Project-wide physics defaults.")) {
-            ProjectPhysicsSettings& physicsSettings = projectManager.currentProject.physicsSettings;
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Physics", "Mass Units", "kilograms grams pounds ounces")) {
-                DrawSettingRow("Mass Units", "Changes how Rigidbody mass values are shown and converted.", [&]() {
-                    int massUnitIndex = static_cast<int>(physicsSettings.massUnit);
-                    const char* massUnitOptions[] = { "Kilograms (kg)", "Grams (g)", "Pounds (lb)", "Ounces (oz)" };
-                    if (ImGui::Combo("##PhysicsMassUnits", &massUnitIndex, massUnitOptions, IM_ARRAYSIZE(massUnitOptions))) {
-                        const ProjectMassUnit previousUnit = physicsSettings.massUnit;
-                        const ProjectMassUnit nextUnit = static_cast<ProjectMassUnit>(
-                            std::clamp(massUnitIndex, 0, static_cast<int>(IM_ARRAYSIZE(massUnitOptions)) - 1));
-                        if (previousUnit != nextUnit) {
-                            const float previousScale = std::max(0.000001f, ProjectMassUnitToKilograms(previousUnit));
-                            const float nextScale = std::max(0.000001f, ProjectMassUnitToKilograms(nextUnit));
-                            for (SceneObject& obj : sceneObjects) {
-                                if (!obj.hasRigidbody) continue;
-                                obj.rigidbody.mass = std::max(0.0001f, obj.rigidbody.mass * (previousScale / nextScale));
-                            }
-                            physicsSettings.massUnit = nextUnit;
-                            projectManager.currentProject.saveProjectFile();
-                            projectManager.currentProject.hasUnsavedChanges = true;
-                            physics.setProjectSettings(physicsSettings);
-                            if ((isPlaying || specMode || testMode) && physics.isReady()) {
-                                physics.onPlayStart(sceneObjects);
-                            }
-                        }
-                        return true;
-                    }
-                    return false;
-                });
-            }
-
-            if (visible(ProjectSettingsVisibilityMode::Simple, "Physics", "World Gravity Strength", "global gravity scale")) {
-                DrawSettingRow("World Gravity Strength", "3D and 2D runtime gravity use this project-wide multiplier.", [&]() {
-                    float gravityScale = physicsSettings.globalGravityScale;
-                    if (ImGui::DragFloat("##WorldGravityStrength", &gravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
-                        physicsSettings.globalGravityScale = std::clamp(gravityScale, 0.0f, 10.0f);
-                        projectManager.currentProject.saveProjectFile();
-                        projectManager.currentProject.hasUnsavedChanges = true;
-                        physics.setProjectSettings(physicsSettings);
-                        return true;
-                    }
-                    return false;
                 });
             }
         }
@@ -4259,31 +4707,6 @@ void Engine::renderProjectBrowserPanel() {
             }
         }
 
-        if (sectionVisible("Audio", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[A]", "Audio", "Editor preview and feedback sounds.")) {
-            if (visible(ProjectSettingsVisibilityMode::Simple, "Audio", "Feedback Sounds", "click error editor sounds")) {
-                editorSettingsChanged |= DrawSettingRow("Feedback Sounds", "Plays short editor sounds for clicks and status feedback.", [&]() {
-                    return ImGui::Checkbox("##FeedbackSounds", &feedbackSoundsEnabled);
-                });
-            }
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Audio", "Preview Volume", "asset browser audio")) {
-                editorSettingsChanged |= DrawSettingRow("Preview Volume", "Volume for audio previews in editor tools.", [&]() {
-                    return ImGui::SliderFloat("##AudioPreviewVolume", &audioPreviewVolume, 0.0f, 2.0f, "%.2f");
-                });
-            }
-            if (visible(ProjectSettingsVisibilityMode::Developer, "Audio", "Sound Categories", "click error other feedback")) {
-                editorSettingsChanged |= DrawSettingRow("Sound Categories", "Developer toggles for individual editor sound groups.", [&]() {
-                    bool changed = false;
-                    changed |= ImGui::Checkbox("Click##FeedbackClickSounds", &feedbackClickSoundsEnabled);
-                    ImGui::SameLine();
-                    changed |= ImGui::Checkbox("Error##FeedbackErrorSounds", &feedbackErrorSoundsEnabled);
-                    ImGui::SameLine();
-                    changed |= ImGui::Checkbox("Other##FeedbackOtherSounds", &feedbackOtherSoundsEnabled);
-                    return changed;
-                });
-            }
-        }
-
         if (sectionVisible("Build", ProjectSettingsVisibilityMode::Simple) &&
             DrawSettingSection("[B]", "Build", "Build profile shortcuts. Full controls remain in the Build tab.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Platform", "target windows linux android")) {
@@ -4316,7 +4739,7 @@ void Engine::renderProjectBrowserPanel() {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Open Build Settings", "advanced build window")) {
                 DrawSettingRow("More Build Options", "Open the dedicated Build tab for scenes, packaging, and export.", [&]() {
                     if (ImGui::Button("Open Build Tab")) {
-                        selectedTab = 3;
+                        selectedTab = kBuildTab;
                         return true;
                     }
                     return false;
@@ -4379,6 +4802,11 @@ void Engine::renderProjectBrowserPanel() {
                         buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 0.05f, buildSettings.editorCameraFar);
                     }
                     return changed;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Editor", "Hierarchy Texture Preview", "hierarchy texture thumbnails")) {
+                editorSettingsChanged |= DrawSettingRow("Hierarchy Texture Preview", "Shows small material texture thumbnails in the Hierarchy panel.", [&]() {
+                    return ImGui::Checkbox("##HierarchyTexturePreview", &hierarchyShowTexturePreview);
                 });
             }
         }
@@ -4721,7 +5149,7 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (sectionVisible("scripts.modu", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[S]", "scripts.modu", "Project script compiler configuration. C++26 is the default; C++23 is a fallback.")) {
+            DrawSettingSection("[S]", "scripts.modu", "Project script compiler configuration and compatibility settings.")) {
             auto editString = [&](const char* label, std::string& value, size_t capacity = 1024) {
                 std::vector<char> buf(capacity, '\0');
                 std::snprintf(buf.data(), buf.size(), "%s", value.c_str());
@@ -4749,31 +5177,29 @@ void Engine::renderProjectBrowserPanel() {
                 if (value == "gnu++2c") return std::string("gnu++26");
                 return value;
             };
-            auto isDeprecatedCppStd = [&](const std::string& value) {
-                const std::string normalized = canonicalCppStd(value);
-                return normalized == "c++17" || normalized == "gnu++17" ||
-                       normalized == "c++14" || normalized == "gnu++14";
-            };
-
             static const char* cppStdLabels[] = {
-                "c++26 (Default)",
-                "c++23",
+                "c++14 (Default)",
+                "c++17",
                 "c++20",
-                "c++17 (Deprecated)",
-                "gnu++26",
-                "gnu++23",
+                "c++23",
+                "c++26",
+                "gnu++14",
+                "gnu++17",
                 "gnu++20",
-                "gnu++17 (Deprecated)"
+                "gnu++23",
+                "gnu++26"
             };
             static const char* cppStdValues[] = {
-                "c++26",
-                "c++23",
-                "c++20",
+                "c++14",
                 "c++17",
-                "gnu++26",
-                "gnu++23",
+                "c++20",
+                "c++23",
+                "c++26",
+                "gnu++14",
+                "gnu++17",
                 "gnu++20",
-                "gnu++17"
+                "gnu++23",
+                "gnu++26"
             };
 
             int cppIdx = 0;
@@ -4784,11 +5210,9 @@ void Engine::renderProjectBrowserPanel() {
                     break;
                 }
             }
-            if (visible(ProjectSettingsVisibilityMode::Simple, "scripts.modu", "C++ Standard", "cpp c++26 c++23")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "scripts.modu", "C++ Standard", "cpp c++26 c++23 c++20 c++17 c++14")) {
                 DrawSettingRow("C++ Standard",
-                               isDeprecatedCppStd(ui.config.cppStandard)
-                                   ? "Standards below C++20 are deprecated and may be removed later."
-                                   : "Default is C++26. Use C++23 if your toolchain is not ready for C++26 yet.",
+                               "Default is C++14 for older toolchain compatibility. Use newer standards when a script needs them.",
                                [&]() {
                     if (ImGui::Combo("##CppStandard", &cppIdx, cppStdLabels, IM_ARRAYSIZE(cppStdLabels))) {
                         ui.config.cppStandard = cppStdValues[cppIdx];

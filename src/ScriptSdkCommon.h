@@ -7,7 +7,17 @@
 #include <cstdlib>
 #include <ctime>
 #include <chrono>
+#if __cplusplus >= 201703L
 #include <filesystem>
+#elif defined(__has_include)
+#if __has_include(<experimental/filesystem>)
+#include <experimental/filesystem>
+#else
+#error "Modularity script SDK requires <filesystem> or <experimental/filesystem>."
+#endif
+#else
+#include <experimental/filesystem>
+#endif
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -22,7 +32,20 @@
 #include "ThirdParty/glm/gtc/quaternion.hpp"
 #include "ThirdParty/glm/gtc/type_ptr.hpp"
 
+#if __cplusplus < 201703L
+namespace std {
+template <typename T>
+constexpr const T& clamp(const T& value, const T& low, const T& high) {
+    return value < low ? low : (high < value ? high : value);
+}
+}
+#endif
+
+#if __cplusplus >= 201703L
 namespace fs = std::filesystem;
+#else
+namespace fs = std::experimental::filesystem;
+#endif
 
 #ifndef MODULARITY_COMMON_SHARED_DECLS
 #define MODULARITY_COMMON_SHARED_DECLS

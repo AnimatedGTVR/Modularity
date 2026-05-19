@@ -422,13 +422,21 @@ struct TimeFacade {
     float& deltaTime;
 };
 
+#if __cplusplus >= 201703L
 inline thread_local TimeFacade time{ detail::gFrameDeltaTime };
+#else
+static thread_local TimeFacade time{ detail::gFrameDeltaTime };
+#endif
 
 struct EngineFacade {
     float& FPS;
 };
 
+#if __cplusplus >= 201703L
 inline thread_local EngineFacade ModuEngine{ detail::gFrameFps };
+#else
+static thread_local EngineFacade ModuEngine{ detail::gFrameFps };
+#endif
 
 struct SpriteFacade {
     bool HasClips() const {

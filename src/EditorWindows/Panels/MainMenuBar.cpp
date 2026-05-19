@@ -213,6 +213,11 @@ void Engine::renderMainMenuBar() {
       if (prevRegistryPackages != showRegistryPackagesWindow) {
         saveEditorUserSettings();
       }
+      bool prevProfilerWindow = showGameProfilerWindow;
+      ImGui::MenuItem("Profiler", nullptr, &showGameProfilerWindow);
+      if (prevProfilerWindow != showGameProfilerWindow) {
+        saveEditorUserSettings();
+      }
       /*if (hasMeshBuilderPackage()) {
         ImGui::MenuItem("Mesh Builder (Legacy Window)", nullptr,
                         &showMeshBuilder);

@@ -410,3 +410,14 @@ void Engine::drawGameProfilerContent() {
         ImGui::TextDisabled("GPU timing is unavailable for this frame. OpenGL timing requires an active game render.");
     }
 }
+
+void Engine::renderGameProfilerWindow() {
+    const bool wasOpen = showGameProfilerWindow;
+    if (ImGui::Begin("Profiler", &showGameProfilerWindow)) {
+        drawGameProfilerContent();
+    }
+    ImGui::End();
+    if (wasOpen != showGameProfilerWindow) {
+        saveEditorUserSettings();
+    }
+}

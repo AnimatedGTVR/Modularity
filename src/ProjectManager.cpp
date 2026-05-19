@@ -61,6 +61,70 @@ const char* SerializeProjectMassUnit(ProjectMassUnit unit) {
     }
 }
 
+ProjectTextureFiltering ParseProjectTextureFiltering(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "point" || value == "nearest" || value == "1") return ProjectTextureFiltering::Point;
+    if (value == "trilinear" || value == "2") return ProjectTextureFiltering::Trilinear;
+    return ProjectTextureFiltering::Bilinear;
+}
+
+const char* SerializeProjectTextureFiltering(ProjectTextureFiltering value) {
+    switch (value) {
+        case ProjectTextureFiltering::Point: return "Point";
+        case ProjectTextureFiltering::Trilinear: return "Trilinear";
+        case ProjectTextureFiltering::Bilinear:
+        default: return "Bilinear";
+    }
+}
+
+ProjectAntiAliasing ParseProjectAntiAliasing(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "off" || value == "none" || value == "0") return ProjectAntiAliasing::Off;
+    if (value == "2x" || value == "msaa2x" || value == "1") return ProjectAntiAliasing::MSAA2x;
+    if (value == "8x" || value == "msaa8x" || value == "3") return ProjectAntiAliasing::MSAA8x;
+    return ProjectAntiAliasing::MSAA4x;
+}
+
+const char* SerializeProjectAntiAliasing(ProjectAntiAliasing value) {
+    switch (value) {
+        case ProjectAntiAliasing::Off: return "Off";
+        case ProjectAntiAliasing::MSAA2x: return "MSAA2x";
+        case ProjectAntiAliasing::MSAA8x: return "MSAA8x";
+        case ProjectAntiAliasing::MSAA4x:
+        default: return "MSAA4x";
+    }
+}
+
+ProjectConsoleMode ParseProjectConsoleMode(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "floatingwindow" || value == "floating" || value == "1") return ProjectConsoleMode::FloatingWindow;
+    return ProjectConsoleMode::DockedMiniButton;
+}
+
+const char* SerializeProjectConsoleMode(ProjectConsoleMode value) {
+    return value == ProjectConsoleMode::FloatingWindow ? "FloatingWindow" : "DockedMiniButton";
+}
+
+ProjectConsoleTone ParseProjectConsoleTone(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "concise" || value == "professional" || value == "1") return ProjectConsoleTone::Concise;
+    return ProjectConsoleTone::Fun;
+}
+
+const char* SerializeProjectConsoleTone(ProjectConsoleTone value) {
+    return value == ProjectConsoleTone::Concise ? "Concise" : "Fun";
+}
+
+bool ParseProjectBool(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
 bool ScriptPathContains(const ScriptComponent& script, const char* token) {
     if (!token || !*token) return false;
     std::string pathLower = script.path;
@@ -123,6 +187,8 @@ Project::Project(const std::string& projectName, const fs::path& basePath)
     usesNewLayout = true;
     pipeline = ProjectPipeline::Pipeline3D;
     rendererBackend = Modularity::GraphicsBackend::OpenGL;
+    playerSettings.productName = projectName;
+    playerSettings.defaultScene = "Main";
 }
 
 bool Project::create() {
@@ -147,9 +213,8 @@ bool Project::create() {
         // Initialize a default scripting build file
         std::ofstream scriptCfg(scriptsConfigPath);
         scriptCfg << "# scripts.modu\n";
-        scriptCfg << "# Default native script target is C++26. Use c++23 if your compiler is not ready for C++26 yet.\n";
-        scriptCfg << "# ModuCPP standards below C++20 are deprecated and may be removed in a later version.\n";
-        scriptCfg << "cppStandard=c++26\n";
+        scriptCfg << "# Default native script target is C++14 for older toolchain compatibility. Use c++17, c++20, c++23, or c++26 when needed.\n";
+        scriptCfg << "cppStandard=c++14\n";
         scriptCfg << "scriptsDir=Assets/Scripts\n";
         scriptCfg << "outDir=Library/CompiledScripts\n";
         scriptCfg << "define=MODU_SCRIPTING=1\n";
@@ -219,19 +284,105 @@ bool Project::load(const fs::path& projectFilePath) {
 
         std::string line;
         while (std::getline(file, line)) {
+            const size_t equals = line.find('=');
+            const std::string key = equals == std::string::npos ? line : line.substr(0, equals);
+            const std::string value = equals == std::string::npos ? std::string() : line.substr(equals + 1);
             if (line.find("name=") == 0) {
-                name = line.substr(5);
+                name = value;
             } else if (line.find("lastScene=") == 0) {
-                currentSceneName = line.substr(10);
+                currentSceneName = value;
             } else if (line.find("pipeline=") == 0) {
-                pipeline = ParseProjectPipeline(line.substr(9));
+                pipeline = ParseProjectPipeline(value);
             } else if (line.find("renderer=") == 0) {
-                std::string value = line.substr(9);
                 rendererBackend = Modularity::GraphicsBackendFromString(value);
             } else if (line.find("physicsMassUnit=") == 0) {
-                physicsSettings.massUnit = ParseProjectMassUnit(line.substr(16));
+                physicsSettings.massUnit = ParseProjectMassUnit(value);
             } else if (line.find("physicsGlobalGravityScale=") == 0) {
-                physicsSettings.globalGravityScale = std::max(0.0f, std::stof(line.substr(26)));
+                physicsSettings.globalGravityScale = std::max(0.0f, std::stof(value));
+            } else if (key == "physicsFixedTimestep") {
+                physicsSettings.fixedTimestep = std::clamp(std::stof(value), 0.001f, 0.1f);
+            } else if (key == "physicsSolverIterations") {
+                physicsSettings.solverIterations = std::clamp(std::stoi(value), 1, 64);
+            } else if (key == "physicsEnable3D") {
+                physicsSettings.enable3DPhysics = ParseProjectBool(value);
+            } else if (key == "physicsEnable2D") {
+                physicsSettings.enable2DPhysics = ParseProjectBool(value);
+            } else if (key == "physicsDefaultRaycastDistance") {
+                physicsSettings.defaultRaycastDistance = std::max(0.01f, std::stof(value));
+            } else if (key == "physicsRaycastHitTriggers") {
+                physicsSettings.raycastHitTriggers = ParseProjectBool(value);
+            } else if (key == "physicsDefaultRigidbodyMass") {
+                physicsSettings.defaultRigidbodyMass = std::max(0.0001f, std::stof(value));
+            } else if (key == "physicsDefaultRigidbodyDrag") {
+                physicsSettings.defaultRigidbodyDrag = std::max(0.0f, std::stof(value));
+            } else if (key == "physicsDefaultMaterialFriction") {
+                physicsSettings.defaultMaterialFriction = std::clamp(std::stof(value), 0.0f, 1.0f);
+            } else if (key == "physicsDefaultMaterialBounciness") {
+                physicsSettings.defaultMaterialBounciness = std::clamp(std::stof(value), 0.0f, 1.0f);
+            } else if (key.rfind("physicsLayer", 0) == 0 && key.size() > 12 && key.substr(key.size() - 5) == "_name") {
+                int index = std::stoi(key.substr(12, key.size() - 17));
+                if (index >= 0 && index < 32) {
+                    if (physicsSettings.collisionLayers.size() <= static_cast<size_t>(index)) {
+                        physicsSettings.collisionLayers.resize(static_cast<size_t>(index) + 1);
+                    }
+                    physicsSettings.collisionLayers[static_cast<size_t>(index)] = value;
+                }
+            } else if (key.rfind("tag", 0) == 0 && key.size() > 5 && key.substr(key.size() - 5) == "_name") {
+                int index = std::stoi(key.substr(3, key.size() - 8));
+                if (index >= 0 && index < 256) {
+                    if (tags.size() <= static_cast<size_t>(index)) {
+                        tags.resize(static_cast<size_t>(index) + 1);
+                    }
+                    tags[static_cast<size_t>(index)] = value;
+                }
+            } else if (key == "graphicsVSync") {
+                graphicsSettings.vsync = ParseProjectBool(value);
+            } else if (key == "graphicsTargetFps") {
+                graphicsSettings.targetFps = std::clamp(std::stoi(value), 1, 500);
+            } else if (key == "graphicsShadowQuality") {
+                graphicsSettings.shadowQuality = std::clamp(std::stoi(value), 0, 3);
+            } else if (key == "graphicsRenderResolutionScale") {
+                graphicsSettings.renderResolutionScale = std::clamp(std::stof(value), 0.25f, 2.0f);
+            } else if (key == "graphicsTextureFiltering") {
+                graphicsSettings.textureFiltering = ParseProjectTextureFiltering(value);
+            } else if (key == "graphicsAntiAliasing") {
+                graphicsSettings.antiAliasing = ParseProjectAntiAliasing(value);
+            } else if (key == "graphicsFullscreenStartup") {
+                graphicsSettings.fullscreenStartup = ParseProjectBool(value);
+            } else if (key == "graphicsEditorPreviewOverrides") {
+                graphicsSettings.editorPreviewOverrides = ParseProjectBool(value);
+            } else if (key == "graphicsGamePreviewOverrides") {
+                graphicsSettings.gamePreviewOverrides = ParseProjectBool(value);
+            } else if (key == "consoleMode") {
+                consoleSettings.mode = ParseProjectConsoleMode(value);
+            } else if (key == "consoleAlwaysOpenOnLaunch") {
+                consoleSettings.alwaysOpenOnLaunch = ParseProjectBool(value);
+            } else if (key == "consoleOpenOnlyOnErrors") {
+                consoleSettings.openOnlyOnErrors = ParseProjectBool(value);
+            } else if (key == "consoleTone") {
+                consoleSettings.tone = ParseProjectConsoleTone(value);
+            } else if (key == "playerProductName") {
+                playerSettings.productName = value;
+            } else if (key == "playerCompanyName") {
+                playerSettings.companyName = value;
+            } else if (key == "playerDefaultScene") {
+                playerSettings.defaultScene = value;
+            } else if (key == "playerStartupWidth") {
+                playerSettings.startupWidth = std::clamp(std::stoi(value), 64, 8192);
+            } else if (key == "playerStartupHeight") {
+                playerSettings.startupHeight = std::clamp(std::stoi(value), 64, 8192);
+            } else if (key == "playerFullscreenStartup") {
+                playerSettings.fullscreenStartup = ParseProjectBool(value);
+            } else if (key == "playerCursorLocked") {
+                playerSettings.cursorLocked = ParseProjectBool(value);
+            } else if (key == "playerCursorVisible") {
+                playerSettings.cursorVisible = ParseProjectBool(value);
+            } else if (key == "playerBuildTarget") {
+                playerSettings.buildTarget = value;
+            } else if (key == "playerApplicationIcon") {
+                playerSettings.applicationIconPath = value;
+            } else if (key == "playerSaveDataPathBehavior") {
+                playerSettings.saveDataPathBehavior = value;
             }
         }
         file.close();
@@ -239,6 +390,16 @@ bool Project::load(const fs::path& projectFilePath) {
         if (currentSceneName.empty()) {
             currentSceneName = "Main";
         }
+        if (physicsSettings.collisionLayers.empty() || physicsSettings.collisionLayers[0].empty()) {
+            if (physicsSettings.collisionLayers.empty()) physicsSettings.collisionLayers.resize(1);
+            physicsSettings.collisionLayers[0] = "Default";
+        }
+        if (tags.empty() || tags[0].empty()) {
+            if (tags.empty()) tags.resize(1);
+            tags[0] = "Untagged";
+        }
+        if (playerSettings.productName.empty()) playerSettings.productName = name;
+        if (playerSettings.defaultScene.empty()) playerSettings.defaultScene = currentSceneName;
 
         isLoaded = true;
         return true;
@@ -256,6 +417,48 @@ void Project::saveProjectFile() const {
     file << "renderer=" << Modularity::ToString(rendererBackend) << "\n";
     file << "physicsMassUnit=" << SerializeProjectMassUnit(physicsSettings.massUnit) << "\n";
     file << "physicsGlobalGravityScale=" << std::max(0.0f, physicsSettings.globalGravityScale) << "\n";
+    file << "physicsFixedTimestep=" << std::clamp(physicsSettings.fixedTimestep, 0.001f, 0.1f) << "\n";
+    file << "physicsSolverIterations=" << std::clamp(physicsSettings.solverIterations, 1, 64) << "\n";
+    file << "physicsEnable3D=" << (physicsSettings.enable3DPhysics ? 1 : 0) << "\n";
+    file << "physicsEnable2D=" << (physicsSettings.enable2DPhysics ? 1 : 0) << "\n";
+    file << "physicsDefaultRaycastDistance=" << std::max(0.01f, physicsSettings.defaultRaycastDistance) << "\n";
+    file << "physicsRaycastHitTriggers=" << (physicsSettings.raycastHitTriggers ? 1 : 0) << "\n";
+    file << "physicsDefaultRigidbodyMass=" << std::max(0.0001f, physicsSettings.defaultRigidbodyMass) << "\n";
+    file << "physicsDefaultRigidbodyDrag=" << std::max(0.0f, physicsSettings.defaultRigidbodyDrag) << "\n";
+    file << "physicsDefaultMaterialFriction=" << std::clamp(physicsSettings.defaultMaterialFriction, 0.0f, 1.0f) << "\n";
+    file << "physicsDefaultMaterialBounciness=" << std::clamp(physicsSettings.defaultMaterialBounciness, 0.0f, 1.0f) << "\n";
+    file << "physicsLayerCount=" << physicsSettings.collisionLayers.size() << "\n";
+    for (size_t i = 0; i < physicsSettings.collisionLayers.size(); ++i) {
+        file << "physicsLayer" << i << "_name=" << physicsSettings.collisionLayers[i] << "\n";
+    }
+    file << "tagCount=" << tags.size() << "\n";
+    for (size_t i = 0; i < tags.size(); ++i) {
+        file << "tag" << i << "_name=" << tags[i] << "\n";
+    }
+    file << "graphicsVSync=" << (graphicsSettings.vsync ? 1 : 0) << "\n";
+    file << "graphicsTargetFps=" << std::clamp(graphicsSettings.targetFps, 1, 500) << "\n";
+    file << "graphicsShadowQuality=" << std::clamp(graphicsSettings.shadowQuality, 0, 3) << "\n";
+    file << "graphicsRenderResolutionScale=" << std::clamp(graphicsSettings.renderResolutionScale, 0.25f, 2.0f) << "\n";
+    file << "graphicsTextureFiltering=" << SerializeProjectTextureFiltering(graphicsSettings.textureFiltering) << "\n";
+    file << "graphicsAntiAliasing=" << SerializeProjectAntiAliasing(graphicsSettings.antiAliasing) << "\n";
+    file << "graphicsFullscreenStartup=" << (graphicsSettings.fullscreenStartup ? 1 : 0) << "\n";
+    file << "graphicsEditorPreviewOverrides=" << (graphicsSettings.editorPreviewOverrides ? 1 : 0) << "\n";
+    file << "graphicsGamePreviewOverrides=" << (graphicsSettings.gamePreviewOverrides ? 1 : 0) << "\n";
+    file << "consoleMode=" << SerializeProjectConsoleMode(consoleSettings.mode) << "\n";
+    file << "consoleAlwaysOpenOnLaunch=" << (consoleSettings.alwaysOpenOnLaunch ? 1 : 0) << "\n";
+    file << "consoleOpenOnlyOnErrors=" << (consoleSettings.openOnlyOnErrors ? 1 : 0) << "\n";
+    file << "consoleTone=" << SerializeProjectConsoleTone(consoleSettings.tone) << "\n";
+    file << "playerProductName=" << (playerSettings.productName.empty() ? name : playerSettings.productName) << "\n";
+    file << "playerCompanyName=" << playerSettings.companyName << "\n";
+    file << "playerDefaultScene=" << (playerSettings.defaultScene.empty() ? currentSceneName : playerSettings.defaultScene) << "\n";
+    file << "playerStartupWidth=" << std::clamp(playerSettings.startupWidth, 64, 8192) << "\n";
+    file << "playerStartupHeight=" << std::clamp(playerSettings.startupHeight, 64, 8192) << "\n";
+    file << "playerFullscreenStartup=" << (playerSettings.fullscreenStartup ? 1 : 0) << "\n";
+    file << "playerCursorLocked=" << (playerSettings.cursorLocked ? 1 : 0) << "\n";
+    file << "playerCursorVisible=" << (playerSettings.cursorVisible ? 1 : 0) << "\n";
+    file << "playerBuildTarget=" << playerSettings.buildTarget << "\n";
+    file << "playerApplicationIcon=" << playerSettings.applicationIconPath << "\n";
+    file << "playerSaveDataPathBehavior=" << playerSettings.saveDataPathBehavior << "\n";
     file.close();
 }
 

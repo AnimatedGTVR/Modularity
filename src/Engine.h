@@ -198,10 +198,12 @@ private:
     bool showFileBrowser = true;
     bool showConsole = true;
     bool showProjectBrowser = true;  // Now merged into file browser
+    bool projectSettingsCompactSidebar = true;
     bool showRegistryPackagesWindow = false;
     bool showMeshBuilder = false;
     bool showBuildSettings = false;
     bool showStyleEditor = false;
+    bool showGameProfilerWindow = false;
     bool showScriptingWindow = false;
     bool showModuPakExportDialog = false;
     bool showModuPakImportDialog = false;
@@ -411,7 +413,7 @@ private:
     bool aiPathDrawGrid = true;
     bool aiPathDrawPath = true;
     uint64_t aiPathLastSourceHash = 0;
-    bool hierarchyShowTexturePreview = false;
+    bool hierarchyShowTexturePreview = true;
     bool audioPreviewLoop = false;
     bool audioPreviewAutoPlay = false;
     float audioPreviewVolume = 1.0f;
@@ -979,6 +981,7 @@ private:
     void renderPlayerViewport();
     void renderGameViewportWindow();
     void drawGameProfilerContent();
+    void renderGameProfilerWindow();
     void renderUiCanvas3DTargets();
     void renderBuildSettingsWindow();
     void renderScriptingWindow();
@@ -1177,6 +1180,7 @@ private:
                           const std::string& shaderPack,
                           const std::string& vertexShader,
                           const std::string& fragmentShader);
+    bool applyTextureAssetToObject(SceneObject& obj, const fs::path& texturePath);
     bool hasInstalledPackage(const char* id) const;
     bool hasSpriteEditorPackage() const;
     bool hasSpritesheetPackage() const;

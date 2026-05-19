@@ -650,7 +650,7 @@ void Engine::renderHierarchyPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 5.0f));
-    ImGui::BeginChild("HierarchyHeader", ImVec2(-1.0f, 60.0f), false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("HierarchyHeader", ImVec2(-1.0f, 42.0f), false, ImGuiWindowFlags_NoScrollbar);
 
     const float headerButtonSize = ImGui::GetFrameHeight();
     if (ImGui::Button("+", ImVec2(headerButtonSize, headerButtonSize))) {
@@ -695,8 +695,6 @@ void Engine::renderHierarchyPanel() {
         ImGui::EndPopup();
     }
 
-    ImGui::Spacing();
-    ImGui::Checkbox("Texture Preview", &hierarchyShowTexturePreview);
     ImGui::EndChild();
     ImGui::PopStyleVar(3);
 
@@ -1190,6 +1188,8 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
             if (!ec) {
                 if (fileBrowser.isModelFile(entry)) {
                     importDroppedModel(fs::path(path), obj.id);
+                } else if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                    applyTextureAssetToObject(obj, entry.path());
                 } else if (fileBrowser.getFileCategory(entry) == FileCategory::Material) {
                     obj.materialPath = entry.path().string();
                     loadMaterialFromFile(obj);

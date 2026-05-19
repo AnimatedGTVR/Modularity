@@ -112,6 +112,73 @@ inline const char* ProjectMassUnitSuffix(ProjectMassUnit unit) {
 struct ProjectPhysicsSettings {
     ProjectMassUnit massUnit = ProjectMassUnit::Kilograms;
     float globalGravityScale = 1.0f;
+    float fixedTimestep = 1.0f / 60.0f;
+    int solverIterations = 8;
+    bool enable3DPhysics = true;
+    bool enable2DPhysics = true;
+    float defaultRaycastDistance = 1000.0f;
+    bool raycastHitTriggers = false;
+    float defaultRigidbodyMass = 1.0f;
+    float defaultRigidbodyDrag = 0.0f;
+    float defaultMaterialFriction = 0.5f;
+    float defaultMaterialBounciness = 0.0f;
+    std::vector<std::string> collisionLayers = { "Default" };
+};
+
+enum class ProjectTextureFiltering {
+    Bilinear = 0,
+    Point = 1,
+    Trilinear = 2
+};
+
+enum class ProjectAntiAliasing {
+    Off = 0,
+    MSAA2x = 1,
+    MSAA4x = 2,
+    MSAA8x = 3
+};
+
+struct ProjectGraphicsSettings {
+    bool vsync = true;
+    int targetFps = 60;
+    int shadowQuality = 2;
+    float renderResolutionScale = 1.0f;
+    ProjectTextureFiltering textureFiltering = ProjectTextureFiltering::Bilinear;
+    ProjectAntiAliasing antiAliasing = ProjectAntiAliasing::MSAA4x;
+    bool fullscreenStartup = false;
+    bool editorPreviewOverrides = true;
+    bool gamePreviewOverrides = false;
+};
+
+enum class ProjectConsoleMode {
+    DockedMiniButton = 0,
+    FloatingWindow = 1
+};
+
+enum class ProjectConsoleTone {
+    Fun = 0,
+    Concise = 1
+};
+
+struct ProjectConsoleSettings {
+    ProjectConsoleMode mode = ProjectConsoleMode::DockedMiniButton;
+    bool alwaysOpenOnLaunch = false;
+    bool openOnlyOnErrors = true;
+    ProjectConsoleTone tone = ProjectConsoleTone::Fun;
+};
+
+struct ProjectPlayerSettings {
+    std::string productName;
+    std::string companyName = "DefaultCompany";
+    std::string defaultScene;
+    int startupWidth = 1280;
+    int startupHeight = 720;
+    bool fullscreenStartup = false;
+    bool cursorLocked = false;
+    bool cursorVisible = true;
+    std::string buildTarget = "Windows";
+    std::string applicationIconPath;
+    std::string saveDataPathBehavior = "CompanyAndProduct";
 };
 
 class Project {
@@ -129,6 +196,10 @@ public:
     ProjectPipeline pipeline = ProjectPipeline::Pipeline3D;
     Modularity::GraphicsBackend rendererBackend = Modularity::GraphicsBackend::OpenGL;
     ProjectPhysicsSettings physicsSettings;
+    ProjectGraphicsSettings graphicsSettings;
+    std::vector<std::string> tags = { "Untagged" };
+    ProjectConsoleSettings consoleSettings;
+    ProjectPlayerSettings playerSettings;
 
     Project() = default;
     Project(const std::string& projectName, const fs::path& basePath);
