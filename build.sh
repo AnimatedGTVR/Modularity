@@ -585,7 +585,7 @@ ensure_linux_dependencies() {
     local need_install=0
     local -a missing=()
     local cmd
-    for cmd in git cmake pkg-config c++; do
+    for cmd in git git-lfs cmake pkg-config c++; do
         if ! command -v "${cmd}" >/dev/null 2>&1; then
             need_install=1
             missing+=("${cmd}")
@@ -630,7 +630,7 @@ ensure_linux_dependencies() {
     local -a glslc_candidates=()
     case "${pkg_manager}" in
         apt)
-            core_pkgs=(build-essential cmake pkg-config git zlib1g-dev)
+            core_pkgs=(build-essential cmake pkg-config git git-lfs zlib1g-dev)
             x11_pkgs=(libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev)
             graphics_pkgs=(libgl1-mesa-dev libegl1-mesa-dev libwayland-dev)
             vulkan_pkgs=(libvulkan-dev vulkan-tools glslang-tools)
@@ -639,7 +639,7 @@ ensure_linux_dependencies() {
             glslc_candidates=(glslc shaderc)
             ;;
         dnf)
-            core_pkgs=(gcc gcc-c++ make cmake pkgconf-pkg-config git zlib-devel)
+            core_pkgs=(gcc gcc-c++ make cmake pkgconf-pkg-config git git-lfs zlib-devel)
             x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
             graphics_pkgs=(mesa-libGL-devel mesa-libEGL-devel wayland-devel)
             vulkan_pkgs=(vulkan-loader-devel vulkan-tools glslang)
@@ -648,7 +648,7 @@ ensure_linux_dependencies() {
             glslc_candidates=(shaderc shaderc-devel)
             ;;
         pacman)
-            core_pkgs=(base-devel cmake pkgconf git zlib)
+            core_pkgs=(base-devel cmake pkgconf git git-lfs zlib)
             x11_pkgs=(libx11 libxrandr libxinerama libxcursor libxi)
             graphics_pkgs=(mesa wayland)
             vulkan_pkgs=(vulkan-headers vulkan-tools glslang)
@@ -657,7 +657,7 @@ ensure_linux_dependencies() {
             glslc_candidates=(shaderc)
             ;;
         zypper)
-            core_pkgs=(gcc gcc-c++ make cmake pkg-config git zlib-devel)
+            core_pkgs=(gcc gcc-c++ make cmake pkg-config git git-lfs zlib-devel)
             x11_pkgs=(libX11-devel libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel)
             graphics_pkgs=(Mesa-libGL-devel Mesa-libEGL-devel wayland-devel)
             vulkan_pkgs=(vulkan-devel vulkan-tools glslang)
@@ -714,6 +714,54 @@ ensure_linux_dependencies() {
 sync_submodules() {
     git -C "${script_dir}" submodule sync --recursive
     git -C "${script_dir}" submodule update --init --recursive
+    sync_lfs_assets
+    verify_lfs_assets
+}
+
+sync_lfs_assets() {
+    if ! command -v git-lfs >/dev/null 2>&1; then
+        log_warn "git-lfs is not installed; cannot refresh large binary assets."
+        return
+    fi
+
+    git -C "${script_dir}" lfs install --local >/dev/null
+    git -C "${script_dir}" lfs pull
+}
+
+is_lfs_pointer_file() {
+    local path="$1"
+    [[ -f "${path}" ]] && head -n 1 "${path}" 2>/dev/null | grep -qx 'version https://git-lfs.github.com/spec/v1'
+}
+
+verify_lfs_assets() {
+    local -a required_assets=(
+        "Resources/Engine-Root/Modu-Logo.png"
+        "Resources/Fonts/TheSunset.ttf"
+        "Resources/Fonts/Thesunsethd-Regular (1).ttf"
+    )
+    local asset
+    local -a missing=()
+    local -a pointers=()
+
+    for asset in "${required_assets[@]}"; do
+        local full_path="${script_dir}/${asset}"
+        if [[ ! -f "${full_path}" ]]; then
+            missing+=("${asset}")
+        elif is_lfs_pointer_file "${full_path}"; then
+            pointers+=("${asset}")
+        fi
+    done
+
+    if [[ "${#missing[@]}" -gt 0 || "${#pointers[@]}" -gt 0 ]]; then
+        if [[ "${#missing[@]}" -gt 0 ]]; then
+            log_error "Missing required LFS assets: ${missing[*]}"
+        fi
+        if [[ "${#pointers[@]}" -gt 0 ]]; then
+            log_error "Git LFS assets are still pointer files: ${pointers[*]}"
+        fi
+        log_error "Install git-lfs, then run: git lfs install && git lfs pull"
+        return 1
+    fi
 }
 
 configure_ccache() {

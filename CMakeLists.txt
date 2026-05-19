@@ -132,6 +132,22 @@ if(NOT IS_DIRECTORY ${MODULARITY_TEMPLATE_PROJECTS_DIR})
     file(MAKE_DIRECTORY ${MODULARITY_TEMPLATE_PROJECTS_DIR})
 endif()
 
+function(modularity_require_real_asset asset_path)
+    set(full_path "${CMAKE_SOURCE_DIR}/${asset_path}")
+    if(NOT EXISTS "${full_path}")
+        message(FATAL_ERROR "Required asset is missing: ${asset_path}. Run git lfs install && git lfs pull.")
+    endif()
+
+    file(READ "${full_path}" asset_header LIMIT 64)
+    if(asset_header MATCHES "^version https://git-lfs.github.com/spec/v1")
+        message(FATAL_ERROR "Required asset is still a Git LFS pointer: ${asset_path}. Run git lfs install && git lfs pull.")
+    endif()
+endfunction()
+
+modularity_require_real_asset("Resources/Engine-Root/Modu-Logo.png")
+modularity_require_real_asset("Resources/Fonts/TheSunset.ttf")
+modularity_require_real_asset("Resources/Fonts/Thesunsethd-Regular (1).ttf")
+
 set(MODULARITY_HAS_VULKAN OFF)
 if(MODULARITY_ENABLE_VULKAN)
     find_package(Vulkan QUIET)
