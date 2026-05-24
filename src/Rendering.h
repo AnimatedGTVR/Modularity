@@ -164,6 +164,7 @@ private:
     };
     RenderTarget previewTarget;
     std::unordered_map<int, RenderTarget> extraPreviewTargets;
+    std::unordered_map<int, uint64_t> extraPreviewTargetLastUsed;
     RenderTarget postTarget;
     RenderTarget previewPostTarget;
     RenderTarget historyTarget;
@@ -204,6 +205,12 @@ private:
         int resolution = 0;
         uint64_t signature = 0;
         bool hasCapture = false;
+    };
+    struct MaskDrawItem {
+        const SceneObject* obj = nullptr;
+        Mesh* mesh = nullptr;
+        bool wantsGpuSkinning = false;
+        bool doubleSided = false;
     };
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
@@ -265,6 +272,7 @@ private:
     size_t textureCacheUsageBytes = 0;
     uint64_t staticMergeSceneSignature = 0;
     uint64_t frameSerial = 0;
+    uint64_t previewTargetUseSerial = 0;
     uint64_t lastStaticMergeCheckFrameSerial = std::numeric_limits<uint64_t>::max();
     std::unordered_map<int, ShadowCubeMap> shadowCubeMaps;
     std::unordered_map<int, ShadowDirectionalMap> shadowDirectionalMaps;
@@ -285,6 +293,11 @@ private:
     double selectionOutlineLastUpdateSec = 0.0;
     std::vector<int> selectionOutlineVisualIds;
     std::vector<int> selectionOutlinePrevIds;
+    std::vector<int> selectionOutlineSourceScratch;
+    std::vector<int> selectionOutlineInputScratch;
+    std::unordered_set<int> selectionOutlineSelectedScratch;
+    std::vector<MaskDrawItem> selectionOutlineCurrentDrawScratch;
+    std::vector<MaskDrawItem> selectionOutlinePreviousDrawScratch;
     float selectionOutlineSwapBlend = 1.0f;
 
     void setupFBO();
@@ -300,6 +313,7 @@ private:
     void ensureQuad();
     void drawFullscreenQuad();
     void purgeTextureCacheIfNeeded();
+    void purgePreviewTargetsIfNeeded(int keepSlot);
     void rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneObjects);
     void resetStats(RenderStats& stats);
     void recordDrawCall();
@@ -355,6 +369,10 @@ public:
     const PostProcessStats& getLastPreviewPostStats() const { return previewPostStats; }
     uint64_t getTextureCacheUsageBytes() const { return static_cast<uint64_t>(textureCacheUsageBytes); }
     uint64_t getTextureCacheBudgetBytes() const { return static_cast<uint64_t>(textureCacheBudgetBytes); }
+    size_t getTextureCacheCount() const { return textureCacheBilinear.size() + textureCachePoint.size(); }
+    size_t getShaderCacheCount() const { return shaderCache.size(); }
+    size_t getExtraPreviewTargetCount() const { return extraPreviewTargets.size(); }
+    size_t getReflectionCastTargetCount() const { return reflectionCastTargets.size(); }
 
     struct UiTargetInfo {
         unsigned int fbo = 0;

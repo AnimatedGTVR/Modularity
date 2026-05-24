@@ -1,4 +1,6 @@
 #include "Engine.h"
+#include <chrono>
+#include <cstdio>
 
 void Engine::renderPlayControlsBar() {
   const EditorChromeMetrics &chrome = getEditorChromeMetrics(uiChromeScale);
@@ -148,14 +150,31 @@ void Engine::renderPlayControlsBar() {
       ImGui::ClearActiveID();
       bool newState = !isPlaying;
       if (newState) {
+        const auto __playStart = std::chrono::steady_clock::now();
+        auto __markPlayStep = [&](const char *label, const auto &stepStart) {
+          const double ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - stepStart)
+                                .count();
+          if (ms > 10.0) {
+            std::fprintf(stderr, "[ModuTimer] play enter %s %.2f ms\n", label,
+                         ms);
+          }
+        };
+        auto __stepStart = std::chrono::steady_clock::now();
         clearVideoPlayers();
         videoAssetPreviewPlayer.reset();
         videoAssetPreviewPath.clear();
+        __markPlayStep("clearPreviews", __stepStart);
         // Reset script module state so Begin/static script state is fresh each
         // play session.
+        __stepStart = std::chrono::steady_clock::now();
         resetScriptRuntimeStateForReload(false);
+        __markPlayStep("scriptReset", __stepStart);
+        __stepStart = std::chrono::steady_clock::now();
         capturePlayModeSnapshot();
+        __markPlayStep("snapshot", __stepStart);
         deferInspectorRefresh = true;
+        __stepStart = std::chrono::steady_clock::now();
         for (SceneObject &obj : sceneObjects) {
           if (!obj.hasAnimation)
             continue;
@@ -166,6 +185,8 @@ void Engine::renderPlayControlsBar() {
           obj.animation.runtimeInitialized = false;
           obj.animation.runtimeClipPath.clear();
         }
+        __markPlayStep("animations", __stepStart);
+        __stepStart = std::chrono::steady_clock::now();
         if (physics.isReady() || physics.init()) {
           physics.onPlayStart(sceneObjects);
         } else {
@@ -173,8 +194,11 @@ void Engine::renderPlayControlsBar() {
               "PhysX failed to initialize; physics disabled for play mode",
               ConsoleMessageType::Warning);
         }
+        __markPlayStep("physics", __stepStart);
+        __stepStart = std::chrono::steady_clock::now();
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
+        __markPlayStep("audio", __stepStart);
         bool hasPlayerController = false;
         for (const auto &obj : sceneObjects) {
           if (IsObjectEnabledInHierarchy(obj) && obj.hasPlayerController &&
@@ -187,7 +211,19 @@ void Engine::renderPlayControlsBar() {
           gameViewCursorLocked = true;
           gameViewportFocused = true;
         }
+        const double __playMs = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() -
+                                    __playStart)
+                                    .count();
+        std::fprintf(stderr,
+                     "[ModuTimer] play enter total %.2f ms objects=%zu scripts=%zu textures=%zu shaders=%zu previews=%zu reflections=%zu\n",
+                     __playMs, sceneObjects.size(), runtimeScriptBindings.size(),
+                     rendererInitialized ? renderer.getTextureCacheCount() : 0,
+                     rendererInitialized ? renderer.getShaderCacheCount() : 0,
+                     rendererInitialized ? renderer.getExtraPreviewTargetCount() : 0,
+                     rendererInitialized ? renderer.getReflectionCastTargetCount() : 0);
       } else {
+        const auto __playStop = std::chrono::steady_clock::now();
         clearVideoPlayers();
         videoAssetPreviewPlayer.reset();
         videoAssetPreviewPath.clear();
@@ -200,6 +236,11 @@ void Engine::renderPlayControlsBar() {
         if (specMode && (physics.isReady() || physics.init())) {
           physics.onPlayStart(sceneObjects);
         }
+        const double __stopMs = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() -
+                                    __playStop)
+                                    .count();
+        std::fprintf(stderr, "[ModuTimer] play exit total %.2f ms\n", __stopMs);
       }
       isPlaying = newState;
     }
@@ -239,5 +280,4 @@ void Engine::renderPlayControlsBar() {
     }
   }
 }
-
 

@@ -364,6 +364,7 @@ Options:
   --jobs=<N>              Parallel compile jobs (default: nproc - 2, min 1)
   --skip-deps             Skip automatic dependency checks/install
   --zip                   Package as .zip instead of the default .7z
+  --fsanitize             Build with AddressSanitizer + UBSan (-DMODULARITY_ENABLE_ASAN=ON)
   --help                  Show this help message
 EOF
 }
@@ -372,6 +373,7 @@ clean_build=0
 build_type="Release"
 skip_deps=0
 package_format="7Z"
+enable_asan=0
 ncpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
 jobs=$(( ncpus - 2 ))
 if (( jobs < 1 )); then
@@ -416,6 +418,9 @@ for arg in "$@"; do
         --7z|--7Z)
             package_format="7Z"
             ;;
+        --fsanitize|--asan|--sanitize=address)
+            enable_asan=1
+            ;;
         --help)
             usage
             exit 0
@@ -449,6 +454,21 @@ if [[ "${build_platform}" == "windows" ]]; then
     fi
 
     cmake_platform_args+=(-DCMAKE_TOOLCHAIN_FILE="${windows_toolchain_file}")
+fi
+
+if [[ "${enable_asan}" -eq 1 ]]; then
+    if [[ "${build_platform}" == "windows" ]]; then
+        log_warn "--fsanitize ignored on Windows cross-build (ASan not supported with MinGW here)."
+        enable_asan=0
+    else
+        cmake_platform_args+=(-DMODULARITY_ENABLE_ASAN=ON)
+        build_dir="${build_dir}/asan"
+        player_cache_dir="${build_dir}/player-cache"
+    fi
+fi
+
+if [[ "${enable_asan}" -eq 0 ]]; then
+    cmake_platform_args+=(-DMODULARITY_ENABLE_ASAN=OFF)
 fi
 
 pkg_manager=""
@@ -842,6 +862,47 @@ build_player_target() {
     cmake --build "${player_cache_dir}" --target ModularityPlayer --parallel "${jobs}"
 }
 
+install_desktop_integration() {
+    local xdg_data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+    local pixmaps_dir="${xdg_data_home}/pixmaps"
+    local applications_dir="${xdg_data_home}/applications"
+    local icon_src="${script_dir}/Resources/Engine-Root/Modu-Logo.png"
+    local icon_dst="${pixmaps_dir}/modularity.png"
+
+    if [[ ! -f "${icon_src}" ]]; then
+        log_warn "Logo not found at ${icon_src}; skipping desktop integration."
+        return
+    fi
+
+    mkdir -p "${pixmaps_dir}" "${applications_dir}"
+    cp -f "${icon_src}" "${icon_dst}"
+    log_ok "Installed icon: ${icon_dst}"
+
+    local editor_bin="${build_dir}/install/bin/Modularity"
+    if [[ -x "${editor_bin}" ]]; then
+        local editor_desktop="${applications_dir}/Modularity.desktop"
+        cat > "${editor_desktop}" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Modularity
+GenericName=Game Engine
+Comment=Modularity Game Engine Editor
+Exec=${editor_bin} %F
+Icon=${icon_dst}
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=Modularity
+EOF
+        log_ok "Installed desktop entry: ${editor_desktop}"
+    fi
+
+    rm -f "${applications_dir}/ModularityPlayer.desktop"
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "${applications_dir}" >/dev/null 2>&1 || true
+    fi
+}
+
 finalize_packaging() {
     rm -rf "${build_dir}/Template-Projects"
     cp -r "${script_dir}/Resources" "${build_dir}/"
@@ -880,6 +941,9 @@ show_stage_hierarchy() {
         "Collect player engine libraries"
         "Package artifacts and resources"
     )
+    if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
+        stages+=("Install desktop icon and .desktop entries")
+    fi
 
     log_info "Build stage hierarchy:"
     local i
@@ -901,6 +965,9 @@ fi
 if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
     total_steps=$((total_steps + 1))
 fi
+if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
+    total_steps=$((total_steps + 1))
+fi
 
 build_started=1
 detect_cmake_generator
@@ -916,6 +983,9 @@ if [[ -n "${cmake_generator}" ]]; then
     log_info "CMake generator: ${cmake_generator}"
 fi
 log_info "Package format: ${package_format}"
+if [[ "${enable_asan}" -eq 1 ]]; then
+    log_info "Sanitizers: AddressSanitizer + UBSan enabled (consider --build-type=Debug for richer reports)"
+fi
 if [[ "${build_platform}" == "windows" && -n "${windows_toolchain_file}" ]]; then
     log_info "Windows toolchain: ${windows_toolchain_file}"
 fi
@@ -945,3 +1015,6 @@ run_long_step "Building Player" build_player_target
 run_long_step "Collecting Player Libs" copy_third_party_libraries "${player_cache_dir}"
 run_long_step "Collecting Player Engine Libs" copy_engine_libraries "${player_cache_dir}"
 run_long_step "Packaging Engine" finalize_packaging
+if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
+    run_long_step "Installing Desktop Icon" install_desktop_integration
+fi

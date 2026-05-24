@@ -2,6 +2,7 @@
 #include "SceneSerializationInternal.h"
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
+#include "DragPreviewOverlay.h"
 #include "MaterialAssetUtils.h"
 #include "ModelLoader.h"
 #include "Render25D/MMeshLoader.h"
@@ -1146,6 +1147,10 @@ int Engine::resolveSpriteSheetFrame(const SceneObject& obj) const {
 
 glm::vec2 Engine::getSpriteDisplaySize(const SceneObject& obj) const {
     glm::vec2 size(std::max(0.01f, obj.ui.size.x), std::max(0.01f, obj.ui.size.y));
+    if (obj.hasUI && obj.ui.type != UIElementType::None) {
+        size.x *= std::max(0.01f, std::abs(obj.scale.x));
+        size.y *= std::max(0.01f, std::abs(obj.scale.y));
+    }
     // Keep frame-to-frame clip scale from bullying the object's authored size.
     return size * ResolveSpriteFrameScale(obj.ui, resolveSpriteSheetFrame(obj));
 }
@@ -3243,6 +3248,8 @@ void Engine::recordState(const char* reason) {
 }
 
 void Engine::capturePlayModeSnapshot() {
+    playerControllerRuntimeStates.clear();
+    playerControllerGroundProbeDebug = {};
     playModeSnapshot.scene = captureSceneSnapshot();
     playModeSnapshot.hadUnsavedChanges = projectManager.currentProject.hasUnsavedChanges;
     playModeSnapshot.valid = true;
@@ -3278,6 +3285,8 @@ void Engine::restorePlayModeSnapshot() {
     restoreSceneSnapshot(std::move(playModeSnapshot.scene));
     ResetParticleSystem2DRuntimes(sceneObjects);
     projectManager.currentProject.hasUnsavedChanges = playModeSnapshot.hadUnsavedChanges;
+    playerControllerRuntimeStates.clear();
+    playerControllerGroundProbeDebug = {};
 
     playModeSnapshot = {};
 }
@@ -4214,6 +4223,11 @@ void Engine::run() {
         if (__postMs > 50.0) std::fprintf(stderr, "[ModuTimer] postPanels(touch+autosave) %.1f ms\n", __postMs);
         const auto __uiC3DStart = std::chrono::steady_clock::now();
         renderUiCanvas3DTargets();
+#if !MODULARITY_RUNTIME_ONLY
+        if (!playerMode) {
+            DragPreview::UpdateAndRender();
+        }
+#endif
         const auto __renderImGuiStart = std::chrono::steady_clock::now();
         ImGui::Render();
         const auto __renderImGuiEnd = std::chrono::steady_clock::now();
@@ -6198,17 +6212,19 @@ void Engine::updatePlayerController(float delta) {
     if (!player) {
         activePlayerId = -1;
         playerControllerGroundProbeDebug = {};
+        playerControllerRuntimeStates.clear();
         return;
     }
 
-    struct ControllerRuntimeState {
-        glm::vec2 localVelocity = glm::vec2(0.0f);
-        glm::vec3 slideVelocity = glm::vec3(0.0f);
-        glm::vec3 lastGroundHitPos = glm::vec3(0.0f);
-        bool hasGroundSample = false;
-    };
-    static std::unordered_map<int, ControllerRuntimeState> runtimeStates;
-    ControllerRuntimeState& runtime = runtimeStates[player->id];
+    for (auto it = playerControllerRuntimeStates.begin();
+         it != playerControllerRuntimeStates.end();) {
+        if (it->first != player->id) {
+            it = playerControllerRuntimeStates.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    PlayerControllerRuntimeState& runtime = playerControllerRuntimeStates[player->id];
     auto moveTowardsVec2 = [](const glm::vec2& current, const glm::vec2& target, float maxDelta) {
         if (maxDelta <= 0.0f) return current;
         glm::vec2 deltaVec = target - current;
@@ -8163,6 +8179,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     scriptAutoCompileCheckedSourceTime.clear();
     scriptAutoCompileBinaryCache.clear();
     scriptAutoCompileDiscoveredSources.clear();
+    scriptBinaryResolveCache.clear();
     autoCompileQueue.clear();
     autoCompileQueued.clear();
     scriptAutoCompileLastCheck = 0.0;
@@ -9509,6 +9526,7 @@ void Engine::createNewProject(const char* name, const char* location) {
         scriptAutoCompileCheckedSourceTime.clear();
         scriptAutoCompileBinaryCache.clear();
         scriptAutoCompileDiscoveredSources.clear();
+        scriptBinaryResolveCache.clear();
         autoCompileQueue.clear();
         autoCompileQueued.clear();
         scriptAutoCompileLastCheck = 0.0;
@@ -9711,6 +9729,19 @@ bool Engine::executeSceneSave(const std::string& destinationSceneName,
     projectManager.currentProject.saveProjectFile();
     saveProjectPreview();
 
+    {
+        const fs::path tintPath = fs::path(scenePath.string() + ".editor");
+        if (hierarchyIconTints.empty()) {
+            std::error_code ec;
+            fs::remove(tintPath, ec);
+        } else {
+            std::ofstream tout(tintPath);
+            for (const auto& [id, col] : hierarchyIconTints) {
+                tout << id << " " << col.x << "," << col.y << "," << col.z << "," << col.w << "\n";
+            }
+        }
+    }
+
     if (preference == SceneSerializer::SavePreference::ForceLegacyFlat) {
         legacySceneSaveChoice = LegacySceneSaveChoice::KeepLegacy;
     } else {
@@ -9833,6 +9864,21 @@ void Engine::performLoadScene(const std::string& sceneName) {
             sceneName.c_str());
         undoStack.clear();
         redoStack.clear();
+        hierarchyIconTints.clear();
+        {
+            const fs::path tintPath = fs::path(scenePath.string() + ".editor");
+            if (std::ifstream tin(tintPath); tin.good()) {
+                std::string line;
+                while (std::getline(tin, line)) {
+                    if (line.empty() || line[0] == '#') continue;
+                    int id;
+                    float r, g, b, a;
+                    if (sscanf(line.c_str(), "%d %f,%f,%f,%f", &id, &r, &g, &b, &a) == 5) {
+                        hierarchyIconTints[id] = ImVec4(r, g, b, a);
+                    }
+                }
+            }
+        }
         currentSceneSerialization = loadedMetadata;
         legacySceneSaveChoice = loadedMetadata.fileFormat == SceneSerializer::FileFormat::LegacyFlat
             ? LegacySceneSaveChoice::Ask
@@ -10483,6 +10529,9 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
     ScriptBuildConfig config;
     std::string error;
     fs::path cfg = resolveScriptsConfigPath(projectManager.currentProject);
+    std::error_code cfgEc;
+    const fs::file_time_type configWriteTime = fs::exists(cfg, cfgEc) ? fs::last_write_time(cfg, cfgEc)
+                                                                     : fs::file_time_type{};
     bool haveConfig = scriptCompiler.loadConfig(cfg, config, error);
     if (haveConfig) {
         auto resolveSource = [&](const fs::path& input) -> fs::path {
@@ -10545,9 +10594,57 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
 
         fs::path resolvedSource = resolveSource(sourcePath);
         if (!resolvedSource.empty()) {
-            ScriptBuildCommands cmds;
-            if (scriptCompiler.makeCommands(config, resolvedSource, cmds, error)) {
-                return cmds.binaryPath;
+            std::error_code sourceEc;
+            fs::path sourceAbs = fs::absolute(resolvedSource, sourceEc);
+            if (sourceEc) sourceAbs = resolvedSource;
+            sourceAbs = sourceAbs.lexically_normal();
+            const std::string cacheKey = sourceAbs.string();
+            const fs::file_time_type sourceWriteTime = fs::last_write_time(sourceAbs, sourceEc);
+            if (!sourceEc) {
+                auto cacheIt = scriptBinaryResolveCache.find(cacheKey);
+                if (cacheIt != scriptBinaryResolveCache.end() &&
+                    cacheIt->second.valid &&
+                    cacheIt->second.sourceWriteTime == sourceWriteTime &&
+                    cacheIt->second.configWriteTime == configWriteTime) {
+                    std::error_code binEc;
+                    if (!cacheIt->second.binaryPath.empty() &&
+                        fs::exists(cacheIt->second.binaryPath, binEc) && !binEc) {
+                        return cacheIt->second.binaryPath;
+                    }
+                    scriptBinaryResolveCache.erase(cacheIt);
+                }
+
+                std::error_code relEc;
+                fs::path relToScripts = fs::relative(sourceAbs, config.scriptsDir, relEc);
+                if (relEc) relToScripts.clear();
+                bool hasDotDot = false;
+                for (const auto& part : relToScripts) {
+                    if (part == "..") {
+                        hasDotDot = true;
+                        break;
+                    }
+                }
+                if (relToScripts.empty() || relToScripts.is_absolute() || hasDotDot) {
+                    relToScripts.clear();
+                }
+
+                fs::path relativeParent = relToScripts.has_parent_path() ? relToScripts.parent_path() : fs::path();
+                fs::path binaryPath = config.outDir / relativeParent;
+#ifdef _WIN32
+                binaryPath /= sourceAbs.stem().string() + ".dll";
+#else
+                binaryPath /= sourceAbs.stem().string() + ".so";
+#endif
+                std::error_code binEc;
+                if (!binaryPath.empty() && fs::exists(binaryPath, binEc) && !binEc) {
+                    ScriptBinaryResolveCacheEntry entry;
+                    entry.sourceWriteTime = sourceWriteTime;
+                    entry.configWriteTime = configWriteTime;
+                    entry.binaryPath = binaryPath;
+                    entry.valid = true;
+                    scriptBinaryResolveCache[cacheKey] = std::move(entry);
+                    return binaryPath;
+                }
             }
         }
     }

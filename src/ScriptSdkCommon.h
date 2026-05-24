@@ -1,12 +1,5 @@
 #pragma once
-
-#include <algorithm>
-#include <cfloat>
 #include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <ctime>
-#include <chrono>
 #if __cplusplus >= 201703L
 #include <filesystem>
 #elif defined(__has_include)
@@ -18,54 +11,31 @@
 #else
 #include <experimental/filesystem>
 #endif
-#include <fstream>
-#include <memory>
-#include <sstream>
-#include <stdexcept>
-#include <string>
-#include <type_traits>
-#include <vector>
-
-#include "ThirdParty/imgui/imgui.h"
 #include "ThirdParty/glm/glm.hpp"
-#include "ThirdParty/glm/gtc/matrix_transform.hpp"
 #include "ThirdParty/glm/gtc/quaternion.hpp"
-#include "ThirdParty/glm/gtc/type_ptr.hpp"
-
 #if __cplusplus < 201703L
 namespace std {
-template <typename T>
-constexpr const T& clamp(const T& value, const T& low, const T& high) {
-    return value < low ? low : (high < value ? high : value);
-}
+    template <typename T>
+    constexpr const T& clamp(const T& value, const T& low, const T& high) {return value < low ? low : (high < value ? high : value);}
 }
 #endif
-
 #if __cplusplus >= 201703L
 namespace fs = std::filesystem;
 #else
 namespace fs = std::experimental::filesystem;
 #endif
-
 #ifndef MODULARITY_COMMON_SHARED_DECLS
 #define MODULARITY_COMMON_SHARED_DECLS
-
 constexpr float SENSITIVITY = 0.1f;
 constexpr float CAMERA_SPEED = 2.5f;
 constexpr float FOV = 45.0f;
 constexpr float NEAR_PLANE = 0.1f;
 constexpr float FAR_PLANE = 100.0f;
 constexpr float PI = 3.14159265359f;
-
 inline glm::vec3 NormalizeEulerDegrees(const glm::vec3& deg) {
-    auto wrap = [](float a) {
-        float r = std::fmod(a, 360.0f);
-        if (r < 0.0f) r += 360.0f;
-        return r;
-    };
+    auto wrap = [](float a) {float r = std::fmod(a, 360.0f); if (r < 0.0f) r += 360.0f; return r;};
     return glm::vec3(wrap(deg.x), wrap(deg.y), wrap(deg.z));
 }
-
 class Mesh;
 class OBJLoader;
 class Renderer;
@@ -75,7 +45,5 @@ class SceneObject;
 class Project;
 class ProjectManager;
 class Engine;
-
 extern OBJLoader g_objLoader;
-
-#endif // MODULARITY_COMMON_SHARED_DECLS
+#endif

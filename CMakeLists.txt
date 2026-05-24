@@ -116,6 +116,32 @@ else()
     set(MODULARITY_WARNING_FLAGS -Wall -Wextra -Wpedantic -O2)
 endif()
 
+# ==================== Sanitizers (opt-in) ====================
+option(MODULARITY_ENABLE_ASAN "Enable AddressSanitizer + UBSan on engine targets" OFF)
+
+set(MODULARITY_SANITIZER_FLAGS "")
+if(MODULARITY_ENABLE_ASAN)
+    if(MSVC)
+        message(WARNING "MODULARITY_ENABLE_ASAN is not supported on MSVC builds; disabling.")
+        set(MODULARITY_ENABLE_ASAN OFF CACHE BOOL "" FORCE)
+    else()
+        set(MODULARITY_SANITIZER_FLAGS
+            -fsanitize=address
+            -fsanitize=undefined
+            -fno-omit-frame-pointer
+            -g
+        )
+        message(STATUS "AddressSanitizer + UBSan enabled on engine targets.")
+    endif()
+endif()
+
+function(modularity_apply_sanitizers target_name)
+    if(MODULARITY_ENABLE_ASAN AND MODULARITY_SANITIZER_FLAGS)
+        target_compile_options(${target_name} PRIVATE ${MODULARITY_SANITIZER_FLAGS})
+        target_link_options(${target_name} PRIVATE ${MODULARITY_SANITIZER_FLAGS})
+    endif()
+endfunction()
+
 # ==================== Optional PhysX ====================
 option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
 option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
@@ -382,6 +408,7 @@ if(WIN32 AND MSVC)
     target_compile_definitions(imgui PRIVATE IMGUI_API=__declspec\(dllexport\))
 endif()
 
+
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
@@ -392,6 +419,8 @@ target_link_libraries(imgui PRIVATE glfw)
 if(MODULARITY_HAS_VULKAN)
     target_link_libraries(imgui PRIVATE Vulkan::Vulkan)
 endif()
+
+
 
 # ==================== Your code (separated files) ====================
 file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS
@@ -483,6 +512,7 @@ if(OPUSFILE_FOUND)
     target_link_libraries(core PUBLIC PkgConfig::OPUSFILE)
 endif()
 target_compile_options(core PRIVATE ${MODULARITY_WARNING_FLAGS})
+modularity_apply_sanitizers(core)
 
 add_library(core_player STATIC ${ENGINE_PLAYER_SOURCES} ${ENGINE_HEADERS})
 modularity_apply_cxx_api_standard(core_player)
@@ -518,6 +548,7 @@ if(OPUSFILE_FOUND)
     target_link_libraries(core_player PUBLIC PkgConfig::OPUSFILE)
 endif()
 target_compile_options(core_player PRIVATE ${MODULARITY_WARNING_FLAGS})
+modularity_apply_sanitizers(core_player)
 
 function(modularity_stage_windows_runtime_dlls target_name)
     if(NOT WIN32)
@@ -597,6 +628,7 @@ if(MODULARITY_BUILD_EDITOR)
     add_executable(Modularity src/main.cpp)
     modularity_apply_cxx_api_standard(Modularity)
     target_compile_options(Modularity PRIVATE ${MODULARITY_WARNING_FLAGS})
+    modularity_apply_sanitizers(Modularity)
     if(WIN32)
         target_compile_definitions(Modularity PRIVATE ${MODULARITY_WINDOWS_DEFINES})
         set_target_properties(Modularity PROPERTIES
@@ -609,6 +641,7 @@ endif()
 add_executable(ModularityPlayer src/main_player.cpp)
 modularity_apply_cxx_api_standard(ModularityPlayer)
 target_compile_options(ModularityPlayer PRIVATE ${MODULARITY_WARNING_FLAGS})
+modularity_apply_sanitizers(ModularityPlayer)
 if(WIN32)
     target_compile_definitions(ModularityPlayer PRIVATE ${MODULARITY_WINDOWS_DEFINES})
     set_target_properties(ModularityPlayer PROPERTIES
@@ -767,7 +800,7 @@ if(MODULARITY_BUILD_EDITOR)
 endif()
 
 install(TARGETS ModularityPlayer
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RUNTIME DESTINATION "Runtime Manager"
 )
 install(SCRIPT ${MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT})
 
@@ -852,6 +885,38 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/Resources
 install(DIRECTORY ${MODULARITY_TEMPLATE_PROJECTS_DIR}
     DESTINATION ./bin/
 )
+
+# ==================== Linux desktop integration ====================
+# Linux ELF binaries don't embed icons. Install the logo to share/pixmaps and
+# generate .desktop entries that reference it, so file managers and taskbars
+# can display the Modularity logo for the executables.
+if(NOT WIN32 AND NOT APPLE)
+    install(FILES ${CMAKE_SOURCE_DIR}/Resources/Engine-Root/Modu-Logo.png
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pixmaps
+        RENAME modularity.png
+    )
+
+    set(_modu_desktop_dir ${CMAKE_BINARY_DIR}/linux-desktop)
+    file(MAKE_DIRECTORY ${_modu_desktop_dir})
+
+    if(MODULARITY_BUILD_EDITOR)
+        file(WRITE ${_modu_desktop_dir}/Modularity.desktop
+"[Desktop Entry]
+Type=Application
+Name=Modularity
+GenericName=Game Engine
+Comment=Modularity Game Engine Editor
+Exec=Modularity %F
+Icon=modularity
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=Modularity
+")
+        install(FILES ${_modu_desktop_dir}/Modularity.desktop
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
+        )
+    endif()
+endif()
 
 # ==================== Packaging (CPack) ====================
 

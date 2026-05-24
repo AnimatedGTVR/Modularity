@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "ModelLoader.h"
+#include "../DragPreviewOverlay.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -534,6 +535,7 @@ namespace {
         GLuint textureId = 0;
         int width = 0;
         int height = 0;
+        int lastUsedFrame = 0;
         bool attempted = false;
         bool ready = false;
     };
@@ -548,12 +550,14 @@ namespace {
         GLuint previewTextureId = 0;
         int previewWidth = 0;
         int previewHeight = 0;
+        int lastUsedFrame = 0;
         glm::vec3 boundsMin = glm::vec3(FLT_MAX);
         glm::vec3 boundsMax = glm::vec3(-FLT_MAX);
     };
 
     struct CachedVideoPreview {
         fs::file_time_type stamp{};
+        int lastUsedFrame = 0;
         bool attempted = false;
         bool loaded = false;
         std::unique_ptr<VideoPlayer> player;
@@ -604,14 +608,58 @@ namespace {
         return slotBase + static_cast<int>(HashPreviewPath(path) % 8192ull);
     }
 
+    template <typename CacheT>
+    void TrimFileBrowserPreviewCache(CacheT& cache, const std::string& keepKey,
+                                     size_t maxEntries, int maxIdleFrames) {
+        if (cache.size() <= maxEntries) {
+            return;
+        }
+
+        const int frame = ImGui::GetFrameCount();
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (it->first != keepKey && frame - it->second.lastUsedFrame > maxIdleFrames) {
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        if (cache.size() <= maxEntries) {
+            return;
+        }
+
+        std::vector<std::pair<int, std::string>> entries;
+        entries.reserve(cache.size());
+        for (const auto& [key, preview] : cache) {
+            if (key == keepKey) continue;
+            entries.emplace_back(preview.lastUsedFrame, key);
+        }
+        std::sort(entries.begin(), entries.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.first != b.first) return a.first < b.first;
+                      return a.second < b.second;
+                  });
+
+        for (const auto& entry : entries) {
+            if (cache.size() <= maxEntries) {
+                break;
+            }
+            cache.erase(entry.second);
+        }
+    }
+
     CachedTexturePreview& GetTexturePreviewData(Renderer& renderer,
                                                 const fs::path& path,
                                                 const fs::file_time_type& stamp) {
         static std::unordered_map<std::string, CachedTexturePreview> cache;
-        CachedTexturePreview& preview = cache[path.string()];
+        constexpr size_t kMaxTexturePreviewEntries = 512;
+        const std::string key = path.string();
+        CachedTexturePreview& preview = cache[key];
+        preview.lastUsedFrame = ImGui::GetFrameCount();
         if (preview.stamp != stamp) {
             preview = {};
             preview.stamp = stamp;
+            preview.lastUsedFrame = ImGui::GetFrameCount();
         }
         if (!preview.attempted && ConsumeFileBrowserPreviewBudget()) {
             preview.attempted = true;
@@ -624,6 +672,7 @@ namespace {
                 preview.ready = true;
             }
         }
+        TrimFileBrowserPreviewCache(cache, key, kMaxTexturePreviewEntries, 1800);
         return preview;
     }
 
@@ -644,10 +693,14 @@ namespace {
 
     CachedVideoPreview& GetVideoPreviewData(const fs::path& path, const fs::file_time_type& stamp) {
         static std::unordered_map<std::string, CachedVideoPreview> cache;
-        CachedVideoPreview& preview = cache[path.string()];
+        constexpr size_t kMaxVideoPreviewEntries = 48;
+        const std::string key = path.string();
+        CachedVideoPreview& preview = cache[key];
+        preview.lastUsedFrame = ImGui::GetFrameCount();
         if (preview.stamp != stamp) {
             preview = {};
             preview.stamp = stamp;
+            preview.lastUsedFrame = ImGui::GetFrameCount();
         }
         if (!preview.attempted && ConsumeFileBrowserPreviewBudget()) {
             preview.attempted = true;
@@ -664,19 +717,25 @@ namespace {
                 preview.player.reset();
             }
         }
+        TrimFileBrowserPreviewCache(cache, key, kMaxVideoPreviewEntries, 900);
         return preview;
     }
 
     CachedModelPreview& GetModelPreviewData(const fs::path& path, const fs::file_time_type& stamp) {
         static std::unordered_map<std::string, CachedModelPreview> cache;
-        CachedModelPreview& preview = cache[path.string()];
+        constexpr size_t kMaxModelPreviewEntries = 128;
+        const std::string key = path.string();
+        CachedModelPreview& preview = cache[key];
+        preview.lastUsedFrame = ImGui::GetFrameCount();
         if (preview.stamp != stamp) {
             const int existingSlot = preview.previewSlot;
             preview = {};
             preview.stamp = stamp;
             preview.previewSlot = existingSlot;
+            preview.lastUsedFrame = ImGui::GetFrameCount();
         }
         if (preview.attempted || !ConsumeFileBrowserPreviewBudget()) {
+            TrimFileBrowserPreviewCache(cache, key, kMaxModelPreviewEntries, 1200);
             return preview;
         }
 
@@ -695,6 +754,7 @@ namespace {
                 preview.boundsMin = info->boundsMin;
                 preview.boundsMax = info->boundsMax;
             }
+            TrimFileBrowserPreviewCache(cache, key, kMaxModelPreviewEntries, 1200);
             return preview;
         }
 
@@ -706,6 +766,7 @@ namespace {
             preview.boundsMin = info->boundsMin;
             preview.boundsMax = info->boundsMax;
         }
+        TrimFileBrowserPreviewCache(cache, key, kMaxModelPreviewEntries, 1200);
         return preview;
     }
 
@@ -2606,12 +2667,16 @@ void Engine::renderFileBrowserPanel() {
                             ImGui::EndDragDropTarget();
                         }
 
-                        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                        if (DragPreview::BeginSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                             std::string payloadPath = entry.path().string();
                             const char* payloadType = entry.is_directory() ? "FILE_BROWSER_ENTRY" : "FILE_PATH";
                             ImGui::SetDragDropPayload(payloadType, payloadPath.c_str(), payloadPath.size() + 1);
-                            ImGui::Text("%s", cached.filename.c_str());
-                            ImGui::EndDragDropSource();
+                            Texture* dragIconTex = FileIcons::GetCategoryIconTexture(renderer, cached.category, cached.folderHasItems);
+                            ImTextureID dragIcon = (dragIconTex && dragIconTex->GetID())
+                                ? (ImTextureID)(intptr_t)dragIconTex->GetID()
+                                : (ImTextureID)0;
+                            DragPreview::SubmitMeta(cached.filename.c_str(), dragIcon, payloadType);
+                            DragPreview::EndSource();
                         }
 
                         ImGui::PopID();
@@ -2883,12 +2948,16 @@ void Engine::renderFileBrowserPanel() {
                 ImGui::EndDragDropTarget();
             }
 
-                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                if (DragPreview::BeginSource(ImGuiDragDropFlags_SourceAllowNullID)) {
                     std::string payloadPath = entry.path().string();
                     const char* payloadType = entry.is_directory() ? "FILE_BROWSER_ENTRY" : "FILE_PATH";
                     ImGui::SetDragDropPayload(payloadType, payloadPath.c_str(), payloadPath.size() + 1);
-                    ImGui::Text("%s", cached.filename.c_str());
-                    ImGui::EndDragDropSource();
+                    Texture* dragIconTex = FileIcons::GetCategoryIconTexture(renderer, cached.category, cached.folderHasItems);
+                    ImTextureID dragIcon = (dragIconTex && dragIconTex->GetID())
+                        ? (ImTextureID)(intptr_t)dragIconTex->GetID()
+                        : (ImTextureID)0;
+                    DragPreview::SubmitMeta(cached.filename.c_str(), dragIcon, payloadType);
+                    DragPreview::EndSource();
                 }
 
                 ImGui::PopID();

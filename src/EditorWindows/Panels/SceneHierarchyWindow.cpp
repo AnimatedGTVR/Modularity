@@ -2,6 +2,7 @@
 #include "MaterialAssetUtils.h"
 #include "ModelLoader.h"
 #include "../../SpritesheetFormat.h"
+#include "../../DragPreviewOverlay.h"
 #include "imgui.h"
 #include <algorithm>
 #include <array>
@@ -67,6 +68,22 @@ namespace {
             }
         }
         return IM_COL32(130, 150, 170, 220);
+    }
+
+    bool HierarchyNameMatchesFilter(const std::string& name, const std::string& lowerFilter) {
+        if (lowerFilter.empty()) return true;
+        const size_t filterSize = lowerFilter.size();
+        if (filterSize > name.size()) return false;
+        for (size_t start = 0; start + filterSize <= name.size(); ++start) {
+            size_t i = 0;
+            for (; i < filterSize; ++i) {
+                const unsigned char c = static_cast<unsigned char>(name[start + i]);
+                const char lower = static_cast<char>(std::tolower(c));
+                if (lower != lowerFilter[i]) break;
+            }
+            if (i == filterSize) return true;
+        }
+        return false;
     }
 
     struct HierarchyFrameCache {
@@ -478,6 +495,41 @@ namespace {
         DrawSvgIcon(drawList, kEmptyObjectSvg, gEmptyObjectSvgCache, min, max, color, stroke, 0.9f);
     }
 
+    const char* GetHierarchyComponentIconPath(const SceneObject& obj) {
+        if (obj.hasCamera) return "Resources/Engine-Root/Hierarchy/Component Camera.png";
+        if (obj.hasLight || obj.hasLight2D) return "Resources/Engine-Root/Hierarchy/Component Light Bulb.png";
+        if (obj.hasPostFX) return "Resources/Engine-Root/Hierarchy/Component ModuVolume.png";
+        if (obj.hasUI) {
+            switch (obj.ui.type) {
+                case UIElementType::Canvas: return "Resources/Engine-Root/Hierarchy/Component Canvas.png";
+                case UIElementType::Text: return "Resources/Engine-Root/Hierarchy/Component Text.png";
+                case UIElementType::Image:
+                case UIElementType::Sprite2D: return "Resources/Engine-Root/Hierarchy/Component Sprite.png";
+                default: break;
+            }
+        }
+        if (obj.hasRenderer) {
+            switch (obj.renderType) {
+                case RenderType::Sprite:
+                    return "Resources/Engine-Root/Hierarchy/Component Sprite.png";
+                case RenderType::Cube:
+                case RenderType::Sphere:
+                case RenderType::Capsule:
+                case RenderType::OBJMesh:
+                case RenderType::Model:
+                case RenderType::Mirror:
+                case RenderType::Plane:
+                case RenderType::Torus:
+                    return "Resources/Engine-Root/Hierarchy/Component Mesh.png";
+                case RenderType::None:
+                default:
+                    break;
+            }
+        }
+        if (obj.hasAudioSource) return "Resources/Engine-Root/Hierarchy/Component Audio Source.png";
+        return "Resources/Engine-Root/Hierarchy/Component Default or Unknown.png";
+    }
+
     void DrawHierarchyLines(ImDrawList* drawList, const ImVec2& itemMin, const ImVec2& itemMax,
                             const std::vector<bool>& ancestorHasNext, int depth, bool isLast) {
         if (depth <= 0) {
@@ -566,12 +618,8 @@ namespace {
                                           std::unordered_map<int, size_t>& sceneObjectIndexById,
                                           const std::vector<SceneObject>& sceneObjects,
                                           std::vector<HierarchyRowCacheEntry>& rows) {
-        if (!filter.empty()) {
-            std::string nameLower = obj.name;
-            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
-            if (nameLower.find(filter) == std::string::npos) {
-                return;
-            }
+        if (!HierarchyNameMatchesFilter(obj.name, filter)) {
+            return;
         }
 
         HierarchyRowCacheEntry row;
@@ -600,13 +648,7 @@ namespace {
                 continue;
             }
             const SceneObject& child = sceneObjects[idxIt->second];
-            if (filter.empty()) {
-                visibleChildren.push_back(&child);
-                continue;
-            }
-            std::string childLower = child.name;
-            std::transform(childLower.begin(), childLower.end(), childLower.begin(), ::tolower);
-            if (childLower.find(filter) != std::string::npos) {
+            if (HierarchyNameMatchesFilter(child.name, filter)) {
                 visibleChildren.push_back(&child);
             }
         }
@@ -934,12 +976,8 @@ void Engine::renderHierarchyPanel() {
 void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
                               std::vector<bool>& ancestorHasNext, std::unordered_set<int>& renderPath,
                               bool isLast, int depth, float animStep) {
-    if (!filter.empty()) {
-        std::string nameLower = obj.name;
-        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
-        if (nameLower.find(filter) == std::string::npos) {
-            return;
-        }
+    if (!HierarchyNameMatchesFilter(obj.name, filter)) {
+        return;
     }
     if (depth > 256 || !renderPath.insert(obj.id).second) {
         return;
@@ -995,7 +1033,24 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
     float labelStart = itemMin.x + ImGui::GetTreeNodeToLabelSpacing();
     ImVec2 iconPos(labelStart, itemMin.y + (lineHeight - iconSize) * 0.5f);
     ImU32 iconColor = GetHierarchyTypeColor(obj);
-    DrawEmptyObjectIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
+    Texture* componentIcon = renderer.getTexture(GetHierarchyComponentIconPath(obj),
+                                                 MaterialProperties::TextureFilter::Bilinear);
+    ImU32 iconTintU32 = IM_COL32_WHITE;
+    {
+        auto it = hierarchyIconTints.find(obj.id);
+        if (it != hierarchyIconTints.end())
+            iconTintU32 = ImGui::ColorConvertFloat4ToU32(it->second);
+    }
+    if (componentIcon && componentIcon->GetID()) {
+        float texIconSize = std::max(8.0f, (lineHeight - 2.0f) * iconScale);
+        ImVec2 texIconPos(labelStart, itemMin.y + (lineHeight - texIconSize) * 0.5f);
+        ImGui::GetWindowDrawList()->AddImage(
+            (ImTextureID)(intptr_t)componentIcon->GetID(),
+            texIconPos, ImVec2(texIconPos.x + texIconSize, texIconPos.y + texIconSize),
+            ImVec2(0, 1), ImVec2(1, 0), iconTintU32);
+    } else {
+        DrawEmptyObjectIcon(ImGui::GetWindowDrawList(), iconPos, iconSize, iconColor);
+    }
     ImVec4 textCol = ImGui::GetStyleColorVec4(ImGuiCol_Text);
     textCol.x = std::min(1.0f, textCol.x + 0.15f * hoverT + 0.2f * activeT);
     textCol.y = std::min(1.0f, textCol.y + 0.15f * hoverT + 0.2f * activeT);
@@ -1117,10 +1172,15 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         camera.velocity = glm::vec3(0.0f);
     }
 
-    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+    if (DragPreview::BeginSource(ImGuiDragDropFlags_None)) {
         ImGui::SetDragDropPayload("SCENE_OBJECT", &obj.id, sizeof(int));
-        ImGui::Text("Moving: %s", obj.name.c_str());
-        ImGui::EndDragDropSource();
+        Texture* dragIconTex = renderer.getTexture(GetHierarchyComponentIconPath(obj),
+                                                   MaterialProperties::TextureFilter::Bilinear);
+        ImTextureID dragIcon = (dragIconTex && dragIconTex->GetID())
+            ? (ImTextureID)(intptr_t)dragIconTex->GetID()
+            : (ImTextureID)0;
+        DragPreview::SubmitMeta(obj.name.c_str(), dragIcon, "SCENE_OBJECT");
+        DragPreview::EndSource();
     }
 
     auto importDroppedModel = [&](const fs::path& path, int parentId) {
@@ -1294,28 +1354,21 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         }
     }
 
-    std::vector<SceneObject*> visibleChildren;
+    size_t visibleChildCount = 0;
     if (hasChildren) {
-        visibleChildren.reserve(obj.childIds.size());
         for (int childId : obj.childIds) {
             auto idxIt = sceneObjectIndexById.find(childId);
             if (idxIt == sceneObjectIndexById.end()) continue;
             size_t idx = idxIt->second;
             if (idx >= sceneObjects.size()) continue;
             SceneObject& child = sceneObjects[idx];
-            if (filter.empty()) {
-                visibleChildren.push_back(&child);
-            } else {
-                std::string childLower = child.name;
-                std::transform(childLower.begin(), childLower.end(), childLower.begin(), ::tolower);
-                if (childLower.find(filter) != std::string::npos) {
-                    visibleChildren.push_back(&child);
-                }
+            if (HierarchyNameMatchesFilter(child.name, filter)) {
+                ++visibleChildCount;
             }
         }
     }
 
-    const bool shouldAnimateChildren = !visibleChildren.empty() && (nodeOpen || openT > 0.001f);
+    const bool shouldAnimateChildren = visibleChildCount > 0 && (nodeOpen || openT > 0.001f);
     if (shouldAnimateChildren) {
         const float revealT = std::clamp(openT, 0.0f, 1.0f);
         const float revealHeightT = std::clamp((revealT - 0.045f) / 0.955f, 0.0f, 1.0f);
@@ -1331,7 +1384,7 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
         const ImVec2 renderCursor = ImGui::GetCursorScreenPos();
         const float cursorMaxYBefore = ImGui::GetCurrentWindow()->DC.CursorMaxPos.y;
         const float estimatedHeight = std::max(lineHeight * 0.9f,
-                                               lineHeight * static_cast<float>(visibleChildren.size()) * 1.1f);
+                                               lineHeight * static_cast<float>(visibleChildCount) * 1.1f);
         const float cachedHeight = std::max(animState.contentExtent, estimatedHeight);
         const float reservedHeight = cachedHeight * easedReveal;
         const float slideOffset = (1.0f - easedReveal) * std::min(std::max(lineHeight * 0.9f, cachedHeight * 0.18f),
@@ -1347,9 +1400,17 @@ void Engine::renderObjectNode(SceneObject& obj, const std::string& filter,
             ImGui::BeginGroup();
 
             ancestorHasNext.push_back(!isLast);
-            for (size_t i = 0; i < visibleChildren.size(); ++i) {
-                bool childLast = (i + 1 == visibleChildren.size());
-                renderObjectNode(*visibleChildren[i], filter, ancestorHasNext, renderPath, childLast, depth + 1, animStep);
+            size_t visibleChildIndex = 0;
+            for (int childId : obj.childIds) {
+                auto idxIt = sceneObjectIndexById.find(childId);
+                if (idxIt == sceneObjectIndexById.end()) continue;
+                size_t idx = idxIt->second;
+                if (idx >= sceneObjects.size()) continue;
+                SceneObject& child = sceneObjects[idx];
+                if (!HierarchyNameMatchesFilter(child.name, filter)) continue;
+                const bool childLast = (visibleChildIndex + 1 == visibleChildCount);
+                ++visibleChildIndex;
+                renderObjectNode(child, filter, ancestorHasNext, renderPath, childLast, depth + 1, animStep);
             }
             ancestorHasNext.pop_back();
 

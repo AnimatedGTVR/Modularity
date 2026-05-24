@@ -1,20 +1,14 @@
 #pragma once
-
 #include "PackageManager.h"
 #include "ProjectManager.h"
 #include "ScriptCompiler.h"
 #include "ScriptDiagnostics.h"
 #include "ScriptLanguageService.h"
 #include "ThirdParty/assimp/contrib/rapidjson/include/rapidjson/document.h"
-
 #include <unordered_map>
-
 fs::path resolveScriptsConfigPath(const Project& project);
-
 class ModularityLspServer {
-public:
-    int run(int argc, char** argv);
-
+public: int run(int argc, char** argv);
 private:
     struct DocumentState {
         fs::path path;
@@ -28,8 +22,6 @@ private:
         std::string term;
         bool hasQualifier;
     };
-
-
     bool initializeProject(const fs::path& workspacePath);
     bool readMessage(std::string& outJson);
     void writeJson(const std::string& jsonText);
@@ -39,7 +31,6 @@ private:
     void sendLogMessage(const std::string& message, int type = 3);
     void publishDiagnostics(const DocumentState& doc);
     std::vector<Modularity::ScriptDiagnostic> collectLiveDiagnostics(const DocumentState& doc) const;
-
     void handleMessage(const rapidjson::Document& request);
     void handleInitialize(const rapidjson::Document& request);
     void handleDidOpen(const rapidjson::Document& request);
@@ -49,7 +40,6 @@ private:
     void handleSignatureHelp(const rapidjson::Document& request);
     void handleHover(const rapidjson::Document& request);
     void handleDocumentSymbol(const rapidjson::Document& request);
-
     static fs::path uriToPath(const std::string& uri);
     static std::string pathToUri(const fs::path& path);
     static std::string readFileText(const fs::path& path);
@@ -57,9 +47,7 @@ private:
     static const rapidjson::Value* getId(const rapidjson::Document& request);
     static rapidjson::Value makeStringValue(const std::string& value, rapidjson::Document::AllocatorType& alloc);
     static std::string extractLine(const std::string& text, int line);
-    static CompletionPrefix extractCompletionPrefix(const std::string& text, int line, int character,
-                                               ScriptLanguageServiceLanguage language);
-
+    static CompletionPrefix extractCompletionPrefix(const std::string& text, int line, int character, ScriptLanguageServiceLanguage language);
     Project project;
     PackageManager packageManager;
     ScriptCompiler scriptCompiler;

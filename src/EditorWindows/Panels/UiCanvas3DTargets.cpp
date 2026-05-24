@@ -561,7 +561,8 @@ void Engine::renderUiCanvas3DTargets() {
           textFont = ImGui::GetFont();
         }
         float scale = std::max(0.1f, obj.ui.textScale);
-        float fontSize = std::max(1.0f, ImGui::GetFontSize() * scale);
+        float fontSize = ResolveViewportUITextFontSize(
+            ImGui::GetFontSize(), scale, obj.ui.fontSize, false, 100.0f);
         ImGui::PushClipRect(drawMin, drawMax, true);
         AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,

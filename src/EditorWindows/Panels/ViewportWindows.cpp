@@ -1720,22 +1720,28 @@ void Engine::renderViewport() {
         } else if (obj.ui.type == UIElementType::Text) {
           spriteBatch.flush();
           ImDrawList *dl = ImGui::GetWindowDrawList();
-          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b, obj.ui.color.a);
+          ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
+                      obj.ui.color.a);
           float scale = std::max(0.1f, obj.ui.textScale);
-          float fontSize = ComputeViewportTextFontSize(ImGui::GetFontSize(), scale, true, uiWorldCamera.zoom);
+          float fontSize = ResolveViewportUITextFontSize(
+              ImGui::GetFontSize(), scale, obj.ui.fontSize, true,
+              uiWorldCamera.zoom);
           const float textRotationRad = glm::radians(obj.ui.rotation);
           const bool textIsRotated = std::abs(textRotationRad) > 1e-4f;
           if (!textIsRotated) ImGui::PushClipRect(drawMin, drawMax, true);
           const int textVtxStart = dl->VtxBuffer.Size;
           AddUITextWithFilter(
               dl, obj.material.textureFilter, ImGui::GetFont(), fontSize,
-              drawMin, drawMax, ImGui::GetColorU32(tint), obj.ui.label.c_str(),
-              obj.ui.textAutoWrap, obj.ui.textHAlign, obj.ui.textVAlign,
-              obj.ui.textEffectFlags, obj.ui.textEffectSpeed,
+              drawMin, drawMax, ImGui::GetColorU32(tint),
+              obj.ui.label.c_str(), obj.ui.textAutoWrap, obj.ui.textHAlign,
+              obj.ui.textVAlign, obj.ui.textEffectFlags, obj.ui.textEffectSpeed,
               obj.ui.textEffectIntensity);
           if (textIsRotated) {
-            const ImVec2 pivot((drawMin.x + drawMax.x) * 0.5f, (drawMin.y + drawMax.y) * 0.5f);
-            ViewportRenderHelpers::RotateDrawListVertices(dl, textVtxStart, dl->VtxBuffer.Size, pivot, textRotationRad);
+            const ImVec2 textPivot((drawMin.x + drawMax.x) * 0.5f,
+                                   (drawMin.y + drawMax.y) * 0.5f);
+            ViewportRenderHelpers::RotateDrawListVertices(
+                dl, textVtxStart, dl->VtxBuffer.Size, textPivot,
+                textRotationRad);
           } else ImGui::PopClipRect();
         }
         if (pushedCanvasMask) {
@@ -2419,7 +2425,8 @@ void Engine::renderViewport() {
                   continue;
                 worldUiRectGizmoSnapshots.push_back(UiRectGizmoSnapshot{
                     id, target->ui.position, target->ui.size,
-                    target->ui.rotation, targetMin, targetMax});
+                    target->ui.rotation, targetMin, targetMax,
+                    target->ui.textScale, target->ui.fontSize});
               }
               worldUiGizmoHistoryCaptured = true;
             }
@@ -2535,7 +2542,7 @@ void Engine::renderViewport() {
               if (op == ImGuizmo::ROTATE) {
                 target->ui.rotation = euler.z;
                 if (groupRotate) {
-                  glm::vec2 worldSize = target->ui.size;
+                  glm::vec2 worldSize = getSpriteDisplaySize(*target);
                   ImVec2 pivotOffset = anchorToPivotUI(
                       target->ui.anchor, ImVec2(worldSize.x, worldSize.y));
                   glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
@@ -2545,7 +2552,7 @@ void Engine::renderViewport() {
                       worldPivot - parentOffset - parallaxOffset(*target);
                 }
               } else if (op == ImGuizmo::TRANSLATE) {
-                glm::vec2 worldSize = target->ui.size;
+                glm::vec2 worldSize = getSpriteDisplaySize(*target);
                 ImVec2 pivotOffset = anchorToPivotUI(
                     target->ui.anchor, ImVec2(worldSize.x, worldSize.y));
                 glm::vec2 worldMin = worldCenter - worldSize * 0.5f;
@@ -2592,7 +2599,19 @@ void Engine::renderViewport() {
                       worldMin + glm::vec2(pivotOffset.x, pivotOffset.y);
                   target->ui.position =
                       worldPivot - parentOffset - parallaxOffset(*target);
-                  target->ui.size = worldSize;
+                  glm::vec2 targetScale(
+                      std::max(0.01f, std::abs(target->scale.x)),
+                      std::max(0.01f, std::abs(target->scale.y)));
+                  target->ui.size = worldSize / targetScale;
+                  const UiRectGizmoSnapshot *snapshot = findRectSnapshot(id);
+                  if (snapshot) {
+                    ImVec2 startSize(
+                        snapshot->rectMax.x - snapshot->rectMin.x,
+                        snapshot->rectMax.y - snapshot->rectMin.y);
+                    ApplyUITextScaleFromRectResize(
+                        *target, snapshot->textScale, snapshot->fontSize,
+                        startSize, newSize);
+                  }
                 }
               }
             }

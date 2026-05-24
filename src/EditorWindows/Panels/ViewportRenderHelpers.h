@@ -225,6 +225,9 @@ void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
 void RotateDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
                             const ImVec2 &pivot, float angleRadians);
 
+void ScaleDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
+                           const ImVec2 &pivot, const ImVec2 &scale);
+
 // `viewportRenderScale` is the on-screen size of the viewport divided by the
 // resolution it's rendered at (e.g. 1.5 means the rendered image is being
 // upscaled 1.5x). Screen-space UI text multiplies font size by it so text
@@ -233,6 +236,17 @@ void RotateDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
 float ComputeViewportTextFontSize(float baseFontSize, float textScale,
                                   bool useWorldUi, float worldUiZoom,
                                   float viewportRenderScale = 1.0f);
+
+float ResolveViewportUITextFontSize(float baseFontSize, float textScale,
+                                    float explicitFontSize, bool useWorldUi,
+                                    float worldUiZoom,
+                                    float viewportRenderScale = 1.0f,
+                                    float elementScaleY = 1.0f);
+
+void ApplyUITextScaleFromRectResize(SceneObject &obj, float startTextScale,
+                                    float startFontSize,
+                                    const ImVec2 &startScreenSize,
+                                    const ImVec2 &newScreenSize);
 
 // ---------- Scene lookup cache ----------
 

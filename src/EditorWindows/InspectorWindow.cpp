@@ -2,6 +2,7 @@
 #include "MaterialAssetUtils.h"
 #include "ModelLoader.h"
 #include "../../SpritesheetFormat.h"
+#include "DragPreviewOverlay.h"
 #include "imgui.h"
 #include <algorithm>
 #include <array>
@@ -3105,10 +3106,10 @@ void Engine::renderInspectorPanel() {
         float right = headerMax.x - style.FramePadding.x;
 
         if (!reorderKey.empty()) {
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoHoldToOpenOthers)) {
+            if (DragPreview::BeginSource(ImGuiDragDropFlags_SourceNoHoldToOpenOthers)) {
                 ImGui::SetDragDropPayload("INSPECTOR_COMPONENT", reorderKey.c_str(), reorderKey.size() + 1);
-                ImGui::TextUnformatted(label);
-                ImGui::EndDragDropSource();
+                DragPreview::SubmitMeta(label, (ImTextureID)0, "INSPECTOR_COMPONENT");
+                DragPreview::EndSource();
             }
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("INSPECTOR_COMPONENT")) {
@@ -3564,13 +3565,41 @@ void Engine::renderInspectorPanel() {
         ImGui::TableNextRow();
 
         ImGui::TableSetColumnIndex(0);
+        const std::string tintPopupId = std::string("##HierarchyTintPicker_") + std::to_string(obj.id);
         if (iconGameObject.id != static_cast<ImTextureID>(0)) {
             const ImVec2 uvMin = iconGameObject.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
             const ImVec2 uvMax = iconGameObject.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
             const ImVec2 iconMin = ImGui::GetCursorScreenPos();
             const ImVec2 iconMax(iconMin.x + objIconSize, iconMin.y + objIconSize);
-            ImGui::GetWindowDrawList()->AddImage(iconGameObject.id, iconMin, iconMax, uvMin, uvMax);
-            ImGui::Dummy(ImVec2(objIconSize, objIconSize));
+            ImVec4 iconTint = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+            {
+                auto it = hierarchyIconTints.find(obj.id);
+                if (it != hierarchyIconTints.end()) iconTint = it->second;
+            }
+            ImGui::GetWindowDrawList()->AddImage(iconGameObject.id, iconMin, iconMax, uvMin, uvMax,
+                ImGui::ColorConvertFloat4ToU32(iconTint));
+            if (ImGui::InvisibleButton("##HierarchyIconTintBtn", ImVec2(objIconSize, objIconSize))) {
+                if (!hierarchyIconTints.count(obj.id))
+                    hierarchyIconTints[obj.id] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+                ImGui::OpenPopup(tintPopupId.c_str());
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Click to set hierarchy icon color");
+            if (ImGui::BeginPopup(tintPopupId.c_str())) {
+                if (!hierarchyIconTints.count(obj.id))
+                    hierarchyIconTints[obj.id] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+                ImVec4& tint = hierarchyIconTints[obj.id];
+                ImGui::TextDisabled("Hierarchy Icon Color");
+                ImGui::Separator();
+                ImGui::ColorPicker4("##HierarchyTintColor", &tint.x,
+                    ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_NoAlpha |
+                    ImGuiColorEditFlags_PickerHueWheel);
+                if (ImGui::Button("Reset to Default", ImVec2(-1.0f, 0.0f))) {
+                    hierarchyIconTints.erase(obj.id);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
         } else {
             ImGui::Dummy(ImVec2(objIconSize, objIconSize));
         }
@@ -3900,7 +3929,7 @@ void Engine::renderInspectorPanel() {
             if (obj.ui.type == UIElementType::Image || obj.ui.type == UIElementType::Sprite2D) {
                 minSize = glm::vec2(0.01f, 0.01f);
             }
-            if (mixedDragFloatN("Size (px)", &obj.ui.size.x, 2, 1.0f, minSize.x, 4096.0f, "%.3f",
+            if (mixedDragFloatN("Size (px)", &obj.ui.size.x, 2, 1.0f, minSize.x, 65536.0f, "%.3f",
                                 [](const SceneObject& selectedObj, int component) {
                                     return (&selectedObj.ui.size.x)[component];
                                 },
@@ -4069,9 +4098,24 @@ void Engine::renderInspectorPanel() {
                 }
             }
             if (obj.ui.type == UIElementType::Text) {
-                if (ImGui::DragFloat("Text Size", &obj.ui.textScale, 0.05f, 0.1f, 10.0f, "%.2f")) {
-                    obj.ui.textScale = std::max(0.1f, obj.ui.textScale);
+                const float baseTextSize = std::max(1.0f, ImGui::GetFontSize());
+                float textSizePx = (obj.ui.fontSize > 0.0f)
+                    ? obj.ui.fontSize
+                    : baseTextSize * std::max(0.1f, obj.ui.textScale);
+                if (ImGui::DragFloat("Text Size (px)", &textSizePx, 0.5f, 1.0f, 512.0f, "%.1f")) {
+                    obj.ui.fontSize = std::max(1.0f, textSizePx);
+                    obj.ui.textScale = obj.ui.fontSize / baseTextSize;
                     changed = true;
+                }
+                if (obj.ui.fontSize > 0.0f) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset##UITextFontSize")) {
+                        obj.ui.fontSize = 0.0f;
+                        changed = true;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Use the legacy Text Size multiplier instead of an explicit pixel size.");
+                    }
                 }
                 const auto& fontCatalog = getUIFontCatalog();
                 std::string currentFontLabel = "Use Editor Style Font";
@@ -4476,11 +4520,6 @@ void Engine::renderInspectorPanel() {
                     changed = true;
                 }
                 ImGui::TextDisabled("Alpha = 0 uses the Tint color.");
-                if (ImGui::DragFloat("Font Size (px)", &obj.ui.fontSize, 0.5f, 0.0f, 256.0f, "%.1f")) {
-                    obj.ui.fontSize = std::max(0.0f, obj.ui.fontSize);
-                    changed = true;
-                }
-                ImGui::TextDisabled("Font Size = 0 uses Text Size multiplier above.");
             }
 
             // ── Draw order ────────────────────────────────────────────────

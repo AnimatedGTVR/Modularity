@@ -809,6 +809,22 @@ void RotateDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
   }
 }
 
+void ScaleDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
+                           const ImVec2 &pivot, const ImVec2 &scale) {
+  if (!dl || (std::abs(scale.x - 1.0f) < 1e-4f &&
+              std::abs(scale.y - 1.0f) < 1e-4f)) {
+    return;
+  }
+  const int total = dl->VtxBuffer.Size;
+  const int first = std::clamp(firstVertex, 0, total);
+  const int last = std::clamp(lastVertex, first, total);
+  ImDrawVert *v = dl->VtxBuffer.Data;
+  for (int i = first; i < last; ++i) {
+    v[i].pos.x = pivot.x + (v[i].pos.x - pivot.x) * scale.x;
+    v[i].pos.y = pivot.y + (v[i].pos.y - pivot.y) * scale.y;
+  }
+}
+
 float ComputeViewportTextFontSize(float baseFontSize, float textScale,
                                   bool useWorldUi, float worldUiZoom,
                                   float viewportRenderScale) {
@@ -820,6 +836,48 @@ float ComputeViewportTextFontSize(float baseFontSize, float textScale,
     return std::max(1.0f, safeBaseFontSize * safeTextScale * worldScale * safeViewportScale);
   }
   return std::max(1.0f, safeBaseFontSize * safeTextScale * safeViewportScale);
+}
+
+float ResolveViewportUITextFontSize(float baseFontSize, float textScale,
+                                    float explicitFontSize, bool useWorldUi,
+                                    float worldUiZoom,
+                                    float viewportRenderScale,
+                                    float elementScaleY) {
+  // obj.scale on a Text element is intentionally not applied to the glyph
+  // size here — it only changes the layout/wrap bounds (mirroring how
+  // RectTransform scale works in TextMeshPro). The elementScaleY parameter
+  // is retained for callers that still want to bake transform scale into
+  // the glyph height directly, but the standard viewport path passes 1.0.
+  const float authoredFontSize =
+      (explicitFontSize > 0.0f) ? explicitFontSize
+                                : std::max(1.0f, baseFontSize) *
+                                      std::max(0.1f, textScale);
+  const float safeElementScale = std::max(0.01f, std::abs(elementScaleY));
+  const float safeViewportScale = std::max(0.01f, viewportRenderScale);
+  const float worldScale =
+      useWorldUi ? std::max(0.01f, worldUiZoom / 100.0f) : 1.0f;
+  return std::max(1.0f, authoredFontSize * safeElementScale * worldScale *
+                            safeViewportScale);
+}
+
+void ApplyUITextScaleFromRectResize(SceneObject &obj, float startTextScale,
+                                    float startFontSize,
+                                    const ImVec2 &startScreenSize,
+                                    const ImVec2 &newScreenSize) {
+  if (obj.ui.type != UIElementType::Text || startScreenSize.y <= 0.01f)
+    return;
+
+  const float heightRatio =
+      std::max(0.01f, newScreenSize.y) / std::max(0.01f, startScreenSize.y);
+  if (std::abs(heightRatio - 1.0f) < 0.001f)
+    return;
+
+  if (startFontSize > 0.0f) {
+    obj.ui.fontSize = std::max(0.1f, startFontSize * heightRatio);
+  } else {
+    obj.ui.fontSize = 0.0f;
+    obj.ui.textScale = std::max(0.1f, startTextScale * heightRatio);
+  }
 }
 
 // ---------- Sprite frame / nine-slice ----------

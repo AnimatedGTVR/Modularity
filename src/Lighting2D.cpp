@@ -1,5 +1,4 @@
 #include "Lighting2D.h"
-
 #include "Rendering.h"
 #include <glad/glad.h>
 #include <algorithm>
@@ -1109,8 +1108,10 @@ unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Ren
                   return a->objectId < b->objectId;
               });
 
-    layerBatchesScratch.clear();
-    layerBatchesScratch.reserve(orderedSpritesScratch.size());
+    size_t activeLayerBatchCount = 0;
+    if (layerBatchesScratch.capacity() < orderedSpritesScratch.size()) {
+        layerBatchesScratch.reserve(orderedSpritesScratch.size());
+    }
     layerToBatchIndexScratch.clear();
     layerToBatchIndexScratch.reserve(orderedSpritesScratch.size());
 
@@ -1123,15 +1124,23 @@ unsigned int Lighting2DRenderer::render(const Light2DRenderRequest& request, Ren
             ++spriteEnd;
         }
 
-        LayerBatch batch;
+        if (activeLayerBatchCount >= layerBatchesScratch.size()) {
+            layerBatchesScratch.emplace_back();
+        }
+        LayerBatch& batch = layerBatchesScratch[activeLayerBatchCount];
         batch.layer = layer;
         batch.spriteBegin = spriteBegin;
         batch.spriteEnd = spriteEnd;
         batch.blendModesMask = 0;
-        layerToBatchIndexScratch[layer] = layerBatchesScratch.size();
-        layerBatchesScratch.push_back(std::move(batch));
+        batch.lights.clear();
+        layerToBatchIndexScratch[layer] = activeLayerBatchCount;
+        ++activeLayerBatchCount;
         spriteBegin = spriteEnd;
     }
+    for (size_t i = activeLayerBatchCount; i < layerBatchesScratch.size(); ++i) {
+        layerBatchesScratch[i].lights.clear();
+    }
+    layerBatchesScratch.resize(activeLayerBatchCount);
 
     const size_t estimatedLightsPerBatch = layerBatchesScratch.empty()
         ? 0

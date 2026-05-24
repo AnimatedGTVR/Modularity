@@ -1,16 +1,12 @@
 #pragma once
-
 #include "Common.h"
-
 struct ModuCPPTranspileResult {
     std::string generatedSource;
     std::string className;
 };
-
 class ModuCPPTranspiler {
 public:
     static bool shouldTranspile(const fs::path& sourcePath, const std::string& sourceText);
-    bool transpile(const fs::path& sourcePath, const std::string& sourceText,
-                   ModuCPPTranspileResult& outResult, std::string& error) const;
+    bool transpile(const fs::path& sourcePath, const std::string& sourceText, ModuCPPTranspileResult& outResult, std::string& error) const;
 };
 

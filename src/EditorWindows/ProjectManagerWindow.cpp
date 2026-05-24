@@ -1960,7 +1960,7 @@ void Engine::renderLauncher() {
             const std::string templateFilter = toLower(TrimCopy(templateSearch));
 
             LauncherTemplateEntry blankEntry;
-            blankEntry.displayName = "Blank Project";
+            blankEntry.displayName = "Standard 3D Project";
             blankEntry.pipeline = ProjectPipeline::Pipeline3D;
             blankEntry.rendererBackend = Modularity::GraphicsBackend::OpenGL;
             blankEntry.isBlankPreset = true;
@@ -1968,7 +1968,7 @@ void Engine::renderLauncher() {
             auto selectTemplateEntry = [&](const LauncherTemplateEntry& entry) {
                 if (entry.isBlankPreset) {
                     projectManager.newProjectTemplatePath.clear();
-                    projectManager.newProjectTemplateName = "Blank Project";
+                    projectManager.newProjectTemplateName = "Standard 3D Project";
                 } else {
                     projectManager.newProjectTemplatePath = entry.projectRoot.string();
                     projectManager.newProjectTemplateName = entry.displayName;
@@ -1988,7 +1988,7 @@ void Engine::renderLauncher() {
             };
 
             if (projectManager.newProjectTemplateName.empty()) {
-                projectManager.newProjectTemplateName = "Blank Project";
+                projectManager.newProjectTemplateName = "Standard 3D Project";
             }
 
             const LauncherTemplateEntry* selectedTemplate = nullptr;
@@ -2004,7 +2004,7 @@ void Engine::renderLauncher() {
             }
             if (!selectedTemplate) {
                 projectManager.newProjectTemplatePath.clear();
-                projectManager.newProjectTemplateName = "Blank Project";
+                projectManager.newProjectTemplateName = "Standard 3D Project";
                 selectedTemplate = &blankEntry;
             }
             projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(selectedTemplate->pipeline);
@@ -2114,7 +2114,7 @@ void Engine::renderLauncher() {
                                    ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 4.0f * uiScale);
                 } else {
                     list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.08f, 0.10f, 0.14f, 1.0f)), 4.0f * uiScale);
-                    const char* placeholder = entry.isBlankPreset ? "Blank" : "Preview";
+                    const char* placeholder = entry.isBlankPreset ? "Default" : "Preview";
                     const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                     list->AddText(ImVec2(thumbMin.x + ((thumbMax.x - thumbMin.x) - textSize.x) * 0.5f,
                                          thumbMin.y + ((thumbMax.y - thumbMin.y) - textSize.y) * 0.5f),
@@ -2193,7 +2193,7 @@ void Engine::renderLauncher() {
                                    ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 3.0f * uiScale);
                 } else {
                     list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.08f, 0.10f, 0.14f, 1.0f)), 3.0f * uiScale);
-                    const char* placeholder = entry.isBlankPreset ? "Blank" : "Preview";
+                    const char* placeholder = entry.isBlankPreset ? "Default" : "Preview";
                     const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                     list->AddText(ImVec2(thumbMin.x + ((thumbMax.x - thumbMin.x) - textSize.x) * 0.5f,
                                          thumbMin.y + ((thumbMax.y - thumbMin.y) - textSize.y) * 0.5f),
@@ -2212,9 +2212,9 @@ void Engine::renderLauncher() {
 
             auto createProjectFromCurrentState = [&]() {
                 if (std::strlen(projectManager.newProjectName) == 0) {
-                    projectManager.errorMessage = "Please enter a project name";
+                    projectManager.errorMessage = "Hey! You'll need a Project name first!";
                 } else if (std::strlen(projectManager.newProjectLocation) == 0) {
-                    projectManager.errorMessage = "Set a default location in Settings first.";
+                    projectManager.errorMessage = "Hey! Please Set a default location in Settings first.";
                 } else {
                     createNewProject(projectManager.newProjectName, projectManager.newProjectLocation);
                     if (projectManager.errorMessage.empty()) {
@@ -2224,11 +2224,10 @@ void Engine::renderLauncher() {
             };
 
             ImGui::TextColored(ImVec4(0.94f, 0.97f, 1.0f, 1.0f), "Create New Project");
-            ImGui::TextColored(ImVec4(0.59f, 0.66f, 0.75f, 1.0f),
-                               "Pick a starting point, review the preview, then confirm name and location.");
+            /*ImGui::TextColored(ImVec4(0.59f, 0.66f, 0.75f, 1.0f), "Pick a starting point, review the preview, then confirm name and location.");*/
             ImGui::Dummy(ImVec2(0.0f, 8.0f * uiScale));
 
-            renderCategoryButton("Blank Project", 0, 140.0f * uiScale);
+            renderCategoryButton("Defaults", 0, 140.0f * uiScale);
             ImGui::SameLine();
             renderCategoryButton("Template Projects", 1, 164.0f * uiScale);
             ImGui::SameLine();
@@ -2237,10 +2236,10 @@ void Engine::renderLauncher() {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.20f, 0.27f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.28f, 0.37f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.19f, 0.25f, 0.34f, 1.0f));
-            if (ImGui::Button("Back", ImVec2(backBtnW, 0.0f))) {
+            /*if (ImGui::Button("Back", ImVec2(backBtnW, 0.0f))) {
                 projectManager.showNewProjectDialog = false;
                 projectManager.errorMessage.clear();
-            }
+            }*/
             ImGui::PopStyleColor(3);
             ImGui::Dummy(ImVec2(0.0f, 8.0f * uiScale));
 
@@ -2339,7 +2338,7 @@ void Engine::renderLauncher() {
                                    previewTexWidth, previewTexHeight,
                                    ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 3.0f * uiScale);
                 } else {
-                    const char* placeholder = selectedTemplate->isBlankPreset ? "Blank Project" : "No Preview Available";
+                    const char* placeholder = selectedTemplate->isBlankPreset ? "Standard 3D Project" : "No Preview Available";
                     const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                     list->AddText(ImVec2(previewPos.x + (previewSize.x - textSize.x) * 0.5f,
                                          previewPos.y + (previewSize.y - textSize.y) * 0.5f),
@@ -2936,7 +2935,7 @@ void Engine::renderNewProjectDialog() {
         const std::string templateFilter = TrimCopy(templateSearch);
 
         LauncherTemplateEntry blankEntry;
-        blankEntry.displayName = "Blank Project";
+        blankEntry.displayName = "Standard 3D Project";
         blankEntry.pipeline = ProjectPipeline::Pipeline3D;
         blankEntry.rendererBackend = Modularity::GraphicsBackend::OpenGL;
         blankEntry.isBlankPreset = true;
@@ -2944,7 +2943,7 @@ void Engine::renderNewProjectDialog() {
         auto selectTemplateEntry = [&](const LauncherTemplateEntry& entry) {
             if (entry.isBlankPreset) {
                 projectManager.newProjectTemplatePath.clear();
-                projectManager.newProjectTemplateName = "Blank Project";
+                projectManager.newProjectTemplateName = "Standard 3D Project";
             } else {
                 projectManager.newProjectTemplatePath = entry.projectRoot.string();
                 projectManager.newProjectTemplateName = entry.displayName;
@@ -2964,7 +2963,7 @@ void Engine::renderNewProjectDialog() {
         };
 
         if (projectManager.newProjectTemplateName.empty()) {
-            projectManager.newProjectTemplateName = "Blank Project";
+            projectManager.newProjectTemplateName = "Standard 3D Project";
         }
 
         const LauncherTemplateEntry* selectedTemplate = nullptr;
@@ -2980,7 +2979,7 @@ void Engine::renderNewProjectDialog() {
         }
         if (!selectedTemplate) {
             projectManager.newProjectTemplatePath.clear();
-            projectManager.newProjectTemplateName = "Blank Project";
+            projectManager.newProjectTemplateName = "Standard 3D Project";
             selectedTemplate = &blankEntry;
         }
         projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(selectedTemplate->pipeline);
@@ -3092,7 +3091,7 @@ void Engine::renderNewProjectDialog() {
                 DrawImageCover(list, textureId, thumbMin, thumbMax, textureW, textureH, ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 4.0f);
             } else {
                 list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.08f, 0.10f, 0.14f, 1.0f)), 4.0f);
-                const char* placeholder = entry.isBlankPreset ? "Blank" : "Preview";
+                const char* placeholder = entry.isBlankPreset ? "Default" : "Preview";
                 const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                 list->AddText(ImVec2(thumbMin.x + ((thumbMax.x - thumbMin.x) - textSize.x) * 0.5f,
                                      thumbMin.y + ((thumbMax.y - thumbMin.y) - textSize.y) * 0.5f),
@@ -3170,7 +3169,7 @@ void Engine::renderNewProjectDialog() {
                 DrawImageCover(list, textureId, thumbMin, thumbMax, textureW, textureH, ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 3.0f);
             } else {
                 list->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImVec4(0.08f, 0.10f, 0.14f, 1.0f)), 3.0f);
-                const char* placeholder = entry.isBlankPreset ? "Blank" : "Preview";
+                const char* placeholder = entry.isBlankPreset ? "Default" : "Preview";
                 const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                 list->AddText(ImVec2(thumbMin.x + ((thumbMax.x - thumbMin.x) - textSize.x) * 0.5f,
                                      thumbMin.y + ((thumbMax.y - thumbMin.y) - textSize.y) * 0.5f),
@@ -3192,9 +3191,9 @@ void Engine::renderNewProjectDialog() {
                            "Choose a base project, review the preview, then configure the project details below.");
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
-        renderCategoryButton("Blank Project", 0, 136.0f);
+        renderCategoryButton("Defaults", 0, 130.0f);
         ImGui::SameLine();
-        renderCategoryButton("Template Projects", 1, 162.0f);
+        renderCategoryButton("Template Projects", 1, 164.0f);
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
 
         const float splitHeight = std::max(340.0f, ImGui::GetContentRegionAvail().y);
@@ -3294,7 +3293,7 @@ void Engine::renderNewProjectDialog() {
             if (previewTexId != static_cast<ImTextureID>(0)) {
                 DrawImageCover(list, previewTexId, previewPos, previewMax, previewTexWidth, previewTexHeight, ImGui::GetColorU32(ImVec4(1, 1, 1, 1)), 3.0f);
             } else {
-                const char* placeholder = selectedTemplate->isBlankPreset ? "Blank Project" : "No Preview Available";
+                const char* placeholder = selectedTemplate->isBlankPreset ? "Standard 3D Project" : "No Preview Available";
                 const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
                 list->AddText(ImVec2(previewPos.x + (previewSize.x - textSize.x) * 0.5f,
                                      previewPos.y + (previewSize.y - textSize.y) * 0.5f),

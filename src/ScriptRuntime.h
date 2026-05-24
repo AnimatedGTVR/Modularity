@@ -2,6 +2,7 @@
 
 #include "ScriptSdkCommon.h"
 #include "SceneObject.h"
+#include "imgui.h"
 #include <unordered_map>
 #include <unordered_set>
 

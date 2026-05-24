@@ -1248,8 +1248,9 @@ void Engine::renderPlayerViewport() {
           textFont = ImGui::GetFont();
         }
         float scale = std::max(0.1f, obj.ui.textScale);
-        float fontSize = ComputeViewportTextFontSize(
-            ImGui::GetFontSize(), scale, useWorldUi, uiWorldCamera.zoom);
+        float fontSize = ResolveViewportUITextFontSize(
+            ImGui::GetFontSize(), scale, obj.ui.fontSize, useWorldUi,
+            uiWorldCamera.zoom);
         const float textRotationRad = glm::radians(obj.ui.rotation);
         const bool textIsRotated = std::abs(textRotationRad) > 1e-4f;
         if (!textIsRotated) {
@@ -1263,10 +1264,11 @@ void Engine::renderPlayerViewport() {
                             obj.ui.textVAlign, obj.ui.textEffectFlags,
                             obj.ui.textEffectSpeed, obj.ui.textEffectIntensity);
         if (textIsRotated) {
-          const ImVec2 pivot((drawMin.x + drawMax.x) * 0.5f,
-                             (drawMin.y + drawMax.y) * 0.5f);
+          const ImVec2 textPivot((drawMin.x + drawMax.x) * 0.5f,
+                                 (drawMin.y + drawMax.y) * 0.5f);
           ViewportRenderHelpers::RotateDrawListVertices(
-              dl, textVtxStart, dl->VtxBuffer.Size, pivot, textRotationRad);
+              dl, textVtxStart, dl->VtxBuffer.Size, textPivot,
+              textRotationRad);
         } else {
           ImGui::PopClipRect();
         }

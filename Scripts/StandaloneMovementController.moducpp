@@ -15,7 +15,7 @@ public class PlayerMovement : ModuNode {
     void TickUpdate() {
         Vector2 move = Input.WASDMovement();
         Vector3 direction = Movement.Direction(move, camera);
-        float speed = Input.ButtonHeld("Sprint") ? sprintSpeed : walkSpeed; // if you wanted to have a bool check before speed, then reference that bool you made by doing 'float speed = allowSprint && input.Auto.Sprint.Down() ? sprintSpeed : walkSpeed;'
+        float speed = Input.ButtonHeld("Sprint") ? sprintSpeed : walkSpeed;
         bool grounded = obj.Physics.IsGrounded(groundCheckDistance);
         obj.Rigidbody3D.Accelerate(direction, speed, acceleration, deceleration);
         obj.Transform.Face(direction);

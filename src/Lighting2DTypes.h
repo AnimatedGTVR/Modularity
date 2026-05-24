@@ -1,50 +1,19 @@
 #pragma once
-
 #include "ScriptSdkCommon.h"
-
 #include <string>
 #include <vector>
 
-enum class Light2DType {
-    Point = 0,
-    Spot = 1,
-    Freeform = 2,
-    Sprite = 3,
-    Global = 4
-};
-
-enum class Light2DBlendMode {
-    Additive = 0,
-    Multiply = 1,
-    Subtractive = 2
-};
-
-enum class Light2DOverlapOperation {
-    Additive = 0,
-    Max = 1,
-    AlphaBlend = 2
-};
-
-enum class Light2DNormalMapQuality {
-    Disabled = 0,
-    Fast = 1,
-    Accurate = 2
-};
-
+enum class Light2DType             {Point = 0,    Spot = 1,     Freeform = 2,    Sprite = 3,     Global = 4};
+enum class Light2DBlendMode        {Additive = 0, Multiply = 1, Subtractive = 2};
+enum class Light2DOverlapOperation {Additive = 0, Max = 1,      AlphaBlend = 2};
+enum class Light2DNormalMapQuality {Disabled = 0, Fast = 1,     Accurate = 2};
 struct Light2DBlendStyleDefinition {
     std::string name = "Additive";
     Light2DBlendMode mode = Light2DBlendMode::Additive;
     glm::vec4 modulate = glm::vec4(1.0f);
     float intensityScale = 1.0f;
 };
-
-struct Light2DFlickerSettings {
-    bool enabled = false;
-    float speed = 9.0f;
-    float amount = 0.12f;
-    float seed = 0.0f;
-};
-
+struct Light2DFlickerSettings {bool enabled = false; float speed = 9.0f; float amount = 0.12f; float seed = 0.0f;};
 struct Light2DComponent {
     bool enabled = true;
     Light2DType type = Light2DType::Point;
@@ -76,7 +45,6 @@ struct Light2DComponent {
     std::vector<glm::vec2> shapePoints;
     Light2DFlickerSettings flicker;
 };
-
 struct ShadowCaster2DComponent {
     bool enabled = true;
     bool castsSelfShadow = false;

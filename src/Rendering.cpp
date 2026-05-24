@@ -1289,6 +1289,7 @@ Renderer::~Renderer() {
         releaseRenderTarget(entry.second);
     }
     extraPreviewTargets.clear();
+    extraPreviewTargetLastUsed.clear();
     if (postTarget.fbo) glDeleteFramebuffers(1, &postTarget.fbo);
     if (postTarget.texture) glDeleteTextures(1, &postTarget.texture);
     if (postTarget.rbo) glDeleteRenderbuffers(1, &postTarget.rbo);
@@ -1443,6 +1444,44 @@ void Renderer::purgeTextureCacheIfNeeded() {
             ? (textureCacheUsageBytes - it->second.approxBytes)
             : 0;
         cache.erase(it);
+    }
+}
+
+void Renderer::purgePreviewTargetsIfNeeded(int keepSlot) {
+    constexpr size_t kMaxExtraPreviewTargets = 192;
+    if (extraPreviewTargets.size() <= kMaxExtraPreviewTargets) {
+        return;
+    }
+
+    struct PreviewTargetCandidate {
+        int slot = 0;
+        uint64_t lastUsed = 0;
+    };
+
+    std::vector<PreviewTargetCandidate> candidates;
+    candidates.reserve(extraPreviewTargets.size());
+    for (const auto& [slot, target] : extraPreviewTargets) {
+        (void)target;
+        if (slot == keepSlot) continue;
+        auto usedIt = extraPreviewTargetLastUsed.find(slot);
+        candidates.push_back({slot, usedIt != extraPreviewTargetLastUsed.end() ? usedIt->second : 0});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const PreviewTargetCandidate& a, const PreviewTargetCandidate& b) {
+                  if (a.lastUsed != b.lastUsed) return a.lastUsed < b.lastUsed;
+                  return a.slot < b.slot;
+              });
+
+    for (const PreviewTargetCandidate& candidate : candidates) {
+        if (extraPreviewTargets.size() <= kMaxExtraPreviewTargets) {
+            break;
+        }
+        auto targetIt = extraPreviewTargets.find(candidate.slot);
+        if (targetIt == extraPreviewTargets.end()) continue;
+        releaseRenderTarget(targetIt->second);
+        extraPreviewTargets.erase(targetIt);
+        extraPreviewTargetLastUsed.erase(candidate.slot);
     }
 }
 
@@ -4522,11 +4561,11 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
         MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
         renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true, true);
     }
-    std::vector<int> effectiveSelection;
+    selectionOutlineSourceScratch.clear();
     if (selectedIds && !selectedIds->empty()) {
-        effectiveSelection = *selectedIds;
+        selectionOutlineSourceScratch.insert(selectionOutlineSourceScratch.end(), selectedIds->begin(), selectedIds->end());
     } else if (selectedId >= 0) {
-        effectiveSelection.push_back(selectedId);
+        selectionOutlineSourceScratch.push_back(selectedId);
     }
     if (!camera.orthographic && drawColliders) {
         MODU_PROFILE_SCOPE("Collision Overlay", ProfilerSampleCategory::RenderDetail);
@@ -4540,13 +4579,13 @@ void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>&
             fovDeg,
             nearPlane,
             farPlane,
-            effectiveSelection.empty() ? nullptr : &effectiveSelection);
+            selectionOutlineSourceScratch.empty() ? nullptr : &selectionOutlineSourceScratch);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
     if (!camera.orthographic) {
         {
             MODU_PROFILE_SCOPE("Selection Outline", ProfilerSampleCategory::RenderDetail);
-            renderSelectionOutline(camera, sceneObjects, effectiveSelection, fovDeg, nearPlane, farPlane);
+            renderSelectionOutline(camera, sceneObjects, selectionOutlineSourceScratch, fovDeg, nearPlane, farPlane);
         }
     }
     unsigned int result = applyPostProcessing(camera, sceneObjects, viewportTexture, currentWidth, currentHeight, true);
@@ -4591,6 +4630,10 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     resetStats(previewStats);
     activeStats = &previewStats;
     RenderTarget& target = (previewSlot == 0) ? previewTarget : extraPreviewTargets[previewSlot];
+    if (previewSlot != 0) {
+        extraPreviewTargetLastUsed[previewSlot] = ++previewTargetUseSerial;
+        purgePreviewTargetsIfNeeded(previewSlot);
+    }
     ensureRenderTarget(target, width, height, transparentBackground, true);
     if (target.fbo == 0) {
         previewPostStats = {};
@@ -4760,31 +4803,28 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     selectionOutlineLastUpdateSec = nowSec;
     dt = std::clamp(dt, 0.0f, 0.25f);
 
-    auto normalizeSelectionIds = [](const std::vector<int>& ids) {
-        std::vector<int> out;
-        out.reserve(ids.size());
-        for (int id : ids) {
-            if (id >= 0) out.push_back(id);
-        }
-        std::sort(out.begin(), out.end());
-        out.erase(std::unique(out.begin(), out.end()), out.end());
-        return out;
-    };
-
-    std::vector<int> normalizedSelection = normalizeSelectionIds(selectedIds);
+    selectionOutlineInputScratch.clear();
+    selectionOutlineInputScratch.reserve(selectedIds.size());
+    for (int id : selectedIds) {
+        if (id >= 0) selectionOutlineInputScratch.push_back(id);
+    }
+    std::sort(selectionOutlineInputScratch.begin(), selectionOutlineInputScratch.end());
+    selectionOutlineInputScratch.erase(
+        std::unique(selectionOutlineInputScratch.begin(), selectionOutlineInputScratch.end()),
+        selectionOutlineInputScratch.end());
 
     constexpr float kFadeInSeconds = 0.05f;
     constexpr float kFadeOutSeconds = 0.05f;
     constexpr float kSwapSeconds = 0.10f;
-    const bool hasSelection = !normalizedSelection.empty();
+    const bool hasSelection = !selectionOutlineInputScratch.empty();
     if (hasSelection) {
         if (selectionOutlineVisualIds.empty()) {
-            selectionOutlineVisualIds = normalizedSelection;
+            selectionOutlineVisualIds = selectionOutlineInputScratch;
             selectionOutlinePrevIds.clear();
             selectionOutlineSwapBlend = 1.0f;
-        } else if (selectionOutlineVisualIds != normalizedSelection) {
+        } else if (selectionOutlineVisualIds != selectionOutlineInputScratch) {
             selectionOutlinePrevIds = selectionOutlineVisualIds;
-            selectionOutlineVisualIds = normalizedSelection;
+            selectionOutlineVisualIds = selectionOutlineInputScratch;
             selectionOutlineSwapBlend = 0.0f;
         }
     }
@@ -4819,13 +4859,6 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     if (!defaultShader || currentWidth <= 0 || currentHeight <= 0) return;
     if (selectionOutlineVisualIds.empty() || selectionOutlineBlend <= 0.001f) return;
 
-    struct MaskDrawItem {
-        const SceneObject* obj = nullptr;
-        Mesh* mesh = nullptr;
-        bool wantsGpuSkinning = false;
-        bool doubleSided = false;
-    };
-
     auto resolveMesh = [this](const SceneObject& obj) -> Mesh* {
         if (obj.renderType == RenderType::Cube) return cubeMesh;
         if (obj.renderType == RenderType::Sphere) return sphereMesh;
@@ -4839,14 +4872,19 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
         return nullptr;
     };
 
-    auto buildDrawItems = [&](const std::vector<int>& ids) {
-        std::unordered_set<int> selectedSet(ids.begin(), ids.end());
-        std::vector<MaskDrawItem> drawItems;
-        drawItems.reserve(selectedSet.size());
+    auto buildDrawItems = [&](const std::vector<int>& ids, std::vector<MaskDrawItem>& drawItems) {
+        selectionOutlineSelectedScratch.clear();
+        selectionOutlineSelectedScratch.reserve(ids.size());
+        for (int id : ids) {
+            selectionOutlineSelectedScratch.insert(id);
+        }
+
+        drawItems.clear();
+        drawItems.reserve(selectionOutlineSelectedScratch.size());
 
         for (const auto& obj : sceneObjects) {
             if (!IsObjectEnabledInHierarchy(obj)) continue;
-            if (selectedSet.find(obj.id) == selectedSet.end()) continue;
+            if (selectionOutlineSelectedScratch.find(obj.id) == selectionOutlineSelectedScratch.end()) continue;
             if (!HasRendererComponent(obj)) continue;
 
             Mesh* meshToDraw = resolveMesh(obj);
@@ -4877,20 +4915,18 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
                 (obj.renderType == RenderType::Sprite || obj.renderType == RenderType::Mirror)
             });
         }
-
-        return drawItems;
     };
 
-    std::vector<MaskDrawItem> currentDrawItems = buildDrawItems(selectionOutlineVisualIds);
-    std::vector<MaskDrawItem> previousDrawItems;
+    buildDrawItems(selectionOutlineVisualIds, selectionOutlineCurrentDrawScratch);
+    selectionOutlinePreviousDrawScratch.clear();
     if (!selectionOutlinePrevIds.empty() && selectionOutlineSwapBlend < 0.999f) {
-        previousDrawItems = buildDrawItems(selectionOutlinePrevIds);
+        buildDrawItems(selectionOutlinePrevIds, selectionOutlinePreviousDrawScratch);
     }
-    if (previousDrawItems.empty()) {
+    if (selectionOutlinePreviousDrawScratch.empty()) {
         selectionOutlinePrevIds.clear();
         selectionOutlineSwapBlend = 1.0f;
     }
-    if (currentDrawItems.empty() && previousDrawItems.empty()) return;
+    if (selectionOutlineCurrentDrawScratch.empty() && selectionOutlinePreviousDrawScratch.empty()) return;
 
     ensureRenderTarget(selectionMaskTarget, currentWidth, currentHeight);
     if (selectionMaskTarget.fbo == 0 || selectionMaskTarget.texture == 0) return;
@@ -5043,13 +5079,13 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
 
     float currentPassWeight = 1.0f;
     float previousPassWeight = 0.0f;
-    if (!previousDrawItems.empty() && selectionOutlineSwapBlend < 0.999f) {
+    if (!selectionOutlinePreviousDrawScratch.empty() && selectionOutlineSwapBlend < 0.999f) {
         previousPassWeight = 1.0f - selectionOutlineSwapBlend;
         currentPassWeight = selectionOutlineSwapBlend;
     }
 
-    drawOutlinePass(previousDrawItems, previousPassWeight);
-    drawOutlinePass(currentDrawItems, currentPassWeight);
+    drawOutlinePass(selectionOutlinePreviousDrawScratch, previousPassWeight);
+    drawOutlinePass(selectionOutlineCurrentDrawScratch, currentPassWeight);
 
     glColorMask(prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
     if (depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);

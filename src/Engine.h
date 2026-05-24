@@ -1,5 +1,4 @@
 #pragma once
-
 #include "Common.h"
 #include "SceneObject.h"
 #include "Camera.h"
@@ -112,6 +111,8 @@ private:
         float rotation = 0.0f;
         ImVec2 rectMin = ImVec2(0.0f, 0.0f);
         ImVec2 rectMax = ImVec2(0.0f, 0.0f);
+        float textScale = 1.0f;
+        float fontSize = 0.0f;
     };
     ImGuizmo::OPERATION worldUiRectGizmoOperation = ImGuizmo::TRANSLATE;
     glm::mat4 worldUiRectGizmoModel = glm::mat4(1.0f);
@@ -460,7 +461,14 @@ private:
         glm::vec3 hitPos = glm::vec3(0.0f);
         bool hasHit = false;
     };
+    struct PlayerControllerRuntimeState {
+        glm::vec2 localVelocity = glm::vec2(0.0f);
+        glm::vec3 slideVelocity = glm::vec3(0.0f);
+        glm::vec3 lastGroundHitPos = glm::vec3(0.0f);
+        bool hasGroundSample = false;
+    };
     PlayerControllerGroundProbeDebug playerControllerGroundProbeDebug;
+    std::unordered_map<int, PlayerControllerRuntimeState> playerControllerRuntimeStates;
     bool showGameViewport = true;
     int previewCameraId = -1;
     bool gameViewCursorLocked = false;
@@ -601,6 +609,7 @@ private:
     };
     std::unordered_map<int, UIAnimationState> uiAnimationStates;
     std::unordered_map<ImGuiID, UIAnimationState> editorUiAnimationStates;
+    std::unordered_map<int, ImVec4> hierarchyIconTints;
     struct UIWorldCamera2D {
         glm::vec2 position = glm::vec2(0.0f);
         float zoom = 100.0f; // pixels per world unit
@@ -788,6 +797,13 @@ private:
     std::unordered_map<std::string, fs::file_time_type> scriptAutoCompileCheckedSourceTime;
     std::unordered_map<std::string, fs::path> scriptAutoCompileBinaryCache;
     std::unordered_set<std::string> scriptAutoCompileDiscoveredSources;
+    struct ScriptBinaryResolveCacheEntry {
+        fs::file_time_type sourceWriteTime{};
+        fs::file_time_type configWriteTime{};
+        fs::path binaryPath;
+        bool valid = false;
+    };
+    std::unordered_map<std::string, ScriptBinaryResolveCacheEntry> scriptBinaryResolveCache;
     std::deque<fs::path> autoCompileQueue;
     std::unordered_set<std::string> autoCompileQueued;
     std::unordered_set<std::string> nativeScriptMissingLogged;

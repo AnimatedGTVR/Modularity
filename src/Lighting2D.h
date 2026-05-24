@@ -1,5 +1,4 @@
 #pragma once
-
 #include "Common.h"
 #include "Lighting2DTypes.h"
 #include "../include/Shaders/Shader.h"
@@ -9,7 +8,6 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
-
 class Renderer;
 
 struct Light2DPolygonCache {
