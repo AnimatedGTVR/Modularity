@@ -828,6 +828,16 @@ struct AIAgentComponent {
     bool autoRepath = true;
     bool alignToPath = true;
     bool debugDrawPath = true;
+    float turnSpeed = 540.0f;          // deg/sec when aligning to path; 0 = snap instantly.
+    float avoidancePadding = 0.3f;     // extra clearance from obstacles/walls during pathing (world units).
+};
+
+struct OffMeshLinkComponent {
+    bool enabled = true;
+    glm::vec3 startPoint = glm::vec3(0.0f);
+    glm::vec3 endPoint = glm::vec3(0.0f);
+    bool bidirectional = true;
+    float costOverride = 0.0f; // 0 = use planar distance
 };
 
 struct Rig25DRootComponent {
@@ -919,6 +929,8 @@ public:
     ObsticleObjectComponent obsticleObject;
     bool hasAIAgent = false;
     AIAgentComponent aiAgent;
+    bool hasOffMeshLink = false;
+    OffMeshLinkComponent offMeshLink;
     bool hasAnimation = false;
     AnimationComponent animation;
     bool hasSkeletalAnimation = false;
@@ -1096,6 +1108,7 @@ inline void EnsureInspectorComponentMetadata(SceneObject& obj) {
     if (obj.hasGroundBakedType) presentKeys.push_back("ground_baked");
     if (obj.hasObsticleObject) presentKeys.push_back("obstacle");
     if (obj.hasAIAgent) presentKeys.push_back("ai_agent");
+    if (obj.hasOffMeshLink) presentKeys.push_back("offmesh_link");
     if (obj.hasRig25DRoot) presentKeys.push_back("rig25d_root");
     if (obj.hasRig25DNode) presentKeys.push_back("rig25d_node");
     if (obj.hasAnimation) presentKeys.push_back("animation");

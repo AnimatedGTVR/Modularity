@@ -2683,6 +2683,7 @@ void Engine::renderInspectorPanel() {
     const bool sharedGroundBaked = allSelected([](const SceneObject& candidate) { return candidate.hasGroundBakedType; });
     const bool sharedObstacle = allSelected([](const SceneObject& candidate) { return candidate.hasObsticleObject; });
     const bool sharedAgent = allSelected([](const SceneObject& candidate) { return candidate.hasAIAgent; });
+    const bool sharedOffMeshLink = allSelected([](const SceneObject& candidate) { return candidate.hasOffMeshLink; });
     const bool sharedAnimation = allSelected([](const SceneObject& candidate) { return candidate.hasAnimation; });
     const bool sharedSkeletal = allSelected([](const SceneObject& candidate) { return candidate.hasSkeletalAnimation; });
     const bool sharedReverb = allSelected([](const SceneObject& candidate) { return candidate.hasReverbZone; });
@@ -2748,6 +2749,7 @@ void Engine::renderInspectorPanel() {
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasGroundBakedType; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasObsticleObject; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasAIAgent; }) ||
+        hasMixedSelected([](const SceneObject& candidate) { return candidate.hasOffMeshLink; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasAnimation; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasSkeletalAnimation; }) ||
         hasMixedSelected([](const SceneObject& candidate) { return candidate.hasReverbZone; }) ||
@@ -3209,6 +3211,7 @@ void Engine::renderInspectorPanel() {
         GroundBaked,
         Obstacle,
         AIAgent,
+        OffMeshLink,
         Animation,
         Skeletal,
         ReverbZone,
@@ -3260,6 +3263,7 @@ void Engine::renderInspectorPanel() {
         GroundBakedTypeComponent groundBaked;
         ObsticleObjectComponent obstacle;
         AIAgentComponent aiAgent;
+        OffMeshLinkComponent offMeshLink;
         AnimationComponent animation;
         SkeletalAnimationComponent skeletal;
         ReverbZoneComponent reverbZone;
@@ -5825,6 +5829,16 @@ void Engine::renderInspectorPanel() {
                 if (boolRow("Auto Repath", &obj.aiAgent.autoRepath)) { changed = true; }
                 if (boolRow("Align To Path", &obj.aiAgent.alignToPath)) { changed = true; }
                 if (boolRow("Debug Draw Path", &obj.aiAgent.debugDrawPath)) { changed = true; }
+                fieldRow("Turn Speed");
+                if (ImGui::DragFloat("##TurnSpeed", &obj.aiAgent.turnSpeed, 5.0f, 0.0f, 3600.0f, "%.0f deg/s")) {
+                    obj.aiAgent.turnSpeed = std::clamp(obj.aiAgent.turnSpeed, 0.0f, 3600.0f);
+                    changed = true;
+                }
+                fieldRow("Avoidance Padding");
+                if (ImGui::DragFloat("##AvoidPad", &obj.aiAgent.avoidancePadding, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                    obj.aiAgent.avoidancePadding = std::clamp(obj.aiAgent.avoidancePadding, 0.0f, 10.0f);
+                    changed = true;
+                }
                 endCompFields();
             }
             ImGui::PopID();
@@ -5833,6 +5847,75 @@ void Engine::renderInspectorPanel() {
             obj.hasAIAgent = false;
             obj.aiAgent = AIAgentComponent{};
             aiAgentRuntimeStates.erase(obj.id);
+            changed = true;
+        }
+        if (changed) {
+            agentSectionChanged = true;
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+        ImGui::PopStyleColor();
+    }
+
+    if (inspectorComponentKey == "offmesh_link" && obj.hasOffMeshLink && sharedOffMeshLink) {
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.45f, 0.36f, 0.58f, 1.0f));
+        bool removeLink = false;
+        bool changed = false;
+        auto header = drawComponentHeader("OffMeshLink", "OffMeshLink", "offmesh_link", &obj.offMeshLink.enabled, true, [&]() {
+            drawStandardComponentMenu(
+                "offmesh_link",
+                "Copy Component Values",
+                "Paste Component Values as New",
+                "Paste Component Values as Value Overrides",
+                inspectorClipboard.kind == InspectorClipboardKind::OffMeshLink,
+                [&]() { obj.offMeshLink = OffMeshLinkComponent{}; changed = true; },
+                [&]() { inspectorClipboard.kind = InspectorClipboardKind::OffMeshLink; inspectorClipboard.offMeshLink = obj.offMeshLink; },
+                [&]() { obj.hasOffMeshLink = true; obj.offMeshLink = inspectorClipboard.offMeshLink; changed = true; },
+                [&]() { obj.offMeshLink = inspectorClipboard.offMeshLink; changed = true; },
+                removeLink);
+        });
+        if (header.enabledChanged) {
+            changed = true;
+        }
+        if (header.open) {
+            InspectorBodyScope _ibs;
+            ImGui::PushID("OffMeshLink");
+            if (ImGui::Button("Open AI Pathfinding")) {
+                showAIPathfindingWindow = true;
+            }
+            if (beginCompFields("##Fields_OffMeshLink")) {
+                fieldRow("Start");
+                if (ImGui::DragFloat3("##LinkStart", &obj.offMeshLink.startPoint.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                if (ImGui::Button("Set Start To Object Position")) {
+                    obj.offMeshLink.startPoint = obj.position;
+                    changed = true;
+                }
+                fieldRow("End");
+                if (ImGui::DragFloat3("##LinkEnd", &obj.offMeshLink.endPoint.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
+                    changed = true;
+                }
+                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                if (ImGui::Button("Set End To Object Position")) {
+                    obj.offMeshLink.endPoint = obj.position;
+                    changed = true;
+                }
+                if (boolRow("Bidirectional", &obj.offMeshLink.bidirectional)) { changed = true; }
+                fieldRow("Cost Override");
+                if (ImGui::DragFloat("##LinkCost", &obj.offMeshLink.costOverride, 0.05f, 0.0f, 1000.0f, "%.2f")) {
+                    obj.offMeshLink.costOverride = std::max(0.0f, obj.offMeshLink.costOverride);
+                    changed = true;
+                }
+                noteRow("0 cost = use planar distance. Links snap to nearest walkable cell at each endpoint.");
+                endCompFields();
+            }
+            ImGui::PopID();
+        }
+        if (removeLink) {
+            obj.hasOffMeshLink = false;
+            obj.offMeshLink = OffMeshLinkComponent{};
             changed = true;
         }
         if (changed) {
@@ -8432,6 +8515,14 @@ void Engine::renderInspectorPanel() {
             obj.hasAIAgent = true;
             obj.aiAgent = AIAgentComponent{};
             obj.aiAgent.destination = obj.position;
+            showAIPathfindingWindow = true;
+            componentChanged = true;
+        });
+        addEntry("AI Pathfinding/OffMesh Link", !obj.hasOffMeshLink && supports3DWorldComponents, [&]() {
+            obj.hasOffMeshLink = true;
+            obj.offMeshLink = OffMeshLinkComponent{};
+            obj.offMeshLink.startPoint = obj.position;
+            obj.offMeshLink.endPoint = obj.position + glm::vec3(2.0f, 0.0f, 0.0f);
             showAIPathfindingWindow = true;
             componentChanged = true;
         });

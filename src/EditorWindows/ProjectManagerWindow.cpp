@@ -4710,11 +4710,21 @@ void Engine::renderProjectBrowserPanel() {
             DrawSettingSection("[B]", "Build", "Build profile shortcuts. Full controls remain in the Build tab.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Platform", "target windows linux android")) {
                 buildSettingsChanged |= DrawSettingRow("Platform", "Target platform used by the build profile.", [&]() {
-                    const char* targets[] = {"Windows", "Linux", "Android"};
-                    int targetIndex = static_cast<int>(buildSettings.platform);
-                    if (ImGui::Combo("##BuildPlatformQuick", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
-                        buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
-                        return true;
+                    int targetIndex = buildPlatformIndex(buildSettings.platform);
+                    if (ImGui::Combo("##BuildPlatformQuick", &targetIndex,
+                                     kBuildPlatformLabels, kBuildPlatformCount)) {
+                        BuildPlatform newPlatform = buildPlatformFromIndex(targetIndex);
+                        if (newPlatform != buildSettings.platform) {
+                            buildSettings.platform = newPlatform;
+                            int archCount = 0;
+                            const BuildArchitectureInfo* archList = buildArchitecturesForPlatform(newPlatform, archCount);
+                            bool valid = false;
+                            for (int i = 0; i < archCount; ++i) {
+                                if (buildSettings.architecture == archList[i].serializedName) { valid = true; break; }
+                            }
+                            if (!valid) buildSettings.architecture = archList[0].serializedName;
+                            return true;
+                        }
                     }
                     return false;
                 });
@@ -4957,21 +4967,42 @@ void Engine::renderProjectBrowserPanel() {
             DrawSettingSection("[B]", "Build Targets", "Platform and packaging options for exported builds.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Build Targets", "Platform", "windows linux android")) {
                 changed |= DrawSettingRow("Platform", "Target operating system for the build profile.", [&]() {
-                    const char* targets[] = {"Windows", "Linux", "Android"};
-                    int targetIndex = static_cast<int>(buildSettings.platform);
-                    if (ImGui::Combo("##BuildPlatform", &targetIndex, targets, IM_ARRAYSIZE(targets))) {
-                        buildSettings.platform = static_cast<BuildPlatform>(targetIndex);
-                        return true;
+                    int targetIndex = buildPlatformIndex(buildSettings.platform);
+                    bool rowChanged = false;
+                    if (ImGui::Combo("##BuildPlatform", &targetIndex,
+                                     kBuildPlatformLabels, kBuildPlatformCount)) {
+                        BuildPlatform newPlatform = buildPlatformFromIndex(targetIndex);
+                        if (newPlatform != buildSettings.platform) {
+                            buildSettings.platform = newPlatform;
+                            int archCount = 0;
+                            const BuildArchitectureInfo* archList = buildArchitecturesForPlatform(newPlatform, archCount);
+                            bool valid = false;
+                            for (int i = 0; i < archCount; ++i) {
+                                if (buildSettings.architecture == archList[i].serializedName) { valid = true; break; }
+                            }
+                            if (!valid) buildSettings.architecture = archList[0].serializedName;
+                            rowChanged = true;
+                        }
                     }
-                    return false;
+                    if (buildPlatformIsExperimental(buildSettings.platform)) {
+                        ImGui::TextDisabled("Experimental — runtime is not fully wired up yet.");
+                    }
+                    return rowChanged;
                 });
             }
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build Targets", "Architecture", "x86 x86_64 cpu")) {
-                changed |= DrawSettingRow("Architecture", "CPU architecture for desktop builds.", [&]() {
-                    const char* arches[] = {"x86_64", "x86"};
-                    int archIndex = (buildSettings.architecture == "x86") ? 1 : 0;
-                    if (ImGui::Combo("##BuildArchitecture", &archIndex, arches, IM_ARRAYSIZE(arches))) {
-                        buildSettings.architecture = arches[archIndex];
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Build Targets", "Architecture", "x86 x86_64 arm arm64 cpu")) {
+                changed |= DrawSettingRow("Architecture", "CPU architecture for the target platform.", [&]() {
+                    int archCount = 0;
+                    const BuildArchitectureInfo* archList = buildArchitecturesForPlatform(buildSettings.platform, archCount);
+                    const char* archLabels[8];
+                    int archLabelsUsed = std::min(archCount, static_cast<int>(sizeof(archLabels) / sizeof(archLabels[0])));
+                    int archIndex = 0;
+                    for (int i = 0; i < archLabelsUsed; ++i) {
+                        archLabels[i] = archList[i].label;
+                        if (buildSettings.architecture == archList[i].serializedName) archIndex = i;
+                    }
+                    if (ImGui::Combo("##BuildArchitecture", &archIndex, archLabels, archLabelsUsed)) {
+                        buildSettings.architecture = archList[archIndex].serializedName;
                         return true;
                     }
                     return false;
@@ -5177,10 +5208,10 @@ void Engine::renderProjectBrowserPanel() {
                 return value;
             };
             static const char* cppStdLabels[] = {
-                "c++14 (Default)",
+                "c++14",
                 "c++17",
                 "c++20",
-                "c++23",
+                "c++23 (Default)",
                 "c++26",
                 "gnu++14",
                 "gnu++17",
@@ -5201,7 +5232,7 @@ void Engine::renderProjectBrowserPanel() {
                 "gnu++26"
             };
 
-            int cppIdx = 0;
+            int cppIdx = 3;
             const std::string currentCppStandard = canonicalCppStd(ui.config.cppStandard);
             for (int i = 0; i < IM_ARRAYSIZE(cppStdValues); ++i) {
                 if (currentCppStandard == cppStdValues[i]) {
@@ -5211,7 +5242,7 @@ void Engine::renderProjectBrowserPanel() {
             }
             if (visible(ProjectSettingsVisibilityMode::Simple, "scripts.modu", "C++ Standard", "cpp c++26 c++23 c++20 c++17 c++14")) {
                 DrawSettingRow("C++ Standard",
-                               "Default is C++14 for older toolchain compatibility. Use newer standards when a script needs them.",
+                               "Default is C++23. Use another standard only when a project needs a different target.",
                                [&]() {
                     if (ImGui::Combo("##CppStandard", &cppIdx, cppStdLabels, IM_ARRAYSIZE(cppStdLabels))) {
                         ui.config.cppStandard = cppStdValues[cppIdx];

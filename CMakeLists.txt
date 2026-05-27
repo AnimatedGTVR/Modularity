@@ -14,53 +14,57 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 
-set(MODULARITY_CXX_STANDARD_LABEL "C++20")
+set(MODULARITY_BUILD_CPP_STANDARD "c++23" CACHE STRING "Default C++ standard for Modularity engine targets")
+set_property(CACHE MODULARITY_BUILD_CPP_STANDARD PROPERTY STRINGS "c++17" "c++20" "c++23")
+string(TOLOWER "${MODULARITY_BUILD_CPP_STANDARD}" MODULARITY_BUILD_CPP_STANDARD_NORMALIZED)
+
+set(MODULARITY_CXX_STANDARD_LABEL "C++23")
 set(MODULARITY_CXX_STANDARD_FLAG "")
 if(MSVC)
-    check_cxx_compiler_flag("/std:c++latest" MODULARITY_HAS_CXX26_FLAG)
-    check_cxx_compiler_flag("/std:c++23" MODULARITY_HAS_CXX23_FLAG)
-    if(NOT MODULARITY_HAS_CXX23_FLAG)
-        check_cxx_compiler_flag("/std:c++23preview" MODULARITY_HAS_CXX23_PREVIEW_FLAG)
-    endif()
-
-    if(MODULARITY_HAS_CXX26_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++26")
-        set(MODULARITY_CXX_STANDARD_FLAG "/std:c++latest")
-    elseif(MODULARITY_HAS_CXX23_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
-        set(MODULARITY_CXX_STANDARD_FLAG "/std:c++23")
-    elseif(MODULARITY_HAS_CXX23_PREVIEW_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
-        set(MODULARITY_CXX_STANDARD_FLAG "/std:c++23preview")
-    else()
+    if(MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "c++17" OR MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "17")
+        set(MODULARITY_CXX_STANDARD_LABEL "C++17")
+        set(MODULARITY_CXX_STANDARD_FLAG "/std:c++17")
+    elseif(MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "c++20" OR MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "20")
         set(MODULARITY_CXX_STANDARD_LABEL "C++20")
         set(MODULARITY_CXX_STANDARD_FLAG "/std:c++20")
+    else()
+        check_cxx_compiler_flag("/std:c++23" MODULARITY_HAS_CXX23_FLAG)
+        if(NOT MODULARITY_HAS_CXX23_FLAG)
+            check_cxx_compiler_flag("/std:c++23preview" MODULARITY_HAS_CXX23_PREVIEW_FLAG)
+        endif()
+        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
+        if(MODULARITY_HAS_CXX23_FLAG)
+            set(MODULARITY_CXX_STANDARD_FLAG "/std:c++23")
+        elseif(MODULARITY_HAS_CXX23_PREVIEW_FLAG)
+            set(MODULARITY_CXX_STANDARD_FLAG "/std:c++23preview")
+        else()
+            message(WARNING "C++23 was requested but this MSVC toolchain does not expose /std:c++23. Falling back to C++20.")
+            set(MODULARITY_CXX_STANDARD_LABEL "C++20")
+            set(MODULARITY_CXX_STANDARD_FLAG "/std:c++20")
+        endif()
     endif()
 else()
-    check_cxx_compiler_flag("-std=c++26" MODULARITY_HAS_CXX26_FLAG)
-    if(NOT MODULARITY_HAS_CXX26_FLAG)
-        check_cxx_compiler_flag("-std=c++2c" MODULARITY_HAS_CXX2C_FLAG)
-    endif()
-    check_cxx_compiler_flag("-std=c++23" MODULARITY_HAS_CXX23_FLAG)
-    if(NOT MODULARITY_HAS_CXX23_FLAG)
-        check_cxx_compiler_flag("-std=c++2b" MODULARITY_HAS_CXX2B_FLAG)
-    endif()
-
-    if(MODULARITY_HAS_CXX26_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++26")
-        set(MODULARITY_CXX_STANDARD_FLAG "-std=c++26")
-    elseif(MODULARITY_HAS_CXX2C_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++26")
-        set(MODULARITY_CXX_STANDARD_FLAG "-std=c++2c")
-    elseif(MODULARITY_HAS_CXX23_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
-        set(MODULARITY_CXX_STANDARD_FLAG "-std=c++23")
-    elseif(MODULARITY_HAS_CXX2B_FLAG)
-        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
-        set(MODULARITY_CXX_STANDARD_FLAG "-std=c++2b")
-    else()
+    if(MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "c++17" OR MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "17")
+        set(MODULARITY_CXX_STANDARD_LABEL "C++17")
+        set(MODULARITY_CXX_STANDARD_FLAG "-std=c++17")
+    elseif(MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "c++20" OR MODULARITY_BUILD_CPP_STANDARD_NORMALIZED STREQUAL "20")
         set(MODULARITY_CXX_STANDARD_LABEL "C++20")
         set(MODULARITY_CXX_STANDARD_FLAG "-std=c++20")
+    else()
+        check_cxx_compiler_flag("-std=c++23" MODULARITY_HAS_CXX23_FLAG)
+        if(NOT MODULARITY_HAS_CXX23_FLAG)
+            check_cxx_compiler_flag("-std=c++2b" MODULARITY_HAS_CXX2B_FLAG)
+        endif()
+        set(MODULARITY_CXX_STANDARD_LABEL "C++23")
+        if(MODULARITY_HAS_CXX23_FLAG)
+            set(MODULARITY_CXX_STANDARD_FLAG "-std=c++23")
+        elseif(MODULARITY_HAS_CXX2B_FLAG)
+            set(MODULARITY_CXX_STANDARD_FLAG "-std=c++2b")
+        else()
+            message(WARNING "C++23 was requested but this compiler does not expose -std=c++23 or -std=c++2b. Falling back to C++20.")
+            set(MODULARITY_CXX_STANDARD_LABEL "C++20")
+            set(MODULARITY_CXX_STANDARD_FLAG "-std=c++20")
+        endif()
     endif()
 endif()
 
@@ -144,10 +148,21 @@ endfunction()
 
 # ==================== Optional PhysX ====================
 option(MODULARITY_ENABLE_PHYSX "Enable PhysX physics integration" ON)
-option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ON)
-option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ON)
+set(MODULARITY_BUILD_EDITOR_DEFAULT ON)
+set(MODULARITY_ENABLE_VULKAN_DEFAULT ON)
+if(ANDROID)
+    set(MODULARITY_BUILD_EDITOR_DEFAULT OFF)
+    set(MODULARITY_ENABLE_VULKAN_DEFAULT OFF)
+endif()
+option(MODULARITY_BUILD_EDITOR "Build the Modularity editor target" ${MODULARITY_BUILD_EDITOR_DEFAULT})
+option(MODULARITY_ENABLE_VULKAN "Enable experimental Vulkan backend" ${MODULARITY_ENABLE_VULKAN_DEFAULT})
 option(MODULARITY_ENABLE_SNDFILE "Enable libsndfile-based audio import support" ON)
 option(MODULARITY_ENABLE_OPUSFILE "Enable libopusfile-based Ogg/Opus decoding support" ON)
+set(MODULARITY_USE_OPENGL_ES_DEFAULT OFF)
+if(ANDROID)
+    set(MODULARITY_USE_OPENGL_ES_DEFAULT ON)
+endif()
+option(MODULARITY_USE_OPENGL_ES "Use OpenGL ES 3.x headers, shaders, and link libraries" ${MODULARITY_USE_OPENGL_ES_DEFAULT})
 set(MODULARITY_SCRIPT_SDK_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyScriptSDK.cmake)
 set(MODULARITY_RUNTIME_DLL_COPY_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/CopyRuntimeDlls.cmake)
 set(MODULARITY_FFMPEG_RUNTIME_DLLS)
@@ -240,9 +255,38 @@ endfunction()
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation" FORCE)
 set(ASSIMP_BUILD_DOCS OFF CACHE BOOL "Build Assimp documentation" FORCE)
+if(ANDROID)
+    set(GLFW_BUILD_X11 OFF CACHE BOOL "Build GLFW X11 support" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "Build GLFW Wayland support" FORCE)
+endif()
 
 add_subdirectory(src/ThirdParty/glfw EXCLUDE_FROM_ALL)
-find_package(OpenGL REQUIRED)
+set(MODULARITY_OPENGL_LIBRARIES)
+if(MODULARITY_USE_OPENGL_ES)
+    if(ANDROID)
+        find_library(MODULARITY_GLES_LIBRARY NAMES GLESv3 GLESv2 REQUIRED)
+        find_library(MODULARITY_EGL_LIBRARY EGL REQUIRED)
+        find_library(MODULARITY_ANDROID_LIBRARY android REQUIRED)
+        find_library(MODULARITY_ANDROID_LOG_LIBRARY log REQUIRED)
+        list(APPEND MODULARITY_OPENGL_LIBRARIES
+            ${MODULARITY_GLES_LIBRARY}
+            ${MODULARITY_EGL_LIBRARY}
+            ${MODULARITY_ANDROID_LIBRARY}
+            ${MODULARITY_ANDROID_LOG_LIBRARY}
+        )
+    else()
+        find_library(MODULARITY_GLES_LIBRARY NAMES GLESv3 GLESv2)
+        find_library(MODULARITY_EGL_LIBRARY EGL)
+        if(NOT MODULARITY_GLES_LIBRARY OR NOT MODULARITY_EGL_LIBRARY)
+            message(FATAL_ERROR "MODULARITY_USE_OPENGL_ES requires GLES and EGL libraries.")
+        endif()
+        list(APPEND MODULARITY_OPENGL_LIBRARIES ${MODULARITY_GLES_LIBRARY} ${MODULARITY_EGL_LIBRARY})
+    endif()
+    message(STATUS "OpenGL ES backend compatibility enabled.")
+else()
+    find_package(OpenGL REQUIRED)
+    list(APPEND MODULARITY_OPENGL_LIBRARIES OpenGL::GL)
+endif()
 find_package(PkgConfig QUIET)
 set(SNDFILE_FOUND FALSE)
 if(MODULARITY_ENABLE_SNDFILE AND PkgConfig_FOUND)
@@ -373,8 +417,12 @@ if(MODULARITY_USE_MONO)
 endif()
 
 # GLAD
-add_library(glad STATIC src/ThirdParty/glad/glad.c)
-target_include_directories(glad PUBLIC src/ThirdParty/glad)
+if(MODULARITY_USE_OPENGL_ES)
+    add_library(glad INTERFACE)
+else()
+    add_library(glad STATIC src/ThirdParty/glad/glad.c)
+    target_include_directories(glad PUBLIC src/ThirdParty/glad)
+endif()
 
 # GLM (header-only)
 add_library(glm INTERFACE)
@@ -387,20 +435,20 @@ add_library(imguizmo STATIC
 target_include_directories(imguizmo PUBLIC src/ThirdParty/ImGuizmo)
 target_link_libraries(imguizmo PUBLIC imgui glm)
 
-# Dear ImGui
-set(IMGUI_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/imgui)
+# ModuGUI (ImGui fork)
+set(MODUGUI_DIR ${PROJECT_SOURCE_DIR}/src/ThirdParty/ModuGUI)
 
 set(IMGUI_SOURCES
-    ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/imgui_demo.cpp
-    ${IMGUI_DIR}/imgui_draw.cpp
-    ${IMGUI_DIR}/imgui_tables.cpp
-    ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    ${MODUGUI_DIR}/imgui.cpp
+    ${MODUGUI_DIR}/imgui_demo.cpp
+    ${MODUGUI_DIR}/imgui_draw.cpp
+    ${MODUGUI_DIR}/imgui_tables.cpp
+    ${MODUGUI_DIR}/imgui_widgets.cpp
+    ${MODUGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${MODUGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 if(MODULARITY_HAS_VULKAN)
-    list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+    list(APPEND IMGUI_SOURCES ${MODUGUI_DIR}/backends/imgui_impl_vulkan.cpp)
 endif()
 
 add_library(imgui STATIC ${IMGUI_SOURCES})
@@ -410,8 +458,8 @@ endif()
 
 
 target_include_directories(imgui PUBLIC
-    ${IMGUI_DIR}
-    ${IMGUI_DIR}/backends
+    ${MODUGUI_DIR}
+    ${MODUGUI_DIR}/backends
     ${PROJECT_SOURCE_DIR}/src/ThirdParty/glfw/include    # <-- FIX
 )
 
@@ -419,6 +467,10 @@ target_link_libraries(imgui PRIVATE glfw)
 if(MODULARITY_HAS_VULKAN)
     target_link_libraries(imgui PRIVATE Vulkan::Vulkan)
 endif()
+target_compile_definitions(imgui PUBLIC
+    MODULARITY_OPENGL_ES=$<BOOL:${MODULARITY_USE_OPENGL_ES}>
+    $<$<BOOL:${MODULARITY_USE_OPENGL_ES}>:IMGUI_IMPL_OPENGL_ES3>
+)
 
 
 
@@ -459,6 +511,22 @@ list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main_player.cpp")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
+
+# Android runtime files compile against the NDK and android_native_app_glue.
+# Keep them out of desktop builds; they get added back only when targeting
+# Android (see the conditional block below).
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/AndroidRuntime/.*")
+list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/AndroidRuntime/.*")
+if(ANDROID)
+    file(GLOB_RECURSE ANDROID_RUNTIME_SOURCES CONFIGURE_DEPENDS
+        ${PROJECT_SOURCE_DIR}/src/AndroidRuntime/*.cpp
+    )
+    file(GLOB_RECURSE ANDROID_RUNTIME_HEADERS CONFIGURE_DEPENDS
+        ${PROJECT_SOURCE_DIR}/src/AndroidRuntime/*.h
+    )
+    list(APPEND ENGINE_SOURCES ${ANDROID_RUNTIME_SOURCES})
+    list(APPEND ENGINE_HEADERS ${ANDROID_RUNTIME_HEADERS})
+endif()
 
 set(ENGINE_PLAYER_SOURCES ${ENGINE_SOURCES})
 list(APPEND ENGINE_SOURCES ${MODULARITY_EDITOR_TEXTEDITOR_SOURCE})
@@ -501,6 +569,7 @@ target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_U
 target_compile_definitions(core PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_OPUSFILE=$<BOOL:${OPUSFILE_FOUND}>)
+target_compile_definitions(core PUBLIC MODULARITY_OPENGL_ES=$<BOOL:${MODULARITY_USE_OPENGL_ES}>)
 target_compile_definitions(core PUBLIC MODULARITY_SOURCE_DIR="${MODULARITY_SOURCE_DIR_CMAKE}")
 if(WIN32)
     target_compile_definitions(core PUBLIC ${MODULARITY_WINDOWS_DEFINES} MODULARITY_SCRIPT_HOST)
@@ -537,6 +606,7 @@ target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODUL
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_OPUSFILE=$<BOOL:${OPUSFILE_FOUND}>)
+target_compile_definitions(core_player PUBLIC MODULARITY_OPENGL_ES=$<BOOL:${MODULARITY_USE_OPENGL_ES}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_SOURCE_DIR="${MODULARITY_SOURCE_DIR_CMAKE}")
 if(WIN32)
     target_compile_definitions(core_player PUBLIC ${MODULARITY_WINDOWS_DEFINES} MODULARITY_SCRIPT_HOST)
@@ -652,7 +722,18 @@ if(WIN32)
 endif()
 
 # Link order matters on Linux
-if(NOT WIN32)
+if(ANDROID)
+    target_link_libraries(ModularityPlayer PRIVATE
+        core_player
+        imgui
+        imguizmo
+        glad
+        glm
+        glfw
+        ${MODULARITY_OPENGL_LIBRARIES}
+        ${CMAKE_DL_LIBS}
+    )
+elseif(NOT WIN32)
     find_package(X11 REQUIRED)
     if(MODULARITY_BUILD_EDITOR)
         target_include_directories(Modularity PRIVATE ${X11_INCLUDE_DIR})
@@ -663,7 +744,7 @@ if(NOT WIN32)
             glad
             glm
             glfw
-            OpenGL::GL
+            ${MODULARITY_OPENGL_LIBRARIES}
             pthread
             dl
             ${X11_LIBRARIES}
@@ -684,7 +765,7 @@ if(NOT WIN32)
         glad
         glm
         glfw
-        OpenGL::GL
+        ${MODULARITY_OPENGL_LIBRARIES}
         pthread
         dl
         ${X11_LIBRARIES}
@@ -696,7 +777,7 @@ if(NOT WIN32)
     target_link_options(ModularityPlayer PRIVATE "-rdynamic")
 else()
     if(MODULARITY_BUILD_EDITOR)
-        target_link_libraries(Modularity PRIVATE core glfw OpenGL::GL)
+        target_link_libraries(Modularity PRIVATE core glfw ${MODULARITY_OPENGL_LIBRARIES})
         if(MSVC)
             target_link_options(Modularity PRIVATE
                 "$<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>"
@@ -706,7 +787,7 @@ else()
             )
         endif()
     endif()
-    target_link_libraries(ModularityPlayer PRIVATE core_player glfw OpenGL::GL)
+    target_link_libraries(ModularityPlayer PRIVATE core_player glfw ${MODULARITY_OPENGL_LIBRARIES})
     if(MSVC)
         target_link_options(ModularityPlayer PRIVATE
             "$<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>"

@@ -22,7 +22,7 @@ namespace
     void centerWindowOnPrimaryMonitor(GLFWwindow* window)
     {
         if (!window) return;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
         // Wayland does not allow clients to set absolute window positions.
         if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
             return;
@@ -60,11 +60,16 @@ namespace
     GLFWwindow* tryCreateWindow(int major, int minor, int profile)
     {
         glfwDefaultWindowHints();
+#if MODULARITY_OPENGL_ES
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+#else
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+#endif
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, major);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minor);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
-        if (profile != kAnyProfile)
+        if (!MODULARITY_OPENGL_ES && profile != kAnyProfile)
         {
             glfwWindowHint(GLFW_OPENGL_PROFILE, profile);
         }
@@ -81,6 +86,15 @@ namespace
         return glfwCreateWindow(kDefaultWindowWidth, kDefaultWindowHeight, "Modularity", nullptr, nullptr);
     }
 
+    bool loadOpenGLFunctions()
+    {
+#if MODULARITY_OPENGL_ES
+        return true;
+#else
+        return gladLoadGLLoader((GLADloadproc)glfwGetProcAddress) != 0;
+#endif
+    }
+
 } // namespace
 
 
@@ -94,7 +108,7 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         4
     );
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
     const char* x11_display     = std::getenv("DISPLAY");
 
@@ -135,6 +149,15 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
     }
     else
     {
+#if MODULARITY_OPENGL_ES
+        window = tryCreateWindow(3, 0, kAnyProfile);
+
+        if (!window)
+        {
+            std::cerr << "Failed to create GLFW window (OpenGL ES 3.0). Retrying...\n";
+            window = tryCreateWindow(2, 0, kAnyProfile);
+        }
+#else
         window = tryCreateWindow(3, 3, GLFW_OPENGL_CORE_PROFILE);
 
         if (!window)
@@ -154,6 +177,7 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
             std::cerr << "Failed to create GLFW window (OpenGL 3.0 any). Retrying...\n";
             window = tryCreateWindow(2, 1, kAnyProfile);
         }
+#endif
     }
 
     if (!window)
@@ -168,13 +192,13 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         glfwMakeContextCurrent(window);
         glfwSwapInterval(0);
 
-        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+        if (!loadOpenGLFunctions())
         {
-            std::cerr << "Failed to initialize GLAD\n";
+            std::cerr << "Failed to initialize " << Modularity::OpenGLApiName() << " functions\n";
             return nullptr;
         }
 
-        std::cout << "OpenGL: " << glGetString(GL_VERSION) << "\n";
+        std::cout << Modularity::OpenGLApiName() << ": " << glGetString(GL_VERSION) << "\n";
     }
 
     if (pixels)

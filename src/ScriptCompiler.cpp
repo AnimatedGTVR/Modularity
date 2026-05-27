@@ -100,8 +100,8 @@ namespace {
                 addIfExists(sdkRoot / "src/ThirdParty/glm");
                 addIfExists(sdkRoot / "src/ThirdParty/glad");
                 addIfExists(sdkRoot / "src/ThirdParty/glfw/include");
-                addIfExists(sdkRoot / "src/ThirdParty/imgui");
-                addIfExists(sdkRoot / "src/ThirdParty/imgui/backends");
+                addIfExists(sdkRoot / "src/ThirdParty/ModuGUI");
+                addIfExists(sdkRoot / "src/ThirdParty/ModuGUI/backends");
                 addIfExists(sdkRoot / "src/ThirdParty/assimp/include");
                 return true;
             }
@@ -796,8 +796,8 @@ bool ScriptCompiler::loadConfig(const fs::path& configPath, ScriptBuildConfig& o
                 addIfExists(candidate / "src/ThirdParty");
                 addIfExists(candidate / "src/ThirdParty/glm");
                 addIfExists(candidate / "src/ThirdParty/glad");
-                addIfExists(candidate / "src/ThirdParty/imgui");
-                addIfExists(candidate / "src/ThirdParty/imgui/backends");
+                addIfExists(candidate / "src/ThirdParty/ModuGUI");
+                addIfExists(candidate / "src/ThirdParty/ModuGUI/backends");
 
                 // Assimp headers live under include/, and generated config/revision headers
                 // are emitted under build/*/src/ThirdParty/assimp/include.
@@ -1203,7 +1203,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
 
         wrapper << "#include \"ScriptRuntime.h\"\n";
         wrapper << "#include \"Engine.h\"\n";
-        wrapper << "#include \"ThirdParty/imgui/imgui.h\"\n";
+        wrapper << "#include \"ThirdParty/ModuGUI/imgui.h\"\n";
         wrapper << "#include <cstring>\n";
         wrapper << "#include <cstdio>\n\n";
         wrapper << "extern \"C\" {\n";

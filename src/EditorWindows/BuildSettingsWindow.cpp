@@ -83,18 +83,38 @@ void Engine::renderBuildSettingsWindow() {
     ImGui::Text("Target Platform");
     ImGui::Separator();
     ImGui::SetNextItemWidth(-1);
-    const char* targets[] = {"Windows", "Linux"};
-    int targetIndex = (buildSettings.platform == BuildPlatform::Linux) ? 1 : 0;
-    if (ImGui::Combo("##target-platform", &targetIndex, targets, 2)) {
-        buildSettings.platform = (targetIndex == 1) ? BuildPlatform::Linux : BuildPlatform::Windows;
-        changed = true;
+    int targetIndex = buildPlatformIndex(buildSettings.platform);
+    if (ImGui::Combo("##target-platform", &targetIndex,
+                     kBuildPlatformLabels, kBuildPlatformCount)) {
+        BuildPlatform newPlatform = buildPlatformFromIndex(targetIndex);
+        if (newPlatform != buildSettings.platform) {
+            buildSettings.platform = newPlatform;
+            int archCount = 0;
+            const BuildArchitectureInfo* archList = buildArchitecturesForPlatform(newPlatform, archCount);
+            bool valid = false;
+            for (int i = 0; i < archCount; ++i) {
+                if (buildSettings.architecture == archList[i].serializedName) { valid = true; break; }
+            }
+            if (!valid) buildSettings.architecture = archList[0].serializedName;
+            changed = true;
+        }
+    }
+    if (buildPlatformIsExperimental(buildSettings.platform)) {
+        ImGui::TextDisabled("Experimental target — runtime is not fully wired up yet.");
     }
     ImGui::Spacing();
     ImGui::SetNextItemWidth(-1);
-    const char* arches[] = {"x86_64", "x86"};
-    int archIndex = (buildSettings.architecture == "x86") ? 1 : 0;
-    if (ImGui::Combo("##architecture", &archIndex, arches, 2)) {
-        buildSettings.architecture = arches[archIndex];
+    int archCount = 0;
+    const BuildArchitectureInfo* archList = buildArchitecturesForPlatform(buildSettings.platform, archCount);
+    const char* archLabels[8];
+    int archLabelsUsed = std::min(archCount, static_cast<int>(sizeof(archLabels) / sizeof(archLabels[0])));
+    int archIndex = 0;
+    for (int i = 0; i < archLabelsUsed; ++i) {
+        archLabels[i] = archList[i].label;
+        if (buildSettings.architecture == archList[i].serializedName) archIndex = i;
+    }
+    if (ImGui::Combo("##architecture", &archIndex, archLabels, archLabelsUsed)) {
+        buildSettings.architecture = archList[archIndex].serializedName;
         changed = true;
     }
     ImGui::EndChild(); // BuildLeftCol

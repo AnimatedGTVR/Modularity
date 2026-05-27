@@ -650,6 +650,209 @@ namespace {
         return out;
     }
 
+    static fs::path userNeovimConfigDir() {
+#if defined(_WIN32)
+        if (const char* localAppData = std::getenv("LOCALAPPDATA")) {
+            if (*localAppData) return fs::path(localAppData) / "nvim";
+        }
+        if (const char* home = std::getenv("USERPROFILE")) {
+            if (*home) return fs::path(home) / "AppData" / "Local" / "nvim";
+        }
+#else
+        if (const char* xdg = std::getenv("XDG_CONFIG_HOME")) {
+            if (*xdg) return fs::path(xdg) / "nvim";
+        }
+        if (const char* home = std::getenv("HOME")) {
+            if (*home) return fs::path(home) / ".config" / "nvim";
+        }
+#endif
+        return {};
+    }
+
+    static bool fileContainsModuCppNvimMarker(const fs::path& path) {
+        constexpr std::uintmax_t kMaxScanBytes = 1ull << 20; // 1 MiB
+        std::error_code ec;
+        const std::uintmax_t size = fs::file_size(path, ec);
+        if (ec || size == 0 || size > kMaxScanBytes) return false;
+
+        std::ifstream in(path, std::ios::binary);
+        if (!in.is_open()) return false;
+        std::string contents;
+        contents.resize(static_cast<size_t>(size));
+        in.read(contents.data(), static_cast<std::streamsize>(size));
+        if (!in) contents.resize(static_cast<size_t>(in.gcount()));
+        return contents.find("Mast3rM0ds/moducpp.nvim") != std::string::npos;
+    }
+
+    static bool scanNeovimConfigForModuCpp(const fs::path& configDir) {
+        std::error_code ec;
+        if (configDir.empty() || !fs::is_directory(configDir, ec)) return false;
+
+        const fs::path initLua = configDir / "init.lua";
+        if (fs::is_regular_file(initLua, ec) && fileContainsModuCppNvimMarker(initLua)) {
+            return true;
+        }
+
+        const fs::path luaRoot = configDir / "lua";
+        if (!fs::is_directory(luaRoot, ec)) return false;
+
+        constexpr int kMaxFilesScanned = 512;
+        int scanned = 0;
+        fs::recursive_directory_iterator it(luaRoot,
+            fs::directory_options::skip_permission_denied, ec);
+        if (ec) return false;
+        const fs::recursive_directory_iterator end;
+        for (; it != end; it.increment(ec)) {
+            if (ec) { ec.clear(); continue; }
+            if (it->is_symlink(ec)) { it.disable_recursion_pending(); continue; }
+            if (!it->is_regular_file(ec)) continue;
+            if (it->path().extension() != ".lua") continue;
+            if (++scanned > kMaxFilesScanned) return false;
+            if (fileContainsModuCppNvimMarker(it->path())) return true;
+        }
+        return false;
+    }
+
+}
+
+void Engine::checkModuCppNvimUsage() {
+    if (moduCppNvimWarningChecked) return;
+    moduCppNvimWarningChecked = true;
+    moduCppNvimWarningDetected = false;
+
+    if (projectManager.moduCppNvimWarningDismissedV1) return;
+
+    const fs::path configDir = userNeovimConfigDir();
+    if (configDir.empty()) return;
+
+    moduCppNvimWarningDetected = scanNeovimConfigForModuCpp(configDir);
+}
+
+void Engine::renderModuCppNvimWarningPopup() {
+#if !MODULARITY_RUNTIME_ONLY && !defined(MODULARITY_PLAYER)
+    if (requiresTermsOfServiceAcceptance()) return;
+    if (showLauncher && !launcherIntroFinished) return;
+
+    if (!moduCppNvimWarningChecked) {
+        checkModuCppNvimUsage();
+    }
+
+    if (projectManager.moduCppNvimWarningDismissedV1) {
+        moduCppNvimWarningPopupOpened = false;
+        moduCppNvimRemovalStepsOpened = false;
+        showModuCppNvimRemovalSteps = false;
+        return;
+    }
+
+    if (!moduCppNvimWarningDetected) {
+        moduCppNvimWarningPopupOpened = false;
+        return;
+    }
+
+    constexpr const char* warningTitle = "Package Safety Warning";
+    constexpr const char* removalTitle = "moducpp.nvim Removal Steps";
+
+    if (!moduCppNvimWarningPopupOpened && !showModuCppNvimRemovalSteps) {
+        ImGui::OpenPopup(warningTitle);
+        moduCppNvimWarningPopupOpened = true;
+        playEditorFeedbackOneShot("Resources/Sounds/Package Warning Chime.mp3",
+                                  0.95f,
+                                  EditorFeedbackSoundCategory::Other);
+    }
+
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const float popupWidth = ImClamp(displaySize.x * 0.46f, 440.0f, 620.0f);
+    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f),
+                            ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(popupWidth, 0.0f), ImGuiCond_Appearing);
+
+    const ImGuiWindowFlags popupFlags =
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    if (ImGui::BeginPopupModal(warningTitle, nullptr, popupFlags)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + popupWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
+        ImGui::TextWrapped("You're using moducpp.nvim, which has been marked Unsafe by the Modularity Team.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("This package is potentially not safe or recommended due to maintainer trust concerns. It may still work, but use it at your own risk.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Are you sure you want to continue using it?");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        constexpr float useAnywayWidth = 140.0f;
+        constexpr float removalWidth = 200.0f;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float totalWidth = useAnywayWidth + removalWidth + spacing;
+        const float available = ImGui::GetContentRegionAvail().x;
+        if (available > totalWidth) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (available - totalWidth) * 0.5f);
+        }
+        if (ImGui::Button("Use Anyway", ImVec2(useAnywayWidth, 0.0f))) {
+            projectManager.moduCppNvimWarningDismissedV1 = true;
+            projectManager.saveLauncherSettings();
+            moduCppNvimWarningPopupOpened = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Show Removal Steps", ImVec2(removalWidth, 0.0f))) {
+            showModuCppNvimRemovalSteps = true;
+            moduCppNvimWarningPopupOpened = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (showModuCppNvimRemovalSteps) {
+        if (!moduCppNvimRemovalStepsOpened) {
+            ImGui::OpenPopup(removalTitle);
+            moduCppNvimRemovalStepsOpened = true;
+        }
+
+        const float removalWidthPx = ImClamp(displaySize.x * 0.5f, 480.0f, 660.0f);
+        ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f),
+                                ImGuiCond_Appearing,
+                                ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(removalWidthPx, 0.0f), ImGuiCond_Appearing);
+
+        if (ImGui::BeginPopupModal(removalTitle, nullptr, popupFlags)) {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + removalWidthPx - ImGui::GetStyle().WindowPadding.x * 2.0f);
+            ImGui::TextWrapped("To remove this package, open your Neovim plugin configuration and remove:");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("\"Mast3rM0ds/moducpp.nvim\"");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Common locations:");
+            ImGui::BulletText("~/.config/nvim/init.lua");
+            ImGui::BulletText("~/.config/nvim/lua/plugins/moducpp.lua");
+            ImGui::BulletText("~/.config/nvim/lua/plugins/*.lua");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Then restart Neovim.");
+            ImGui::PopTextWrapPos();
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            constexpr float closeWidth = 120.0f;
+            const float availableClose = ImGui::GetContentRegionAvail().x;
+            if (availableClose > closeWidth) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (availableClose - closeWidth) * 0.5f);
+            }
+            if (ImGui::Button("Close", ImVec2(closeWidth, 0.0f))) {
+                showModuCppNvimRemovalSteps = false;
+                moduCppNvimRemovalStepsOpened = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+#endif
 }
 
 void Engine::refreshScriptingFileList() {

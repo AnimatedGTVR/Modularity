@@ -1,6 +1,6 @@
 #include "Engine.h"
 #include "AnimationBindingHelpers.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ThirdParty/ModuGUI/imgui.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2290,6 +2290,56 @@ void Engine::renderAnimationWindow() {
         return value.substr(first, last - first + 1);
     };
 
+    struct AnimationUiIcon {
+        ImTextureID id = static_cast<ImTextureID>(0);
+        bool flipY = false;
+    };
+    const bool hasVulkanUiImagesAnim = usingVulkan() && vulkanRendererInitialized && (vulkanRenderer != nullptr);
+    auto resolveAnimationIcon = [&](const char* iconPath) -> AnimationUiIcon {
+        if (!iconPath || !*iconPath) return {};
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Bilinear);
+                icon && icon->GetID()) {
+                return { static_cast<ImTextureID>(icon->GetID()), true };
+            }
+        }
+        if (hasVulkanUiImagesAnim && vulkanRenderer) {
+            ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (icon != static_cast<ImTextureID>(0)) return { icon, false };
+        }
+        return {};
+    };
+    const AnimationUiIcon iconSetRoot      = resolveAnimationIcon("Resources/Engine-Root/Animation/Set as Root Button.png");
+    const AnimationUiIcon iconClearRoot    = resolveAnimationIcon("Resources/Engine-Root/Animation/Clear Button.png");
+    const AnimationUiIcon iconKeyAll       = resolveAnimationIcon("Resources/Engine-Root/Animation/Key All Button.png");
+    const AnimationUiIcon iconFlip         = resolveAnimationIcon("Resources/Engine-Root/Animation/Flip Button.png");
+    const AnimationUiIcon iconSave         = resolveAnimationIcon("Resources/Engine-Root/Animation/Save Button.png");
+    const AnimationUiIcon iconPlay         = resolveAnimationIcon("Resources/Engine-Root/Animation/Play Button.png");
+    const AnimationUiIcon iconStop         = resolveAnimationIcon("Resources/Engine-Root/Animation/Stop Button.png");
+    const AnimationUiIcon iconRecordOff    = resolveAnimationIcon("Resources/Engine-Root/Animation/Not Recording.png");
+    const AnimationUiIcon iconRecordOn     = resolveAnimationIcon("Resources/Engine-Root/Animation/Recording.png");
+
+    auto drawAnimationIconButton = [&](const char* id,
+                                       const AnimationUiIcon& icon,
+                                       const char* fallbackLabel,
+                                       const char* tooltip) -> bool {
+        bool clicked = false;
+        const float buttonSize = std::max(20.0f, ImGui::GetFrameHeight() - 2.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 2.0f));
+        if (icon.id != static_cast<ImTextureID>(0)) {
+            const ImVec2 uvMin = icon.flipY ? ImVec2(0, 1) : ImVec2(0, 0);
+            const ImVec2 uvMax = icon.flipY ? ImVec2(1, 0) : ImVec2(1, 1);
+            clicked = ImGui::ImageButton(id, icon.id, ImVec2(buttonSize, buttonSize), uvMin, uvMax);
+        } else {
+            clicked = ImGui::Button(fallbackLabel);
+        }
+        ImGui::PopStyleVar();
+        if (tooltip && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", tooltip);
+        }
+        return clicked;
+    };
+
     SceneObject* rootObject = (state.clip.rootObjectId >= 0) ? findObjectById(state.clip.rootObjectId) : nullptr;
     if (rootObject) {
         NormalizeAnimationClipSlots(rootObject->animation);
@@ -2339,11 +2389,14 @@ void Engine::renderAnimationWindow() {
     ImGui::TextDisabled("Root: %s", rootObject ? rootObject->name.c_str() : "<none>");
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
-    if (ImGui::Button("Set Root") && selectedObjectId >= 0) {
+    if (drawAnimationIconButton("##anim_set_root", iconSetRoot, "Set Root",
+                                "Set Root\nUse the selected object as the animation root.")
+        && selectedObjectId >= 0) {
         state.clip.rootObjectId = selectedObjectId;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Clear")) {
+    if (drawAnimationIconButton("##anim_clear_root", iconClearRoot, "Clear",
+                                "Clear Root\nDetach the current animation root.")) {
         state.clip.rootObjectId = -1;
     }
     ImGui::SameLine();
@@ -2353,12 +2406,18 @@ void Engine::renderAnimationWindow() {
             state.clipDirty = true;
         }
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Bind Hierarchy\nAuto-bind transform tracks for the root and all children.");
+    }
     ImGui::SameLine();
-    bool requestKeyAll = ImGui::Button("Key All");
+    bool requestKeyAll = drawAnimationIconButton("##anim_key_all", iconKeyAll, "Key All",
+                                                 "Key All\nKey every bound track at the current time.");
     ImGui::SameLine();
-    bool requestFlip = ImGui::Button("Flip");
+    bool requestFlip = drawAnimationIconButton("##anim_flip", iconFlip, "Flip",
+                                               "Flip\nReverse all keys in the clip along the time axis.");
     ImGui::SameLine();
-    bool saveClipPressed = ImGui::Button("Save");
+    bool saveClipPressed = drawAnimationIconButton("##anim_save", iconSave, "Save",
+                                                   "Save\nWrite the current clip to its .moduanimate file.");
     ImGui::PopStyleVar();
     if (saveClipPressed && rootObject && !desiredClipAssetPath.empty()) {
         UpgradeLegacyScriptSettingTracks(state.clip, objectById);
@@ -2583,27 +2642,39 @@ void Engine::renderAnimationWindow() {
     ImGui::Checkbox("Preview", &state.previewEnabled);
     ImGui::SameLine();
 
-    if (ImGui::Button(state.isPlaying ? "Pause" : "Play")) {
+    if (drawAnimationIconButton("##anim_play", iconPlay,
+                                state.isPlaying ? "Pause" : "Play",
+                                state.isPlaying ? "Pause\nPause timeline playback." : "Play\nStart timeline playback from the current time.")) {
         state.isPlaying = !state.isPlaying;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Stop")) {
+    if (drawAnimationIconButton("##anim_stop", iconStop, "Stop",
+                                "Stop\nStop playback and rewind to the start.")) {
         state.isPlaying = false;
         state.currentTime = 0.0f;
     }
     ImGui::SameLine();
     ImGui::Checkbox("Loop", &state.loopPlayback);
     ImGui::SameLine();
-    if (state.recordEnabled) {
-        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 54, 54, 255));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(210, 72, 72, 255));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(220, 82, 82, 255));
-    }
-    if (ImGui::Button(state.recordEnabled ? "Record ●" : "Record")) {
-        state.recordEnabled = !state.recordEnabled;
-    }
-    if (state.recordEnabled) {
-        ImGui::PopStyleColor(3);
+    {
+        const AnimationUiIcon& recordIcon = state.recordEnabled ? iconRecordOn : iconRecordOff;
+        const bool hasRecordIcon = (recordIcon.id != static_cast<ImTextureID>(0));
+        if (state.recordEnabled && !hasRecordIcon) {
+            ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(180, 54, 54, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(210, 72, 72, 255));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(220, 82, 82, 255));
+        }
+        const char* recordTip = state.recordEnabled
+            ? "Recording\nProperty changes are being keyed automatically. Click to stop recording."
+            : "Record\nClick to record keyframes from property changes.";
+        if (drawAnimationIconButton("##anim_record", recordIcon,
+                                    state.recordEnabled ? "Record ●" : "Record",
+                                    recordTip)) {
+            state.recordEnabled = !state.recordEnabled;
+        }
+        if (state.recordEnabled && !hasRecordIcon) {
+            ImGui::PopStyleColor(3);
+        }
     }
     if (state.recordEnabled != state.recordWasEnabled) {
         state.recordLastValues.clear();

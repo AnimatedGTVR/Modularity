@@ -213,8 +213,8 @@ bool Project::create() {
         // Initialize a default scripting build file
         std::ofstream scriptCfg(scriptsConfigPath);
         scriptCfg << "# scripts.modu\n";
-        scriptCfg << "# Default native script target is C++14 for older toolchain compatibility. Use c++17, c++20, c++23, or c++26 when needed.\n";
-        scriptCfg << "cppStandard=c++14\n";
+        scriptCfg << "# Default native script target is C++23. Use c++17, c++20, or c++26 only when a project needs a different target.\n";
+        scriptCfg << "cppStandard=c++23\n";
         scriptCfg << "scriptsDir=Assets/Scripts\n";
         scriptCfg << "outDir=Library/CompiledScripts\n";
         scriptCfg << "define=MODU_SCRIPTING=1\n";
@@ -567,6 +567,7 @@ void ProjectManager::loadLauncherSettings() {
     defaultProjectLocation[0] = '\0';
     acceptedTermsVersion.clear();
     windowsDisclaimerAcknowledgedV68 = false;
+    moduCppNvimWarningDismissedV1 = false;
     fs::path settingsFile = appDataPath / "launcher_settings.modu";
 
     if (fs::exists(settingsFile)) {
@@ -587,6 +588,8 @@ void ProjectManager::loadLauncherSettings() {
                 acceptedTermsVersion = value;
             } else if (key == "WindowsDisclaimerAcknowledged_V6_8") {
                 windowsDisclaimerAcknowledgedV68 = (value == "1" || value == "true" || value == "yes");
+            } else if (key == "ModuCppNvimWarningDismissed_V1") {
+                moduCppNvimWarningDismissedV1 = (value == "1" || value == "true" || value == "yes");
             }
         }
     }
@@ -609,6 +612,7 @@ void ProjectManager::saveLauncherSettings() const {
         file << "acceptedTermsVersion=" << acceptedTermsVersion << "\n";
     }
     file << "WindowsDisclaimerAcknowledged_V6_8=" << (windowsDisclaimerAcknowledgedV68 ? "1" : "0") << "\n";
+    file << "ModuCppNvimWarningDismissed_V1=" << (moduCppNvimWarningDismissedV1 ? "1" : "0") << "\n";
     file << "defaultProjectLocation=" << defaultProjectLocation << "\n";
 }
 
@@ -925,6 +929,16 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "aiAgentAutoRepath=" << (obj.aiAgent.autoRepath ? 1 : 0) << "\n";
                 file << "aiAgentAlignToPath=" << (obj.aiAgent.alignToPath ? 1 : 0) << "\n";
                 file << "aiAgentDebugDrawPath=" << (obj.aiAgent.debugDrawPath ? 1 : 0) << "\n";
+                file << "aiAgentTurnSpeed=" << obj.aiAgent.turnSpeed << "\n";
+                file << "aiAgentAvoidancePadding=" << obj.aiAgent.avoidancePadding << "\n";
+            }
+            file << "hasOffMeshLink=" << (obj.hasOffMeshLink ? 1 : 0) << "\n";
+            if (obj.hasOffMeshLink) {
+                file << "offMeshLinkEnabled=" << (obj.offMeshLink.enabled ? 1 : 0) << "\n";
+                file << "offMeshLinkStart=" << obj.offMeshLink.startPoint.x << "," << obj.offMeshLink.startPoint.y << "," << obj.offMeshLink.startPoint.z << "\n";
+                file << "offMeshLinkEnd=" << obj.offMeshLink.endPoint.x << "," << obj.offMeshLink.endPoint.y << "," << obj.offMeshLink.endPoint.z << "\n";
+                file << "offMeshLinkBidirectional=" << (obj.offMeshLink.bidirectional ? 1 : 0) << "\n";
+                file << "offMeshLinkCostOverride=" << obj.offMeshLink.costOverride << "\n";
             }
             file << "hasRig25DRoot=" << (obj.hasRig25DRoot ? 1 : 0) << "\n";
             if (obj.hasRig25DRoot) {
@@ -1675,6 +1689,14 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"aiAgentAutoRepath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.autoRepath = std::stoi(value) != 0; }},
         {"aiAgentAlignToPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.alignToPath = std::stoi(value) != 0; }},
         {"aiAgentDebugDrawPath", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.debugDrawPath = std::stoi(value) != 0; }},
+        {"aiAgentTurnSpeed", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.turnSpeed = std::stof(value); }},
+        {"aiAgentAvoidancePadding", +[](SceneObject& obj, const std::string& value) { obj.aiAgent.avoidancePadding = std::stof(value); }},
+        {"hasOffMeshLink", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = std::stoi(value) != 0; }},
+        {"offMeshLinkEnabled", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = true; obj.offMeshLink.enabled = std::stoi(value) != 0; }},
+        {"offMeshLinkStart", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = true; ParseVec3(value, obj.offMeshLink.startPoint); }},
+        {"offMeshLinkEnd", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = true; ParseVec3(value, obj.offMeshLink.endPoint); }},
+        {"offMeshLinkBidirectional", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = true; obj.offMeshLink.bidirectional = std::stoi(value) != 0; }},
+        {"offMeshLinkCostOverride", +[](SceneObject& obj, const std::string& value) { obj.hasOffMeshLink = true; obj.offMeshLink.costOverride = std::stof(value); }},
         {"hasRig25DRoot", +[](SceneObject& obj, const std::string& value) { obj.hasRig25DRoot = std::stoi(value) != 0; }},
         {"rig25dRootEnabled", +[](SceneObject& obj, const std::string& value) { obj.rig25DRoot.enabled = std::stoi(value) != 0; obj.hasRig25DRoot = true; }},
         {"hasRig25DNode", +[](SceneObject& obj, const std::string& value) { obj.hasRig25DNode = std::stoi(value) != 0; }},

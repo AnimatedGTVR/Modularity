@@ -3,7 +3,7 @@
 
 #include <string>
 #include <cstddef>
-#include <glad/glad.h>
+#include "../Graphics/OpenGL.h"
 
 class Texture
 {

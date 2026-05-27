@@ -1,11 +1,11 @@
-#include <glad/glad.h>
+#include "../include/Graphics/OpenGL.h"
 #include "CrashReporter.h"
 #include "AudioSystem.h"
 
 #include "ThirdParty/glfw/include/GLFW/glfw3.h"
-#include "ThirdParty/imgui/backends/imgui_impl_glfw.h"
-#include "ThirdParty/imgui/backends/imgui_impl_opengl3.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ThirdParty/ModuGUI/backends/imgui_impl_glfw.h"
+#include "ThirdParty/ModuGUI/backends/imgui_impl_opengl3.h"
+#include "ThirdParty/ModuGUI/imgui.h"
 #include "../include/ThirdParty/stb_image.h"
 
 #include <atomic>
@@ -610,9 +610,16 @@ int runCrashReporterWindow(const std::string& productName,
         return EXIT_FAILURE;
     }
 
+#if MODULARITY_OPENGL_ES
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+#else
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#endif
     GLFWwindow* window = glfwCreateWindow(920, 720, (productName + " Crash Reporter").c_str(), nullptr, nullptr);
     if (!window) {
         glfwTerminate();
@@ -621,7 +628,12 @@ int runCrashReporterWindow(const std::string& productName,
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+#if MODULARITY_OPENGL_ES
+    const bool glLoaded = true;
+#else
+    const bool glLoaded = gladLoadGLLoader((GLADloadproc)glfwGetProcAddress) != 0;
+#endif
+    if (!glLoaded) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return EXIT_FAILURE;
@@ -635,7 +647,7 @@ int runCrashReporterWindow(const std::string& productName,
     applyCrashReporterTheme();
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL3_Init("#version 330");
+    ImGui_ImplOpenGL3_Init(Modularity::OpenGLImGuiGlslVersion());
 
     AudioSystem audio;
     const bool audioReady = audio.init();

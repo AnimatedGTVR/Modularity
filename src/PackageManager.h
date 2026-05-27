@@ -69,6 +69,13 @@ public:
     const std::string& getRegistryLastUpdated() const { return registryLastUpdated; }
     const std::string& getRegistryUpdatedBy() const { return registryUpdatedBy; }
 
+    struct RegistryPackageLocations {
+        fs::path source;
+        fs::path destination;
+        std::string downloadUrl;
+    };
+    bool resolveRegistryPackageLocations(const std::string& id, RegistryPackageLocations& out) const;
+
 private:
     void buildRegistry();
     void loadManifest();

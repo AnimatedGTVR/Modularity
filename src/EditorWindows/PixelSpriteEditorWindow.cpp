@@ -1,5 +1,5 @@
 #include "Engine.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ThirdParty/ModuGUI/imgui.h"
 #include "ThirdParty/glfw/deps/stb_image_write.h"
 #include "../../include/ThirdParty/stb_image.h"
 #include "../SpritesheetFormat.h"

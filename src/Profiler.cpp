@@ -207,7 +207,9 @@ void Profiler::setCurrentFrameGpuCapability(bool supported, bool partial) {
 }
 
 bool Profiler::supportsOpenGlGpuTimers() const {
-#ifdef GL_TIME_ELAPSED
+#if MODULARITY_OPENGL_ES
+    return false;
+#elif defined(GL_TIME_ELAPSED)
     return (GLAD_GL_VERSION_3_3 != 0);
 #else
     return false;
@@ -229,7 +231,9 @@ bool Profiler::beginOpenGlGpuFrame() {
     activeGpuQueryPartial = true;
     currentFrame.gpuTimingSupported = true;
     currentFrame.gpuTimingPartial = true;
+#if !MODULARITY_OPENGL_ES
     glBeginQuery(GL_TIME_ELAPSED, activeGpuQuery);
+#endif
     return true;
 }
 
@@ -238,7 +242,9 @@ void Profiler::endOpenGlGpuFrame() {
         return;
     }
 
+#if !MODULARITY_OPENGL_ES
     glEndQuery(GL_TIME_ELAPSED);
+#endif
     pendingGpuQueries.push_back({ activeGpuQuery, activeGpuQueryFrameId, activeGpuQueryPartial });
     activeGpuQuery = 0;
     activeGpuQueryFrameId = 0;
@@ -280,6 +286,12 @@ uint64_t Profiler::getLatestFrameId() const {
 }
 
 void Profiler::resolvePendingGpuQueries() {
+#if MODULARITY_OPENGL_ES
+    while (!pendingGpuQueries.empty()) {
+        releaseGpuQuery(pendingGpuQueries.front().query);
+        pendingGpuQueries.pop_front();
+    }
+#else
     while (!pendingGpuQueries.empty()) {
         const PendingGpuQuery& pending = pendingGpuQueries.front();
         GLuint available = GL_FALSE;
@@ -296,6 +308,7 @@ void Profiler::resolvePendingGpuQueries() {
         releaseGpuQuery(pending.query);
         pendingGpuQueries.pop_front();
     }
+#endif
 }
 
 GLuint Profiler::acquireGpuQuery() {

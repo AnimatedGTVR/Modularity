@@ -74,12 +74,14 @@ void Camera::processKeyboard(float deltaTime, GLFWwindow* window) {
         desiredDir += up;
         isMoving = true;
     }
+#if !MODULARITY_OPENGL_ES
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
+#endif
 
     if (smoothMovement) {
         glm::vec3 targetVelocity(0.0f);

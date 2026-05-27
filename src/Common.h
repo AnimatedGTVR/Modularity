@@ -33,13 +33,13 @@
 #endif
 #endif
 
-#include <glad/glad.h>
-#include "ThirdParty/imgui/imgui.h"
-#include "ThirdParty/imgui/imgui_internal.h"
-#include "ThirdParty/imgui/backends/imgui_impl_glfw.h"
-#include "ThirdParty/imgui/backends/imgui_impl_opengl3.h"
+#include "../include/Graphics/OpenGL.h"
+#include "ThirdParty/ModuGUI/imgui.h"
+#include "ThirdParty/ModuGUI/imgui_internal.h"
+#include "ThirdParty/ModuGUI/backends/imgui_impl_glfw.h"
+#include "ThirdParty/ModuGUI/backends/imgui_impl_opengl3.h"
 #if MODULARITY_HAS_VULKAN
-#include "ThirdParty/imgui/backends/imgui_impl_vulkan.h"
+#include "ThirdParty/ModuGUI/backends/imgui_impl_vulkan.h"
 #endif
 #include "ThirdParty/ImGuizmo/ImGuizmo.h"
 #include "ThirdParty/glm/glm.hpp"

@@ -3,7 +3,7 @@
 #include "../SceneObject.h"
 
 #if MODULARITY_HAS_VULKAN
-#include "../ThirdParty/imgui/backends/imgui_impl_vulkan.h"
+#include "../ThirdParty/ModuGUI/backends/imgui_impl_vulkan.h"
 #include "../../include/ThirdParty/stb_image.h"
 
 #include <algorithm>

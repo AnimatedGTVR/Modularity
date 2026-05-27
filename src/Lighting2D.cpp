@@ -1,6 +1,6 @@
 #include "Lighting2D.h"
 #include "Rendering.h"
-#include <glad/glad.h>
+#include "../include/Graphics/OpenGL.h"
 #include <algorithm>
 #include <array>
 #include <chrono>

@@ -1,13 +1,23 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-set "SCRIPT_DIR=%~dp0"
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "SCRIPT_HOME=%~dp0"
+if "%SCRIPT_HOME:~-1%"=="\" set "SCRIPT_HOME=%SCRIPT_HOME:~0,-1%"
+
+call :resolve_modularity_root
+if errorlevel 1 (
+    echo [ERROR] Could not find the Modularity source root. Set MODULARITY_ROOT or run from inside/above the Modularity folder.
+    pause
+    exit /b 1
+)
+cd /d "%SCRIPT_DIR%"
 
 echo.
 echo ================================
 echo      Native Windows Build
 echo ================================
+echo.
+echo [INFO] Modularity root: %SCRIPT_DIR%
 echo.
 
 git submodule update --init --recursive
@@ -17,6 +27,7 @@ call :time_to_cs "%START_TIME%" START_CS
 
 set "CLEAN_BUILD=0"
 set "BUILD_TYPE=Release"
+set "BUILD_CPP_STANDARD=c++23"
 set "PACKAGE_FORMAT=7Z"
 set "PACKAGE_EXT=7z"
 for %%A in (%*) do (
@@ -54,8 +65,8 @@ echo [INFO] Creating fresh build directory...
 if not exist build mkdir build
 pushd build
 
-echo [INFO] Configuring with CMake (Visual Studio 18 2026)...
-cmake -A x64 .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE% %MONO_ROOT_ARG%
+echo [INFO] Configuring with CMake (Visual Studio 18 2026, %BUILD_CPP_STANDARD%)...
+cmake -A x64 .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DMODULARITY_BUILD_CPP_STANDARD=%BUILD_CPP_STANDARD% %MONO_ROOT_ARG%
 
 if errorlevel 1 (
     echo.
@@ -95,7 +106,7 @@ if exist "%PLAYER_CACHE_DIR%" if %CLEAN_BUILD%==1 (
 
 if not exist "%PLAYER_CACHE_DIR%" mkdir "%PLAYER_CACHE_DIR%"
 echo [INFO] Configuring player cache build...
-cmake -S . -B "%PLAYER_CACHE_DIR%" -DMODULARITY_BUILD_EDITOR=OFF -DCMAKE_BUILD_TYPE=%BUILD_TYPE% %MONO_ROOT_ARG%
+cmake -S . -B "%PLAYER_CACHE_DIR%" -DMODULARITY_BUILD_EDITOR=OFF -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DMODULARITY_BUILD_CPP_STANDARD=%BUILD_CPP_STANDARD% %MONO_ROOT_ARG%
 if errorlevel 1 (
     echo.
     echo [ERROR] Player cache CMake configuration failed!
@@ -176,6 +187,43 @@ if /I "%BASE%"=="imgui.lib"          exit /b 0
 if /I "%BASE%"=="imguizmo.lib"       exit /b 0
 copy /Y "%SRC%" "%DEST%" >nul
 exit /b 0
+
+:resolve_modularity_root
+if defined MODULARITY_ROOT (
+    call :try_modularity_root "%MODULARITY_ROOT%"
+    if not errorlevel 1 exit /b 0
+)
+
+call :search_modularity_root_up "%SCRIPT_HOME%"
+if not errorlevel 1 exit /b 0
+
+call :search_modularity_root_up "%CD%"
+if not errorlevel 1 exit /b 0
+
+exit /b 1
+
+:search_modularity_root_up
+set "SEARCH_DIR=%~f1"
+:search_modularity_root_loop
+call :try_modularity_root "!SEARCH_DIR!"
+if not errorlevel 1 exit /b 0
+call :try_modularity_root "!SEARCH_DIR!\Modularity"
+if not errorlevel 1 exit /b 0
+for %%I in ("!SEARCH_DIR!\..") do set "PARENT_DIR=%%~fI"
+if /I "!PARENT_DIR!"=="!SEARCH_DIR!" exit /b 1
+set "SEARCH_DIR=!PARENT_DIR!"
+goto search_modularity_root_loop
+
+:try_modularity_root
+set "CANDIDATE_ROOT=%~f1"
+if exist "%CANDIDATE_ROOT%\CMakeLists.txt" if exist "%CANDIDATE_ROOT%\src" if exist "%CANDIDATE_ROOT%\Resources" (
+    findstr /C:"project(Modularity" "%CANDIDATE_ROOT%\CMakeLists.txt" >nul 2>&1
+    if not errorlevel 1 (
+        set "SCRIPT_DIR=%CANDIDATE_ROOT%"
+        exit /b 0
+    )
+)
+exit /b 1
 
 :time_to_cs
 set "T=%~1"

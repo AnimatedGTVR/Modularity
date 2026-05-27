@@ -1,5 +1,5 @@
-[submodule "src/ThirdParty/imgui"]
-	path = src/ThirdParty/imgui
+[submodule "src/ThirdParty/ModuGUI"]
+	path = src/ThirdParty/ModuGUI
 	url = https://github.com/darkresident55/ModuGUI.git
 	branch = docking
 [submodule "src/ThirdParty/glfw"]

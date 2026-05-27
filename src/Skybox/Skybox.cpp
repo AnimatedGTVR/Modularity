@@ -1,7 +1,7 @@
 #include "../../include/Skybox/Skybox.h"
 #include "../../include/Shaders/Shader.h"
 #include "../../include/Textures/Texture.h"
-#include <glad/glad.h>
+#include "../../include/Graphics/OpenGL.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>

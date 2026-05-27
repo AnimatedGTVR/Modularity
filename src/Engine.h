@@ -334,6 +334,11 @@ private:
     ImGuiID mainDockspaceId = 0;
     bool editorSettingsDirty = false;
     bool windowsDisclaimerPopupOpened = false;
+    bool moduCppNvimWarningChecked = false;
+    bool moduCppNvimWarningDetected = false;
+    bool moduCppNvimWarningPopupOpened = false;
+    bool showModuCppNvimRemovalSteps = false;
+    bool moduCppNvimRemovalStepsOpened = false;
     bool showEnvironmentWindow = true;
     bool showCameraWindow = true;
     bool showAnimationWindow = false;
@@ -389,6 +394,15 @@ private:
         bool autoRebake = false;
         int maxGridResolution = 512;
     };
+    struct AIOffMeshLinkBaked {
+        int sourceId = -1;
+        int fromCell = -1;
+        int toCell = -1;
+        glm::vec3 startPoint = glm::vec3(0.0f);
+        glm::vec3 endPoint = glm::vec3(0.0f);
+        bool bidirectional = true;
+        float cost = 1.0f;
+    };
     struct AIPathGrid {
         bool baked = false;
         glm::vec2 origin = glm::vec2(0.0f);
@@ -396,8 +410,11 @@ private:
         int height = 0;
         float cellSize = 1.0f;
         std::vector<uint8_t> walkable;
+        std::vector<float> cellCost;     // per-cell traversal multiplier (1.0 default)
+        std::vector<float> groundTop;    // per-cell ground Y (FLT_MAX if unknown)
         std::vector<int> sourceGroundIds;
         std::vector<int> sourceObstacleIds;
+        std::vector<AIOffMeshLinkBaked> links;
     };
     struct AIAgentRuntimeState {
         std::vector<glm::vec3> path;
@@ -693,6 +710,84 @@ private:
         Linux = 1,
         Android = 2
     };
+
+    // Single source of truth for build target metadata. UI combos, serialization,
+    // and the export pipeline all derive from these tables so a new platform only
+    // needs to be added here (plus its runtime hooks).
+    static constexpr int kBuildPlatformCount = 3;
+    static constexpr const char* kBuildPlatformLabels[kBuildPlatformCount] = {
+        "Windows",
+        "Linux",
+        "Android (Experimental)"
+    };
+    static constexpr const char* kBuildPlatformSerializedNames[kBuildPlatformCount] = {
+        "Windows",
+        "Linux",
+        "Android"
+    };
+    static constexpr bool kBuildPlatformExperimental[kBuildPlatformCount] = {
+        false,
+        false,
+        true
+    };
+
+    struct BuildArchitectureInfo {
+        const char* label;
+        const char* serializedName;
+    };
+    static constexpr int kDesktopArchitectureCount = 2;
+    static constexpr BuildArchitectureInfo kDesktopArchitectures[kDesktopArchitectureCount] = {
+        {"x86_64", "x86_64"},
+        {"x86",    "x86"},
+    };
+    static constexpr int kAndroidArchitectureCount = 2;
+    static constexpr BuildArchitectureInfo kAndroidArchitectures[kAndroidArchitectureCount] = {
+        {"arm64-v8a",   "arm64-v8a"},
+        {"armeabi-v7a", "armeabi-v7a"},
+    };
+
+    static int buildPlatformIndex(BuildPlatform p) {
+        int idx = static_cast<int>(p);
+        if (idx < 0 || idx >= kBuildPlatformCount) idx = 0;
+        return idx;
+    }
+    static BuildPlatform buildPlatformFromIndex(int index) {
+        if (index < 0 || index >= kBuildPlatformCount) index = 0;
+        return static_cast<BuildPlatform>(index);
+    }
+    static const char* buildPlatformLabel(BuildPlatform p) {
+        return kBuildPlatformLabels[buildPlatformIndex(p)];
+    }
+    static const char* buildPlatformSerializedName(BuildPlatform p) {
+        return kBuildPlatformSerializedNames[buildPlatformIndex(p)];
+    }
+    static bool buildPlatformIsExperimental(BuildPlatform p) {
+        return kBuildPlatformExperimental[buildPlatformIndex(p)];
+    }
+    static BuildPlatform buildPlatformFromSerializedName(const std::string& name, BuildPlatform fallback) {
+        for (int i = 0; i < kBuildPlatformCount; ++i) {
+            if (name == kBuildPlatformSerializedNames[i]) return static_cast<BuildPlatform>(i);
+        }
+        return fallback;
+    }
+    static const BuildArchitectureInfo* buildArchitecturesForPlatform(BuildPlatform p, int& outCount) {
+        if (p == BuildPlatform::Android) {
+            outCount = kAndroidArchitectureCount;
+            return kAndroidArchitectures;
+        }
+        outCount = kDesktopArchitectureCount;
+        return kDesktopArchitectures;
+    }
+    static const char* defaultArchitectureForPlatform(BuildPlatform p) {
+        int count = 0;
+        const BuildArchitectureInfo* list = buildArchitecturesForPlatform(p, count);
+        return list[0].serializedName;
+    }
+
+    // Defined in AndroidExport.cpp. Returns an empty string if no usable NDK
+    // can be located via ANDROID_NDK_ROOT / ANDROID_NDK_HOME / ANDROID_NDK.
+    static std::string resolveAndroidNdkPath();
+
     struct BuildSceneEntry {
         std::string name;
         bool enabled = true;
@@ -1072,8 +1167,10 @@ private:
     void buildWorkspaceLayout(WorkspaceMode mode);
     void updateDockDrawerInteractions();
     void renderWindowsDisclaimerPopup();
+    void renderModuCppNvimWarningPopup();
+    void checkModuCppNvimUsage();
     bool bakeAIPathGrid(bool logResult);
-    bool findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vector<glm::vec3>& outPath) const;
+    bool findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vector<glm::vec3>& outPath, float clearancePadding = 0.0f) const;
     void autosaveWorkspaceLayout();
     void saveWorkspaceLayout(WorkspaceMode mode) const;
     fs::path getEditorUserSettingsPath() const;

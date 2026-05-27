@@ -121,8 +121,8 @@ void appendBundledScriptSdkIncludeDirs(std::vector<fs::path>& includeDirs, const
     appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glm");
     appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glad");
     appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/glfw/include");
-    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/imgui");
-    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/imgui/backends");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/ModuGUI");
+    appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/ModuGUI/backends");
     appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/ImGuizmo");
     appendIfExists(includeDirs, sdkRoot / "src/ThirdParty/assimp/include");
 }
@@ -748,15 +748,15 @@ void PackageManager::buildRegistry() {
 
     PackageInfo imgui;
     imgui.id = "imgui";
-    imgui.name = "Dear ImGui";
-    imgui.description = "Immediate-mode UI helpers for editor-time tools";
+    imgui.name = "ModuGUI";
+    imgui.description = "ModuGUI immediate-mode UI fork for editor-time tools";
     imgui.builtIn = false;
     if (!engineSourceRoot.empty()) {
-        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/imgui");
-        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/imgui/backends");
+        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/ModuGUI");
+        appendIfExists(imgui.includeDirs, engineSourceRoot / "src/ThirdParty/ModuGUI/backends");
     } else if (!sdkRoot.empty()) {
-        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/imgui");
-        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/imgui/backends");
+        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/ModuGUI");
+        appendIfExists(imgui.includeDirs, sdkRoot / "src/ThirdParty/ModuGUI/backends");
     }
     add(imgui);
 
@@ -1096,6 +1096,25 @@ fs::path PackageManager::resolveRegistrySourcePath(const PackageInfo& pkg) const
     }
 
     return {};
+}
+
+bool PackageManager::resolveRegistryPackageLocations(const std::string& id, RegistryPackageLocations& out) const {
+    out = {};
+    const PackageInfo* pkg = findPackage(id);
+    if (!pkg || !pkg->registryPackage) {
+        return false;
+    }
+    out.destination = projectRegistryPackagePath(*pkg);
+    out.downloadUrl = pkg->downloadUrl;
+    fs::path source = resolveRegistrySourcePath(*pkg);
+    if (source.empty() || !fs::exists(source)) {
+        auto globalSource = findVersionedPackageAtAnyVersion(globalPackagesFolder(), *pkg);
+        if (globalSource.has_value() && fs::exists(*globalSource)) {
+            source = *globalSource;
+        }
+    }
+    out.source = source;
+    return true;
 }
 
 fs::path PackageManager::projectRegistryPackagePath(const PackageInfo& pkg) const {
@@ -1634,7 +1653,7 @@ bool PackageManager::isBuiltIn(const std::string& id) const {
 
 #pragma region Utility Helpers
 std::string PackageManager::currentEngineVersion() {
-    return "6.7";
+    return "6.8.1";
 }
 
 bool PackageManager::isCompatibleVersionString(const std::string& rule, const std::string& currentVersion) {

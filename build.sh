@@ -2,7 +2,58 @@
 set -euo pipefail
 
 start_time="$(date +%s)"
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+script_home="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+is_modularity_root() {
+    local candidate="$1"
+    [[ -f "${candidate}/CMakeLists.txt" ]] &&
+    [[ -d "${candidate}/src" ]] &&
+    [[ -d "${candidate}/Resources" ]] &&
+    grep -q 'project(Modularity' "${candidate}/CMakeLists.txt"
+}
+
+find_modularity_root_from() {
+    local start="$1"
+    local current
+    current="$(cd -- "${start}" 2>/dev/null && pwd)" || return 1
+
+    while [[ -n "${current}" ]]; do
+        if is_modularity_root "${current}"; then
+            printf "%s\n" "${current}"
+            return 0
+        fi
+        if is_modularity_root "${current}/Modularity"; then
+            printf "%s\n" "${current}/Modularity"
+            return 0
+        fi
+
+        local parent
+        parent="$(dirname -- "${current}")"
+        if [[ "${parent}" == "${current}" ]]; then
+            break
+        fi
+        current="${parent}"
+    done
+
+    return 1
+}
+
+find_modularity_root() {
+    if [[ -n "${MODULARITY_ROOT:-}" ]] && is_modularity_root "${MODULARITY_ROOT}"; then
+        cd -- "${MODULARITY_ROOT}" && pwd
+        return 0
+    fi
+
+    find_modularity_root_from "${script_home}" ||
+    find_modularity_root_from "${PWD}"
+}
+
+script_dir="$(find_modularity_root)" || {
+    printf "Could not find the Modularity source root. Set MODULARITY_ROOT or run from inside/above the Modularity folder.\n" >&2
+    exit 1
+}
+
 build_platform="native"
 build_platform_label="Linux"
 build_dir="${script_dir}/build"
@@ -371,6 +422,7 @@ EOF
 
 clean_build=0
 build_type="Release"
+build_cpp_standard="c++23"
 skip_deps=0
 package_format="7Z"
 enable_asan=0
@@ -814,6 +866,7 @@ configure_editor_build() {
     cmake "${generator_args[@]}" -S "${script_dir}" -B "${build_dir}" \
         "${cmake_platform_args[@]}" \
         -DMONO_ROOT=/usr \
+        -DMODULARITY_BUILD_CPP_STANDARD="${build_cpp_standard}" \
         -DCMAKE_BUILD_TYPE="${build_type}"
 }
 
@@ -854,6 +907,7 @@ configure_player_build() {
     cmake "${generator_args[@]}" -S "${script_dir}" -B "${player_cache_dir}" \
         "${cmake_platform_args[@]}" \
         -DMONO_ROOT=/usr \
+        -DMODULARITY_BUILD_CPP_STANDARD="${build_cpp_standard}" \
         -DCMAKE_BUILD_TYPE="${build_type}" \
         -DMODULARITY_BUILD_EDITOR=OFF
 }
@@ -975,9 +1029,9 @@ printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
 printf "%s   Modularity - %s%s\n" "${C_BOLD}" "${build_platform_label}" "${C_RESET}"
 printf "%s================================%s\n" "${C_BOLD}" "${C_RESET}"
 if [[ "${jobs_overridden}" -eq 0 && "${jobs}" -lt "${ncpus}" ]]; then
-    log_info "Build type: ${build_type} | Jobs: ${jobs} (of ${ncpus} cores; reserved 2 to keep desktop responsive — override with --jobs=N)"
+    log_info "Build type: ${build_type} | C++: ${build_cpp_standard} | Jobs: ${jobs} (of ${ncpus} cores; reserved 2 to keep desktop responsive — override with --jobs=N)"
 else
-    log_info "Build type: ${build_type} | Jobs: ${jobs}"
+    log_info "Build type: ${build_type} | C++: ${build_cpp_standard} | Jobs: ${jobs}"
 fi
 if [[ -n "${cmake_generator}" ]]; then
     log_info "CMake generator: ${cmake_generator}"

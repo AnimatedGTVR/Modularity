@@ -445,7 +445,7 @@ void Engine::renderMainMenuBar() {
 
     if (ImGui::BeginMenu("Help")) {
       if (ImGui::MenuItem("About")) {
-        logToConsole("Modularity Engine - V6.8\nThis build may still have "
+        logToConsole("Modularity Engine - V6.8.1\nThis build may still have "
                      "issues,\n\nif you'd like to report any bugs or missing "
                      "features, feel free to contact us!");
       }

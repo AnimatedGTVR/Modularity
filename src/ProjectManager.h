@@ -223,6 +223,7 @@ public:
     bool showOpenProjectDialog = false;
     std::string acceptedTermsVersion;
     bool windowsDisclaimerAcknowledgedV68 = false;
+    bool moduCppNvimWarningDismissedV1 = false;
     int newProjectPipelineMode = 0;
     int newProjectRendererMode = 0;
     bool newProjectImportLastPackages = true;

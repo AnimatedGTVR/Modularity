@@ -120,7 +120,7 @@ void Engine::renderUiCanvas3DTargets() {
       if (canvasFont) {
         io.FontDefault = canvasFont;
       }
-      ImGui_ImplOpenGL3_Init("#version 330");
+      ImGui_ImplOpenGL3_Init(Modularity::OpenGLImGuiGlslVersion());
       ctxEntry.backendReady = true;
     }
 

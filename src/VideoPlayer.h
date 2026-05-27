@@ -6,7 +6,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <glad/glad.h>
+#include "../include/Graphics/OpenGL.h"
 class AudioSystem;
 class VideoPlayer {
     public:

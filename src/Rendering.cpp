@@ -33,6 +33,16 @@ inline void Runtime2DCountStateBind() {
     ++gRuntime2DRenderCounters.stateBindCount;
 }
 
+inline void SetDepthOnlyFramebufferDrawBuffer()
+{
+#if MODULARITY_OPENGL_ES
+    const GLenum noColorAttachments = GL_NONE;
+    glDrawBuffers(1, &noColorAttachments);
+#else
+    glDrawBuffer(GL_NONE);
+#endif
+}
+
 glm::vec4 BuildSpriteUvRect(const SceneObject& obj) {
     if (obj.ui.spriteCustomFramesEnabled &&
         !obj.ui.spriteCustomFrames.empty() &&
@@ -2482,62 +2492,8 @@ unsigned int Renderer::findFramebufferForTexture(unsigned int texture) const {
 }
 
 void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) const {
-#if MODULARITY_RUNTIME_ONLY
     (void)stats;
     (void)allowHistory;
-    return;
-#endif
-    if (stats.resolvedVolumeId < 0 && stats.sourceTextureId == 0 && stats.skipReason.empty()) {
-        return;
-    }
-
-    const char* route = allowHistory ? "viewport" : "preview";
-    if (!stats.executionBegan) {
-        if (stats.skipReason == "no_visible_effects") {
-            return;
-        }
-        std::cerr << "[PostFX][" << route << "] skipped"
-                  << " reason=" << (stats.skipReason.empty() ? "unknown" : stats.skipReason)
-                  << " srcTex=" << stats.sourceTextureId
-                  << " srcFbo=" << stats.sourceFramebufferId
-                  << " finalTex=" << stats.finalPresentedTextureId
-                  << " differs=" << (stats.finalTextureDiffersFromSource ? "yes" : "no")
-                  << "\n";
-        return;
-    }
-
-    std::cerr << "[PostFX][" << route << "] begin"
-              << " volume=" << (stats.resolvedVolumeName.empty() ? "<none>" : stats.resolvedVolumeName)
-              << " blend=" << stats.resolvedBlend
-              << " effects=" << stats.activeEffectCount
-              << " srcTex=" << stats.sourceTextureId
-              << " srcFbo=" << stats.sourceFramebufferId
-              << "\n";
-
-    if (stats.bloomExtractDestinationTextureId != 0) {
-        std::cerr << "[PostFX][" << route << "] bloom-extract"
-                  << " dstTex=" << stats.bloomExtractDestinationTextureId
-                  << " dstFbo=" << stats.bloomExtractDestinationFramebufferId
-                  << "\n";
-    }
-    if (stats.bloomBlurTextureId != 0) {
-        std::cerr << "[PostFX][" << route << "] bloom-blur"
-                  << " finalTex=" << stats.bloomBlurTextureId
-                  << " finalFbo=" << stats.bloomBlurFramebufferId
-                  << "\n";
-    }
-    if (stats.compositeExecuted) {
-        std::cerr << "[PostFX][" << route << "] composite"
-                  << " dstTex=" << stats.compositeDestinationTextureId
-                  << " dstFbo=" << stats.compositeDestinationFramebufferId
-                  << "\n";
-    }
-
-    std::cerr << "[PostFX][" << route << "] present"
-              << " finalTex=" << stats.finalPresentedTextureId
-              << " finalFbo=" << stats.finalPresentedFramebufferId
-              << " differs=" << (stats.finalTextureDiffersFromSource ? "yes" : "no")
-              << "\n";
 }
 
 void Renderer::resize(int w, int h) {
@@ -3070,14 +3026,19 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                                  GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+#if MODULARITY_OPENGL_ES
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
                     const float borderColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
                     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+#endif
 
                     glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
                     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMap.depthTexture, 0);
-                    glDrawBuffer(GL_NONE);
+                    SetDepthOnlyFramebufferDrawBuffer();
                     glReadBuffer(GL_NONE);
                     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
                         std::cerr << "Failed to create directional shadow framebuffer for light " << light.sourceId << "\n";
@@ -3105,7 +3066,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 glViewport(0, 0, shadowMap.resolution, shadowMap.resolution);
                 glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadowMap.depthTexture, 0);
-                glDrawBuffer(GL_NONE);
+                SetDepthOnlyFramebufferDrawBuffer();
                 glReadBuffer(GL_NONE);
                 glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -3149,7 +3110,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
                 glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_CUBE_MAP_POSITIVE_X, shadowMap.depthCube, 0);
-                glDrawBuffer(GL_NONE);
+                SetDepthOnlyFramebufferDrawBuffer();
                 glReadBuffer(GL_NONE);
                 if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
                     std::cerr << "Failed to create shadow cubemap framebuffer for light " << light.sourceId << "\n";
@@ -3191,7 +3152,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             for (int face = 0; face < 6; ++face) {
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
                                        GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, shadowMap.depthCube, 0);
-                glDrawBuffer(GL_NONE);
+                SetDepthOnlyFramebufferDrawBuffer();
                 glReadBuffer(GL_NONE);
                 glClear(GL_DEPTH_BUFFER_BIT);
                 shadowDepthShader->setMat4("lightSpaceMatrix", shadowProj * shadowViews[face]);
@@ -4303,11 +4264,15 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
          settings.wavyEnabled);
 
     if (wantsEffects) {
+#if MODULARITY_OPENGL_ES
+        bool wireframe = false;
+#else
         GLint polygonMode[2] = { GL_FILL, GL_FILL };
 #ifdef GL_POLYGON_MODE
         glGetIntegerv(GL_POLYGON_MODE, polygonMode);
 #endif
         bool wireframe = (polygonMode[0] == GL_LINE || polygonMode[1] == GL_LINE);
+#endif
         if (wireframe) {
             wantsEffects = false;
             postStats.activeEffectCount = 0;
@@ -4666,6 +4631,17 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
 }
 
 void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, const std::vector<int>* previewIds) {
+#if MODULARITY_OPENGL_ES
+    (void)camera;
+    (void)sceneObjects;
+    (void)width;
+    (void)height;
+    (void)fovDeg;
+    (void)nearPlane;
+    (void)farPlane;
+    (void)previewIds;
+    return;
+#else
     if (camera.orthographic || !defaultShader || width <= 0 || height <= 0) return;
     std::unordered_set<int> previewSet;
     if (previewIds && !previewIds->empty()) {
@@ -4789,6 +4765,7 @@ void Renderer::renderCollisionOverlay(const Camera& camera, const std::vector<Sc
     if (cullFace) glEnable(GL_CULL_FACE);
     if (depthTest) glEnable(GL_DEPTH_TEST);
     glPolygonMode(GL_FRONT_AND_BACK, prevPoly[0]);
+#endif
 }
 
 void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, const std::vector<int>& selectedIds, float fovDeg, float nearPlane, float farPlane) {
@@ -4949,9 +4926,11 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     GLint prevBlendSrcAlpha = GL_ONE;
     GLint prevBlendDstAlpha = GL_ZERO;
     GLint prevDepthFunc = GL_LESS;
-    GLint prevPoly[2] = { GL_FILL, GL_FILL };
     GLfloat prevPolyOffsetFactor = 0.0f;
     GLfloat prevPolyOffsetUnits = 0.0f;
+#if !MODULARITY_OPENGL_ES
+    GLint prevPoly[2] = { GL_FILL, GL_FILL };
+#endif
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFbo);
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
     glGetIntegerv(GL_VIEWPORT, prevViewport);
@@ -4961,7 +4940,9 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcAlpha);
     glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstAlpha);
     glGetIntegerv(GL_DEPTH_FUNC, &prevDepthFunc);
+#if !MODULARITY_OPENGL_ES
     glGetIntegerv(GL_POLYGON_MODE, prevPoly);
+#endif
     glGetFloatv(GL_POLYGON_OFFSET_FACTOR, &prevPolyOffsetFactor);
     glGetFloatv(GL_POLYGON_OFFSET_UNITS, &prevPolyOffsetUnits);
 
@@ -4996,7 +4977,9 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
         glDepthMask(GL_FALSE);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
+#if !MODULARITY_OPENGL_ES
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
         glDisable(GL_BLEND);
         glDisable(GL_STENCIL_TEST);
         glEnable(GL_POLYGON_OFFSET_FILL);
@@ -5102,8 +5085,10 @@ void Renderer::renderSelectionOutline(const Camera& camera, const std::vector<Sc
     if (polyOffsetFill) glEnable(GL_POLYGON_OFFSET_FILL); else glDisable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(prevPolyOffsetFactor, prevPolyOffsetUnits);
     glDepthFunc(prevDepthFunc);
+#if !MODULARITY_OPENGL_ES
     glPolygonMode(GL_FRONT, prevPoly[0]);
     glPolygonMode(GL_BACK, prevPoly[1]);
+#endif
 
     glActiveTexture(prevActiveTex);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFbo);

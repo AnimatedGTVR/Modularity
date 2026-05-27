@@ -1660,13 +1660,30 @@ fs::path resolveExecutablePath(const fs::path& buildRoot, const char* exeBaseNam
     return {};
 }
 
+bool isModularitySourceRoot(const fs::path& candidate) {
+    std::error_code ec;
+    if (!fs::exists(candidate / "CMakeLists.txt", ec)) return false;
+    if (!fs::is_directory(candidate / "src", ec)) return false;
+    if (!fs::is_directory(candidate / "Resources", ec)) return false;
+
+    std::ifstream cmakeFile(candidate / "CMakeLists.txt");
+    std::string line;
+    while (std::getline(cmakeFile, line)) {
+        if (line.find("project(Modularity") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 fs::path findCMakeSourceRoot(const fs::path& start) {
     std::error_code ec;
     fs::path cur = fs::absolute(start, ec);
     if (ec) return {};
     while (!cur.empty()) {
-        fs::path candidate = cur / "CMakeLists.txt";
-        if (fs::exists(candidate)) return cur;
+        if (isModularitySourceRoot(cur)) return cur;
+        fs::path childRoot = cur / "Modularity";
+        if (isModularitySourceRoot(childRoot)) return childRoot;
         if (!cur.has_parent_path()) break;
         fs::path parent = cur.parent_path();
         if (parent == cur) break;
@@ -3072,7 +3089,7 @@ std::string BuildScriptTemplateContents(ScriptScaffoldKind kind, const std::stri
             return
                 "#include \"ScriptRuntime.h\"\n"
                 "#include \"SceneObject.h\"\n"
-                "#include \"ThirdParty/imgui/imgui.h\"\n"
+                "#include \"ThirdParty/ModuGUI/imgui.h\"\n"
                 "\n"
                 "extern \"C\" void Script_OnInspector(ScriptContext& ctx) {\n"
                 "    ImGui::TextUnformatted(\"" + className + "\");\n"
@@ -4204,6 +4221,7 @@ void Engine::run() {
 #if !MODULARITY_RUNTIME_ONLY
                 renderTermsOfServiceModal();
                 renderWindowsDisclaimerPopup();
+                renderModuCppNvimWarningPopup();
                 renderDialogs();
                 renderModuPakExportDialog();
                 renderModuPakImportDialog();
@@ -4311,7 +4329,9 @@ void Engine::run() {
                     GLint previousReadFramebuffer = 0;
                     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+#if !MODULARITY_OPENGL_ES
                     glReadBuffer(GL_BACK);
+#endif
 
                     std::array<unsigned char, 4> pixel = {0, 0, 0, 255};
                     glReadPixels(sampleX, sampleY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
@@ -8482,9 +8502,7 @@ void Engine::loadBuildSettings() {
         if (line.rfind("platform=", 0) == 0) {
             std::string value = line.substr(9);
             trim(value);
-            if (value == "Windows") buildSettings.platform = BuildPlatform::Windows;
-            else if (value == "Linux") buildSettings.platform = BuildPlatform::Linux;
-            else if (value == "Android") buildSettings.platform = BuildPlatform::Android;
+            buildSettings.platform = buildPlatformFromSerializedName(value, buildSettings.platform);
         } else if (line.rfind("architecture=", 0) == 0) {
             buildSettings.architecture = line.substr(13);
             trim(buildSettings.architecture);
@@ -8593,10 +8611,7 @@ void Engine::saveBuildSettings() {
     fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
     std::ofstream file(buildPath);
     file << "# build.modu\n";
-    const char* platformName = "Windows";
-    if (buildSettings.platform == BuildPlatform::Linux) platformName = "Linux";
-    else if (buildSettings.platform == BuildPlatform::Android) platformName = "Android";
-    file << "platform=" << platformName << "\n";
+    file << "platform=" << buildPlatformSerializedName(buildSettings.platform) << "\n";
     file << "architecture=" << buildSettings.architecture << "\n";
     file << "companyName=" << buildSettings.companyName << "\n";
     file << "buildName=" << buildSettings.buildName << "\n";
@@ -8699,9 +8714,31 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     std::string buildVersionDisplay = buildSettings.version.empty() ? "0.1.0" : buildSettings.version;
     std::string executableStem = sanitizeBuildToken(buildNameDisplay, "Game");
     std::string safeVersion = sanitizeBuildToken(buildVersionDisplay, "0.1.0");
-    std::string platformLabel = "Windows";
-    if (buildSettings.platform == BuildPlatform::Linux) platformLabel = "Linux";
-    else if (buildSettings.platform == BuildPlatform::Android) platformLabel = "Android";
+    std::string platformLabel = buildPlatformSerializedName(buildSettings.platform);
+
+    if (buildSettings.platform == BuildPlatform::Android) {
+        std::string ndkPath = resolveAndroidNdkPath();
+        if (ndkPath.empty()) {
+            addConsoleMessage(
+                "Android build aborted: no Android NDK found. "
+                "Set ANDROID_NDK_ROOT (or ANDROID_NDK_HOME / ANDROID_NDK) to a valid NDK install before exporting.",
+                ConsoleMessageType::Error);
+        } else {
+            addConsoleMessage(
+                "Android export is experimental: NDK located at " + ndkPath +
+                ", but the APK packaging pipeline is not implemented yet. "
+                "See docs/AndroidRuntime.md for the planned bring-up.",
+                ConsoleMessageType::Warning);
+        }
+        std::lock_guard<std::mutex> lock(exportMutex);
+        exportJob = ExportJobState{};
+        exportJob.done = true;
+        exportJob.success = false;
+        exportJob.status = ndkPath.empty()
+            ? "Android NDK not found. Set ANDROID_NDK_ROOT."
+            : "Android export pipeline not implemented yet.";
+        return;
+    }
     std::string packageStem = executableStem + "-" + safeVersion + "-" + platformLabel;
     fs::path exportRoot = normalizedOut / packageStem;
     fs::path archivePath = normalizedOut / (packageStem + ".tar.gz");
@@ -9605,6 +9642,10 @@ void Engine::saveProjectPreview() {
     if (previewPath.empty()) return;
     fs::create_directories(previewPath.parent_path());
 
+#if MODULARITY_OPENGL_ES
+    std::cerr << "Project preview texture readback is not supported on OpenGL ES yet.\n";
+    return;
+#else
     std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 4);
     glBindTexture(GL_TEXTURE_2D, texId);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
@@ -9613,6 +9654,7 @@ void Engine::saveProjectPreview() {
     const size_t rowBytes = static_cast<size_t>(width) * 4;
     stbi_write_png(previewPath.string().c_str(), width, height, 4, pixels.data(),
                    static_cast<int>(rowBytes));
+#endif
 }
 
 namespace {
@@ -12349,7 +12391,7 @@ void Engine::setupImGui() {
             throw std::runtime_error("ImGui GLFW OpenGL init failed");
         }
 
-        if (!ImGui_ImplOpenGL3_Init("#version 330")) {
+        if (!ImGui_ImplOpenGL3_Init(Modularity::OpenGLImGuiGlslVersion())) {
             throw std::runtime_error("ImGui error");
         }
     }

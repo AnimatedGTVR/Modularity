@@ -1,6 +1,6 @@
 #include "ScriptRuntime.h"
 #include "SceneObject.h"
-#include "ThirdParty/imgui/imgui.h"
+#include "ThirdParty/ModuGUI/imgui.h"
 
 namespace {
 

@@ -688,6 +688,16 @@ const std::vector<ComponentSchema>& GetComponentSchemas() {
             {}
         },
         {
+            "OffMeshLink",
+            "hasOffMeshLink",
+            "offMeshLinkEnabled",
+            {},
+            {"offMeshLink"},
+            {},
+            {},
+            {}
+        },
+        {
             "Rig25DRoot",
             "hasRig25DRoot",
             "rig25dRootEnabled",
@@ -1324,6 +1334,8 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "hasObsticleObject", "obsticleEnabled", "obsticleCarve", "obsticlePadding",
             "hasAIAgent", "aiAgentEnabled", "aiAgentUseTargetObject", "aiAgentTargetId", "aiAgentDestination", "aiAgentSpeed",
             "aiAgentStoppingDistance", "aiAgentRepathInterval", "aiAgentAutoRepath", "aiAgentAlignToPath", "aiAgentDebugDrawPath",
+            "aiAgentTurnSpeed", "aiAgentAvoidancePadding",
+            "hasOffMeshLink", "offMeshLinkEnabled", "offMeshLinkStart", "offMeshLinkEnd", "offMeshLinkBidirectional", "offMeshLinkCostOverride",
             "hasRig25DRoot", "rig25dRootEnabled",
             "hasRig25DNode", "rig25dNodeEnabled", "rig25dNodeId", "rig25dNodeName",
             "hasAnimation", "animEnabled", "animClipAsset",

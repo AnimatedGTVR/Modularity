@@ -820,7 +820,7 @@ namespace {
             baseType = listElementType;
         }
 
-        const std::string normalized = toLowerCopy(removeWhitespaceCopy(baseType));
+        const std::string normalized = toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(baseType)));
         if (dims.size() == 1 && trimCopy(dims[0]).empty()) {
             if (normalized == "dialogueport::dialogueline") return FieldKind::DialogueLines;
             if (normalized == "sceneobj*" || normalized == "sceneobject*" ||
@@ -4143,6 +4143,10 @@ namespace {
                             << " : ::ModuCPP::DeserializeSubScriptArray<" << mapScriptBaseTypeToCpp(field.baseType)
                             << ">(ctx.GetSetting(\"" << field.name << "\", \"\"));\n";
                     }
+                } else if (fieldLooksLikeDialogueLineArray(field)) {
+                    out << "    config." << field.name << " = DialoguePort::DeserializeDialogueLines(ctx.GetSetting(\""
+                        << field.name << "\", DialoguePort::SerializeDialogueLines(config." << field.name
+                        << ")));\n";
                 } else if (field.arrayDimensions.empty()) {
                     out << "    if (!ctx.GetSetting(\"" << field.name << "\", \"\").empty()) {\n";
                     out << "        config." << field.name << " = static_cast<" << cachedMapScriptTypeToCpp(field.rawType)
@@ -4215,6 +4219,17 @@ namespace {
                         out << "    auto& " << field.name << " = state." << field.name << ";\n";
                     }
                 }
+            }
+            std::vector<const FieldSpec*> inspectorSnapshotFields;
+            for (const FieldSpec& field : spec.fields) {
+                if (!fieldPersists(field)) continue;
+                if (field.kind == FieldKind::DialogueLines || fieldLooksLikeDialogueLineArray(field)) {
+                    inspectorSnapshotFields.push_back(&field);
+                }
+            }
+            for (const FieldSpec* field : inspectorSnapshotFields) {
+                out << "    const std::string _moduBefore_" << field->name
+                    << " = DialoguePort::SerializeDialogueLines(config." << field->name << ");\n";
             }
             out << "    bool changed = false;\n";
 
@@ -4475,7 +4490,7 @@ namespace {
                         << "::DrawDialogueLinesEditor(ctx, "
                         << expr << ");\n";
                     out << indent << "    changed |= " << changedVar << ";\n";
-                    if (field && field->kind == FieldKind::DialogueLines) {
+                    if (field && (field->kind == FieldKind::DialogueLines || fieldLooksLikeDialogueLineArray(*field))) {
                         out << indent << "    if (" << changedVar << ") {\n";
                         out << indent << "        ctx.SetSetting(\"" << field->name
                             << "\", DialoguePort::SerializeDialogueLines(" << expr << "));\n";
@@ -4781,6 +4796,17 @@ namespace {
             const std::string inspectorDsl = stripCommentsPreserveLayout(spec.inspectorBlock);
             if (!emitInspectorScope(inspectorDsl, "    ", false)) {
                 return {};
+            }
+
+            for (const FieldSpec* field : inspectorSnapshotFields) {
+                out << "    {\n";
+                out << "        const std::string _moduAfter_" << field->name
+                    << " = DialoguePort::SerializeDialogueLines(config." << field->name << ");\n";
+                out << "        if (_moduAfter_" << field->name << " != _moduBefore_" << field->name << ") {\n";
+                out << "            ctx.SetSetting(\"" << field->name << "\", _moduAfter_" << field->name << ");\n";
+                out << "            changed = true;\n";
+                out << "        }\n";
+                out << "    }\n";
             }
 
             if (!hasExplicitInspectorSave) {
