@@ -5792,54 +5792,58 @@ void Engine::renderInspectorPanel() {
                 showAIPathfindingWindow = true;
                 aiPreviewAgentId = obj.id;
             }
-            if (beginCompFields("##Fields_AIAgent")) {
+            bool agentFieldsOpen = beginCompFields("##Fields_AIAgent");
+            if (agentFieldsOpen) {
                 if (boolRow("Use Target", &obj.aiAgent.useTargetObject)) { changed = true; }
                 if (obj.aiAgent.useTargetObject) {
                     endCompFields();
+                    agentFieldsOpen = false;
                     if (drawSceneObjectReferenceSlot("Target Object", "##AIAgentTarget", obj.aiAgent.targetId, obj.id, "None (Target Object)")) {
                         aiPreviewTargetId = obj.aiAgent.targetId;
                         changed = true;
                     }
-                    beginCompFields("##Fields_AIAgent2");
+                    agentFieldsOpen = beginCompFields("##Fields_AIAgent2");
                 }
-                fieldRow("Destination");
-                if (ImGui::DragFloat3("##Destination", &obj.aiAgent.destination.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
-                    changed = true;
+                if (agentFieldsOpen) {
+                    fieldRow("Destination");
+                    if (ImGui::DragFloat3("##Destination", &obj.aiAgent.destination.x, 0.05f, -10000.0f, 10000.0f, "%.2f")) {
+                        changed = true;
+                    }
+                    ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
+                    if (ImGui::Button("Set To Current")) {
+                        obj.aiAgent.destination = obj.position;
+                        changed = true;
+                    }
+                    fieldRow("Speed");
+                    if (ImGui::DragFloat("##Speed", &obj.aiAgent.speed, 0.05f, 0.05f, 100.0f, "%.2f")) {
+                        obj.aiAgent.speed = std::max(0.05f, obj.aiAgent.speed);
+                        changed = true;
+                    }
+                    fieldRow("Stop Distance");
+                    if (ImGui::DragFloat("##StoppingDist", &obj.aiAgent.stoppingDistance, 0.01f, 0.0f, 25.0f, "%.2f")) {
+                        obj.aiAgent.stoppingDistance = std::clamp(obj.aiAgent.stoppingDistance, 0.0f, 25.0f);
+                        changed = true;
+                    }
+                    fieldRow("Repath Interval");
+                    if (ImGui::DragFloat("##RepathInterval", &obj.aiAgent.repathInterval, 0.05f, 0.05f, 10.0f, "%.2f")) {
+                        obj.aiAgent.repathInterval = std::clamp(obj.aiAgent.repathInterval, 0.05f, 10.0f);
+                        changed = true;
+                    }
+                    if (boolRow("Auto Repath", &obj.aiAgent.autoRepath)) { changed = true; }
+                    if (boolRow("Align To Path", &obj.aiAgent.alignToPath)) { changed = true; }
+                    if (boolRow("Debug Draw Path", &obj.aiAgent.debugDrawPath)) { changed = true; }
+                    fieldRow("Turn Speed");
+                    if (ImGui::DragFloat("##TurnSpeed", &obj.aiAgent.turnSpeed, 5.0f, 0.0f, 3600.0f, "%.0f deg/s")) {
+                        obj.aiAgent.turnSpeed = std::clamp(obj.aiAgent.turnSpeed, 0.0f, 3600.0f);
+                        changed = true;
+                    }
+                    fieldRow("Avoidance Padding");
+                    if (ImGui::DragFloat("##AvoidPad", &obj.aiAgent.avoidancePadding, 0.01f, 0.0f, 10.0f, "%.2f")) {
+                        obj.aiAgent.avoidancePadding = std::clamp(obj.aiAgent.avoidancePadding, 0.0f, 10.0f);
+                        changed = true;
+                    }
+                    endCompFields();
                 }
-                ImGui::TableNextRow(); ImGui::TableSetColumnIndex(1);
-                if (ImGui::Button("Set To Current")) {
-                    obj.aiAgent.destination = obj.position;
-                    changed = true;
-                }
-                fieldRow("Speed");
-                if (ImGui::DragFloat("##Speed", &obj.aiAgent.speed, 0.05f, 0.05f, 100.0f, "%.2f")) {
-                    obj.aiAgent.speed = std::max(0.05f, obj.aiAgent.speed);
-                    changed = true;
-                }
-                fieldRow("Stop Distance");
-                if (ImGui::DragFloat("##StoppingDist", &obj.aiAgent.stoppingDistance, 0.01f, 0.0f, 25.0f, "%.2f")) {
-                    obj.aiAgent.stoppingDistance = std::clamp(obj.aiAgent.stoppingDistance, 0.0f, 25.0f);
-                    changed = true;
-                }
-                fieldRow("Repath Interval");
-                if (ImGui::DragFloat("##RepathInterval", &obj.aiAgent.repathInterval, 0.05f, 0.05f, 10.0f, "%.2f")) {
-                    obj.aiAgent.repathInterval = std::clamp(obj.aiAgent.repathInterval, 0.05f, 10.0f);
-                    changed = true;
-                }
-                if (boolRow("Auto Repath", &obj.aiAgent.autoRepath)) { changed = true; }
-                if (boolRow("Align To Path", &obj.aiAgent.alignToPath)) { changed = true; }
-                if (boolRow("Debug Draw Path", &obj.aiAgent.debugDrawPath)) { changed = true; }
-                fieldRow("Turn Speed");
-                if (ImGui::DragFloat("##TurnSpeed", &obj.aiAgent.turnSpeed, 5.0f, 0.0f, 3600.0f, "%.0f deg/s")) {
-                    obj.aiAgent.turnSpeed = std::clamp(obj.aiAgent.turnSpeed, 0.0f, 3600.0f);
-                    changed = true;
-                }
-                fieldRow("Avoidance Padding");
-                if (ImGui::DragFloat("##AvoidPad", &obj.aiAgent.avoidancePadding, 0.01f, 0.0f, 10.0f, "%.2f")) {
-                    obj.aiAgent.avoidancePadding = std::clamp(obj.aiAgent.avoidancePadding, 0.0f, 10.0f);
-                    changed = true;
-                }
-                endCompFields();
             }
             ImGui::PopID();
         }

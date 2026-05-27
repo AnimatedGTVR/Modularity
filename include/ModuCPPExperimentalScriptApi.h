@@ -425,33 +425,15 @@ inline bool DrawObjectRefListEditor(ScriptContext& ctx, const char* label, std::
 
     for (size_t i = 0; i < refs.size(); ++i) {
         ModuGUI::PushID(static_cast<int>(i));
-        ModuGUI::SetNextItemWidth(-80.0f);
-        changed |= DrawStdStringInput("##ref", refs[i], 256);
-        ModuGUI::SameLine();
-        if (ModuGUI::SmallButton("X")) {
+        const std::string rowLabel = std::string("Reference ") + std::to_string(i + 1);
+        changed |= ::ModuCPP::DrawObjectRefInput(ctx, rowLabel.c_str(), refs[i]);
+        if (ModuGUI::SmallButton("Remove")) {
             refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(i));
             changed = true;
             ModuGUI::PopID();
             --i;
             continue;
         }
-
-        SceneObject* resolved = ResolveSceneObjectRef(ctx, refs[i]);
-        if (resolved) {
-            ModuGUI::TextDisabled("%s (id=%d)", resolved->name.c_str(), resolved->id);
-        }
-
-        if (ModuGUI::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ModuGUI::AcceptDragDropPayload("SCENE_OBJECT")) {
-                if (payload->Data && payload->DataSize == static_cast<int>(sizeof(int))) {
-                    const int droppedId = *static_cast<const int*>(payload->Data);
-                    refs[i] = MakeObjectRef(droppedId);
-                    changed = true;
-                }
-            }
-            ModuGUI::EndDragDropTarget();
-        }
-
         ModuGUI::PopID();
     }
 
