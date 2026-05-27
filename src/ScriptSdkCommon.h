@@ -1,6 +1,14 @@
 #pragma once
 #include <cmath>
-#if __cplusplus >= 201703L
+#if defined(_MSVC_LANG)
+#define MODULARITY_CPLUSPLUS _MSVC_LANG
+#else
+#define MODULARITY_CPLUSPLUS __cplusplus
+#endif
+#if defined(_MSC_VER) && MODULARITY_CPLUSPLUS < 201703L && !defined(_SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING)
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
+#endif
+#if MODULARITY_CPLUSPLUS >= 201703L
 #include <filesystem>
 #elif defined(__has_include)
 #if __has_include(<experimental/filesystem>)
@@ -13,13 +21,13 @@
 #endif
 #include "ThirdParty/glm/glm.hpp"
 #include "ThirdParty/glm/gtc/quaternion.hpp"
-#if __cplusplus < 201703L
+#if MODULARITY_CPLUSPLUS < 201703L
 namespace std {
     template <typename T>
     constexpr const T& clamp(const T& value, const T& low, const T& high) {return value < low ? low : (high < value ? high : value);}
 }
 #endif
-#if __cplusplus >= 201703L
+#if MODULARITY_CPLUSPLUS >= 201703L
 namespace fs = std::filesystem;
 #else
 namespace fs = std::experimental::filesystem;

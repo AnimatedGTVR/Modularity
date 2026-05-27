@@ -111,6 +111,11 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN       # Speeds up Windows.h includes
         _CRT_SECURE_NO_WARNINGS   # Silences strncpy, sscanf, etc. warnings
     )
+    if(MSVC)
+        list(APPEND MODULARITY_WINDOWS_DEFINES
+            _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
+        )
+    endif()
 endif()
 
 # ==================== Compiler flags ====================
