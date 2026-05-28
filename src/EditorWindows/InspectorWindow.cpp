@@ -1342,12 +1342,25 @@ void Engine::renderInspectorPanel() {
     };
 
     auto collectProjectShaderPackAssets = [&]() {
-        fs::path root = projectManager.currentProject.isLoaded
+        std::vector<fs::path> matches;
+        std::vector<fs::path> roots;
+        roots.push_back(projectManager.currentProject.isLoaded
             ? projectManager.currentProject.assetsPath
-            : fileBrowser.projectRoot;
-        return collectAssetsInDirectory(root, [&](const fs::directory_entry& entry) {
-            return IsShaderPackFile(entry.path());
+            : fileBrowser.projectRoot);
+        roots.push_back(fs::path("Resources") / "ThirdParty");
+
+        for (const fs::path& root : roots) {
+            std::vector<fs::path> rootMatches = collectAssetsInDirectory(root, [&](const fs::directory_entry& entry) {
+                return IsMaterialShaderAssetFile(entry.path());
+            });
+            matches.insert(matches.end(), rootMatches.begin(), rootMatches.end());
+        }
+
+        std::sort(matches.begin(), matches.end(), [](const fs::path& a, const fs::path& b) {
+            return a.string() < b.string();
         });
+        matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+        return matches;
     };
 
     auto isTextureOrSpriteSheetSelection = [&](const fs::path& path) {
@@ -1645,7 +1658,7 @@ void Engine::renderInspectorPanel() {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
                 const char* dropped = static_cast<const char*>(payload->Data);
                 const fs::path droppedPath(dropped ? dropped : "");
-                if (IsShaderPackFile(droppedPath) && assignShaderPack(droppedPath.string())) {
+                if (IsMaterialShaderAssetFile(droppedPath) && assignShaderPack(droppedPath.string())) {
                     changed = true;
                 }
             }
@@ -1669,7 +1682,7 @@ void Engine::renderInspectorPanel() {
             std::string& filter = popupFilters[popupId];
             char searchBuf[128] = {};
             std::snprintf(searchBuf, sizeof(searchBuf), "%s", filter.c_str());
-            if (ImGui::InputTextWithHint("##Filter", "Filter shader packs", searchBuf, sizeof(searchBuf))) {
+            if (ImGui::InputTextWithHint("##Filter", "Filter shaders", searchBuf, sizeof(searchBuf))) {
                 filter = searchBuf;
             }
 
@@ -1692,10 +1705,10 @@ void Engine::renderInspectorPanel() {
                 ImGui::CloseCurrentPopup();
             }
 
-            const bool selectedIsPack = IsShaderPackFile(fileBrowser.selectedFile);
+            const bool selectedIsPack = IsMaterialShaderAssetFile(fileBrowser.selectedFile);
             if (selectedIsPack) {
                 ImGui::Separator();
-                if (ImGui::Selectable("Use Selected Shader Pack")) {
+                if (ImGui::Selectable("Use Selected Shader")) {
                     if (assignShaderPack(fileBrowser.selectedFile.string())) {
                         changed = true;
                         ImGui::CloseCurrentPopup();
@@ -1706,8 +1719,8 @@ void Engine::renderInspectorPanel() {
             ImGui::Separator();
             ImGui::BeginChild("##ShaderPackList", ImVec2(320.0f, 180.0f), false);
             for (const fs::path& assetPath : collectProjectShaderPackAssets()) {
-                const std::string assetName = assetDisplayName(assetPath.string(), "Shader Pack");
-                const std::string assetInfo = assetHintLabel(assetPath.string(), "Shader Pack");
+                const std::string assetName = assetDisplayName(assetPath.string(), "Shader");
+                const std::string assetInfo = assetHintLabel(assetPath.string(), "Shader");
                 if (!matchesPopupFilter(assetName + " " + assetInfo, filter)) {
                     continue;
                 }
@@ -1809,7 +1822,7 @@ void Engine::renderInspectorPanel() {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
                 const char* dropped = static_cast<const char*>(payload->Data);
                 const fs::path droppedPath(dropped ? dropped : "");
-                if (IsShaderPackFile(droppedPath) && assignShaderPack(droppedPath.string())) {
+                if (IsMaterialShaderAssetFile(droppedPath) && assignShaderPack(droppedPath.string())) {
                     changed = true;
                 }
             }
@@ -1820,7 +1833,7 @@ void Engine::renderInspectorPanel() {
             std::string& filter = popupFilters[popupId];
             char searchBuf[128] = {};
             std::snprintf(searchBuf, sizeof(searchBuf), "%s", filter.c_str());
-            if (ImGui::InputTextWithHint("##Filter", "Filter shader packs", searchBuf, sizeof(searchBuf))) {
+            if (ImGui::InputTextWithHint("##Filter", "Filter shaders", searchBuf, sizeof(searchBuf))) {
                 filter = searchBuf;
             }
 
@@ -1846,10 +1859,10 @@ void Engine::renderInspectorPanel() {
                 ImGui::CloseCurrentPopup();
             }
 
-            const bool selectedIsPack = IsShaderPackFile(fileBrowser.selectedFile);
+            const bool selectedIsPack = IsMaterialShaderAssetFile(fileBrowser.selectedFile);
             if (selectedIsPack) {
                 ImGui::Separator();
-                if (ImGui::Selectable("Use Selected Shader Pack")) {
+                if (ImGui::Selectable("Use Selected Shader")) {
                     if (assignShaderPack(fileBrowser.selectedFile.string())) {
                         changed = true;
                         ImGui::CloseCurrentPopup();
@@ -1860,8 +1873,8 @@ void Engine::renderInspectorPanel() {
             ImGui::Separator();
             ImGui::BeginChild("##HeaderShaderPackList", ImVec2(320.0f, 180.0f), false);
             for (const fs::path& assetPath : collectProjectShaderPackAssets()) {
-                const std::string assetName = assetDisplayName(assetPath.string(), "Shader Pack");
-                const std::string assetInfo = assetHintLabel(assetPath.string(), "Shader Pack");
+                const std::string assetName = assetDisplayName(assetPath.string(), "Shader");
+                const std::string assetInfo = assetHintLabel(assetPath.string(), "Shader");
                 if (!matchesPopupFilter(assetName + " " + assetInfo, filter)) {
                     continue;
                 }

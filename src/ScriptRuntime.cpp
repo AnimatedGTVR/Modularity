@@ -1941,18 +1941,11 @@ void ScriptRuntime::tickModule(const fs::path& binaryPath, ScriptContext& ctx, f
 }
 
 void ScriptRuntime::unloadAll() {
-    for (auto& kv : loaded) {
-        if (!kv.second.handle) continue;
-#if defined(_WIN32)
-        FreeLibrary(static_cast<HMODULE>(kv.second.handle));
-#else
-        dlclose(kv.second.handle);
-#endif
-        if (kv.second.loadedFromShadowCopy && !kv.second.loadedPath.empty()) {
-            std::error_code removeEc;
-            fs::remove(kv.second.loadedPath, removeEc);
-        }
-    }
+    // Intentionally do NOT dlclose/FreeLibrary loaded script modules. Engine
+    // state (callbacks, vtables, component data, etc.) can hold pointers into
+    // these libraries; unmapping them creates dangling refs that corrupt the
+    // heap later. We accept a small bounded RSS cost in exchange for safety.
+    // TODO: revisit with RTLD_NODELETE at load time or proper lifetime tracking.
     loaded.clear();
     gSpriteAlphaFadeStates.clear();
     gSpriteClipFadeStates.clear();

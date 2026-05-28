@@ -3,6 +3,8 @@
 #include "../../ThirdParty/glm/glm.hpp"
 #include "../../ThirdParty/glm/gtc/matrix_transform.hpp"
 #include "../../ThirdParty/glm/gtc/type_ptr.hpp"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -12,6 +14,67 @@
 
 namespace
 {
+    std::string trimShaderDirective(std::string value)
+    {
+        const auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char ch) {
+            return !isSpace(ch);
+        }).base(), value.end());
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }
+
+    bool splitCombinedShaderSource(const std::string& source, std::string& outVertex, std::string& outFragment)
+    {
+        enum class Stage {
+            None,
+            Vertex,
+            Fragment
+        };
+
+        Stage stage = Stage::None;
+        std::stringstream stream(source);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            const std::string directive = trimShaderDirective(line);
+            if (directive.rfind("#shader", 0) == 0)
+            {
+                if (directive.find("vertex") != std::string::npos || directive.find("vert") != std::string::npos)
+                {
+                    stage = Stage::Vertex;
+                }
+                else if (directive.find("fragment") != std::string::npos || directive.find("frag") != std::string::npos)
+                {
+                    stage = Stage::Fragment;
+                }
+                else
+                {
+                    stage = Stage::None;
+                }
+                continue;
+            }
+
+            if (stage == Stage::Vertex)
+            {
+                outVertex += line;
+                outVertex += '\n';
+            }
+            else if (stage == Stage::Fragment)
+            {
+                outFragment += line;
+                outFragment += '\n';
+            }
+        }
+
+        return !outVertex.empty() && !outFragment.empty();
+    }
+
 #if MODULARITY_OPENGL_ES
     void replaceAll(std::string& text, const std::string& from, const std::string& to)
     {
@@ -61,8 +124,24 @@ namespace
 
 Shader::Shader(const char* vertexPath, const char* fragmentPath)
 {
-    std::string vertexCode = readShaderFile(vertexPath);
-    std::string fragmentCode = readShaderFile(fragmentPath);
+    const bool sameShaderFile = vertexPath != nullptr && fragmentPath != nullptr &&
+                                std::string(vertexPath) == std::string(fragmentPath);
+    std::string vertexCode;
+    std::string fragmentCode;
+    if (sameShaderFile)
+    {
+        const std::string combinedCode = readShaderFile(vertexPath);
+        if (!splitCombinedShaderSource(combinedCode, vertexCode, fragmentCode))
+        {
+            vertexCode = combinedCode;
+            fragmentCode = combinedCode;
+        }
+    }
+    else
+    {
+        vertexCode = readShaderFile(vertexPath);
+        fragmentCode = readShaderFile(fragmentPath);
+    }
     
     compileShaders(vertexCode.c_str(), fragmentCode.c_str());
 }

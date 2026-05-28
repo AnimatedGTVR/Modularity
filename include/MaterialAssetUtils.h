@@ -38,6 +38,15 @@ inline bool IsShaderPackFile(const fs::path& path) {
     return MaterialAssetLowercase(path.extension().string()) == ".modushader";
 }
 
+inline bool IsShaderSourceFile(const fs::path& path) {
+    const std::string ext = MaterialAssetLowercase(path.extension().string());
+    return ext == ".glsl" || ext == ".vert" || ext == ".frag" || ext == ".shader";
+}
+
+inline bool IsMaterialShaderAssetFile(const fs::path& path) {
+    return IsShaderPackFile(path) || IsShaderSourceFile(path);
+}
+
 inline fs::path ResolveShaderPackReferencedPath(const fs::path& packPath, const std::string& rawValue) {
     if (rawValue.empty()) {
         return {};
@@ -61,12 +70,33 @@ inline bool ReadShaderPackFile(const std::string& path, ShaderPackAssetData& out
         return false;
     }
 
+    const fs::path packPath(path);
+    const std::string ext = MaterialAssetLowercase(packPath.extension().string());
+    const std::string stem = MaterialAssetLowercase(packPath.stem().string());
+    if (ext == ".vert") {
+        outData.vertexShaderPath = path;
+        return true;
+    }
+    if (ext == ".frag") {
+        outData.fragmentShaderPath = path;
+        return true;
+    }
+    if (ext == ".glsl") {
+        if (stem.find("vert") != std::string::npos ||
+            stem.find("vertex") != std::string::npos ||
+            (stem.size() >= 2 && stem.compare(stem.size() - 2, 2, "_v") == 0)) {
+            outData.vertexShaderPath = path;
+        } else {
+            outData.fragmentShaderPath = path;
+        }
+        return true;
+    }
+
     std::ifstream in(path);
     if (!in.is_open()) {
         return false;
     }
 
-    const fs::path packPath(path);
     std::string line;
     while (std::getline(in, line)) {
         line = MaterialAssetTrim(line);
@@ -88,5 +118,19 @@ inline bool ReadShaderPackFile(const std::string& path, ShaderPackAssetData& out
         }
     }
 
-    return !outData.vertexShaderPath.empty() && !outData.fragmentShaderPath.empty();
+    if (ext == ".modushader") {
+        return !outData.vertexShaderPath.empty() && !outData.fragmentShaderPath.empty();
+    }
+
+    if (!outData.vertexShaderPath.empty() || !outData.fragmentShaderPath.empty()) {
+        return true;
+    }
+
+    if (ext == ".shader") {
+        outData.vertexShaderPath = path;
+        outData.fragmentShaderPath = path;
+        return true;
+    }
+
+    return false;
 }
