@@ -1,5 +1,4 @@
 #include "PhysicsSystem.h"
-
 #ifdef MODULARITY_ENABLE_PHYSX
 #include "PxPhysicsAPI.h"
 #include "ModelLoader.h"
@@ -8,238 +7,186 @@
 #include <algorithm>
 #include <new>
 #include "extensions/PxRigidBodyExt.h"
-
 using namespace physx;
-
 namespace {
-PxVec3 ToPxVec3(const glm::vec3& v) {
-    return PxVec3(v.x, v.y, v.z);
-}
-
-PxQuat ToPxQuat(const glm::vec3& eulerDeg) {
-    glm::vec3 r = glm::radians(eulerDeg);
-    glm::mat4 m(1.0f);
-    m = glm::rotate(m, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
-    m = glm::rotate(m, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
-    m = glm::rotate(m, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::quat q = glm::quat_cast(glm::mat3(m));
-    return PxQuat(q.x, q.y, q.z, q.w);
-}
-
-glm::vec3 ToGlmVec3(const PxVec3& v) {return glm::vec3(v.x, v.y, v.z);}
-
-glm::vec3 ToGlmVec3(const glm::vec3& v) { return v; }
-
-glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
-    float T1 = std::atan2(m[2][1], m[2][2]);
-    float C2 = std::sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
-    float T2 = std::atan2(-m[2][0], C2);
-    float S1 = std::sin(T1);
-    float C1 = std::cos(T1);
-    float T3 = std::atan2(S1 * m[0][2] - C1 * m[0][1], C1 * m[1][1] - S1 * m[1][2]);
-    return glm::vec3(-T1, -T2, -T3);
-}
-
-glm::vec3 ToGlmEulerDeg(const PxQuat& q) {
-    glm::quat gq(q.w, q.x, q.y, q.z);
-    glm::mat3 m = glm::mat3_cast(gq);
-    return glm::degrees(ExtractEulerXYZ(m));
-}
-
-float EffectiveMassKilograms(const SceneObject& obj, const ProjectPhysicsSettings& settings) {
-    const float authoredMass = std::max(0.0001f, obj.rigidbody.mass);
-    const float unitScale = std::max(0.000001f, ProjectMassUnitToKilograms(settings.massUnit));
-    return std::max(0.01f, authoredMass * unitScale);
-}
-
-PxVec3 SceneGravity(const ProjectPhysicsSettings& settings) {
-    return PxVec3(0.0f, -9.81f * std::max(0.0f, settings.globalGravityScale), 0.0f);
-}
-
-uint32_t BuildAngularLockMask(const SceneObject& obj) {
-    uint32_t mask = 0;
-    if (obj.rigidbody.lockRotationX) mask |= 1u << 0u;
-    if (obj.rigidbody.lockRotationY) mask |= 1u << 1u;
-    if (obj.rigidbody.lockRotationZ) mask |= 1u << 2u;
-    return mask;
-}
-
-PxRigidDynamicLockFlags BuildAngularLockFlags(const SceneObject& obj) {
-    PxRigidDynamicLockFlags lockFlags;
-    if (obj.rigidbody.lockRotationX) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_X;
-    if (obj.rigidbody.lockRotationY) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y;
-    if (obj.rigidbody.lockRotationZ) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
-    return lockFlags;
-}
-
-PxMaterial* CreateShapeMaterial(PxPhysics* physics, PxMaterial* fallback,
-                                const SceneObject& obj, bool& outOwned) {
-    outOwned = false;
-    if (!physics || !fallback) return fallback;
-    if (!obj.hasCollider || !obj.collider.enabled) {
-        return fallback;
+    PxVec3 ToPxVec3(const glm::vec3& v) {
+        return PxVec3(v.x, v.y, v.z);
     }
-    const float staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
-    const float dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
-    const float restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
-    PxMaterial* material = physics->createMaterial(staticFriction, dynamicFriction, restitution);
-    if (!material) {
-        return fallback;
+    PxQuat ToPxQuat(const glm::vec3& eulerDeg) {
+        glm::vec3 r = glm::radians(eulerDeg);
+        glm::mat4 m(1.0f);
+        m = glm::rotate(m, r.x, glm::vec3(1.0f, 0.0f, 0.0f));
+        m = glm::rotate(m, r.y, glm::vec3(0.0f, 1.0f, 0.0f));
+        m = glm::rotate(m, r.z, glm::vec3(0.0f, 0.0f, 1.0f));
+        glm::quat q = glm::quat_cast(glm::mat3(m));
+        return PxQuat(q.x, q.y, q.z, q.w);
     }
-    outOwned = true;
-    return material;
-}
-
-bool BuildTriangleMeshFromVertexStream(const std::vector<float>& source,
-                                       std::vector<PxVec3>& vertices,
-                                       std::vector<uint32_t>& indices) {
-    constexpr size_t kStrideFloats = 8;
-    if (source.size() < kStrideFloats * 3 || (source.size() % kStrideFloats) != 0) {
-        return false;
+    glm::vec3 ToGlmVec3(const PxVec3& v) {return glm::vec3(v.x, v.y, v.z);}
+    glm::vec3 ToGlmVec3(const glm::vec3& v) { return v; }
+    glm::vec3 ExtractEulerXYZ(const glm::mat3& m) {
+        float T1 = std::atan2(m[2][1], m[2][2]);
+        float C2 = std::sqrt(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+        float T2 = std::atan2(-m[2][0], C2);
+        float S1 = std::sin(T1);
+        float C1 = std::cos(T1);
+        float T3 = std::atan2(S1 * m[0][2] - C1 * m[0][1], C1 * m[1][1] - S1 * m[1][2]);
+        return glm::vec3(-T1, -T2, -T3);
     }
-
-    const size_t vertexCount = source.size() / kStrideFloats;
-    vertices.reserve(vertexCount);
-    indices.resize(vertexCount);
-    for (size_t i = 0; i < vertexCount; ++i) {
-        const size_t base = i * kStrideFloats;
-        vertices.emplace_back(source[base + 0], source[base + 1], source[base + 2]);
-        indices[i] = static_cast<uint32_t>(i);
+    glm::vec3 ToGlmEulerDeg(const PxQuat& q) {
+        glm::quat gq(q.w, q.x, q.y, q.z);
+        glm::mat3 m = glm::mat3_cast(gq);
+        return glm::degrees(ExtractEulerXYZ(m));
     }
-
-    return !vertices.empty() && (indices.size() % 3 == 0);
-}
-
-bool PoseChangedSignificantly(const glm::vec3& prevPosition,
-                              const glm::vec3& prevRotation,
-                              const glm::vec3& nextPosition,
-                              const glm::vec3& nextRotation) {
-    const glm::vec3 positionDelta = nextPosition - prevPosition;
-    const glm::vec3 rotationDelta = nextRotation - prevRotation;
-    return glm::dot(positionDelta, positionDelta) > 1e-8f ||
-           glm::dot(rotationDelta, rotationDelta) > 1e-8f;
-}
-
-void BakeScaleIntoVertices(std::vector<PxVec3>& vertices, const glm::vec3& scale) {
-    const PxVec3 bakedScale(std::abs(scale.x), std::abs(scale.y), std::abs(scale.z));
-    for (PxVec3& v : vertices) {
-        v.x *= bakedScale.x;
-        v.y *= bakedScale.y;
-        v.z *= bakedScale.z;
+    float EffectiveMassKilograms(const SceneObject& obj, const ProjectPhysicsSettings& settings) {
+        const float authoredMass = std::max(0.0001f, obj.rigidbody.mass);
+        const float unitScale = std::max(0.000001f, ProjectMassUnitToKilograms(settings.massUnit));
+        return std::max(0.01f, authoredMass * unitScale);
     }
-}
-
-void BakeTransformIntoVertices(std::vector<PxVec3>& vertices, const SceneObject& obj) {
-    glm::mat4 transform(1.0f);
-    transform = glm::translate(transform, obj.position);
-    transform = glm::rotate(transform, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    transform = glm::translate(transform, obj.collider.offset);
-    transform = glm::scale(transform, obj.scale);
-
-    for (PxVec3& v : vertices) {
-        glm::vec4 world = transform * glm::vec4(v.x, v.y, v.z, 1.0f);
-        v = PxVec3(world.x, world.y, world.z);
+    PxVec3 SceneGravity(const ProjectPhysicsSettings& settings) {
+        return PxVec3(0.0f, -9.81f * std::max(0.0f, settings.globalGravityScale), 0.0f);
     }
-}
-
-glm::mat4 BuildColliderVertexTransform(const SceneObject& obj) {
-    glm::mat4 transform(1.0f);
-    transform = glm::translate(transform, obj.position);
-    transform = glm::rotate(transform, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    transform = glm::rotate(transform, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    transform = glm::translate(transform, obj.collider.offset);
-    transform = glm::scale(transform, obj.scale);
-    return transform;
-}
-
-template <typename VertexContainer>
-void ComputeColliderBounds(const VertexContainer& vertices,
-                           const SceneObject& obj,
-                           bool bakeWorldSpaceStaticMesh,
-                           glm::vec3& boundsMin,
-                           glm::vec3& boundsMax) {
-    boundsMin = glm::vec3(FLT_MAX);
-    boundsMax = glm::vec3(-FLT_MAX);
-
-    const glm::mat4 transform = bakeWorldSpaceStaticMesh ? BuildColliderVertexTransform(obj) : glm::mat4(1.0f);
-    for (const auto& vertex : vertices) {
-        glm::vec3 p = ToGlmVec3(vertex);
-        if (bakeWorldSpaceStaticMesh) {
-            glm::vec4 world = transform * glm::vec4(p, 1.0f);
-            p = glm::vec3(world);
-        } else {
-            p *= obj.scale;
+    uint32_t BuildAngularLockMask(const SceneObject& obj) {
+        uint32_t mask = 0;
+        if (obj.rigidbody.lockRotationX) mask |= 1u << 0u;
+        if (obj.rigidbody.lockRotationY) mask |= 1u << 1u;
+        if (obj.rigidbody.lockRotationZ) mask |= 1u << 2u;
+        return mask;
+    }
+    PxRigidDynamicLockFlags BuildAngularLockFlags(const SceneObject& obj) {
+        PxRigidDynamicLockFlags lockFlags;
+        if (obj.rigidbody.lockRotationX) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_X;
+        if (obj.rigidbody.lockRotationY) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y;
+        if (obj.rigidbody.lockRotationZ) lockFlags |= PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
+        return lockFlags;
+    }
+    PxMaterial* CreateShapeMaterial(PxPhysics* physics, PxMaterial* fallback, const SceneObject& obj, bool& outOwned) {
+        outOwned = false;
+        if (!physics || !fallback) return fallback;
+        if (!obj.hasCollider || !obj.collider.enabled) {
+            return fallback;
         }
-        boundsMin = glm::min(boundsMin, p);
-        boundsMax = glm::max(boundsMax, p);
+        const float staticFriction = std::clamp(obj.collider.staticFriction, 0.0f, 4.0f);
+        const float dynamicFriction = std::clamp(obj.collider.dynamicFriction, 0.0f, 4.0f);
+        const float restitution = std::clamp(obj.collider.restitution, 0.0f, 1.0f);
+        PxMaterial* material = physics->createMaterial(staticFriction, dynamicFriction, restitution);
+        if (!material) {
+            return fallback;
+        }
+        outOwned = true;
+        return material;
+    }
+    bool BuildTriangleMeshFromVertexStream(const std::vector<float>& source, std::vector<PxVec3>& vertices, std::vector<uint32_t>& indices) {
+        constexpr size_t kStrideFloats = 8;
+        if (source.size() < kStrideFloats * 3 || (source.size() % kStrideFloats) != 0) return false;
+        const size_t vertexCount = source.size() / kStrideFloats;
+        vertices.reserve(vertexCount);
+        indices.resize(vertexCount);
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const size_t base = i * kStrideFloats;
+            vertices.emplace_back(source[base + 0], source[base + 1], source[base + 2]);
+            indices[i] = static_cast<uint32_t>(i);
+        }
+        return !vertices.empty() && (indices.size() % 3 == 0);
+    }
+
+    bool PoseChangedSignificantly(const glm::vec3& prevPosition, const glm::vec3& prevRotation,
+                                  const glm::vec3& nextPosition, const glm::vec3& nextRotation) {
+        const glm::vec3 positionDelta = nextPosition - prevPosition;
+        const glm::vec3 rotationDelta = nextRotation - prevRotation;
+        return glm::dot(positionDelta, positionDelta) > 1e-8f || glm::dot(rotationDelta, rotationDelta) > 1e-8f;
+    }
+    void BakeScaleIntoVertices(std::vector<PxVec3>& vertices, const glm::vec3& scale) {
+        const PxVec3 bakedScale(std::abs(scale.x), std::abs(scale.y), std::abs(scale.z));
+        for (PxVec3& v : vertices) {
+            v.x *= bakedScale.x;
+            v.y *= bakedScale.y;
+            v.z *= bakedScale.z;
+        }
+    }
+    void BakeTransformIntoVertices(std::vector<PxVec3>& vertices, const SceneObject& obj) {
+        glm::mat4 transform(1.0f);
+        transform = glm::translate(transform, obj.position);
+        transform = glm::rotate(transform, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        transform = glm::translate(transform, obj.collider.offset);
+        transform = glm::scale(transform, obj.scale);
+        for (PxVec3& v : vertices) {
+            glm::vec4 world = transform * glm::vec4(v.x, v.y, v.z, 1.0f);
+            v = PxVec3(world.x, world.y, world.z);
+        }
+    }
+    glm::mat4 BuildColliderVertexTransform(const SceneObject& obj) {
+        glm::mat4 transform(1.0f);
+        transform = glm::translate(transform, obj.position);
+        transform = glm::rotate(transform, glm::radians(obj.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(obj.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(obj.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        transform = glm::translate(transform, obj.collider.offset);
+        transform = glm::scale(transform, obj.scale);
+        return transform;
+    }
+    template <typename VertexContainer>
+    void ComputeColliderBounds(const VertexContainer& vertices, const SceneObject& obj, bool bakeWorldSpaceStaticMesh,
+                               glm::vec3& boundsMin, glm::vec3& boundsMax) {
+        boundsMin = glm::vec3(FLT_MAX);
+        boundsMax = glm::vec3(-FLT_MAX);
+        const glm::mat4 transform = bakeWorldSpaceStaticMesh ? BuildColliderVertexTransform(obj) : glm::mat4(1.0f);
+        for (const auto& vertex : vertices) {
+            glm::vec3 p = ToGlmVec3(vertex);
+            if (bakeWorldSpaceStaticMesh) {
+                glm::vec4 world = transform * glm::vec4(p, 1.0f); p = glm::vec3(world);
+            }
+            else p *= obj.scale;
+            boundsMin = glm::min(boundsMin, p);
+            boundsMax = glm::max(boundsMax, p);
+        }
+    }
+    const std::vector<float>* GetPrimitiveTriangleStream(RenderType type) {
+        static const std::vector<float> cubeVerts(std::begin(vertices), std::end(vertices));
+        static const std::vector<float> planeVerts(std::begin(mirrorPlaneVertices), std::end(mirrorPlaneVertices));
+        static const std::vector<float> sphereVerts = generateSphere();
+        static const std::vector<float> capsuleVerts = generateCapsule();
+        static const std::vector<float> torusVerts = generateTorus();
+        switch (type) {
+            case RenderType::Cube: return &cubeVerts;
+            case RenderType::Sphere: return &sphereVerts;
+            case RenderType::Capsule: return &capsuleVerts;
+            case RenderType::Plane: return &planeVerts;
+            case RenderType::Torus: return &torusVerts;
+            default: return nullptr;
+        }
     }
 }
-
-const std::vector<float>* GetPrimitiveTriangleStream(RenderType type) {
-    static const std::vector<float> cubeVerts(std::begin(vertices), std::end(vertices));
-    static const std::vector<float> planeVerts(std::begin(mirrorPlaneVertices), std::end(mirrorPlaneVertices));
-    static const std::vector<float> sphereVerts = generateSphere();
-    static const std::vector<float> capsuleVerts = generateCapsule();
-    static const std::vector<float> torusVerts = generateTorus();
-
-    switch (type) {
-        case RenderType::Cube: return &cubeVerts;
-        case RenderType::Sphere: return &sphereVerts;
-        case RenderType::Capsule: return &capsuleVerts;
-        case RenderType::Plane: return &planeVerts;
-        case RenderType::Torus: return &torusVerts;
-        default: return nullptr;
-    }
-}
-} // namespace
-
 namespace {
-struct IgnoreActorFilter : PxQueryFilterCallback {
-    PxRigidActor* ignore = nullptr;
-    explicit IgnoreActorFilter(PxRigidActor* actor) : ignore(actor) {}
+    struct IgnoreActorFilter : PxQueryFilterCallback {
+        PxRigidActor* ignore = nullptr;
+        explicit IgnoreActorFilter(PxRigidActor* actor) : ignore(actor) {}
 
-    PxQueryHitType::Enum preFilter(const PxFilterData&,
-                                   const PxShape* shape,
-                                   const PxRigidActor* actor,
-                                   PxHitFlags&) override {
-        if (actor == ignore) return PxQueryHitType::eNONE;
-        // Keep default blocking behaviour
-        if (shape && shape->getFlags().isSet(PxShapeFlag::eTRIGGER_SHAPE)) {
-            return PxQueryHitType::eNONE;
+        PxQueryHitType::Enum preFilter(const PxFilterData&, const PxShape* shape, const PxRigidActor* actor, PxHitFlags&) override {
+            if (actor == ignore) return PxQueryHitType::eNONE;
+            // Keep default blocking behaviour
+            if (shape && shape->getFlags().isSet(PxShapeFlag::eTRIGGER_SHAPE)) return PxQueryHitType::eNONE;
+            return PxQueryHitType::eBLOCK;
         }
-        return PxQueryHitType::eBLOCK;
-    }
-
-    PxQueryHitType::Enum postFilter(const PxFilterData&,
-                                    const PxQueryHit&,
-                                    const PxShape*,
-                                    const PxRigidActor*) override {
-        return PxQueryHitType::eBLOCK;
-    }
-};
-} // namespace
-
+        PxQueryHitType::Enum postFilter(const PxFilterData&, const PxQueryHit&, const PxShape*, const PxRigidActor*) override {
+            return PxQueryHitType::eBLOCK;
+        }
+    };
+}
 bool PhysicsSystem::init() {
     if (isReady()) return true;
-
     mFoundation = PxCreateFoundation(PX_PHYSICS_VERSION, mAllocator, mErrorCallback);
     if (!mFoundation) return false;
-
     mPhysics = PxCreatePhysics(PX_PHYSICS_VERSION, *mFoundation, PxTolerancesScale(), true, nullptr);
     if (!mPhysics) return false;
-
     mDispatcher = PxDefaultCpuDispatcherCreate(2);
     if (!mDispatcher) return false;
-
     PxTolerancesScale scale = mPhysics->getTolerancesScale();
     mCookParams = PxCookingParams(scale);
     mCookParams.meshPreprocessParams |= PxMeshPreprocessingFlag::eDISABLE_ACTIVE_EDGES_PRECOMPUTE;
     mCookParams.meshPreprocessParams |= PxMeshPreprocessingFlag::eWELD_VERTICES;
     mCookParams.meshWeldTolerance = std::max(0.0001f, 0.001f * scale.length);
-
     PxSceneDesc sceneDesc(mPhysics->getTolerancesScale());
     sceneDesc.gravity = SceneGravity(mProjectSettings);
     sceneDesc.cpuDispatcher = mDispatcher;
@@ -247,47 +194,35 @@ bool PhysicsSystem::init() {
     sceneDesc.flags |= PxSceneFlag::eENABLE_CCD;
     mScene = mPhysics->createScene(sceneDesc);
     if (!mScene) return false;
-
     mDefaultMaterial = mPhysics->createMaterial(0.9f, 0.9f, 0.0f);
-
     return mDefaultMaterial != nullptr;
 }
-
 bool PhysicsSystem::isReady() const {
     return mFoundation && mPhysics && mScene && mDefaultMaterial;
 }
-
 void PhysicsSystem::setProjectSettings(const ProjectPhysicsSettings& settings) {
     mProjectSettings = settings;
     applySceneGravity();
 }
-
 void PhysicsSystem::applySceneGravity() {
     if (!mScene) return;
     mScene->setGravity(SceneGravity(mProjectSettings));
 }
-
 bool PhysicsSystem::gatherMeshData(const SceneObject& obj, std::vector<PxVec3>& vertices, std::vector<uint32_t>& indices) const {
     auto buildFromPrimitiveStream = [&]() {
         const std::vector<float>* sourceVertices = GetPrimitiveTriangleStream(obj.renderType);
-        if (!sourceVertices) {
-            return false;
-        }
+        if (!sourceVertices) return false;
         vertices.clear();
         indices.clear();
         return BuildTriangleMeshFromVertexStream(*sourceVertices, vertices, indices);
     };
-
     const OBJLoader::LoadedMesh* meshInfo = nullptr;
     if (obj.hasRenderer && obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
         meshInfo = g_objLoader.getMeshInfo(obj.meshId);
     } else if (obj.hasRenderer && obj.renderType == RenderType::Model && obj.meshId >= 0) {
         meshInfo = getModelLoader().getMeshInfo(obj.meshId);
     }
-    if (!meshInfo) {
-        return buildFromPrimitiveStream();
-    }
-
+    if (!meshInfo) return buildFromPrimitiveStream();
     if (!meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3) {
         vertices.reserve(meshInfo->positions.size());
         indices.reserve(meshInfo->triangleIndices.size());
@@ -297,31 +232,19 @@ bool PhysicsSystem::gatherMeshData(const SceneObject& obj, std::vector<PxVec3>& 
         indices.insert(indices.end(), meshInfo->triangleIndices.begin(), meshInfo->triangleIndices.end());
         return !vertices.empty() && (indices.size() % 3 == 0);
     }
-
-    if (meshInfo->triangleVertices.empty()) {
-        return false;
-    }
-
+    if (meshInfo->triangleVertices.empty()) return false;
     vertices.reserve(meshInfo->triangleVertices.size());
     indices.resize(meshInfo->triangleVertices.size());
-
     for (size_t i = 0; i < meshInfo->triangleVertices.size(); ++i) {
         const glm::vec3& v = meshInfo->triangleVertices[i];
         vertices.emplace_back(v.x, v.y, v.z);
         indices[i] = static_cast<uint32_t>(i);
     }
-
-    if (!vertices.empty() && (indices.size() % 3 == 0)) {
-        return true;
-    }
-
+    if (!vertices.empty() && (indices.size() % 3 == 0)) return true;
     return buildFromPrimitiveStream();
 }
-
-PxTriangleMesh* PhysicsSystem::cookTriangleMesh(const std::vector<PxVec3>& vertices,
-                                                const std::vector<uint32_t>& indices) const {
+PxTriangleMesh* PhysicsSystem::cookTriangleMesh(const std::vector<PxVec3>& vertices, const std::vector<uint32_t>& indices) const {
     if (vertices.empty() || indices.size() < 3) return nullptr;
-
     try {
         PxTriangleMeshDesc desc;
         desc.points.count = static_cast<uint32_t>(vertices.size());
@@ -330,21 +253,15 @@ PxTriangleMesh* PhysicsSystem::cookTriangleMesh(const std::vector<PxVec3>& verti
         desc.triangles.count = static_cast<uint32_t>(indices.size() / 3);
         desc.triangles.stride = 3 * sizeof(uint32_t);
         desc.triangles.data = indices.data();
-
         PxDefaultMemoryOutputStream buf;
-        if (!PxCookTriangleMesh(mCookParams, desc, buf)) {
-            return nullptr;
-        }
+        if (!PxCookTriangleMesh(mCookParams, desc, buf)) return nullptr;
         PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
         return mPhysics->createTriangleMesh(input);
-    } catch (const std::bad_alloc&) {
-        return nullptr;
     }
+    catch (const std::bad_alloc&) {return nullptr;}
 }
-
 PxConvexMesh* PhysicsSystem::cookConvexMesh(const std::vector<PxVec3>& vertices) const {
     if (vertices.size() < 4) return nullptr;
-
     try {
         PxConvexMeshDesc desc;
         desc.points.count = static_cast<uint32_t>(vertices.size());
@@ -352,18 +269,13 @@ PxConvexMesh* PhysicsSystem::cookConvexMesh(const std::vector<PxVec3>& vertices)
         desc.points.data = vertices.data();
         desc.flags = PxConvexFlag::eCOMPUTE_CONVEX | PxConvexFlag::eCHECK_ZERO_AREA_TRIANGLES;
         desc.vertexLimit = 255;
-
         PxDefaultMemoryOutputStream buf;
-        if (!PxCookConvexMesh(mCookParams, desc, buf)) {
-            return nullptr;
-        }
+        if (!PxCookConvexMesh(mCookParams, desc, buf)) return nullptr;
         PxDefaultMemoryInputData input(buf.getData(), buf.getSize());
         return mPhysics->createConvexMesh(input);
-    } catch (const std::bad_alloc&) {
-        return nullptr;
     }
+    catch (const std::bad_alloc&) {return nullptr;}
 }
-
 bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic) const {
     (void)isDynamic;
     if (!actor) return false;
@@ -376,7 +288,6 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
         s->setContactOffset(contact);
         s->setRestOffset(0.0f);
     };
-
     switch (obj.renderType) {
         case RenderType::Cube: {
             PxVec3 halfExtents = ToPxVec3(glm::max(obj.scale * 0.5f, glm::vec3(0.01f)));
@@ -425,23 +336,17 @@ bool PhysicsSystem::attachPrimitiveShape(PxRigidActor* actor, const SceneObject&
             tuneShape(shape, radius * 2.0f, isDynamic);
             break;
         }
-        default:
-            break;
+        default: break;
     }
-
-    if (ownsMaterial && shapeMaterial) {
-        shapeMaterial->release();
-    }
+    if (ownsMaterial && shapeMaterial) shapeMaterial->release();
     if (!shape) return false;
     actor->attachShape(*shape);
     shape->release();
     return true;
 }
 
-bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic,
-                                        bool bakeWorldSpaceStaticMesh) const {
+bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& obj, bool isDynamic, bool bakeWorldSpaceStaticMesh) const {
     if (!actor || !obj.hasCollider || !obj.collider.enabled) return false;
-
     bool ownsMaterial = false;
     PxMaterial* shapeMaterial = CreateShapeMaterial(mPhysics, mDefaultMaterial, obj, ownsMaterial);
     PxShape* shape = nullptr;
@@ -480,17 +385,13 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
         }
         const bool hasIndexed = meshInfo && !meshInfo->positions.empty() && meshInfo->triangleIndices.size() >= 3;
         const bool hasTriVerts = meshInfo && !meshInfo->triangleVertices.empty();
-        if (meshInfo && !hasIndexed && !hasTriVerts) {
-            return false;
-        }
-
+        if (meshInfo && !hasIndexed && !hasTriVerts) return false;
         auto makeBoundsShape = [&](const glm::vec3& boundsMin, const glm::vec3& boundsMax) {
             glm::vec3 halfExtents = glm::max((boundsMax - boundsMin) * 0.5f, glm::vec3(0.01f));
             glm::vec3 center = (boundsMax + boundsMin) * 0.5f;
             PxShape* box = mPhysics->createShape(PxBoxGeometry(ToPxVec3(halfExtents)), *shapeMaterial, true);
             if (box) {
-                const PxVec3 poseCenter = bakeWorldSpaceStaticMesh ? ToPxVec3(center)
-                                                                   : ToPxVec3(center) + localOffset;
+                const PxVec3 poseCenter = bakeWorldSpaceStaticMesh ? ToPxVec3(center) : ToPxVec3(center) + localOffset;
                 box->setLocalPose(PxTransform(poseCenter, PxQuat(PxIdentity)));
             }
             return box;
@@ -498,49 +399,32 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
 
         constexpr size_t kMaxCookVertices = 1000000;
         size_t cookVertices = 0;
-        if (meshInfo) {
-            cookVertices = hasIndexed ? meshInfo->positions.size() : meshInfo->triangleVertices.size();
-        }
+        if (meshInfo) cookVertices = hasIndexed ? meshInfo->positions.size() : meshInfo->triangleVertices.size();
         if (cookVertices > kMaxCookVertices) {
             glm::vec3 boundsMin;
             glm::vec3 boundsMax;
-            if (hasIndexed) {
-                ComputeColliderBounds(meshInfo->positions, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);
-            } else {
-                ComputeColliderBounds(meshInfo->triangleVertices, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);
-            }
+            if (hasIndexed) {ComputeColliderBounds(meshInfo->positions, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);}
+            else {ComputeColliderBounds(meshInfo->triangleVertices, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);}
             minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
             shape = makeBoundsShape(boundsMin, boundsMax);
         } else {
             std::vector<PxVec3> verts;
             std::vector<uint32_t> indices;
             bool hasMeshData = false;
-            try {
-                hasMeshData = gatherMeshData(obj, verts, indices);
-            } catch (const std::bad_alloc&) {
-                hasMeshData = false;
-            }
-
+            try {hasMeshData = gatherMeshData(obj, verts, indices);}
+            catch (const std::bad_alloc&) {hasMeshData = false;}
             if (!hasMeshData) {
-                if (!meshInfo) {
-                    return false;
-                }
+                if (!meshInfo) return false;
                 glm::vec3 boundsMin;
                 glm::vec3 boundsMax;
-                if (hasIndexed) {
-                    ComputeColliderBounds(meshInfo->positions, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);
-                } else {
-                    ComputeColliderBounds(meshInfo->triangleVertices, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);
-                }
+                if (hasIndexed) {ComputeColliderBounds(meshInfo->positions, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);}
+                else {ComputeColliderBounds(meshInfo->triangleVertices, obj, bakeWorldSpaceStaticMesh, boundsMin, boundsMax);}
                 minDim = std::max(0.01f, std::min({boundsMax.x - boundsMin.x, boundsMax.y - boundsMin.y, boundsMax.z - boundsMin.z}));
                 shape = makeBoundsShape(boundsMin, boundsMax);
             } else {
                 bool useConvex = isDynamic || obj.collider.type == ColliderType::ConvexMesh;
-                if (bakeWorldSpaceStaticMesh) {
-                    BakeTransformIntoVertices(verts, obj);
-                } else {
-                    BakeScaleIntoVertices(verts, obj.scale);
-                }
+                if (bakeWorldSpaceStaticMesh) {BakeTransformIntoVertices(verts, obj);}
+                else {BakeScaleIntoVertices(verts, obj.scale);}
                 glm::vec3 boundsMin;
                 glm::vec3 boundsMax;
                 ComputeColliderBounds(verts, obj, false, boundsMin, boundsMax);
@@ -551,8 +435,7 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
                         PxConvexMeshGeometry geom(convex);
                         shape = mPhysics->createShape(geom, *shapeMaterial, true);
                         if (shape) {
-                            shape->setLocalPose(PxTransform(bakeWorldSpaceStaticMesh ? PxVec3(0.0f) : localOffset,
-                                                            PxQuat(PxIdentity)));
+                            shape->setLocalPose(PxTransform(bakeWorldSpaceStaticMesh ? PxVec3(0.0f) : localOffset, PxQuat(PxIdentity)));
                         }
                         convex->release();
                     }
@@ -562,25 +445,17 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
                         PxTriangleMeshGeometry geom(tri);
                         shape = mPhysics->createShape(geom, *shapeMaterial, true);
                         if (shape) {
-                            shape->setLocalPose(PxTransform(bakeWorldSpaceStaticMesh ? PxVec3(0.0f) : localOffset,
-                                                            PxQuat(PxIdentity)));
+                            shape->setLocalPose(PxTransform(bakeWorldSpaceStaticMesh ? PxVec3(0.0f) : localOffset, PxQuat(PxIdentity)));
                         }
                         tri->release();
                     }
                 }
-
-                if (!shape) {
-                    shape = makeBoundsShape(boundsMin, boundsMax);
-                }
+                if (!shape) shape = makeBoundsShape(boundsMin, boundsMax);
             }
         }
     }
-
     tuneShape(shape, std::max(0.01f, minDim), isDynamic || obj.hasPlayerController);
-
-    if (ownsMaterial && shapeMaterial) {
-        shapeMaterial->release();
-    }
+    if (ownsMaterial && shapeMaterial) shapeMaterial->release();
     if (!shape) return false;
     actor->attachShape(*shape);
     shape->release();
@@ -589,25 +464,15 @@ bool PhysicsSystem::attachColliderShape(PxRigidActor* actor, const SceneObject& 
 
 PhysicsSystem::ActorRecord PhysicsSystem::createActorFor(const SceneObject& obj) const {
     ActorRecord record;
-
     const bool wantsDynamic = obj.hasRigidbody && obj.rigidbody.enabled;
     const bool wantsCollider = obj.hasCollider && obj.collider.enabled;
-    const bool bakeWorldSpaceStaticMesh =
-        !wantsDynamic && wantsCollider && obj.collider.type == ColliderType::Mesh;
-    if (!wantsDynamic && !wantsCollider) {
-        return record;
-    }
-
+    const bool bakeWorldSpaceStaticMesh = !wantsDynamic && wantsCollider && obj.collider.type == ColliderType::Mesh;
+    if (!wantsDynamic && !wantsCollider) return record;
     PxTransform transform = bakeWorldSpaceStaticMesh
-        ? PxTransform(PxIdentity)
-        : PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation));
-
+        ? PxTransform(PxIdentity) : PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation));
     PxRigidActor* actor = wantsDynamic
-        ? static_cast<PxRigidActor*>(mPhysics->createRigidDynamic(transform))
-        : static_cast<PxRigidActor*>(mPhysics->createRigidStatic(transform));
-
+        ? static_cast<PxRigidActor*>(mPhysics->createRigidDynamic(transform)) : static_cast<PxRigidActor*>(mPhysics->createRigidStatic(transform));
     if (!actor) return record;
-
     record.actor = actor;
     record.isDynamic = wantsDynamic;
     record.isKinematic = wantsDynamic && obj.rigidbody.isKinematic;
@@ -615,21 +480,12 @@ PhysicsSystem::ActorRecord PhysicsSystem::createActorFor(const SceneObject& obj)
     record.hasAuthoringPose = true;
     record.lastAuthoringPosition = obj.position;
     record.lastAuthoringRotation = obj.rotation;
-
     bool attached = false;
-    if (wantsCollider) {
-        attached = attachColliderShape(actor, obj, wantsDynamic, bakeWorldSpaceStaticMesh);
-    }
+    if (wantsCollider) attached = attachColliderShape(actor, obj, wantsDynamic, bakeWorldSpaceStaticMesh);
+    if (!attached) attached = attachPrimitiveShape(actor, obj, wantsDynamic);
     if (!attached) {
-        attached = attachPrimitiveShape(actor, obj, wantsDynamic);
+        actor->release(); record.actor = nullptr; return record;
     }
-
-    if (!attached) {
-        actor->release();
-        record.actor = nullptr;
-        return record;
-    }
-
     if (PxRigidDynamic* dyn = actor->is<PxRigidDynamic>()) {
         dyn->setAngularDamping(obj.rigidbody.angularDamping);
         dyn->setLinearDamping(obj.rigidbody.linearDamping);
@@ -655,28 +511,22 @@ PhysicsSystem::ActorRecord PhysicsSystem::createActorFor(const SceneObject& obj)
         record.angularDamping = obj.rigidbody.angularDamping;
         record.angularLockMask = BuildAngularLockMask(obj);
     }
-
     return record;
 }
-
 void PhysicsSystem::clearActors() {
     for (auto& [id, rec] : mActors) {
         if (rec.actor && mScene) {
-            mScene->removeActor(*rec.actor);
-            rec.actor->release();
+            mScene->removeActor(*rec.actor); rec.actor->release();
         }
     }
     mActors.clear();
     mActorIdsByPtr.clear();
 }
-
 void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
     if (!isReady()) return;
-
     clearActors();
     mActors.reserve(objects.size());
     mActorIdsByPtr.reserve(objects.size());
-
     for (const auto& obj : objects) {
         if (!IsObjectEnabledInHierarchy(obj)) continue;
         ActorRecord rec = createActorFor(obj);
@@ -686,11 +536,7 @@ void PhysicsSystem::onPlayStart(const std::vector<SceneObject>& objects) {
         mActorIdsByPtr[rec.actor] = obj.id;
     }
 }
-
-void PhysicsSystem::onPlayStop() {
-    clearActors();
-}
-
+void PhysicsSystem::onPlayStop() {clearActors();}
 bool PhysicsSystem::setLinearVelocity(int id, const glm::vec3& velocity) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -711,7 +557,6 @@ bool PhysicsSystem::setLinearVelocity(int id, const glm::vec3& velocity) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::setAngularVelocity(int id, const glm::vec3& velocity) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -725,7 +570,6 @@ bool PhysicsSystem::setAngularVelocity(int id, const glm::vec3& velocity) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::setActorYaw(int id, float yawDegrees) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -743,7 +587,6 @@ bool PhysicsSystem::setActorYaw(int id, float yawDegrees) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::getLinearVelocity(int id, glm::vec3& outVelocity) const {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -758,7 +601,6 @@ bool PhysicsSystem::getLinearVelocity(int id, glm::vec3& outVelocity) const {
 #endif
     return false;
 }
-
 bool PhysicsSystem::getAngularVelocity(int id, glm::vec3& outVelocity) const {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -767,13 +609,11 @@ bool PhysicsSystem::getAngularVelocity(int id, glm::vec3& outVelocity) const {
     if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
     if (const PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
         PxVec3 v = dyn->getAngularVelocity();
-        outVelocity = glm::vec3(v.x, v.y, v.z);
-        return true;
+        outVelocity = glm::vec3(v.x, v.y, v.z); return true;
     }
 #endif
     return false;
 }
-
 bool PhysicsSystem::setActorPose(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -791,7 +631,6 @@ bool PhysicsSystem::setActorPose(int id, const glm::vec3& position, const glm::v
     return false;
 #endif
 }
-
 bool PhysicsSystem::addForce(int id, const glm::vec3& force) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -799,13 +638,11 @@ bool PhysicsSystem::addForce(int id, const glm::vec3& force) {
     ActorRecord& rec = it->second;
     if (!rec.actor || !rec.isDynamic || rec.isKinematic) return false;
     if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
-        dyn->addForce(ToPxVec3(force), PxForceMode::eFORCE);
-        return true;
+        dyn->addForce(ToPxVec3(force), PxForceMode::eFORCE); return true;
     }
 #endif
     return false;
 }
-
 bool PhysicsSystem::addImpulse(int id, const glm::vec3& impulse) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -819,7 +656,6 @@ bool PhysicsSystem::addImpulse(int id, const glm::vec3& impulse) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::addTorque(int id, const glm::vec3& torque) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -833,7 +669,6 @@ bool PhysicsSystem::addTorque(int id, const glm::vec3& torque) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::addAngularImpulse(int id, const glm::vec3& impulse) {
 #ifdef MODULARITY_ENABLE_PHYSX
     auto it = mActors.find(id);
@@ -847,11 +682,9 @@ bool PhysicsSystem::addAngularImpulse(int id, const glm::vec3& impulse) {
 #endif
     return false;
 }
-
 bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
                                    int ignoreId, glm::vec3* hitPos, glm::vec3* hitNormal, float* hitDistance,
-                                   int* hitActorId, glm::vec3* hitActorVelocity,
-                                   float* hitStaticFriction, float* hitDynamicFriction) const {
+                                   int* hitActorId, glm::vec3* hitActorVelocity, float* hitStaticFriction, float* hitDynamicFriction) const {
 #ifdef MODULARITY_ENABLE_PHYSX
     if (!isReady() || distance <= 0.0f) return false;
     if (hitActorId) *hitActorId = -1;
@@ -860,21 +693,16 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
     if (hitDynamicFriction) *hitDynamicFriction = 0.9f;
     PxVec3 unitDir = ToPxVec3(glm::normalize(dir));
     if (!unitDir.isFinite()) return false;
-
     PxRaycastBuffer hit;
     PxQueryFilterData fd(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER);
     IgnoreActorFilter cb(nullptr);
-
     auto it = mActors.find(ignoreId);
     if (it != mActors.end()) {
         cb.ignore = it->second.actor;
     }
-
-    bool result = mScene->raycast(ToPxVec3(origin), unitDir, distance, hit,
-                                  PxHitFlag::ePOSITION | PxHitFlag::eNORMAL,
+    bool result = mScene->raycast(ToPxVec3(origin), unitDir, distance, hit, PxHitFlag::ePOSITION | PxHitFlag::eNORMAL,
                                   fd, cb.ignore ? &cb : nullptr);
     if (!result || !hit.hasBlock) return false;
-
     if (hitPos) *hitPos = ToGlmVec3(hit.block.position);
     if (hitNormal) *hitNormal = ToGlmVec3(hit.block.normal);
     if (hitDistance) *hitDistance = hit.block.distance;
@@ -898,10 +726,7 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
                 auto actorIt = mActors.find(idIt->second);
                 if (hitActorVelocity && actorIt != mActors.end() &&
                     actorIt->second.isDynamic) {
-                    if (const PxRigidDynamic* dyn =
-                            actorIt->second.actor->is<PxRigidDynamic>()) {
-                        *hitActorVelocity = ToGlmVec3(dyn->getLinearVelocity());
-                    }
+                    if (const PxRigidDynamic* dyn = actorIt->second.actor->is<PxRigidDynamic>()) {*hitActorVelocity = ToGlmVec3(dyn->getLinearVelocity());}
                 }
             }
         }
@@ -913,15 +738,11 @@ bool PhysicsSystem::raycastClosest(const glm::vec3& origin, const glm::vec3& dir
     return false;
 #endif
 }
-
 void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects) {
     if (!isReady() || deltaTime <= 0.0f) return;
-
     std::unordered_map<int, SceneObject*> objectsById;
     objectsById.reserve(objects.size());
-    for (SceneObject& obj : objects) {
-        objectsById[obj.id] = &obj;
-    }
+    for (SceneObject& obj : objects) {objectsById[obj.id] = &obj;}
 
     // Sync actors to authoring transforms before stepping.
     // Zeroth pass: any SceneObject that just became hierarchyEnabled mid-play
@@ -973,12 +794,10 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
                 mScene->addActor(*fresh.actor);
                 mActorIdsByPtr[fresh.actor] = id;
                 recIt->second = fresh;
-            } else {
-                mActors.erase(recIt);
             }
+            else mActors.erase(recIt);
         }
     }
-
     for (auto& [id, rec] : mActors) {
         if (!rec.actor) continue;
         auto objIt = objectsById.find(id);
@@ -986,26 +805,21 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
         SceneObject& obj = *objIt->second;
         const bool enabledInHierarchy = IsObjectEnabledInHierarchy(obj);
         if (enabledInHierarchy == rec.simulationDisabled) {
-            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION,
-                                    !enabledInHierarchy);
+            rec.actor->setActorFlag(PxActorFlag::eDISABLE_SIMULATION, !enabledInHierarchy);
             rec.simulationDisabled = !enabledInHierarchy;
         }
-        if (!enabledInHierarchy) {
-            continue;
-        }
+        if (!enabledInHierarchy) continue;
         if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
             const bool isKinematic = obj.rigidbody.isKinematic;
             if (rec.isKinematic != isKinematic) {
                 dyn->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, isKinematic);
                 rec.isKinematic = isKinematic;
             }
-
             const bool gravityDisabled = !obj.rigidbody.useGravity;
             if (rec.gravityDisabled != gravityDisabled) {
                 dyn->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, gravityDisabled);
                 rec.gravityDisabled = gravityDisabled;
             }
-
             if (std::abs(rec.linearDamping - obj.rigidbody.linearDamping) > 0.0001f) {
                 dyn->setLinearDamping(obj.rigidbody.linearDamping);
                 rec.linearDamping = obj.rigidbody.linearDamping;
@@ -1014,17 +828,14 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
                 dyn->setAngularDamping(obj.rigidbody.angularDamping);
                 rec.angularDamping = obj.rigidbody.angularDamping;
             }
-
             const uint32_t angularLockMask = BuildAngularLockMask(obj);
             if (rec.angularLockMask != angularLockMask) {
                 dyn->setRigidDynamicLockFlags(BuildAngularLockFlags(obj));
                 rec.angularLockMask = angularLockMask;
             }
-
             const float massKg = EffectiveMassKilograms(obj, mProjectSettings);
             const bool useCustomCenterOfMass = obj.rigidbody.useCustomCenterOfMass;
-            const glm::vec3 centerOfMassDelta =
-                rec.centerOfMass - obj.rigidbody.centerOfMass;
+            const glm::vec3 centerOfMassDelta = rec.centerOfMass - obj.rigidbody.centerOfMass;
             const bool centerOfMassChanged = glm::dot(centerOfMassDelta, centerOfMassDelta) > 0.000001f;
             const bool massChanged = std::abs(rec.massKg - massKg) > 0.0001f;
             const bool customCenterStateChanged = rec.useCustomCenterOfMass != useCustomCenterOfMass;
@@ -1036,78 +847,56 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
                 rec.useCustomCenterOfMass = useCustomCenterOfMass;
                 rec.centerOfMass = obj.rigidbody.centerOfMass;
             }
-
             if (rec.isKinematic) {
                 const bool poseChanged =
                     !rec.hasAuthoringPose ||
-                    PoseChangedSignificantly(rec.lastAuthoringPosition,
-                                             rec.lastAuthoringRotation,
-                                             obj.position, obj.rotation);
+                    PoseChangedSignificantly(rec.lastAuthoringPosition, rec.lastAuthoringRotation, obj.position, obj.rotation);
                 if (poseChanged) {
-                    dyn->setKinematicTarget(
-                        PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
+                    dyn->setKinematicTarget(PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
                     rec.hasAuthoringPose = true;
                     rec.lastAuthoringPosition = obj.position;
                     rec.lastAuthoringRotation = obj.rotation;
                 }
             }
         } else {
-            if (rec.hasWorldBakedStaticMesh) {
-                continue;
-            }
+            if (rec.hasWorldBakedStaticMesh) continue;
             const bool poseChanged =
                 !rec.hasAuthoringPose ||
-                PoseChangedSignificantly(rec.lastAuthoringPosition,
-                                         rec.lastAuthoringRotation,
-                                         obj.position, obj.rotation);
+                PoseChangedSignificantly(rec.lastAuthoringPosition, rec.lastAuthoringRotation, obj.position, obj.rotation);
             if (poseChanged) {
                 // Static actors follow their authoring transform so scripted
                 // moves/rotations take effect without a full actor rebuild.
-                rec.actor->setGlobalPose(
-                    PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
+                rec.actor->setGlobalPose(PxTransform(ToPxVec3(obj.position), ToPxQuat(obj.rotation)));
                 rec.hasAuthoringPose = true;
                 rec.lastAuthoringPosition = obj.position;
                 rec.lastAuthoringRotation = obj.rotation;
             }
         }
     }
-
     mScene->simulate(deltaTime);
     mScene->fetchResults(true);
-
     for (auto& [id, rec] : mActors) {
         if (!rec.actor || !rec.isDynamic || rec.isKinematic) continue;
         PxTransform pose = rec.actor->getGlobalPose();
         auto objIt = objectsById.find(id);
-        if (objIt == objectsById.end() || !IsObjectEnabledInHierarchy(*objIt->second)) {
-            continue;
-        }
+        if (objIt == objectsById.end() || !IsObjectEnabledInHierarchy(*objIt->second)) continue;
         SceneObject& obj = *objIt->second;
-
         obj.position = ToGlmVec3(pose.p);
-        if (obj.hasPlayerController && obj.playerController.enabled) {
-            continue;
-        }
+        if (obj.hasPlayerController && obj.playerController.enabled) continue;
         glm::vec3 euler = ToGlmEulerDeg(pose.q);
         if (PxRigidDynamic* dyn = rec.actor->is<PxRigidDynamic>()) {
             PxRigidDynamicLockFlags lockFlags = dyn->getRigidDynamicLockFlags();
             bool lockX = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_X);
             bool lockY = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y);
             bool lockZ = lockFlags.isSet(PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z);
-            if (lockX && lockZ && !lockY) {
-                obj.rotation.y = euler.y;
-            } else {
-                obj.rotation = euler;
-            }
-        } else {
-            obj.rotation.y = euler.y;
-        }
+            if (lockX && lockZ && !lockY) obj.rotation.y = euler.y;
+            else obj.rotation = euler;
+        } 
+        else obj.rotation.y = euler.y;
     }
 }
-
 void PhysicsSystem::shutdown() {
     clearActors();
-
     if (mScene) { mScene->release(); mScene = nullptr; }
     if (mDispatcher) { mDispatcher->release(); mDispatcher = nullptr; }
     if (mPhysics) { mPhysics->release(); mPhysics = nullptr; }
@@ -1116,7 +905,6 @@ void PhysicsSystem::shutdown() {
 }
 
 #else // MODULARITY_ENABLE_PHYSX
-
 bool PhysicsSystem::init() { return false; }
 void PhysicsSystem::shutdown() {}
 bool PhysicsSystem::isReady() const { return false; }
@@ -1131,8 +919,10 @@ bool PhysicsSystem::addForce(int, const glm::vec3&) { return false; }
 bool PhysicsSystem::addImpulse(int, const glm::vec3&) { return false; }
 bool PhysicsSystem::addTorque(int, const glm::vec3&) { return false; }
 bool PhysicsSystem::addAngularImpulse(int, const glm::vec3&) { return false; }
+bool PhysicsSystem::raycastClosest(const glm::vec3&, const glm::vec3&, float, int,
+                                   glm::vec3*, glm::vec3*, float*, int*,
+                                   glm::vec3*, float*, float*) const { return false; }
 void PhysicsSystem::onPlayStart(const std::vector<SceneObject>&) {}
 void PhysicsSystem::onPlayStop() {}
 void PhysicsSystem::simulate(float, std::vector<SceneObject>&) {}
-
 #endif

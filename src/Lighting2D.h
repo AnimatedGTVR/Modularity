@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 class Renderer;
-
 struct Light2DPolygonCache {
     uint64_t version = 0;
     bool valid = false;
@@ -20,7 +19,6 @@ struct Light2DPolygonCache {
     std::vector<unsigned int> indices;
     std::string error;
 };
-
 struct Light2DScreenSprite {
     int objectId = -1;
     int layer = 0;
@@ -34,7 +32,6 @@ struct Light2DScreenSprite {
     bool unlit = false;
     float emissiveIntensity = 0.0f;
 };
-
 struct Light2DScreenLight {
     int objectId = -1;
     bool enabled = true;
@@ -66,7 +63,6 @@ struct Light2DScreenLight {
     float cookieRotationRad = 0.0f;
     std::vector<glm::vec2> polygon;
 };
-
 struct Light2DScreenShadowCaster {
     int objectId = -1;
     bool enabled = true;
@@ -75,7 +71,6 @@ struct Light2DScreenShadowCaster {
     float shadowStrength = 1.0f;
     std::vector<glm::vec2> polygon;
 };
-
 struct Light2DPostFXSettings {
     bool enabled = false;
     float ditherIntensity = 0.65f;
@@ -94,9 +89,7 @@ struct Light2DPostFXSettings {
     float grainAmount = 0.0f;
     float scanlineIntensity = 0.0f;
 };
-
 bool Light2DHasVisiblePostFx(const Light2DPostFXSettings& settings);
-
 struct Light2DRenderRequest {
     int width = 0;
     int height = 0;
@@ -109,7 +102,6 @@ struct Light2DRenderRequest {
     std::vector<Light2DScreenLight> lights;
     std::vector<Light2DScreenShadowCaster> shadowCasters;
 };
-
 struct Light2DDebugStats {
     int renderedLayers = 0;
     int visibleSprites = 0;
@@ -122,109 +114,84 @@ struct Light2DDebugStats {
     int drawCalls = 0;
     float cpuBuildMs = 0.0f;
 };
-
 uint32_t Light2DLayerBit(int layer);
 bool Light2DLayerMaskContains(uint32_t mask, int layer);
 uint64_t Light2DHashShape(const std::vector<glm::vec2>& points);
 bool Light2DPolygonSelfIntersects(const std::vector<glm::vec2>& points);
 bool Light2DValidatePolygon(const std::vector<glm::vec2>& points, std::string* outError = nullptr);
-bool Light2DTriangulatePolygon(const std::vector<glm::vec2>& points,
-                               std::vector<unsigned int>& outIndices,
-                               std::string* outError = nullptr);
-
+bool Light2DTriangulatePolygon(const std::vector<glm::vec2>& points, std::vector<unsigned int>& outIndices, std::string* outError = nullptr);
 class Lighting2DRenderer {
-public:
-    Lighting2DRenderer() = default;
-    ~Lighting2DRenderer();
+    public:
+        Lighting2DRenderer() = default;
+        ~Lighting2DRenderer();
+        void shutdown();
+        unsigned int render(const Light2DRenderRequest& request, Renderer& renderer);
+        void setLightingBufferScale(float scale) { lightingBufferScale = std::clamp(scale, 0.25f, 1.0f); }
+        float getLightingBufferScale() const { return lightingBufferScale; }
 
-    void shutdown();
-    unsigned int render(const Light2DRenderRequest& request, Renderer& renderer);
-    void setLightingBufferScale(float scale) { lightingBufferScale = std::clamp(scale, 0.25f, 1.0f); }
-    float getLightingBufferScale() const { return lightingBufferScale; }
-
-    const Light2DDebugStats& getLastStats() const { return lastStats; }
-    const Light2DPolygonCache* getPolygonCache(int objectId) const;
-    const Light2DPolygonCache& updatePolygonCache(int objectId, const Light2DComponent& component);
-    void clearPolygonCache(int objectId);
-
-private:
-    struct RenderTarget {
-        unsigned int fbo = 0;
-        unsigned int texture = 0;
-        int width = 0;
-        int height = 0;
-    };
-
-    struct LayerBatch {
-        int layer = 0;
-        size_t spriteBegin = 0;
-        size_t spriteEnd = 0;
-        uint8_t blendModesMask = 0;
-        std::vector<const Light2DScreenLight*> lights;
-    };
-
-    struct SpriteGpuVertex {
-        glm::vec2 position = glm::vec2(0.0f);
-        glm::vec2 uv = glm::vec2(0.0f);
-        glm::vec4 color = glm::vec4(1.0f);
-        glm::vec4 params = glm::vec4(0.0f);
-    };
-
-    bool initialized = false;
-    RenderTarget finalTarget;
-    RenderTarget postTarget;
-    RenderTarget additiveTarget;
-    RenderTarget multiplyTarget;
-    RenderTarget subtractiveTarget;
-    unsigned int quadVao = 0;
-    unsigned int quadVbo = 0;
-    unsigned int spriteVao = 0;
-    unsigned int spriteVbo = 0;
-    unsigned int polygonVao = 0;
-    unsigned int polygonVbo = 0;
-    unsigned int polygonEbo = 0;
-    size_t spriteVboCapacity = 0;
-    std::unique_ptr<Shader> lightQuadShader;
-    std::unique_ptr<Shader> lightFreeformShader;
-    std::unique_ptr<Shader> spriteShader;
-    std::unique_ptr<Shader> postFxShader;
-    float lightingBufferScale = 1.0f;
-    std::vector<const Light2DScreenSprite*> orderedSpritesScratch;
-    std::vector<const Light2DScreenLight*> orderedLightsScratch;
-    std::vector<LayerBatch> layerBatchesScratch;
-    std::unordered_map<int, size_t> layerToBatchIndexScratch;
-    std::vector<SpriteGpuVertex> spriteVertices;
-    std::vector<glm::vec2> polygonVerticesScratch;
-    std::unordered_map<int, Light2DPolygonCache> polygonCache;
-    Light2DDebugStats lastStats;
-
-    void initializeIfNeeded();
-    void destroyTarget(RenderTarget& target);
-    void ensureTarget(RenderTarget& target, int width, int height);
-    void ensureGeometry();
-    void ensureShaders();
-    void clearTarget(RenderTarget& target, const glm::vec4& color) const;
-    float resolveLightingBufferScale(const Light2DRenderRequest& request) const;
-    void renderLayer(const Light2DRenderRequest& request,
-                     Renderer& renderer,
-                     const LayerBatch& batch,
-                     float lightingScale,
-                     bool clearLightBuffers);
-    void clearLightTargets();
-    void renderLightPass(const Light2DRenderRequest& request,
-                         Renderer& renderer,
-                         int layer,
-                         const std::vector<const Light2DScreenLight*>& lights,
-                         float lightingScale);
-    void renderSpritePass(const Light2DRenderRequest& request,
-                          int layer,
-                          size_t spriteBegin,
-                          size_t spriteEnd,
-                          uint8_t blendModesMask);
-    unsigned int applyPostProcessing(const Light2DRenderRequest& request,
-                                     unsigned int sourceTexture,
-                                     int width,
-                                     int height);
-    void drawFullscreenQuad() const;
-    void drawUnitQuad() const;
+        const Light2DDebugStats& getLastStats() const { return lastStats; }
+        const Light2DPolygonCache* getPolygonCache(int objectId) const;
+        const Light2DPolygonCache& updatePolygonCache(int objectId, const Light2DComponent& component);
+        void clearPolygonCache(int objectId);
+    private:
+        struct RenderTarget {
+            unsigned int fbo = 0;
+            unsigned int texture = 0;
+            int width = 0;
+            int height = 0;
+        };
+        struct LayerBatch {
+            int layer = 0;
+            size_t spriteBegin = 0;
+            size_t spriteEnd = 0;
+            uint8_t blendModesMask = 0;
+            std::vector<const Light2DScreenLight*> lights;
+        };
+        struct SpriteGpuVertex {
+            glm::vec2 position = glm::vec2(0.0f);
+            glm::vec2 uv = glm::vec2(0.0f);
+            glm::vec4 color = glm::vec4(1.0f);
+            glm::vec4 params = glm::vec4(0.0f);
+        };
+        bool initialized = false;
+        RenderTarget finalTarget;
+        RenderTarget postTarget;
+        RenderTarget additiveTarget;
+        RenderTarget multiplyTarget;
+        RenderTarget subtractiveTarget;
+        unsigned int quadVao = 0;
+        unsigned int quadVbo = 0;
+        unsigned int spriteVao = 0;
+        unsigned int spriteVbo = 0;
+        unsigned int polygonVao = 0;
+        unsigned int polygonVbo = 0;
+        unsigned int polygonEbo = 0;
+        size_t spriteVboCapacity = 0;
+        std::unique_ptr<Shader> lightQuadShader;
+        std::unique_ptr<Shader> lightFreeformShader;
+        std::unique_ptr<Shader> spriteShader;
+        std::unique_ptr<Shader> postFxShader;
+        float lightingBufferScale = 1.0f;
+        std::vector<const Light2DScreenSprite*> orderedSpritesScratch;
+        std::vector<const Light2DScreenLight*> orderedLightsScratch;
+        std::vector<LayerBatch> layerBatchesScratch;
+        std::unordered_map<int, size_t> layerToBatchIndexScratch;
+        std::vector<SpriteGpuVertex> spriteVertices;
+        std::vector<glm::vec2> polygonVerticesScratch;
+        std::unordered_map<int, Light2DPolygonCache> polygonCache;
+        Light2DDebugStats lastStats;
+        void initializeIfNeeded();
+        void destroyTarget(RenderTarget& target);
+        void ensureTarget(RenderTarget& target, int width, int height);
+        void ensureGeometry();
+        void ensureShaders();
+        void clearTarget(RenderTarget& target, const glm::vec4& color) const;
+        float resolveLightingBufferScale(const Light2DRenderRequest& request) const;
+        void renderLayer(const Light2DRenderRequest& request, Renderer& renderer, const LayerBatch& batch, float lightingScale, bool clearLightBuffers);
+        void clearLightTargets();
+        void renderLightPass(const Light2DRenderRequest& request, Renderer& renderer, int layer, const std::vector<const Light2DScreenLight*>& lights, float lightingScale);
+        void renderSpritePass(const Light2DRenderRequest& request, int layer, size_t spriteBegin, size_t spriteEnd, uint8_t blendModesMask);
+        unsigned int applyPostProcessing(const Light2DRenderRequest& request, unsigned int sourceTexture, int width, int height);
+        void drawFullscreenQuad() const;
+        void drawUnitQuad() const;
 };

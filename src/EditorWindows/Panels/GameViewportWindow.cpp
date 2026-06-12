@@ -145,12 +145,17 @@ void Engine::renderGameViewportWindow() {
     bool useWindow;
     bool custom;
   };
-  static const std::array<GameResolutionOption, 5> kGameResolutions = {
+  static const std::array<GameResolutionOption, 6> kGameResolutions = {
       {{"Default (1280x720)", 0, 0, false, false},
        {"1920x1080 (1080p)", 1920, 1080, false, false},
        {"1280x720 (720p)", 1280, 720, false, false},
        {"2560x1440 (1440p)", 2560, 1440, false, false},
-       {"Custom", 0, 0, false, true}}};
+       {"Custom", 0, 0, false, true},
+       // "Native" pulls the display size at runtime — on Android that's
+       // the EGL surface size (AndroidRuntime::GetSurfaceSize), on desktop
+       // the GLFW framebuffer size. Picks the natively right aspect ratio
+       // so 16:9 content doesn't stretch into a 16:10 panel.
+       {"Native (Display Size)", 0, 0, true, false}}};
   if (gameViewportResolutionIndex < 0 ||
       gameViewportResolutionIndex >= (int)kGameResolutions.size()) {
     gameViewportResolutionIndex = 0;
@@ -213,6 +218,10 @@ void Engine::renderGameViewportWindow() {
         bool selected = (i == gameViewportResolutionIndex);
         if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
           gameViewportResolutionIndex = i;
+          // Persist immediately. Without this, the in-memory value can
+          // revert between picking it and clicking Bake — and the bundle
+          // ships whatever build.modu still has on disk.
+          saveBuildSettings();
         }
         if (selected)
           ImGui::SetItemDefaultFocus();

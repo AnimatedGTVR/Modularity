@@ -36,7 +36,26 @@
 #include "../include/Graphics/OpenGL.h"
 #include "ThirdParty/ModuGUI/imgui.h"
 #include "ThirdParty/ModuGUI/imgui_internal.h"
+// GLFW (and therefore imgui's GLFW backend) doesn't ship on Android. The
+// Android runtime drives ImGui through its own NativeActivity-backed
+// platform layer instead. On desktop we keep both GLFW and the ImGui GLFW
+// backend in the umbrella include so engine code can call glfwGetTime() etc.
+// without remembering to include the header themselves.
+// Pull in Vulkan declarations before glfw3.h so glfwCreateWindowSurface
+// and friends are exposed. Without this the engine would have to rely on
+// header-include order luck.
+#if MODULARITY_HAS_VULKAN
+#define GLFW_INCLUDE_VULKAN
+#endif
+#include "ThirdParty/glfw/include/GLFW/glfw3.h"
+// On Android GLFW builds with its null backend and the imgui GLFW backend
+// is link-stubbed (see src/Platform/ImGuiGlfwStubs.cpp). The headers and
+// call sites stay identical to desktop.
+#ifndef __ANDROID__
 #include "ThirdParty/ModuGUI/backends/imgui_impl_glfw.h"
+#else
+#include "Platform/ImGuiGlfwStubs.h"
+#endif
 #include "ThirdParty/ModuGUI/backends/imgui_impl_opengl3.h"
 #if MODULARITY_HAS_VULKAN
 #include "ThirdParty/ModuGUI/backends/imgui_impl_vulkan.h"
@@ -83,5 +102,24 @@ class Engine;
 
 // Global OBJ loader instance (extern declaration)
 extern OBJLoader g_objLoader;
+
+// Sheet-relative sprite reference (kept byte-identical to the copy in
+// ScriptSdkCommon.h — both live under MODULARITY_COMMON_SHARED_DECLS, so only
+// one is ever active per TU). int<->Sprite stays back-compatible with the
+// former clip-index Sprite.
+struct Sprite {
+    std::string sheetAssetPath;
+    std::string clipName;
+    mutable int clipIndex = -1;
+
+    Sprite() = default;
+    Sprite(int clip) : clipIndex(clip) {}
+    Sprite& operator=(int clip) { sheetAssetPath.clear(); clipName.clear(); clipIndex = clip; return *this; }
+    operator int() const { return clipIndex; }
+
+    bool IsValid() const { return !clipName.empty() || clipIndex >= 0; }
+    bool IsAssigned() const { return IsValid(); }
+    explicit operator bool() const { return IsValid(); }
+};
 
 #endif // MODULARITY_COMMON_SHARED_DECLS

@@ -1,9 +1,13 @@
 #include "EditorUI.h"
+#include "../include/Platform/AssetSource.h"
 #include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <unordered_map>
+#if defined(IMGUI_ENABLE_FREETYPE)
+#include "ThirdParty/ModuGUI/misc/freetype/imgui_freetype.h"
+#endif
 
 namespace {
 constexpr float kModularityUiFontSizeBase = 18.0f;
@@ -540,6 +544,120 @@ bool FileBrowser::matchesFilter(const fs::directory_entry& entry) const {
 #pragma endregion
 
 #pragma region ImGui Theme
+void appendFontReport(std::string* outReport, const std::string& message) {
+    if (!outReport || message.empty()) {
+        return;
+    }
+    if (!outReport->empty()) {
+        *outReport += " ";
+    }
+    *outReport += message;
+}
+
+// Forward declaration — defined below loadModularityUiFont. Both this
+// emoji-merge function and the main font loader need it.
+static ImFont* AddFontFromAssetSourceTTF(ImGuiIO& io,
+                                         const std::string& assetPath,
+                                         float sizePx,
+                                         const ImFontConfig* cfg = nullptr,
+                                         const ImWchar* glyphRanges = nullptr);
+
+bool mergeModularityEmojiFont(ImGuiIO& io, float fontSize, std::string* outReport) {
+#if defined(IMGUI_ENABLE_FREETYPE) && defined(IMGUI_USE_WCHAR32)
+    struct EmojiFontCandidate {
+        fs::path path;
+        float bitmapStrikePixels;
+    };
+
+    const EmojiFontCandidate emojiFontCandidates[] = {
+        { fs::path("Resources") / "Fonts" / "twemoji.ttf", 61.0f },
+        { fs::path("Resources") / "Fonts" / "NotoColorEmoji.ttf", 109.0f },
+        { fs::path("/usr/share/fonts/twemoji/twemoji.ttf"), 61.0f },
+        { fs::path("/usr/share/fonts/noto/NotoColorEmoji.ttf"), 109.0f },
+#if defined(_WIN32)
+        { fs::path("C:/Windows/Fonts/seguiemj.ttf"), 0.0f },
+#elif defined(__APPLE__)
+        { fs::path("/System/Library/Fonts/Apple Color Emoji.ttc"), 0.0f },
+#endif
+    };
+
+    static const ImWchar emojiRanges[] = {
+        0x1, 0x1FFFF,
+        0
+    };
+
+    std::ostringstream report;
+    for (const EmojiFontCandidate& candidate : emojiFontCandidates) {
+        const fs::path& emojiPath = candidate.path;
+        std::error_code ec;
+        if (!fs::exists(emojiPath, ec) || ec) {
+            report << "missing '" << emojiPath.string() << "'; ";
+            continue;
+        }
+        if (!fs::is_regular_file(emojiPath, ec) || ec) {
+            report << "invalid '" << emojiPath.string() << "'; ";
+            continue;
+        }
+
+        const std::string emojiPathStr = emojiPath.generic_string();
+        ImFontConfig emojiConfig;
+        emojiConfig.MergeMode = true;
+        emojiConfig.FontLoaderFlags |= ImGuiFreeTypeLoaderFlags_LoadColor;
+        emojiConfig.FontLoaderFlags |= ImGuiFreeTypeLoaderFlags_Bitmap;
+        emojiConfig.GlyphMinAdvanceX = fontSize;
+        if (candidate.bitmapStrikePixels > fontSize) {
+            emojiConfig.RasterizerDensity = candidate.bitmapStrikePixels / fontSize;
+        }
+        ImFont* mergedFont = AddFontFromAssetSourceTTF(io, emojiPathStr, fontSize,
+                                                      &emojiConfig, emojiRanges);
+        if (mergedFont) {
+            if (ImFontBaked* baked = mergedFont->GetFontBaked(fontSize)) {
+                static const ImWchar preloadEmoji[] = {
+                    0x1F600, // grinning face
+                    0x1F602, // tears of joy
+                    0x1F62D, // loudly crying face
+                    0x1F642, // slight smile
+                    0x1F680, // rocket
+                    0
+                };
+                for (const ImWchar* codepoint = preloadEmoji; *codepoint != 0; ++codepoint) {
+                    baked->FindGlyphNoFallback(*codepoint);
+                }
+            }
+            return true;
+        }
+        report << "ImGui rejected '" << emojiPathStr << "'; ";
+    }
+
+    appendFontReport(outReport, "Color emoji font load failed. Attempts: " + report.str());
+    return false;
+#else
+    appendFontReport(outReport, "Color emoji disabled because ImGui was built without FreeType/WCHAR32 support.");
+    return false;
+#endif
+}
+
+// Load a TTF font through the engine's AssetSource so the same code path
+// works on desktop (std::filesystem under the hood) and Android (APK
+// assets/ via AAssetManager). ImGui takes ownership of the buffer and
+// frees it via IM_FREE when the atlas is rebuilt or shut down.
+static ImFont* AddFontFromAssetSourceTTF(ImGuiIO& io,
+                                         const std::string& assetPath,
+                                         float sizePx,
+                                         const ImFontConfig* cfg,
+                                         const ImWchar* glyphRanges) {
+    auto& src = Modularity::Platform::GetAssetSource();
+    std::vector<uint8_t> bytes = src.ReadAll(assetPath);
+    if (bytes.empty()) return nullptr;
+    void* owned = IM_ALLOC(bytes.size());
+    if (!owned) return nullptr;
+    std::memcpy(owned, bytes.data(), bytes.size());
+    // AddFontFromMemoryTTF defaults to FontDataOwnedByAtlas = true, so
+    // it'll IM_FREE(owned) at atlas teardown. Don't free here.
+    return io.Fonts->AddFontFromMemoryTTF(owned, static_cast<int>(bytes.size()),
+                                          sizePx, cfg, glyphRanges);
+}
+
 ImFont* loadModularityUiFont(ImGuiIO& io, float fontSize, std::string* outReport) {
     ImFont* loadedFont = nullptr;
     fs::path primaryFontPath;
@@ -555,32 +673,15 @@ ImFont* loadModularityUiFont(ImGuiIO& io, float fontSize, std::string* outReport
     std::error_code cwdEc;
     const fs::path currentWorkingDir = fs::current_path(cwdEc);
     for (const auto& fontPath : fontCandidates) {
-        std::error_code fileEc;
-        if (!fs::exists(fontPath, fileEc) || fileEc) {
-            report << "missing '" << fontPath.string() << "'";
-            if (fileEc) {
-                report << " (" << fileEc.message() << ")";
-            }
-            report << "; ";
-            continue;
-        }
-        if (!fs::is_regular_file(fontPath, fileEc) || fileEc) {
-            report << "invalid '" << fontPath.string() << "'";
-            if (fileEc) {
-                report << " (" << fileEc.message() << ")";
-            }
-            report << "; ";
-            continue;
-        }
-
-        const std::string fontPathStr = fontPath.string();
-        loadedFont = io.Fonts->AddFontFromFileTTF(fontPathStr.c_str(), fontSize);
+        // Use generic_string so the AssetSource gets POSIX-style paths
+        // (AAssetManager doesn't like backslashes; desktop is unaffected).
+        const std::string fontPathStr = fontPath.generic_string();
+        loadedFont = AddFontFromAssetSourceTTF(io, fontPathStr, fontSize);
         if (loadedFont) {
             primaryFontPath = fontPath;
             break;
         }
-
-        report << "ImGui rejected '" << fontPathStr << "'; ";
+        report << "missing or rejected '" << fontPathStr << "'; ";
     }
 
     if (!loadedFont) {
@@ -600,26 +701,21 @@ ImFont* loadModularityUiFont(ImGuiIO& io, float fontSize, std::string* outReport
     };
     if (primaryFontPath.filename() != "TheSunset.ttf") {
         for (const auto& fallbackPath : fallbackCandidates) {
-            std::error_code fallbackEc;
-            if (!fs::exists(fallbackPath, fallbackEc) || fallbackEc) {
-                continue;
-            }
-
-            const std::string fallbackPathStr = fallbackPath.string();
+            const std::string fallbackPathStr = fallbackPath.generic_string();
             ImFontConfig mergeConfig;
             mergeConfig.MergeMode = true;
-            ImFont* fallbackFont = io.Fonts->AddFontFromFileTTF(
-                fallbackPathStr.c_str(),
-                fontSize,
-                &mergeConfig,
-                io.Fonts->GetGlyphRangesDefault()
-            );
-            if (!fallbackFont && outReport) {
-                *outReport = "Failed to merge fallback font '" + fallbackPathStr + "'.";
+            ImFont* fallbackFont = AddFontFromAssetSourceTTF(
+                io, fallbackPathStr, fontSize, &mergeConfig,
+                io.Fonts->GetGlyphRangesDefault());
+            if (!fallbackFont) {
+                // Try the next candidate; only flag failure if all fail.
+                continue;
             }
             break;
         }
     }
+
+    mergeModularityEmojiFont(io, fontSize, outReport);
 
     return loadedFont;
 }
@@ -632,7 +728,11 @@ void applyModernTheme() {
     std::string fontReport;
     ImFont* editorFont = loadModularityUiFont(io, fontSize, &fontReport);
     if (!editorFont) {
-        io.Fonts->AddFontDefault();
+        ImFont* defaultFont = io.Fonts->AddFontDefault();
+        if (defaultFont) {
+            io.FontDefault = defaultFont;
+            mergeModularityEmojiFont(io, fontSize, &fontReport);
+        }
         if (!fontReport.empty()) {
             std::cerr << "[WARN] " << fontReport << std::endl;
         }

@@ -1,17 +1,17 @@
 # ModuCPP Language Reference
+## *Note: Written by Anémunt and Codex*
+
+---
 
 This file summarizes the ModuCPP surface currently implemented by the engine transpiler and script APIs. It is intended as source data for VS Code syntax highlighting, completions, and snippets.
 
 ## Source Files
-
 - ModuCPP scripts use `.moducpp`.
 - A file is treated as ModuCPP when it contains a high-level class declaration like `public class Name : ModuBehaviour` or `public class Name : ModuNode`.
 - Script-facing member access should use `.`, not `->`, where the ModuCPP surface supports it.
 
 ## Package Imports
-
 ModuCPP uses `add PackageName;` at the top of scripts. The transpiler lowers these to C++ includes.
-
 | ModuCPP import | Generated include |
 | --- | --- |
 | `add ModuCPP;` | `#include "ModuCPPScriptApi.h"` |
@@ -21,9 +21,7 @@ ModuCPP uses `add PackageName;` at the top of scripts. The transpiler lowers the
 | `add ModuCPP.Experimental;` | `#include "ModuCPPExperimentalScriptApi.h"` |
 
 ## Declaration Keywords
-
 These are ModuCPP-specific or required by the high-level script form:
-
 ```text
 add
 public
@@ -41,25 +39,20 @@ state
 ModuCPP also passes through normal C++ syntax after lowering, so a VS Code grammar should also include C++ keywords such as `if`, `else`, `for`, `while`, `return`, `static`, `const`, `auto`, `struct`, `namespace`, `using`, `switch`, `case`, `break`, `continue`, `true`, `false`, and `nullptr`.
 
 ## Script Base Types
-
 High-level script classes must derive from one of these:
-
 ```text
 ModuBehaviour
 ModuNode
 ```
 
 Supported declaration form:
-
 ```moducpp
 public class MyScript : ModuBehaviour {
 }
 ```
 
 ## Primitive And Alias Types
-
 The transpiler maps these script-facing aliases:
-
 | ModuCPP type | C++ type |
 | --- | --- |
 | `string` | `std::string` |
@@ -77,7 +70,6 @@ The transpiler maps these script-facing aliases:
 | `T[R][C]` | `std::array<std::array<T, C>, R>` |
 
 Inspector-backed primitive fields support:
-
 ```text
 float
 int
@@ -92,9 +84,7 @@ DialoguePort::DialogueLine[]
 ```
 
 ## Field Attributes
-
 Attributes are written before a field declaration.
-
 | Attribute | Arguments | Notes |
 | --- | --- | --- |
 | `[Header(title)]` | one title expression | Emits inspector heading and separator. |
@@ -109,7 +99,6 @@ Attributes are written before a field declaration.
 | `@step(value)` | one expression | Adds drag step metadata for auto inspector numeric fields. |
 
 Example:
-
 ```moducpp
 [Header("Movement")]
 [Slider(0.0f, 20.0f)] public float speed = 4.0f;
@@ -118,7 +107,6 @@ private vec3 velocity = vec3(0.0f);
 ```
 
 ## Lifecycle Methods
-
 These method names are recognized by the transpiler/runtime. `ScriptContext& ctx` is auto-injected when omitted. `float dt` is auto-injected for runtime tick-style hooks where supported.
 
 ```text
@@ -133,7 +121,6 @@ Script_OnInspector
 ```
 
 Common signatures:
-
 ```moducpp
 void Begin() {}
 void TickUpdate() {}
@@ -144,26 +131,20 @@ void ExitRenderEditorWindow(ScriptContext& ctx) {}
 void Script_OnInspector() {}
 void Script_OnInspector(ScriptContext& ctx) {}
 ```
-
-`MODU_obj` is also accepted as a parameter alias and lowers to `ScriptContext& ctx`.
+`MODU_obj` (aka: SceneOBJ) is also accepted as a parameter alias and lowers to `ScriptContext& ctx`.
 
 ## Expression-Bodied Methods
-
 Methods may use `to` for expression-bodied syntax:
-
 ```moducpp
 bool IsReady() to timer.Ready;
 int ClampFrame(int frame) to Math.Clamp(frame, 0, 3);
 ```
-
 For non-`void` methods, the transpiler emits `return <expression>;`. For `void`, it emits `<expression>;`.
 
 ## Inspector DSL
-
 A class can define an `inspector { ... }` block instead of writing `Script_OnInspector`. Statements end with `;`. Containers use braces.
 
 ### Inspector Statements
-
 ```text
 Config(Type, varName)
 AutoSave(configVar)
@@ -204,7 +185,6 @@ SoundSet(label, sounds)
 ```
 
 ### Inspector Containers
-
 ```text
 Tabs { ... }
 Tab(title) { ... }
@@ -215,7 +195,6 @@ Foldout(title) { ... }
 ```
 
 Example:
-
 ```moducpp
 inspector {
     Section("Movement") {
@@ -226,9 +205,7 @@ inspector {
 ```
 
 ## Surface Syntax Rewrites
-
 The transpiler rewrites these convenience forms:
-
 | ModuCPP form | Lowered form |
 | --- | --- |
 | `Math.Max(a, b)` | `Math::Max(a, b)` |
@@ -250,20 +227,15 @@ The transpiler rewrites these convenience forms:
 | `ModuEngine.FPS` | `::ModuCPP::ModuEngine.FPS` |
 
 ## Object List Syntax
-
 For persisted object-list fields, this convenience statement is supported:
-
 ```moducpp
 each selectedStateEnable.state(true);
 each selectedStateDisable.state(false);
 ```
-
 It resolves every object reference in the list and sets enabled state.
 
 ## IEnum Helpers
-
 Lightweight coroutine-style helpers are macro-backed:
-
 ```text
 IEnum
 IEnum_Start(fn)
@@ -272,7 +244,6 @@ IEnum_Ensure(fn)
 ```
 
 Runtime methods:
-
 ```text
 ctx.StartIEnum(fn)
 ctx.StopIEnum(fn)
@@ -282,11 +253,8 @@ ctx.StopAllIEnums()
 ```
 
 ## ModuCPP Core API
-
 Available from `add ModuCPP;`.
-
 ### Aliases
-
 ```text
 ModuCPP::vec2
 ModuCPP::vec3
@@ -296,7 +264,6 @@ ModuCPP::string
 ```
 
 ### Math
-
 ```text
 Math.Max(a, b)
 Math.Min(a, b)
@@ -305,7 +272,6 @@ Math.Abs(value)
 ```
 
 ### Conversion Helpers
-
 ```text
 IntRD(value)
 IntR(value)
@@ -313,7 +279,6 @@ IntRU(value)
 ```
 
 ### Script State Helpers
-
 ```text
 ctx()
 ctxPtr()
@@ -336,20 +301,15 @@ TimerReady(timerValue, interval)
 ```
 
 ### Generated Prelude
-
 Lifecycle functions get this prelude through `MODU_SCRIPT(ctx)`:
-
 ```text
 MODU_SCRIPT(ctx)
 obj
 ```
-
 `obj` is an `ObjectFacade` for `ctx.object`. It supports bool checks, pointer-style access, and `obj.UILabel = "text";`.
 
 ## ModuEngine API
-
 Available from `add ModuEngine;`.
-
 ```text
 GetProjectGravityScale()
 SetProjectGravityScale(scale)
@@ -385,7 +345,6 @@ EditSoundSet(heading, sounds, itemPrefix)
 ```
 
 ### Facades
-
 ```text
 audio.HasSource()
 audio.PlayOneShot(clipPath, volumeScale)
@@ -402,11 +361,8 @@ sprite.ClipNameAt(clipIndex)
 ```
 
 ## ModuInput API
-
 Available from `add ModuInput;`.
-
 ### Key Constants
-
 ```text
 KEY_W
 KEY_A
@@ -425,7 +381,6 @@ KEY_KP_ENTER
 ```
 
 ### Input Helpers
-
 ```text
 KeyDown(ctx, key)
 KeyDown(key)
@@ -440,9 +395,7 @@ input.jump()
 ```
 
 ## ModuCPP.Experimental API
-
 Available from `add ModuCPP.Experimental;`.
-
 ```text
 Trim(value)
 ParseInt(value, fallback)
@@ -476,15 +429,12 @@ DrawObjectRefListEditor(ctx, label, refs)
 ```
 
 ## RMeshBuilder API
-
 `add RMeshBuilder;` is currently reserved. `RMeshBuilderScriptApi.h` includes `ModuCPPScriptApi.h` but does not expose additional script-facing helpers yet.
 
 ## ScriptContext API
-
 Scripts generally access this as `ctx`.
 
 ### Object Lookup And Object Metadata
-
 ```text
 ctx.FindObjectByName(name)
 ctx.FindObjectById(id)
@@ -502,7 +452,6 @@ ctx.MarkDirty()
 ```
 
 ### Transform And Input
-
 ```text
 ctx.SetPosition(pos)
 ctx.SetPosition2D(pos)
@@ -520,7 +469,6 @@ ctx.ApplyVelocity(velocity, deltaTime)
 ```
 
 ### Standalone Movement
-
 ```text
 ctx.BindStandaloneMovementSettings(settings)
 ctx.DrawStandaloneMovementInspector(settings, showDebug)
@@ -531,7 +479,6 @@ ScriptContext::StandaloneMovementDebug
 ```
 
 ### UI And Sprite
-
 ```text
 ctx.IsUIButtonPressed()
 ctx.IsUIInteractable()
@@ -562,7 +509,6 @@ ctx.FadeSpriteToClipName(clipName, fadeOutDuration, fadeInDuration, deltaTime)
 ```
 
 ### Physics
-
 ```text
 ctx.HasRigidbody()
 ctx.HasRigidbody2D()
@@ -589,7 +535,6 @@ ctx.TeleportRigidbody(pos, rotDeg)
 ```
 
 ### Audio
-
 ```text
 ctx.HasAudioSource()
 ctx.PlayAudio()
@@ -601,7 +546,6 @@ ctx.PlayAudioOneShot(clipPath, volumeScale)
 ```
 
 ### Animation
-
 ```text
 ctx.HasAnimation()
 ctx.PlayAnimation(restart)
@@ -617,7 +561,6 @@ ctx.SetAnimationPlayOnAwake(playOnAwake)
 ```
 
 ### Settings, Files, HTTP, Console
-
 ```text
 ctx.GetSetting(key, fallback)
 ctx.SetSetting(key, value)
@@ -645,7 +588,6 @@ ctx.SaveAutoSettings()
 ```
 
 ## Common Enums
-
 ```text
 ConsoleMessageType.Info
 ConsoleMessageType.Warning
@@ -667,5 +609,4 @@ UIElementType.Button
 UIElementType.Text
 UIElementType.Sprite2D
 ```
-
 The transpiler also accepts the C++ scoped enum form, for example `ConsoleMessageType::Warning`.

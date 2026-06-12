@@ -108,7 +108,14 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         4
     );
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+    // GLFW on Android is built with only the null platform compiled in
+    // (X11/Wayland forced off in our CMake). The default GLFW_ANY_PLATFORM
+    // tries the desktop platforms first and bails with
+    // GLFW_PLATFORM_UNAVAILABLE when none are present, so explicitly
+    // pin the null platform here.
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_NULL);
+#elif defined(__linux__)
     const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
     const char* x11_display     = std::getenv("DISPLAY");
 
@@ -149,7 +156,19 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
     }
     else
     {
-#if MODULARITY_OPENGL_ES
+#ifdef __ANDROID__
+        // On Android the real EGL context is created by AndroidRuntime
+        // against the ANativeWindow that the NativeActivity hands in. The
+        // GLFW null backend can't create a GL context anyway, so ask for
+        // GLFW_NO_API — the resulting "window" is just a state holder
+        // (callbacks, should-close flag, user pointer) that Engine code
+        // expects to dereference.
+        window = tryCreateVulkanWindow(); // GLFW_NO_API + invisible
+        if (!window)
+        {
+            std::cerr << "Failed to create null-backend GLFW window\n";
+        }
+#elif MODULARITY_OPENGL_ES
         window = tryCreateWindow(3, 0, kAnyProfile);
 
         if (!window)
@@ -187,6 +206,7 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         return nullptr;
     }
 
+#ifndef __ANDROID__
     if (backend == Modularity::GraphicsBackend::OpenGL)
     {
         glfwMakeContextCurrent(window);
@@ -200,6 +220,7 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
 
         std::cout << Modularity::OpenGLApiName() << ": " << glGetString(GL_VERSION) << "\n";
     }
+#endif
 
     if (pixels)
     {

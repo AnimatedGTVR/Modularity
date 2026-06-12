@@ -33,9 +33,8 @@ namespace FileIcons {
             const char* iconPath = nullptr;
             switch (category) {
                 case FileCategory::Folder:
-                    iconPath = folderHasItems
-                        ? "Resources/Engine-Root/File Explorer/Folder Full.png"
-                        : "Resources/Engine-Root/File Explorer/Folder Empty.png";                    break;
+                    iconPath =folderHasItems ?"Resources/Engine-Root/File Explorer/Folder Full.png"
+                                             :"Resources/Engine-Root/File Explorer/Folder Empty.png";break;
                 case FileCategory::Script:
                     iconPath = "Resources/Engine-Root/File Explorer/File Icon Script.png";           break;
                 case FileCategory::Scene:
@@ -530,12 +529,18 @@ namespace {
         int remainingBuilds = kMaxPreviewBuildsPerFrame;
     };
 
+    // Bumped when something invalidates loaded textures without changing the file
+    // on disk (e.g. a GPU-format override), so thumbnails re-fetch instead of
+    // drawing a freed texture id.
+    int g_texturePreviewGeneration = 0;
+
     struct CachedTexturePreview {
         fs::file_time_type stamp{};
         GLuint textureId = 0;
         int width = 0;
         int height = 0;
         int lastUsedFrame = 0;
+        int generation = 0;
         bool attempted = false;
         bool ready = false;
     };
@@ -656,9 +661,10 @@ namespace {
         const std::string key = path.string();
         CachedTexturePreview& preview = cache[key];
         preview.lastUsedFrame = ImGui::GetFrameCount();
-        if (preview.stamp != stamp) {
+        if (preview.stamp != stamp || preview.generation != g_texturePreviewGeneration) {
             preview = {};
             preview.stamp = stamp;
+            preview.generation = g_texturePreviewGeneration;
             preview.lastUsedFrame = ImGui::GetFrameCount();
         }
         if (!preview.attempted && ConsumeFileBrowserPreviewBudget()) {
@@ -2075,74 +2081,8 @@ void Engine::renderFileBrowserPanel() {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Up one folder");
     ImGui::PopStyleVar();
 
-    ImGui::SameLine();
+    ImGui::SameLine();  // breadcrumb path moved to its own row below the toolbar
 
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-
-    fs::path relativePath;
-    if (fileBrowser.projectRoot.empty()) {
-        relativePath = fileBrowser.currentPath.filename();
-    } else {
-        try {
-            relativePath = fs::relative(fileBrowser.currentPath, fileBrowser.projectRoot);
-        } catch (...) {
-            relativePath = fileBrowser.currentPath.filename();
-        }
-    }
-    std::vector<fs::path> pathParts;
-    fs::path accumulated = fileBrowser.projectRoot;
-
-    pathParts.push_back(fileBrowser.projectRoot);
-    for (const auto& part : relativePath) {
-        if (part != ".") {
-            accumulated /= part;
-            pathParts.push_back(accumulated);
-        }
-    }
-
-    struct Breadcrumb {
-        std::string label;
-        fs::path target;
-    };
-    std::vector<Breadcrumb> crumbs;
-    if (pathParts.size() <= 4) {
-        for (size_t i = 0; i < pathParts.size(); ++i) {
-            std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
-            crumbs.push_back({name, pathParts[i]});
-        }
-    } else {
-        crumbs.push_back({"Project", pathParts.front()});
-        crumbs.push_back({"..", pathParts[pathParts.size() - 3]});
-        crumbs.push_back({pathParts[pathParts.size() - 2].filename().string(), pathParts[pathParts.size() - 2]});
-        crumbs.push_back({pathParts.back().filename().string(), pathParts.back()});
-    }
-
-    for (size_t i = 0; i < crumbs.size(); i++) {
-        ImGui::PushID(static_cast<int>(i));
-        if (ImGui::SmallButton(crumbs[i].label.c_str())) {
-            fileBrowser.navigateTo(crumbs[i].target);
-        }
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
-                handleMovePayloadToDirectory(payload, crumbs[i].target);
-            }
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
-                handleMovePayloadToDirectory(payload, crumbs[i].target);
-            }
-            ImGui::EndDragDropTarget();
-        }
-        ImGui::PopID();
-        if (i < crumbs.size() - 1) {
-            ImGui::SameLine(0, 2);
-            ImGui::TextDisabled("/");
-            ImGui::SameLine(0, 2);
-        }
-    }
-
-    ImGui::PopStyleColor(2);
-
-    ImGui::SameLine();
     ImGui::SetNextItemWidth(168.0f);
     if (ImGui::InputTextWithHint("##Search", "Filter files...", fileBrowserSearch, sizeof(fileBrowserSearch))) {
         fileBrowser.searchFilter = fileBrowserSearch;
@@ -2218,6 +2158,111 @@ void Engine::renderFileBrowserPanel() {
     ImGui::TextDisabled("%s", itemCount.c_str());
 
     ImGui::PopStyleVar(2);
+
+    // === BREADCRUMB PATH (own row, full width, dynamic truncation) ===
+    {
+        fs::path relativePath;
+        if (fileBrowser.projectRoot.empty()) {
+            relativePath = fileBrowser.currentPath.filename();
+        } else {
+            try {
+                relativePath = fs::relative(fileBrowser.currentPath, fileBrowser.projectRoot);
+            } catch (...) {
+                relativePath = fileBrowser.currentPath.filename();
+            }
+        }
+
+        std::vector<fs::path> pathParts;
+        pathParts.push_back(fileBrowser.projectRoot);
+        fs::path accumulated = fileBrowser.projectRoot;
+        for (const auto& part : relativePath) {
+            if (part != ".") {
+                accumulated /= part;
+                pathParts.push_back(accumulated);
+            }
+        }
+
+        struct Breadcrumb {
+            std::string label;
+            fs::path target;
+        };
+        std::vector<Breadcrumb> allCrumbs;
+        allCrumbs.reserve(pathParts.size());
+        for (size_t i = 0; i < pathParts.size(); ++i) {
+            std::string name = (i == 0) ? "Project" : pathParts[i].filename().string();
+            allCrumbs.push_back({name, pathParts[i]});
+        }
+
+        // Use the whole row by default; only collapse the middle into "..." when
+        // the full path doesn't fit. Always keep Project + as many trailing
+        // crumbs as fit the available width.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        auto crumbWidth = [&](const std::string& s) {
+            return ImGui::CalcTextSize(s.c_str()).x + style.FramePadding.x * 2.0f;
+        };
+        const float sepWidth = ImGui::CalcTextSize("/").x + 4.0f;  // 2px gap each side
+
+        float fullWidth = 0.0f;
+        for (size_t i = 0; i < allCrumbs.size(); ++i) {
+            fullWidth += crumbWidth(allCrumbs[i].label);
+            if (i + 1 < allCrumbs.size()) fullWidth += sepWidth;
+        }
+
+        std::vector<Breadcrumb> crumbs;
+        if (fullWidth <= avail || allCrumbs.size() <= 2) {
+            crumbs = allCrumbs;
+        } else {
+            const std::string kEllipsis = "...";
+            float used = crumbWidth(allCrumbs.front().label) + sepWidth + crumbWidth(kEllipsis);
+            std::vector<size_t> tail;  // kept trailing indices, back-to-front
+            for (size_t i = allCrumbs.size() - 1; i >= 1; --i) {
+                const float add = sepWidth + crumbWidth(allCrumbs[i].label);
+                if (used + add > avail && !tail.empty()) break;
+                used += add;
+                tail.push_back(i);
+                if (i == 1) break;
+            }
+            const size_t firstTailIdx = tail.back();
+            if (firstTailIdx <= 1) {
+                crumbs = allCrumbs;  // nothing actually hidden
+            } else {
+                crumbs.push_back(allCrumbs.front());
+                crumbs.push_back({kEllipsis, allCrumbs[firstTailIdx - 1].target});
+                for (auto it = tail.rbegin(); it != tail.rend(); ++it) {
+                    crumbs.push_back(allCrumbs[*it]);
+                }
+            }
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+        for (size_t i = 0; i < crumbs.size(); i++) {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::SmallButton(crumbs[i].label.c_str())) {
+                fileBrowser.navigateTo(crumbs[i].target);
+            }
+            if (crumbs[i].label == "..." && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", crumbs[i].target.string().c_str());
+            }
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_BROWSER_ENTRY")) {
+                    handleMovePayloadToDirectory(payload, crumbs[i].target);
+                }
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_PATH")) {
+                    handleMovePayloadToDirectory(payload, crumbs[i].target);
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::PopID();
+            if (i < crumbs.size() - 1) {
+                ImGui::SameLine(0, 2);
+                ImGui::TextDisabled("/");
+                ImGui::SameLine(0, 2);
+            }
+        }
+        ImGui::PopStyleColor(2);
+    }
 
     ImGui::Dummy(ImVec2(0.0f, 3.0f));
 
@@ -2551,6 +2596,45 @@ void Engine::renderFileBrowserPanel() {
                                 }
                             }
                             if (fileBrowser.getFileCategory(entry) == FileCategory::Texture) {
+                                if (ImGui::BeginMenu("GPU Storage Format")) {
+                                    const std::string texAbs = entry.path().string();
+                                    const TextureFormatPolicy current = renderer.getTextureFormatOverride(texAbs);
+                                    auto applyFormat = [&](TextureFormatPolicy policy) {
+                                        // Live-reload the texture at the new format...
+                                        renderer.setTextureFormatOverride(texAbs, policy);
+                                        // ...then persist it on the project, keyed project-relative.
+                                        std::error_code relEc;
+                                        fs::path rel = fs::relative(entry.path(),
+                                                                    projectManager.currentProject.projectPath, relEc);
+                                        const std::string relKey = (relEc || rel.empty())
+                                            ? texAbs : rel.generic_string();
+                                        auto& overrides = projectManager.currentProject.textureFormatOverrides;
+                                        if (policy == TextureFormatPolicy::Auto) {
+                                            overrides.erase(relKey);
+                                        } else {
+                                            overrides[relKey] = ToString(policy);
+                                        }
+                                        projectManager.currentProject.hasUnsavedChanges = true;
+                                        projectManager.currentProject.saveProjectFile();
+                                        // Refresh thumbnails so they don't draw the freed texture id.
+                                        ++g_texturePreviewGeneration;
+                                    };
+                                    struct FormatChoice { TextureFormatPolicy policy; const char* label; const char* hint; };
+                                    static const FormatChoice kChoices[] = {
+                                        { TextureFormatPolicy::Auto,    "Auto (adaptive)", "Smallest format the image allows" },
+                                        { TextureFormatPolicy::Full,    "Full (RGBA8)",    "32bpp, highest quality" },
+                                        { TextureFormatPolicy::RGB565,  "RGB565",          "16bpp, no alpha" },
+                                        { TextureFormatPolicy::RGB5_A1, "RGB5_A1",         "16bpp, 1-bit cutout alpha" },
+                                        { TextureFormatPolicy::RGBA4,   "RGBA4",           "16bpp, smooth alpha (may band)" },
+                                    };
+                                    for (const FormatChoice& choice : kChoices) {
+                                        if (ImGui::MenuItem(choice.label, nullptr, current == choice.policy)) {
+                                            applyFormat(choice.policy);
+                                        }
+                                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", choice.hint);
+                                    }
+                                    ImGui::EndMenu();
+                                }
                                 if (hasSpriteEditorPackage() && ImGui::MenuItem("Open in Pixel Sprite Editor")) {
                                     loadPixelSpriteDocument(entry.path());
                                 }

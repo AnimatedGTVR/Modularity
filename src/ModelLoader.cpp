@@ -12,7 +12,9 @@
 #include <cstring>
 #include <functional>
 #include <unordered_set>
+#if MODULARITY_ENABLE_ASSIMP
 #include <assimp/material.h>
+#endif
 #include "ThirdParty/glm/gtc/quaternion.hpp"
 #include <system_error>
 
@@ -20,6 +22,8 @@ ModelLoader& ModelLoader::getInstance() {
     static ModelLoader instance;
     return instance;
 }
+
+#if MODULARITY_ENABLE_ASSIMP
 
 static void collectRawMeshData(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform, RawMeshAsset& out);
 static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
@@ -30,9 +34,13 @@ static void buildSceneNodes(const aiScene* scene,
                             ModelSceneData& out);
 static glm::mat4 aiToGlm(const aiMatrix4x4& m);
 
+#endif
+
 ModelLoader& getModelLoader() {
     return ModelLoader::getInstance();
 }
+
+#if MODULARITY_ENABLE_ASSIMP
 
 namespace {
 constexpr uint32_t kRMeshFormatVersion1 = 1;
@@ -1932,6 +1940,60 @@ void ModelLoader::processMesh(aiMesh* mesh, const aiMatrix4x4& transform,
         }
     }
 }
+
+#else
+
+std::vector<ModelFormat> ModelLoader::getSupportedFormats() {
+    return {};
+}
+
+bool ModelLoader::isSupported(const std::string&) const {
+    return false;
+}
+
+ModelLoadResult ModelLoader::loadModel(const std::string&) {
+    ModelLoadResult result;
+    result.errorMessage = "Model loading is not available in this runtime build.";
+    return result;
+}
+
+bool ModelLoader::loadModelScene(const std::string&, ModelSceneData&, std::string& errorMsg) {
+    errorMsg = "Model loading is not available in this runtime build.";
+    return false;
+}
+
+bool ModelLoader::exportRawMesh(const std::string&, const std::string&, std::string& errorMsg) {
+    errorMsg = "Model import is not available in this runtime build.";
+    return false;
+}
+
+bool ModelLoader::loadRawMesh(const std::string&, RawMeshAsset&, std::string& errorMsg) {
+    errorMsg = "Raw mesh loading is not available in this runtime build.";
+    return false;
+}
+
+bool ModelLoader::saveRawMesh(const RawMeshAsset&, const std::string&, std::string& errorMsg) {
+    errorMsg = "Raw mesh saving is not available in this runtime build.";
+    return false;
+}
+
+bool ModelLoader::updateRawMesh(int, const RawMeshAsset&, std::string& errorMsg) {
+    errorMsg = "Raw mesh editing is not available in this runtime build.";
+    return false;
+}
+
+int ModelLoader::addRawMesh(const RawMeshAsset&, const std::string&, const std::string&, std::string& errorMsg) {
+    errorMsg = "Raw mesh loading is not available in this runtime build.";
+    return -1;
+}
+
+bool ModelLoader::buildRawMeshFromScene(const std::string&, RawMeshAsset&, std::string& errorMsg,
+                                        glm::vec3*, glm::vec3*, glm::vec3*) {
+    errorMsg = "Model import is not available in this runtime build.";
+    return false;
+}
+
+#endif
 
 Mesh* ModelLoader::getMesh(int index) {
     if (index < 0 || index >= static_cast<int>(loadedMeshes.size())) {

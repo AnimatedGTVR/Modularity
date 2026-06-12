@@ -1449,7 +1449,9 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "postStaticDistortionStrength", "postLensDistortionEnabled", "postLensDistortionAmount", "postLensDistortionEdgeFalloff",
             "postLensDistortionCenterOffset", "postVHSOverlayEnabled", "postVHSOverlayOpacity", "postVHSOverlayScanlineStrength",
             "postVHSOverlayTapeNoise", "postVHSOverlayChromaBleed", "postVHSOverlayBottomNoiseBandHeight",
-            "postVHSOverlayBottomNoiseBandIntensity", "postWavyEnabled", "postWavyAmplitude", "postWavyFrequency", "postWavySpeed",
+            "postVHSOverlayBottomNoiseBandIntensity", "postVHSOverlayDistortionStrength", "postVHSOverlayAnimationSpeed",
+            "postVHSOverlayColorBleed", "postVHSOverlayBanding", "postVHSOverlaySignalMode", "postVHSOverlayDropouts",
+            "postWavyEnabled", "postWavyAmplitude", "postWavyFrequency", "postWavySpeed",
             "postWavyVertical", "meshPath", "meshSourceIndex", "children"
         };
         for (const std::string& key : postMaterialKeys) {

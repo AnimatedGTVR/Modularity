@@ -1,13 +1,16 @@
 #include "ScriptRuntime.h"
 #include "Engine.h"
 #include "SceneObject.h"
+#include "SpritesheetFormat.h"
 #include "ThirdParty/ModuGUI/imgui.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <iterator>
+#include <sstream>
 #include <unordered_map>
 
 #if defined(_WIN32)
@@ -17,6 +20,7 @@
 #   endif
 #else
     #include <dlfcn.h>
+    #include <unistd.h>
 #endif
 
 namespace {
@@ -185,7 +189,6 @@ struct KeyPressedState {
 
 std::unordered_map<std::string, KeyPressedState> gKeyPressedStates;
 
-#if defined(_WIN32)
 fs::path makeShadowScriptBinaryPath(const fs::path& binaryPath) {
     std::error_code ec;
     fs::path sourceAbsolute = fs::absolute(binaryPath, ec);
@@ -211,7 +214,12 @@ fs::path makeShadowScriptBinaryPath(const fs::path& binaryPath) {
 
     const std::string canonicalKey = sourceAbsolute.lexically_normal().string();
     const size_t pathHash = std::hash<std::string>{}(canonicalKey);
+#if defined(_WIN32)
     const unsigned long processId = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+    const unsigned long processId = static_cast<unsigned long>(getpid());
+#endif
+    const auto loadStamp = std::chrono::steady_clock::now().time_since_epoch().count();
 
     fs::path shadowDir = sourceAbsolute.parent_path() / ".loaded";
     fs::create_directories(shadowDir, ec);
@@ -221,9 +229,41 @@ fs::path makeShadowScriptBinaryPath(const fs::path& binaryPath) {
              << ".pid" << processId
              << ".t" << writeStamp
              << ".s" << sizeStamp
+             << ".l" << loadStamp
              << ".h" << pathHash
              << sourceAbsolute.extension().string();
     return shadowDir / filename.str();
+}
+
+// Shadow copies accumulate across sessions because unloadAll never unmaps
+// modules (see comment there) and each load gets a unique filename. Sweep
+// copies left by other (dead) processes once per directory per session.
+// In-use files: POSIX keeps mappings valid after unlink; Windows fails the
+// remove with a sharing violation, which we ignore.
+void cleanupStaleShadowScriptBinaries(const fs::path& shadowDir) {
+    static std::unordered_set<std::string> cleanedDirs;
+    const std::string dirKey = shadowDir.lexically_normal().string();
+    if (!cleanedDirs.insert(dirKey).second) return;
+
+#if defined(_WIN32)
+    const unsigned long currentPid = static_cast<unsigned long>(GetCurrentProcessId());
+#else
+    const unsigned long currentPid = static_cast<unsigned long>(getpid());
+#endif
+    const std::string currentTag = ".pid" + std::to_string(currentPid) + ".";
+
+    std::error_code ec;
+    fs::directory_iterator it(shadowDir, ec);
+    if (ec) return;
+    for (fs::directory_iterator end; it != end; it.increment(ec)) {
+        if (ec) break;
+        const fs::path& path = it->path();
+        const std::string name = path.filename().string();
+        if (name.find(".pid") == std::string::npos) continue;
+        if (name.find(currentTag) != std::string::npos) continue;
+        std::error_code removeEc;
+        fs::remove(path, removeEc);
+    }
 }
 
 bool prepareShadowScriptBinary(const fs::path& binaryPath, fs::path& outShadowPath, std::string& error) {
@@ -241,6 +281,7 @@ bool prepareShadowScriptBinary(const fs::path& binaryPath, fs::path& outShadowPa
 
     fs::create_directories(outShadowPath.parent_path(), ec);
     ec.clear();
+    cleanupStaleShadowScriptBinaries(outShadowPath.parent_path());
 
     if (fs::exists(outShadowPath, ec) && !ec) {
         fs::remove(outShadowPath, ec);
@@ -255,7 +296,6 @@ bool prepareShadowScriptBinary(const fs::path& binaryPath, fs::path& outShadowPa
 
     return true;
 }
-#endif
 }
 
 SceneObject* ScriptContext::FindObjectByName(const std::string& name) {
@@ -837,6 +877,96 @@ bool ScriptContext::SetSpriteClipName(const std::string& name) {
         }
     }
     return false;
+}
+
+namespace {
+// Clip count for an arbitrary sprite component (mirrors GetSpriteClipCount).
+int SpriteClipCountFor(const UIElementComponent& ui) {
+    if (ui.spriteCustomFramesEnabled && !ui.spriteCustomFrames.empty()) {
+        return static_cast<int>(ui.spriteCustomFrames.size());
+    }
+    if (!ui.spriteSheetEnabled) return 0;
+    return std::max(1, ui.spriteSheetColumns * ui.spriteSheetRows);
+}
+
+// Resolve a clip name to an index within a component (mirrors SetSpriteClipName's
+// lookup). Returns -1 when unnamed frames or no match.
+int SpriteClipIndexByName(const UIElementComponent& ui, const std::string& name) {
+    if (name.empty()) return -1;
+    if (!(ui.spriteCustomFramesEnabled && !ui.spriteCustomFrames.empty())) return -1;
+    for (size_t i = 0; i < ui.spriteCustomFrames.size(); ++i) {
+        std::string clipName = (i < ui.spriteCustomFrameNames.size() &&
+                                !ui.spriteCustomFrameNames[i].empty())
+            ? ui.spriteCustomFrameNames[i]
+            : ("Clip " + std::to_string(i));
+        if (clipName == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+} // namespace
+
+bool ScriptContext::SetObjectSprite(int objectId, const Sprite& sprite) {
+    SceneObject* target = (objectId < 0) ? nullptr : FindObjectById(objectId);
+    if (!target || !target->hasUI) {
+        AddConsoleMessage("SetObjectSprite: target object has no sprite component.",
+                          ConsoleMessageType::Error);
+        return false;
+    }
+    UIElementComponent& ui = target->ui;
+
+    // Load a different sheet's frame table before resolving the clip. An empty
+    // sheet path means "use whatever sheet the target already has."
+    const bool sameSheet = sprite.sheetAssetPath.empty() ||
+                           sprite.sheetAssetPath == ui.spriteSheetAssetPath;
+    if (!sameSheet) {
+        if (!engine) return false;
+        std::ifstream file(engine->resolveProjectPathFromScript(sprite.sheetAssetPath));
+        if (!file) {
+            AddConsoleMessage("SetObjectSprite: sheet asset not found: " + sprite.sheetAssetPath,
+                              ConsoleMessageType::Error);
+            return false;
+        }
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        const SpritesheetDocument doc = ParseSpritesheet(buffer.str()).document;
+        if (doc.rects.empty()) {
+            AddConsoleMessage("SetObjectSprite: sheet asset has no clips: " + sprite.sheetAssetPath,
+                              ConsoleMessageType::Error);
+            return false;
+        }
+        ui.spriteCustomFramesEnabled = true;
+        ui.spriteCustomFrames = doc.rects;
+        ui.spriteCustomFrameNames = doc.names;
+        ui.spriteCustomFrameScales = doc.scales;
+        ui.spriteCustomFrameScales.resize(doc.rects.size(), glm::vec2(1.0f));
+        ui.spriteSheetAssetPath = sprite.sheetAssetPath;
+        // NOTE: only the frame table swaps here. The sprite's source image isn't
+        // owned by UIElementComponent, and no runtime sheet->object texture binding
+        // exists yet, so a cross-sheet assignment that also changes the image needs
+        // that plumbing before it fully works. Same-sheet assignment is unaffected.
+        if (!doc.linkedSpriteName.empty()) {
+            AddConsoleMessage("SetObjectSprite: cross-sheet image swap not yet wired; "
+                              "frames updated but texture unchanged (" + sprite.sheetAssetPath + ").",
+                              ConsoleMessageType::Warning);
+        }
+    }
+
+    // Resolve the clip: prefer the name (reorder-stable), fall back to the cached
+    // index for sheets with unnamed frames.
+    int index = SpriteClipIndexByName(ui, sprite.clipName);
+    if (index < 0) index = sprite.clipIndex;
+    if (index < 0 || index >= SpriteClipCountFor(ui)) {
+        AddConsoleMessage("SetObjectSprite: clip not found in sheet: " + sprite.clipName,
+                          ConsoleMessageType::Error);
+        return false;
+    }
+
+    if (ui.spriteSheetFrame != index) {
+        ui.spriteSheetFrame = index;
+        MarkDirty();
+    }
+    sprite.clipIndex = index;
+    return true;
 }
 
 float ScriptContext::GetSpriteAlpha() const {
@@ -1465,6 +1595,13 @@ std::string ScriptContext::ReadFileText(const std::string& path) const {
     return engine->readFileTextFromScript(path);
 }
 
+std::string ScriptContext::ReadFileBase64(const std::string& path, size_t maxBytes) const {
+    if (!engine) {
+        return {};
+    }
+    return engine->readFileBase64FromScript(path, maxBytes);
+}
+
 bool ScriptContext::WriteFileText(const std::string& path, const std::string& content) {
     if (!engine) {
         return false;
@@ -1507,6 +1644,43 @@ std::string ScriptContext::GetEngineDocsRootPath() const {
         return {};
     }
     return engine->getEngineDocsRootPathFromScript().string();
+}
+
+ImTextureID ScriptContext::GetUIImageTexture(const std::string& path, int* outWidth, int* outHeight) const {
+    if (!engine) {
+        if (outWidth) *outWidth = 0;
+        if (outHeight) *outHeight = 0;
+        return ImTextureID_Invalid;
+    }
+    return engine->getUIImageTextureFromScript(path, outWidth, outHeight);
+}
+
+std::string ScriptContext::GetSelectedFilePath() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getSelectedFilePathFromScript();
+}
+
+std::string ScriptContext::GetSelectedObjectInfo() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getSelectedObjectInfoFromScript();
+}
+
+std::string ScriptContext::GetProjectName() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getProjectNameFromScript();
+}
+
+std::string ScriptContext::GetCurrentSceneName() const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getCurrentSceneNameFromScript();
 }
 
 bool ScriptContext::SaveProject() {
@@ -1786,12 +1960,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
             return &it->second;
         }
 
-        // The script binary was rebuilt in place; unload the stale handle and reload it.
-#if defined(_WIN32)
-        if (it->second.handle) FreeLibrary(static_cast<HMODULE>(it->second.handle));
-#else
-        if (it->second.handle) dlclose(it->second.handle);
-#endif
+        // Keep the old mapped module alive. Script state can retain pointers into it,
+        // so hot reload switches to a fresh shadow copy without unmapping old code.
         loaded.erase(it);
     }
 
@@ -1828,6 +1998,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     }
     AbiVersionFn abiVersionFn = reinterpret_cast<AbiVersionFn>(
         GetProcAddress(static_cast<HMODULE>(mod.handle), "Modularity_ScriptAbiVersion"));
+    LayoutSignatureFn layoutSignatureFn = reinterpret_cast<LayoutSignatureFn>(
+        GetProcAddress(static_cast<HMODULE>(mod.handle), "Modularity_ScriptLayoutSignature"));
     mod.inspector = reinterpret_cast<InspectorFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_OnInspector"));
     mod.begin = reinterpret_cast<BeginFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_Begin"));
     mod.spec = reinterpret_cast<SpecFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "Script_Spec"));
@@ -1837,15 +2009,28 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     mod.editorRender = reinterpret_cast<EditorRenderFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "RenderEditorWindow"));
     mod.editorExit = reinterpret_cast<EditorExitFn>(GetProcAddress(static_cast<HMODULE>(mod.handle), "ExitRenderEditorWindow"));
 #else
-    mod.loadedPath = binaryPath;
-    mod.handle = dlopen(binaryPath.string().c_str(), RTLD_LAZY);
+    fs::path loadPath = binaryPath;
+    std::string shadowError;
+    if (!prepareShadowScriptBinary(binaryPath, loadPath, shadowError)) {
+        lastError = shadowError;
+        return nullptr;
+    }
+
+    mod.loadedPath = loadPath;
+    mod.loadedFromShadowCopy = true;
+    mod.handle = dlopen(loadPath.string().c_str(), RTLD_LAZY);
     if (!mod.handle) {
         const char* err = dlerror();
         if (err) lastError = err;
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
         return nullptr;
     }
     dlerror();
     AbiVersionFn abiVersionFn = reinterpret_cast<AbiVersionFn>(dlsym(mod.handle, "Modularity_ScriptAbiVersion"));
+    LayoutSignatureFn layoutSignatureFn = reinterpret_cast<LayoutSignatureFn>(dlsym(mod.handle, "Modularity_ScriptLayoutSignature"));
     mod.inspector = reinterpret_cast<InspectorFn>(dlsym(mod.handle, "Script_OnInspector"));
     mod.begin = reinterpret_cast<BeginFn>(dlsym(mod.handle, "Script_Begin"));
     mod.spec = reinterpret_cast<SpecFn>(dlsym(mod.handle, "Script_Spec"));
@@ -1885,6 +2070,19 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
         lastError = "Native script binary ABI mismatch (expected " +
                     std::to_string(MODULARITY_NATIVE_SCRIPT_ABI_VERSION) +
                     ", got " + std::to_string(abiVersion) + "). Recompile scripts.";
+        return nullptr;
+    }
+
+    // Reject binaries built against a different SceneObject/ScriptContext layout;
+    // loading them corrupts memory (fields read/written at stale offsets).
+    if (layoutSignatureFn && layoutSignatureFn() != MODULARITY_SCRIPT_LAYOUT_SIGNATURE()) {
+        unloadModuleHandle(mod.handle);
+        if (mod.loadedFromShadowCopy && !mod.loadedPath.empty()) {
+            std::error_code removeEc;
+            fs::remove(mod.loadedPath, removeEc);
+        }
+        lastError = "Native script binary was built against an older engine data layout "
+                    "(SceneObject/ScriptContext changed). Recompile scripts.";
         return nullptr;
     }
 

@@ -76,6 +76,8 @@ uniform float vhsOverlayDistortionStrength = 0.0;
 uniform float vhsOverlayAnimationSpeed = 0.0;
 uniform float vhsOverlayColorBleed = 0.0;
 uniform float vhsOverlayBanding = 0.0;
+uniform int vhsOverlaySignalMode = 3; // 0 Composite, 1 S-Video, 2 RF, 3 VHS SP, 4 VHS LP, 5 VHS EP
+uniform float vhsOverlayDropouts = 0.0;
 uniform bool enableWavyEffect = false;
 uniform float wavyAmplitude = 0.0;
 uniform float wavyFrequency = 16.0;
@@ -204,43 +206,83 @@ vec3 sampleDisplayBase(vec2 uv) {
     return toneMap(sampleBase(clamp(uv, vec2(0.0), vec2(1.0))));
 }
 
-vec2 applyVhsSignalWarp(vec2 uv, out float trackingMask, out float burstMask, out float headSwitchMask) {
-    trackingMask = 0.0;
-    burstMask = 0.0;
-    headSwitchMask = 0.0;
-    if (!enableVHSOverlay || vhsOverlayOpacity <= 0.000001) {
-        return uv;
+// ---------------------------------------------------------------------------
+// NTSC / VHS emulation, modeled on the ntsc-rs signal chain:
+// edge wave -> head switching -> tracking noise -> band-limited luma with
+// one-sided tape smear + sharpen overshoot -> narrow delayed chroma ->
+// cross-color / chroma phase noise / chroma loss -> snow speckles.
+// Modes: 0 NTSC Composite, 1 NTSC S-Video, 2 NTSC RF, 3 VHS SP, 4 VHS LP, 5 VHS EP.
+// ---------------------------------------------------------------------------
+
+float vhsHash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float vhsNoise2D(vec2 p, float seed) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = vhsHash(i + vec2(seed, seed));
+    float b = vhsHash(i + vec2(1.0 + seed, seed));
+    float c = vhsHash(i + vec2(seed, 1.0 + seed));
+    float d = vhsHash(i + vec2(1.0 + seed, 1.0 + seed));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float vhsFbm2(vec2 p, float seed) {
+    return vhsNoise2D(p, seed) * 0.625 +
+           vhsNoise2D(p * 2.0, seed + 9.0) * 0.25 +
+           vhsNoise2D(p * 4.0, seed + 17.0) * 0.125;
+}
+
+// Sparse comet-shaped transients ("snow"): a damped cosine burst that decays
+// to the right, the way a tape dropout reads back.
+float vhsSpeckles(float xPx, float line, float frame, float rate, float widthPx, float pxScale) {
+    float acc = 0.0;
+    for (int k = 0; k < 2; ++k) {
+        float fk = float(k);
+        float gate = vhsHash(vec2(line * 1.117 + fk * 37.0, frame * 0.731 + fk));
+        if (gate < rate) {
+            float x0 = vhsHash(vec2(line * 0.913 + fk * 11.0, frame + 3.0 + fk)) * widthPx;
+            float len = mix(8.0, 64.0, vhsHash(vec2(frame * 1.3 + fk, line * 0.7))) * pxScale;
+            float dxp = xPx - x0;
+            if (dxp >= 0.0 && dxp < len) {
+                float amp = vhsHash(vec2(x0 * 0.37 + frame, line + fk)) * 3.0 - 1.0;
+                acc += cos(dxp * 3.14159265 / max(len * 0.25, 1.0)) *
+                       pow(1.0 - dxp / len, 2.0) * amp;
+            }
+        }
     }
+    return acc;
+}
 
-    float speed = max(vhsOverlayAnimationSpeed, 0.0);
-    float t = u_time * speed;
-    float distortion = clamp(vhsOverlayDistortionStrength, 0.0, 2.0);
-    float trackAmount = clamp(vhsOverlayBottomNoiseBandHeight, 0.0, 1.0);
-    float burstAmount = clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0);
-    float line = floor(uv.y / max(texelSize.y, 1e-6));
-
-    float jitterA = interleavedNoise(vec2(line * 0.071, floor(t * 22.0) + 13.0)) - 0.5;
-    float jitterB = interleavedNoise(vec2(line * 0.193 + 7.0, floor(t * 12.0) + 3.0)) - 0.5;
-    uv.x += (jitterA * 10.0 + jitterB * 6.0) * texelSize.x * distortion;
-    uv.x += sin(uv.y * 170.0 + t * 11.0 + jitterB * 6.28318) * texelSize.x * 2.5 * distortion;
-
-    float trackingSeed = floor(t * 1.7);
-    float bandCenter = fract(interleavedNoise(vec2(trackingSeed, 0.37)) + t * 0.035);
-    float bandWidth = mix(0.015, 0.16, trackAmount);
-    trackingMask = (1.0 - smoothstep(bandWidth, bandWidth * 2.6, abs(uv.y - bandCenter))) * trackAmount;
-    uv.x += trackingMask * (jitterB * 38.0 + sin(uv.y * 60.0 - t * 8.0) * 18.0) * texelSize.x * (0.35 + distortion);
-    uv.y += trackingMask * sin(uv.y * 32.0 - t * 7.5 + jitterA * 4.0) * texelSize.y * 8.0 * distortion;
-
-    headSwitchMask = (1.0 - smoothstep(0.0, 0.08 + trackAmount * 0.1, uv.y));
-    uv.x += headSwitchMask * sin(uv.y * 980.0 + t * 30.0) * texelSize.x * (6.0 + burstAmount * 14.0);
-
-    float burstGate = step(0.68, interleavedNoise(vec2(floor(t * 1.5) + 41.0, 7.3)));
-    float burstCenter = fract(interleavedNoise(vec2(floor(t * 0.9) + 3.0, 17.0)) + t * 0.02);
-    float burstBand = 1.0 - smoothstep(0.015, 0.09, abs(uv.y - burstCenter));
-    burstMask = burstGate * burstBand * clamp(burstAmount * 0.6, 0.0, 1.0);
-    uv.x += burstMask * (jitterA * 60.0 + 12.0) * texelSize.x * distortion;
-
-    return clamp(uv, vec2(0.0), vec2(1.0));
+// Tape-speed/source parameters. Luma/chroma smear lengths are in native NTSC
+// pixels (~754 samples per active line) and get rescaled to the viewport.
+void vhsModeParams(int mode, out float lumaSmearPx, out float chromaSmearPx,
+                   out float chromaDelayPx, out float sharpenAmt, out float baseNoise,
+                   out float chromaLossBase, out float crossColorAmt, out float snowBase,
+                   out float isTape) {
+    if (mode == 0) {        // NTSC Composite
+        lumaSmearPx = 0.20; chromaSmearPx = 2.0; chromaDelayPx = 0.0; sharpenAmt = 0.0;
+        baseNoise = 0.008; chromaLossBase = 0.0; crossColorAmt = 1.0; snowBase = 0.0; isTape = 0.0;
+    } else if (mode == 1) { // NTSC S-Video
+        lumaSmearPx = 0.15; chromaSmearPx = 1.4; chromaDelayPx = 0.0; sharpenAmt = 0.0;
+        baseNoise = 0.005; chromaLossBase = 0.0; crossColorAmt = 0.15; snowBase = 0.0; isTape = 0.0;
+    } else if (mode == 2) { // NTSC RF (antenna)
+        lumaSmearPx = 0.40; chromaSmearPx = 2.4; chromaDelayPx = 0.5; sharpenAmt = 0.0;
+        baseNoise = 0.040; chromaLossBase = 0.0; crossColorAmt = 1.3; snowBase = 0.08; isTape = 0.0;
+    } else if (mode == 4) { // VHS LP (1.9 MHz luma / 300 kHz chroma)
+        lumaSmearPx = 1.20; chromaSmearPx = 7.6; chromaDelayPx = 5.0; sharpenAmt = 0.55;
+        baseNoise = 0.035; chromaLossBase = 0.015; crossColorAmt = 0.60; snowBase = 0.06; isTape = 1.0;
+    } else if (mode == 5) { // VHS EP (1.4 MHz luma / 280 kHz chroma)
+        lumaSmearPx = 1.65; chromaSmearPx = 8.1; chromaDelayPx = 6.0; sharpenAmt = 0.60;
+        baseNoise = 0.055; chromaLossBase = 0.030; crossColorAmt = 0.70; snowBase = 0.12; isTape = 1.0;
+    } else {                // VHS SP (2.4 MHz luma / 320 kHz chroma)
+        lumaSmearPx = 0.95; chromaSmearPx = 7.1; chromaDelayPx = 4.0; sharpenAmt = 0.50;
+        baseNoise = 0.020; chromaLossBase = 0.005; crossColorAmt = 0.50; snowBase = 0.03; isTape = 1.0;
+    }
 }
 
 vec3 applyVhsOverlay(vec3 color, vec2 uv) {
@@ -248,51 +290,165 @@ vec3 applyVhsOverlay(vec3 color, vec2 uv) {
         return color;
     }
 
-    float trackingMask;
-    float burstMask;
-    float headSwitchMask;
-    vec2 warpedUv = applyVhsSignalWarp(uv, trackingMask, burstMask, headSwitchMask);
-
-    float chromaOffsetPx = mix(0.25, 6.0, clamp(vhsOverlayChromaBleed, 0.0, 1.0));
-    float colorBleedPx = mix(0.0, 10.0, clamp(vhsOverlayColorBleed, 0.0, 1.0));
-    vec2 dx = vec2(texelSize.x, 0.0);
-
-    vec3 yiqM3 = rgbToYiq(sampleDisplayBase(warpedUv - dx * (chromaOffsetPx + colorBleedPx * 0.85)));
-    vec3 yiqM2 = rgbToYiq(sampleDisplayBase(warpedUv - dx * (chromaOffsetPx * 0.65 + colorBleedPx * 0.35)));
-    vec3 yiqM1 = rgbToYiq(sampleDisplayBase(warpedUv - dx * chromaOffsetPx));
-    vec3 yiqC = rgbToYiq(sampleDisplayBase(warpedUv));
-    vec3 yiqP1 = rgbToYiq(sampleDisplayBase(warpedUv + dx * chromaOffsetPx));
-    vec3 yiqP2 = rgbToYiq(sampleDisplayBase(warpedUv + dx * (chromaOffsetPx * 0.65 + colorBleedPx * 0.35)));
-    vec3 yiqP3 = rgbToYiq(sampleDisplayBase(warpedUv + dx * (chromaOffsetPx + colorBleedPx * 0.85)));
-
-    vec3 signal;
-    signal.x = dot(vec4(yiqM1.x, yiqC.x, yiqP1.x, yiqP2.x), vec4(0.12, 0.58, 0.2, 0.1));
-    signal.x += (yiqM2.x + yiqP3.x) * 0.04;
-    signal.y = dot(vec4(yiqM2.y, yiqM1.y, yiqC.y, yiqP1.y), vec4(0.18, 0.27, 0.32, 0.23));
-    signal.y += (yiqP2.y + yiqM3.y) * 0.08;
-    signal.z = dot(vec4(yiqM3.z, yiqM1.z, yiqP1.z, yiqP3.z), vec4(0.2, 0.28, 0.28, 0.2));
-    signal.z += (yiqC.z + yiqP2.z + yiqM2.z) * 0.013;
-
-    float crossColor = (yiqM1.x - yiqP1.x) * (0.03 + clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.08);
-    signal.y += crossColor;
-    signal.z -= crossColor * 0.65;
-    signal.yz *= vec2(1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.2,
-                      1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.3);
-
-    vec3 ntscColor = clamp(yiqToRgb(signal), 0.0, 1.0);
+    int mode = clamp(vhsOverlaySignalMode, 0, 5);
+    float lumaSmearPx, chromaSmearPx, chromaDelayPx, sharpenAmt, baseNoise;
+    float chromaLossBase, crossColorAmt, snowBase, isTape;
+    vhsModeParams(mode, lumaSmearPx, chromaSmearPx, chromaDelayPx, sharpenAmt, baseNoise,
+                  chromaLossBase, crossColorAmt, snowBase, isTape);
 
     float speed = max(vhsOverlayAnimationSpeed, 0.0);
-    float t = u_time * speed;
-    float scanlinePhase = gl_FragCoord.y * 3.14159265 + t * 6.0;
+    // Wrap time so hash inputs stay small; float precision otherwise degrades
+    // the noise after long sessions.
+    float t = mod(u_time * speed, 3600.0);
+    float frame = floor(mod(t * 29.97, 1024.0));
+
+    float widthPx = 1.0 / max(texelSize.x, 1e-6);
+    float heightPx = 1.0 / max(texelSize.y, 1e-6);
+    float pxScale = max(widthPx / 754.0, 0.1);  // horizontal scale vs. native NTSC sampling
+    float vScale = max(heightPx / 480.0, 0.1);
+
+    float distortion = clamp(vhsOverlayDistortionStrength, 0.0, 2.0);
+    float trackAmount = clamp(vhsOverlayBottomNoiseBandHeight, 0.0, 1.0);
+    float headAmount = clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0);
+    float chromaBleed = clamp(vhsOverlayChromaBleed, 0.0, 1.0);
+    float colorBleed = clamp(vhsOverlayColorBleed, 0.0, 1.0);
+    float noiseAmount = clamp(vhsOverlayTapeNoise, 0.0, 1.0);
+    float dropouts = clamp(vhsOverlayDropouts, 0.0, 1.0);
+
+    vec2 wUv = uv;
+    float line = floor(uv.y * heightPx);
+    float rowFromBottom = uv.y * heightPx;  // uv.y = 0 is the bottom of the picture
+
+    // --- Edge wave: scanlines surf on smooth low-frequency noise ---
+    float waveAmp = distortion * 10.0 * pxScale * mix(0.15, 1.0, isTape);
+    float wave = (vhsFbm2(vec2(line * 0.05 / vScale, t * 2.0), 7.0) - 0.5) * 2.0 * waveAmp;
+    wUv.x += wave * texelSize.x;
+
+    // Per-line time-base error: a sub-pixel twitch on every scanline.
+    wUv.x += (vhsHash(vec2(line, frame)) - 0.5) * (0.3 + isTape * 0.7) * distortion * pxScale * texelSize.x;
+
+    // --- Head switching: the bottom rows tear rightward, tape only ---
+    float headTransient = 0.0;
+    float headMask = 0.0;
+    float headRows = 8.0 * vScale;
+    if (isTape > 0.5 && headAmount > 0.0001 && rowFromBottom < headRows) {
+        headMask = 1.0;
+        float prog = (headRows - rowFromBottom + 3.0 * vScale) / max(headRows, 1.0);
+        float shiftPx = 72.0 * pxScale * headAmount * 0.5 * pow(clamp(prog, 0.0, 2.0), 1.5) +
+                        (vhsHash(vec2(floor(rowFromBottom), frame)) - 0.5) * pxScale;
+        if (floor(rowFromBottom) >= floor(headRows) - 1.0) {
+            // Mid-line switch: only part of the top affected row tears, with a
+            // bright transient right at the switch point.
+            float pos = 0.6 + (vhsHash(vec2(frame, 17.0)) + vhsHash(vec2(frame, 91.0)) - 1.0) * 0.15;
+            if (uv.x > pos) {
+                wUv.x -= shiftPx * texelSize.x;
+            }
+            float dxp = (uv.x - pos) * widthPx;
+            float transientLen = 16.0 * pxScale;
+            if (dxp >= 0.0 && dxp < transientLen) {
+                headTransient = pow(1.0 - dxp / transientLen, 3.0) *
+                                (vhsHash(vec2(frame, 5.0)) * 0.5 + 0.25) * headAmount;
+            }
+        } else {
+            wUv.x -= shiftPx * texelSize.x;
+        }
+    }
+
+    // --- Tracking noise: a band above the head switch that ramps toward the bottom ---
+    float trackScale = 0.0;
+    float trackRows = trackAmount * 0.35 * heightPx;
+    if (isTape > 0.5 && trackAmount > 0.0001 && rowFromBottom < trackRows) {
+        trackScale = 1.0 - rowFromBottom / max(trackRows, 1.0);
+        float waveShift = (vhsFbm2(vec2(line * 0.5, t * 3.0), 23.0) - 0.5) *
+                          trackScale * 30.0 * pxScale;
+        wUv.x += waveShift * texelSize.x;
+    }
+
+    wUv = clamp(wUv, vec2(0.0), vec2(1.0));
+
+    // --- Luma: nearly sharp, with a one-sided tape smear and sharpen overshoot ---
+    // The asymmetry matters: a real deck's lowpass is causal, so detail smears
+    // to the right instead of blurring evenly.
+    vec2 dx = vec2(texelSize.x, 0.0);
+    float smearL = max(lumaSmearPx * pxScale, 0.01);
+    vec3 rgb0 = sampleDisplayBase(wUv);
+    float y0 = rgbToYiq(rgb0).x;
+    float y1 = rgbToYiq(sampleDisplayBase(wUv - dx * smearL)).x;
+    float y2 = rgbToYiq(sampleDisplayBase(wUv - dx * smearL * 2.0)).x;
+    float y3 = rgbToYiq(sampleDisplayBase(wUv - dx * smearL * 3.0)).x;
+    float yLow = y0 * 0.46 + y1 * 0.27 + y2 * 0.16 + y3 * 0.11;
+    float yWide = (y0 + y1 + y2 + y3) * 0.25;
+    float yOut = yLow + (yLow - yWide) * sharpenAmt * 2.0;
+
+    // RF ghosting: faint displaced echo of the picture.
+    if (mode == 2) {
+        float yGhost = rgbToYiq(sampleDisplayBase(wUv + dx * 30.0 * pxScale)).x;
+        yOut += (yGhost - yOut) * 0.08;
+    }
+
+    // --- Chroma: very narrow bandwidth, delayed right, vertically blended ---
+    float smearC = max(chromaSmearPx * pxScale * mix(0.6, 1.6, chromaBleed), 0.01);
+    float delayC = (chromaDelayPx + colorBleed * 4.0) * pxScale;
+    // Sampling half a scanline up lets bilinear filtering average each chroma
+    // line with its neighbor for free (VHS chroma vertical blend).
+    vec2 cUv = vec2(wUv.x - delayC * texelSize.x, wUv.y + isTape * 0.5 * texelSize.y);
+    vec2 iq = rgbToYiq(sampleDisplayBase(cUv)).yz * 0.38 +
+              rgbToYiq(sampleDisplayBase(cUv - dx * smearC * 0.75)).yz * 0.28 +
+              rgbToYiq(sampleDisplayBase(cUv - dx * smearC * 1.75)).yz * 0.20 +
+              rgbToYiq(sampleDisplayBase(cUv - dx * smearC * 3.0)).yz * 0.14;
+
+    // Cross-color / dot crawl: luma edges leak in along the subcarrier phase.
+    float subcarrierPhase = line * 3.14159265 + uv.x * widthPx * 1.5708 + mod(frame, 4.0) * 1.5708;
+    iq += (y0 - y1) * 0.5 * vec2(cos(subcarrierPhase), sin(subcarrierPhase)) *
+          crossColorAmt * (0.08 + colorBleed * 0.12);
+
+    // Chroma phase noise: per-line hue wobble.
+    float hueJit = (vhsHash(vec2(line * 0.531, frame + 7.0)) - 0.5) * 6.28318 *
+                   (0.04 + colorBleed * 0.20) * (0.3 + isTape * 0.7);
+    float cosH = cos(hueJit);
+    float sinH = sin(hueJit);
+    iq = vec2(iq.x * cosH - iq.y * sinH, iq.x * sinH + iq.y * cosH);
+
+    // Chroma loss: whole scanlines randomly drop their color.
+    float lossRate = chromaLossBase + colorBleed * 0.05 * isTape + trackScale * 0.25;
+    if (vhsHash(vec2(line * 1.731, frame * 1.13 + 41.0)) < lossRate) {
+        iq = vec2(0.0);
+    }
+
+    // --- Noise floor: smooth per-line grain plus fine speckle ---
+    float grainAmt = baseNoise + noiseAmount * 0.15 + trackScale * trackScale * trackAmount * 0.4;
+    float grain = vhsFbm2(vec2(uv.x * widthPx * 0.25 / pxScale, line * 0.77 + frame * 31.7), 3.0) - 0.5;
+    float grainFine = vhsHash(gl_FragCoord.xy + vec2(frame * 13.7, frame * 7.3)) - 0.5;
+    yOut += grain * grainAmt * 1.6 + grainFine * grainAmt * 0.5;
+
+    // Soft colored noise in the chroma planes.
+    iq += vec2(vhsNoise2D(vec2(uv.x * widthPx * 0.05, line * 0.5 + frame * 11.0), 5.0) - 0.5,
+               vhsNoise2D(vec2(uv.x * widthPx * 0.05, line * 0.5 + frame * 17.0), 13.0) - 0.5) *
+          (0.02 + noiseAmount * 0.12 + colorBleed * 0.05);
+
+    // --- Snow: sparse comet-tailed dropout transients ---
+    float speckleRate = snowBase * 0.5 + dropouts * 0.25 + trackScale * trackScale * trackAmount * 0.6;
+    if (speckleRate > 0.0001) {
+        yOut += vhsSpeckles(uv.x * widthPx, line, frame, speckleRate, widthPx, pxScale) *
+                (0.5 + dropouts * 0.5);
+    }
+
+    // Head switching transient + noise inside the switch region.
+    yOut += headTransient;
+    if (headMask > 0.5) {
+        yOut += (vhsHash(vec2(gl_FragCoord.x, gl_FragCoord.y + frame * 7.0)) - 0.5) * 0.2 * headAmount;
+    }
+
+    // Tape playback lifts black level slightly and compresses whites.
+    float blackLift = 0.012 * isTape;
+    yOut = yOut * (1.0 - blackLift * 2.0) + blackLift;
+
+    vec3 ntscColor = clamp(yiqToRgb(vec3(yOut, iq)), 0.0, 1.0);
+
+    float scanlinePhase = gl_FragCoord.y * 3.14159265;
     float scanline = 1.0 - clamp(vhsOverlayScanlineStrength, 0.0, 1.0) *
         (0.18 + 0.22 * (0.5 + 0.5 * sin(scanlinePhase)));
     ntscColor *= scanline;
-
-    float noiseAmount = clamp(vhsOverlayTapeNoise, 0.0, 1.0);
-    float grain0 = interleavedNoise(gl_FragCoord.xy * vec2(1.0, 0.85) + vec2(t * 31.0, t * 7.0)) - 0.5;
-    float grain1 = interleavedNoise(gl_FragCoord.xy * vec2(0.75, 1.2) + vec2(19.0, t * 17.0)) - 0.5;
-    float chromaNoise = interleavedNoise(gl_FragCoord.xy * vec2(0.5, 1.8) + vec2(t * 11.0, 53.0)) - 0.5;
-    ntscColor += vec3(grain0, grain1, chromaNoise) * (0.08 + noiseAmount * 0.22);
 
     float banding = clamp(vhsOverlayBanding, 0.0, 1.0);
     if (banding > 0.0001) {
@@ -301,19 +457,6 @@ vec3 applyVhsOverlay(vec3 color, vec2 uv) {
         ntscColor = mix(ntscColor, degraded, banding * 0.7);
     }
 
-    float luma = luminance(ntscColor);
-    ntscColor = mix(vec3(luma), ntscColor, 1.0 - clamp(vhsOverlayColorBleed, 0.0, 1.0) * 0.12);
-
-    vec3 burstNoise = vec3(
-        interleavedNoise(gl_FragCoord.xy * 1.8 + vec2(t * 53.0, 11.0)),
-        interleavedNoise(gl_FragCoord.xy * 2.1 + vec2(17.0, t * 47.0)),
-        interleavedNoise(gl_FragCoord.xy * 1.4 + vec2(t * 39.0, 29.0))) - 0.5;
-    ntscColor += burstNoise * burstMask * 0.65;
-
-    float headNoise = interleavedNoise(vec2(gl_FragCoord.x * 0.9, gl_FragCoord.y * 8.0 + t * 90.0)) - 0.5;
-    ntscColor += vec3(headNoise) * headSwitchMask * clamp(vhsOverlayBottomNoiseBandIntensity, 0.0, 2.0) * 0.35;
-
-    ntscColor = mix(ntscColor, ntscColor * 0.75 + vec3(0.07), trackingMask * 0.35);
     ntscColor = clamp(ntscColor, 0.0, 1.0);
     return mix(color, ntscColor, clamp(vhsOverlayOpacity, 0.0, 1.0));
 }

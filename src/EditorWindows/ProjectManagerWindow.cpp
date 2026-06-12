@@ -648,6 +648,8 @@ static const LauncherPackageSnapshot& GetLauncherPackageSnapshot(const ProjectMa
 
 struct LauncherTemplateEntry {
     std::string displayName;
+    std::string description;
+    std::string presetId;
     fs::path projectRoot;
     fs::path projectFile;
     fs::path previewImage;
@@ -655,6 +657,25 @@ struct LauncherTemplateEntry {
     Modularity::GraphicsBackend rendererBackend = Modularity::GraphicsBackend::OpenGL;
     bool isBlankPreset = false;
 };
+
+static std::vector<LauncherTemplateEntry> BuiltInProjectPresets() {
+    std::vector<LauncherTemplateEntry> presets;
+    auto add = [&](const char* id, const char* name, const char* description, ProjectPipeline pipeline) {
+        LauncherTemplateEntry entry;
+        entry.presetId = id;
+        entry.displayName = name;
+        entry.description = description;
+        entry.pipeline = pipeline;
+        entry.rendererBackend = Modularity::GraphicsBackend::OpenGL;
+        entry.isBlankPreset = true;
+        presets.push_back(std::move(entry));
+    };
+    add("empty", "Empty", "Clean project folders with no starter scene content.", ProjectPipeline::Pipeline3D);
+    add("2d-game", "2D Game", "2D pipeline setup with sprite folders and a starter controller script.", ProjectPipeline::Pipeline2D);
+    add("tool-app", "Tool/App", "UI-focused app setup with runtime/editor script folders and UI assets.", ProjectPipeline::Pipeline2D);
+    add("runtime-only", "Runtime Only", "Minimal runtime-oriented project with no starter editor script content.", ProjectPipeline::Pipeline3D);
+    return presets;
+}
 
 struct ProjectFileMetadata {
     std::string name;
@@ -1956,22 +1977,21 @@ void Engine::renderLauncher() {
             static char templateSearch[128] = "";
             static int templateCategory = 0; // 0 = Blank Project, 1 = Template Projects
             const std::vector<LauncherTemplateEntry> templates = GatherTemplateEntries();
+            const std::vector<LauncherTemplateEntry> builtInPresets = BuiltInProjectPresets();
             const fs::path templatesRoot = GetTemplateProjectsRoot();
             const std::string templateFilter = toLower(TrimCopy(templateSearch));
 
-            LauncherTemplateEntry blankEntry;
-            blankEntry.displayName = "Standard 3D Project";
-            blankEntry.pipeline = ProjectPipeline::Pipeline3D;
-            blankEntry.rendererBackend = Modularity::GraphicsBackend::OpenGL;
-            blankEntry.isBlankPreset = true;
+            LauncherTemplateEntry blankEntry = builtInPresets.empty() ? LauncherTemplateEntry{} : builtInPresets.front();
 
             auto selectTemplateEntry = [&](const LauncherTemplateEntry& entry) {
                 if (entry.isBlankPreset) {
                     projectManager.newProjectTemplatePath.clear();
-                    projectManager.newProjectTemplateName = "Standard 3D Project";
+                    projectManager.newProjectTemplateName = entry.displayName;
+                    projectManager.newProjectPresetId = entry.presetId.empty() ? "empty" : entry.presetId;
                 } else {
                     projectManager.newProjectTemplatePath = entry.projectRoot.string();
                     projectManager.newProjectTemplateName = entry.displayName;
+                    projectManager.newProjectPresetId.clear();
                 }
                 projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(entry.pipeline);
                 projectManager.newProjectRendererMode = (entry.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
@@ -1988,12 +2008,20 @@ void Engine::renderLauncher() {
             };
 
             if (projectManager.newProjectTemplateName.empty()) {
-                projectManager.newProjectTemplateName = "Standard 3D Project";
+                projectManager.newProjectTemplateName = blankEntry.displayName;
+                projectManager.newProjectPresetId = blankEntry.presetId;
             }
 
             const LauncherTemplateEntry* selectedTemplate = nullptr;
             if (projectManager.newProjectTemplatePath.empty()) {
                 selectedTemplate = &blankEntry;
+                for (const auto& preset : builtInPresets) {
+                    if (preset.presetId == projectManager.newProjectPresetId ||
+                        preset.displayName == projectManager.newProjectTemplateName) {
+                        selectedTemplate = &preset;
+                        break;
+                    }
+                }
             } else {
                 for (const auto& t : templates) {
                     if (fs::path(projectManager.newProjectTemplatePath) == t.projectRoot) {
@@ -2004,7 +2032,8 @@ void Engine::renderLauncher() {
             }
             if (!selectedTemplate) {
                 projectManager.newProjectTemplatePath.clear();
-                projectManager.newProjectTemplateName = "Standard 3D Project";
+                projectManager.newProjectTemplateName = blankEntry.displayName;
+                projectManager.newProjectPresetId = blankEntry.presetId;
                 selectedTemplate = &blankEntry;
             }
             projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(selectedTemplate->pipeline);
@@ -2060,7 +2089,8 @@ void Engine::renderLauncher() {
 
             auto renderTemplateListRow = [&](const LauncherTemplateEntry& entry) {
                 const bool selected = selectedTemplate &&
-                    ((entry.isBlankPreset && selectedTemplate->isBlankPreset) ||
+                    ((entry.isBlankPreset && selectedTemplate->isBlankPreset &&
+                      entry.presetId == selectedTemplate->presetId) ||
                      (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                       selectedTemplate->projectRoot == entry.projectRoot));
 
@@ -2146,7 +2176,8 @@ void Engine::renderLauncher() {
 
             auto renderTemplateGridTile = [&](const LauncherTemplateEntry& entry, float tileWidth) {
                 const bool selected = selectedTemplate &&
-                    ((entry.isBlankPreset && selectedTemplate->isBlankPreset) ||
+                    ((entry.isBlankPreset && selectedTemplate->isBlankPreset &&
+                      entry.presetId == selectedTemplate->presetId) ||
                      (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                       selectedTemplate->projectRoot == entry.projectRoot));
 
@@ -2273,9 +2304,19 @@ void Engine::renderLauncher() {
             ImGui::BeginChild("TemplateRows", ImVec2(0.0f, 0.0f), false);
             if (templateCategory == 0) {
                 if (templateViewMode == 0) {
-                    renderTemplateGridTile(blankEntry, ImGui::GetContentRegionAvail().x);
+                    int tileIndex = 0;
+                    const float tileSpacing = 8.0f * uiScale;
+                    const float contentRegionWidth = ImGui::GetContentRegionAvail().x;
+                    const float minTileWidth = 146.0f * uiScale;
+                    const int tileColumns = std::max(1, static_cast<int>((contentRegionWidth + tileSpacing) / (minTileWidth + tileSpacing)));
+                    const float tileWidth = (contentRegionWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns);
+                    for (const auto& preset : builtInPresets) {
+                        if (tileIndex > 0 && (tileIndex % tileColumns) != 0) ImGui::SameLine(0.0f, tileSpacing);
+                        renderTemplateGridTile(preset, tileWidth);
+                        ++tileIndex;
+                    }
                 } else {
-                    renderTemplateListRow(blankEntry);
+                    for (const auto& preset : builtInPresets) renderTemplateListRow(preset);
                 }
             } else {
                 bool hadVisible = false;
@@ -2931,22 +2972,21 @@ void Engine::renderNewProjectDialog() {
         static int templateCategory = 0; // 0 = Blank Project, 1 = Template Projects
         static char templateSearch[128] = "";
         const std::vector<LauncherTemplateEntry> templates = GatherTemplateEntries();
+        const std::vector<LauncherTemplateEntry> builtInPresets = BuiltInProjectPresets();
         const fs::path templatesRoot = GetTemplateProjectsRoot();
         const std::string templateFilter = TrimCopy(templateSearch);
 
-        LauncherTemplateEntry blankEntry;
-        blankEntry.displayName = "Standard 3D Project";
-        blankEntry.pipeline = ProjectPipeline::Pipeline3D;
-        blankEntry.rendererBackend = Modularity::GraphicsBackend::OpenGL;
-        blankEntry.isBlankPreset = true;
+        LauncherTemplateEntry blankEntry = builtInPresets.empty() ? LauncherTemplateEntry{} : builtInPresets.front();
 
         auto selectTemplateEntry = [&](const LauncherTemplateEntry& entry) {
             if (entry.isBlankPreset) {
                 projectManager.newProjectTemplatePath.clear();
-                projectManager.newProjectTemplateName = "Standard 3D Project";
+                projectManager.newProjectTemplateName = entry.displayName;
+                projectManager.newProjectPresetId = entry.presetId.empty() ? "empty" : entry.presetId;
             } else {
                 projectManager.newProjectTemplatePath = entry.projectRoot.string();
                 projectManager.newProjectTemplateName = entry.displayName;
+                projectManager.newProjectPresetId.clear();
             }
             projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(entry.pipeline);
             projectManager.newProjectRendererMode = (entry.rendererBackend == Modularity::GraphicsBackend::Vulkan) ? 1 : 0;
@@ -2963,12 +3003,20 @@ void Engine::renderNewProjectDialog() {
         };
 
         if (projectManager.newProjectTemplateName.empty()) {
-            projectManager.newProjectTemplateName = "Standard 3D Project";
+            projectManager.newProjectTemplateName = blankEntry.displayName;
+            projectManager.newProjectPresetId = blankEntry.presetId;
         }
 
         const LauncherTemplateEntry* selectedTemplate = nullptr;
         if (projectManager.newProjectTemplatePath.empty()) {
             selectedTemplate = &blankEntry;
+            for (const auto& preset : builtInPresets) {
+                if (preset.presetId == projectManager.newProjectPresetId ||
+                    preset.displayName == projectManager.newProjectTemplateName) {
+                    selectedTemplate = &preset;
+                    break;
+                }
+            }
         } else {
             for (const auto& t : templates) {
                 if (fs::path(projectManager.newProjectTemplatePath) == t.projectRoot) {
@@ -2979,7 +3027,8 @@ void Engine::renderNewProjectDialog() {
         }
         if (!selectedTemplate) {
             projectManager.newProjectTemplatePath.clear();
-            projectManager.newProjectTemplateName = "Standard 3D Project";
+            projectManager.newProjectTemplateName = blankEntry.displayName;
+            projectManager.newProjectPresetId = blankEntry.presetId;
             selectedTemplate = &blankEntry;
         }
         projectManager.newProjectPipelineMode = ProjectPipelineToUiIndex(selectedTemplate->pipeline);
@@ -3048,7 +3097,8 @@ void Engine::renderNewProjectDialog() {
 
         auto renderTemplateListRow = [&](const LauncherTemplateEntry& entry) {
             const bool selected = selectedTemplate &&
-                ((entry.isBlankPreset && selectedTemplate->isBlankPreset) ||
+                ((entry.isBlankPreset && selectedTemplate->isBlankPreset &&
+                  entry.presetId == selectedTemplate->presetId) ||
                  (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                   selectedTemplate->projectRoot == entry.projectRoot));
 
@@ -3124,7 +3174,8 @@ void Engine::renderNewProjectDialog() {
 
         auto renderTemplateGridTile = [&](const LauncherTemplateEntry& entry, float tileWidth) {
             const bool selected = selectedTemplate &&
-                ((entry.isBlankPreset && selectedTemplate->isBlankPreset) ||
+                ((entry.isBlankPreset && selectedTemplate->isBlankPreset &&
+                  entry.presetId == selectedTemplate->presetId) ||
                  (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                   selectedTemplate->projectRoot == entry.projectRoot));
 
@@ -3222,9 +3273,23 @@ void Engine::renderNewProjectDialog() {
         ImGui::BeginChild("TemplateSelectionRows", ImVec2(0.0f, 0.0f), false);
         if (templateCategory == 0) {
             if (templateViewMode == 0) {
-                renderTemplateGridTile(blankEntry, ImGui::GetContentRegionAvail().x);
+                int tileIndex = 0;
+                const float tileSpacing = 8.0f;
+                const float contentWidth = ImGui::GetContentRegionAvail().x;
+                const float minTileWidth = 146.0f;
+                const int tileColumns = std::max(1, static_cast<int>((contentWidth + tileSpacing) / (minTileWidth + tileSpacing)));
+                const float tileWidth = (contentWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns);
+                for (const auto& preset : builtInPresets) {
+                    if (tileIndex > 0 && (tileIndex % tileColumns) != 0) {
+                        ImGui::SameLine(0.0f, tileSpacing);
+                    }
+                    renderTemplateGridTile(preset, tileWidth);
+                    ++tileIndex;
+                }
             } else {
-                renderTemplateListRow(blankEntry);
+                for (const auto& preset : builtInPresets) {
+                    renderTemplateListRow(preset);
+                }
             }
         } else {
             bool hadVisible = false;
@@ -3303,9 +3368,9 @@ void Engine::renderNewProjectDialog() {
             ImGui::Dummy(previewSize);
         }
 
-        const std::string selectedDescription = selectedTemplate->isBlankPreset
-            ? "Creates a clean Modularity project with the standard folders, scripting setup, and no starter content."
-            : "Copies the selected template project into your new project folder.";
+            const std::string selectedDescription = selectedTemplate->isBlankPreset
+                ? (selectedTemplate->description.empty() ? "Creates a clean Modularity project with the standard folders and scripting setup." : selectedTemplate->description)
+                : "Copies the selected template project into your new project folder.";
         const std::string sourceLabel = selectedTemplate->isBlankPreset
             ? "Built-in preset"
             : selectedTemplate->projectRoot.filename().string();
@@ -4105,11 +4170,44 @@ void Engine::renderProjectBrowserPanel() {
         bool changed = false;
 
         if (DrawSettingSection("[G]", "Global Simulation", "Project-wide gravity, timing, and solver defaults.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Global Simulation", "Physics Backend", "physics engine backend jolt physx")) {
+                changed |= DrawSettingRow("Physics Backend",
+                                          "Engine used for 3D simulation. Jolt is the cross-platform default "
+                                          "(works on Android). PhysX is available on desktop only. Switching "
+                                          "rebuilds the active physics world.",
+                                          [&]() {
+                    const PhysicsBackendType options[] = { PhysicsBackendType::Jolt, PhysicsBackendType::PhysX };
+                    int currentIdx = (physicsSettings.backend == PhysicsBackendType::PhysX) ? 1 : 0;
+                    const char* preview = PhysicsBackendLabel(physicsSettings.backend);
+                    bool rowChanged = false;
+                    if (ImGui::BeginCombo("##PhysicsBackend", preview)) {
+                        for (int i = 0; i < (int)(sizeof(options) / sizeof(options[0])); ++i) {
+                            const bool selected = (i == currentIdx);
+                            if (ImGui::Selectable(PhysicsBackendLabel(options[i]), selected)) {
+                                if (options[i] != physicsSettings.backend) {
+                                    physicsSettings.backend = options[i];
+                                    // Hot-swap: tear down the live backend and stand up the new one.
+                                    if (physics) physics->shutdown();
+                                    physics = CreatePhysicsBackend(physicsSettings.backend);
+                                    if (physics) {
+                                        physics->setProjectSettings(physicsSettings);
+                                        physics->init();
+                                    }
+                                    rowChanged = true;
+                                }
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    return rowChanged;
+                });
+            }
             if (visible(ProjectSettingsVisibilityMode::Simple, "Global Simulation", "Global Gravity", "gravity physics")) {
                 changed |= DrawSettingRow("Global Gravity", "3D and 2D runtime gravity use this project-wide multiplier.", [&]() {
                     if (ImGui::DragFloat("##PhysicsGlobalGravity", &physicsSettings.globalGravityScale, 0.01f, 0.0f, 10.0f, "%.2f")) {
                         physicsSettings.globalGravityScale = std::clamp(physicsSettings.globalGravityScale, 0.0f, 10.0f);
-                        physics.setProjectSettings(physicsSettings);
+                        physics->setProjectSettings(physicsSettings);
                         return true;
                     }
                     return false;
@@ -4566,6 +4664,14 @@ void Engine::renderProjectBrowserPanel() {
             });
             changed |= DrawSettingRow("Fullscreen Startup", "Launch the player fullscreen by default.", [&]() {
                 return ImGui::Checkbox("##PlayerFullscreenStartup", &player.fullscreenStartup);
+            });
+            changed |= DrawSettingRow("Native Display Resolution",
+                                      "Render at the device's actual display surface size instead of the Startup "
+                                      "Resolution above. On Android this is the EGL surface size (e.g. tablet's "
+                                      "native res); on desktop, the GLFW window framebuffer. Recommended for "
+                                      "mobile builds so 16:9 content doesn't get stretched into a 16:10 panel.",
+                                      [&]() {
+                return ImGui::Checkbox("##PlayerNativeDisplayResolution", &player.nativeDisplayResolution);
             });
             changed |= DrawSettingRow("Cursor Defaults", "Initial cursor lock and visibility.", [&]() {
                 bool rowChanged = ImGui::Checkbox("Locked##CursorLocked", &player.cursorLocked);

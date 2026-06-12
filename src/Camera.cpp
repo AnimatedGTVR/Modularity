@@ -1,5 +1,12 @@
 #include "Camera.h"
 
+// GLFW only exists on desktop. On Android the keyboard-poll paths below
+// are inert (touch input is delivered via the AndroidRuntime event pump,
+// not by polling key state).
+#ifndef __ANDROID__
+#include "ThirdParty/glfw/include/GLFW/glfw3.h"
+#endif
+
 void Camera::processMouse(double xpos, double ypos) {
     if (ImGuizmo::IsUsing() || ImGuizmo::IsOver()) {
         return;
@@ -42,6 +49,11 @@ void Camera::processMouseDelta(double deltaX, double deltaY) {
 }
 
 void Camera::processKeyboard(float deltaTime, GLFWwindow* window) {
+#ifdef __ANDROID__
+    (void)deltaTime; (void)window;
+    // No keyboard polling on Android; touch input is delivered separately.
+    return;
+#else
     float currentSpeed = moveSpeed;
     if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
         currentSpeed = sprintSpeed;
@@ -106,6 +118,7 @@ void Camera::processKeyboard(float deltaTime, GLFWwindow* window) {
             }
         }
     }
+#endif // __ANDROID__
 }
 
 glm::mat4 Camera::getViewMatrix() const {
@@ -138,9 +151,16 @@ void ViewportController::clearManualUnfocus() {
 }
 
 void ViewportController::update(GLFWwindow* window, bool& cursorLocked) {
+#ifdef __ANDROID__
+    (void)window; (void)cursorLocked;
+    // Android has no Escape-to-unfocus equivalent; the viewport-focus
+    // model maps to lifecycle pause/resume instead and is driven by
+    // AndroidRuntime, not by polling here.
+#else
     if (viewportFocused && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
         viewportFocused = false;
         manualUnfocus = true;
         cursorLocked = false;
     }
+#endif
 }

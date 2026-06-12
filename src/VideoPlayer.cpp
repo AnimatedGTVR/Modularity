@@ -4,6 +4,41 @@
 #include <cmath>
 #include <iostream>
 
+#if !MODULARITY_HAS_FFMPEG
+
+// Android (and any other build without an FFmpeg cross-compile) gets a
+// link-complete VideoPlayer with all methods as inert no-ops. Video import
+// is unsupported on those targets; resurrect once FFmpeg's NDK path is in
+// place. See docs/AndroidRuntime.md.
+
+struct VideoPlayer::DecoderState {};
+struct VideoPlayer::AudioBufferSource {};
+
+VideoPlayer::VideoPlayer() = default;
+VideoPlayer::~VideoPlayer() = default;
+
+bool VideoPlayer::LoadVideo(const std::string&, bool) { return false; }
+void VideoPlayer::Play() {}
+void VideoPlayer::Pause() {}
+void VideoPlayer::Stop() {}
+void VideoPlayer::SetLoop(bool loop) { m_loop = loop; }
+void VideoPlayer::SetPlaybackSpeed(float speed) { m_playbackSpeed = speed; }
+void VideoPlayer::SetPointFiltering(bool enabled) { m_pointFiltering = enabled; }
+void VideoPlayer::SetAudioSystem(AudioSystem* audioSystem, int streamId) {
+    m_audioSystem = audioSystem; m_audioStreamId = streamId;
+}
+void VideoPlayer::SetPlayAudioFromVideo(bool enabled) { m_playAudioFromVideo = enabled; }
+void VideoPlayer::SetSyncAudioToVideo(bool enabled) { m_syncAudioToVideo = enabled; }
+void VideoPlayer::SetAudioSyncTolerance(float t) { m_audioSyncToleranceSeconds = t; }
+void VideoPlayer::Update(float) {}
+std::string VideoPlayer::GetLastError() const { return m_lastError; }
+void VideoPlayer::SetLastError(std::string error) { m_lastError = std::move(error); }
+void VideoPlayer::UploadPixelsToTexture(const unsigned char*, int, int) {}
+void VideoPlayer::StartWorker() {}
+void VideoPlayer::StopWorker() {}
+
+#else
+
 extern "C" {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
@@ -1416,3 +1451,5 @@ void VideoPlayer::WorkerMain() {
         std::cerr << std::endl;
     }
 }
+
+#endif // MODULARITY_HAS_FFMPEG

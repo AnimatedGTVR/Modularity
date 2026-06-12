@@ -47,7 +47,45 @@ inline void SetClip(const std::string& keyPrefix, int direction, int value) {
 inline void SetClip(const std::string& keyPrefix, int direction, int frame, int value) {
     SetInt(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame), value);
 }
+
+// Sheet-relative Sprite handles, keyed exactly like Clip (so Sprite[N] / Sprite[N][M]
+// settings line up with BindArray/BindArray2D). Return type is qualified ::Sprite
+// because this function shares the type's name.
+inline ::Sprite Sprite(const std::string& key) {
+    return DeserializeSprite(Text(key));
+}
+
+inline ::Sprite Sprite(const std::string& keyPrefix, int direction) {
+    return DeserializeSprite(Text(keyPrefix + std::to_string(direction)));
+}
+
+inline ::Sprite Sprite(const std::string& keyPrefix, int direction, int frame) {
+    return DeserializeSprite(Text(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame)));
+}
+
+inline void SetSprite(const std::string& key, const ::Sprite& value) {
+    SetSetting(key, SerializeSprite(value));
+}
+
+inline void SetSprite(const std::string& keyPrefix, int direction, const ::Sprite& value) {
+    SetSetting(keyPrefix + std::to_string(direction), SerializeSprite(value));
+}
+
+inline void SetSprite(const std::string& keyPrefix, int direction, int frame, const ::Sprite& value) {
+    SetSetting(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame), SerializeSprite(value));
+}
 } // namespace Field
+
+// Assign a sheet-relative Sprite to an object's sprite component. Target by id,
+// by handle, or self (Scene::Current()). Lowering target for `obj.Sprite = expr`.
+inline bool SetObjectSprite(int objectId, const ::Sprite& sprite) {
+    if (ScriptContext* c = ctxPtr()) return c->SetObjectSprite(objectId, sprite);
+    return false;
+}
+
+inline bool SetObjectSprite(SceneObject* object, const ::Sprite& sprite) {
+    return object ? SetObjectSprite(object->id, sprite) : false;
+}
 
 namespace Scene {
 inline SceneObject* Current() {
@@ -484,15 +522,10 @@ struct SpriteFacade {
 
 inline const SpriteFacade sprite{};
 
-struct Sprite {
-    int clipIndex = -1;
-
-    Sprite() = default;
-    Sprite(int clip) : clipIndex(clip) {}
-    operator int() const { return clipIndex; }
-    Sprite& operator=(int clip) { clipIndex = clip; return *this; }
-    bool IsAssigned() const { return clipIndex >= 0; }
-};
+// The sheet-relative Sprite (ScriptSdkCommon.h) is the one Sprite type. It keeps
+// int<->Sprite conversion + IsAssigned() so the clip-index containers below and
+// existing self-sheet call sites are unchanged.
+using Sprite = ::Sprite;
 
 struct Sprite8WaySet {
     std::array<Sprite, 8> directions{};

@@ -1,5 +1,42 @@
 #include "Engine.h"
 
+namespace {
+std::vector<fs::path> GatherBuildProfiles(const fs::path& projectRoot) {
+    std::vector<fs::path> profiles;
+    const fs::path profilesDir = projectRoot / "BuildProfiles";
+    std::error_code ec;
+    if (fs::exists(profilesDir, ec)) {
+        for (const auto& entry : fs::directory_iterator(profilesDir, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file()) continue;
+            if (entry.path().extension() == ".modubuild") {
+                profiles.push_back(fs::relative(entry.path(), projectRoot, ec));
+                if (ec) {
+                    ec.clear();
+                    profiles.push_back(entry.path());
+                }
+            }
+        }
+    }
+    if (profiles.empty()) {
+        profiles.push_back(fs::path("BuildProfiles") / "Default.modubuild");
+    }
+    std::sort(profiles.begin(), profiles.end());
+    return profiles;
+}
+
+bool DrawModuleStateCombo(const char* label, std::string& value) {
+    const char* states[] = {"Auto", "On", "Off"};
+    int index = value == "on" ? 1 : (value == "off" ? 2 : 0);
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::Combo(label, &index, states, 3)) {
+        value = index == 1 ? "on" : (index == 2 ? "off" : "auto");
+        return true;
+    }
+    return false;
+}
+} // namespace
+
 void Engine::renderBuildSettingsWindow() {
     if (!showBuildSettings) return;
 
@@ -17,6 +54,64 @@ void Engine::renderBuildSettingsWindow() {
 
     bool changed = false;
     float buttonSpacing = ImGui::GetStyle().ItemSpacing.x;
+
+    static char profileNameBuf[128] = "";
+    static char duplicateNameBuf[128] = "";
+    std::vector<fs::path> profiles = GatherBuildProfiles(projectManager.currentProject.projectPath);
+    std::string activeProfile = buildSettings.activeProfilePath.empty()
+        ? (fs::path("BuildProfiles") / (buildSettings.profileName + ".modubuild")).generic_string()
+        : buildSettings.activeProfilePath;
+    ImGui::Text("Build Profile");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(240.0f);
+    if (ImGui::BeginCombo("##BuildProfileSelector", buildSettings.profileName.c_str())) {
+        for (const fs::path& profile : profiles) {
+            const bool selected = profile.generic_string() == activeProfile;
+            std::string label = profile.stem().string();
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                selectBuildSettingsProfile(profile);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("New")) {
+        std::snprintf(profileNameBuf, sizeof(profileNameBuf), "Profile");
+        ImGui::OpenPopup("New Build Profile");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate")) {
+        std::snprintf(duplicateNameBuf, sizeof(duplicateNameBuf), "%s_Copy", buildSettings.profileName.c_str());
+        ImGui::OpenPopup("Duplicate Build Profile");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(buildSettings.profileName == "Default");
+    if (ImGui::Button("Delete")) {
+        deleteBuildSettingsProfile(buildSettings.profileName);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopupModal("New Build Profile", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::InputText("Name", profileNameBuf, sizeof(profileNameBuf));
+        if (ImGui::Button("Create", ImVec2(100, 0))) {
+            saveBuildSettingsProfileAs(profileNameBuf);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    if (ImGui::BeginPopupModal("Duplicate Build Profile", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::InputText("Name", duplicateNameBuf, sizeof(duplicateNameBuf));
+        if (ImGui::Button("Duplicate", ImVec2(100, 0))) {
+            duplicateBuildSettingsProfile(duplicateNameBuf);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::Separator();
 
     const float footerReserve = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 8.0f;
     const float bottomPanelH  = 185.0f;
@@ -109,9 +204,23 @@ void Engine::renderBuildSettingsWindow() {
     const char* archLabels[8];
     int archLabelsUsed = std::min(archCount, static_cast<int>(sizeof(archLabels) / sizeof(archLabels[0])));
     int archIndex = 0;
+    bool archMatched = false;
     for (int i = 0; i < archLabelsUsed; ++i) {
         archLabels[i] = archList[i].label;
-        if (buildSettings.architecture == archList[i].serializedName) archIndex = i;
+        if (buildSettings.architecture == archList[i].serializedName) {
+            archIndex = i;
+            archMatched = true;
+        }
+    }
+    // If the persisted architecture isn't valid for the current platform
+    // (e.g. an "x86_64" left over from a previous Linux config + a project
+    // file loaded with platform=Android), snap it to the first valid entry.
+    // Without this, the combo *displays* archList[0] but the build still
+    // reads the stale serialized value — which is how Android exports end
+    // up in lib/x86_64/ when the UI clearly shows arm64-v8a.
+    if (!archMatched && archLabelsUsed > 0) {
+        buildSettings.architecture = archList[0].serializedName;
+        changed = true;
     }
     if (ImGui::Combo("##architecture", &archIndex, archLabels, archLabelsUsed)) {
         buildSettings.architecture = archList[archIndex].serializedName;
@@ -124,6 +233,17 @@ void Engine::renderBuildSettingsWindow() {
     // ---- Right column ----------------------------------------
     ImGui::BeginChild("BuildRightCol", ImVec2(rightColW, 0.0f), false);
     ImGui::Text("Build Options");
+    const char* configurations[] = {"Release", "Debug"};
+    int configurationIndex = buildSettings.configuration == "Debug" ? 1 : 0;
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("Configuration", &configurationIndex, configurations, 2)) {
+        buildSettings.configuration = configurations[configurationIndex];
+        changed = true;
+    }
+    if (ImGui::Checkbox("Runtime Only", &buildSettings.runtimeOnly)) changed = true;
+    if (ImGui::Checkbox("Include Editor Target", &buildSettings.includeEditor)) changed = true;
+    if (ImGui::Checkbox("Lean Runtime Export", &buildSettings.leanRuntimeExport)) changed = true;
+    if (ImGui::Checkbox("Ship ScriptSDK", &buildSettings.shipScriptSdk)) changed = true;
     if (ImGui::Checkbox("Development Build",  &buildSettings.developmentBuild))  changed = true;
     if (ImGui::Checkbox("Server Build",       &buildSettings.serverBuild))       changed = true;
     if (ImGui::Checkbox("Script Debugging",   &buildSettings.scriptDebugging))   changed = true;
@@ -151,6 +271,21 @@ void Engine::renderBuildSettingsWindow() {
     }
     if (ImGui::Checkbox("Export as Archive (.tar.gz)", &buildSettings.packageStandaloneArchive))
         changed = true;
+    ImGui::Spacing();
+    ImGui::Text("Modules");
+    ImGui::Separator();
+    if (DrawModuleStateCombo("Assimp", buildSettings.moduleAssimp)) changed = true;
+    ImGui::SameLine();
+    if (DrawModuleStateCombo("Vulkan", buildSettings.moduleVulkan)) changed = true;
+    if (DrawModuleStateCombo("PhysX", buildSettings.modulePhysX)) changed = true;
+    ImGui::SameLine();
+    if (DrawModuleStateCombo("Jolt", buildSettings.moduleJolt)) changed = true;
+    if (DrawModuleStateCombo("sndfile", buildSettings.moduleSndfile)) changed = true;
+    ImGui::SameLine();
+    if (DrawModuleStateCombo("opusfile", buildSettings.moduleOpusfile)) changed = true;
+    if (DrawModuleStateCombo("Mono", buildSettings.moduleMono)) changed = true;
+    ImGui::SameLine();
+    if (DrawModuleStateCombo("OpenGL ES", buildSettings.moduleOpenGLES)) changed = true;
     ImGui::EndChild(); // BuildRightCol
     ImGui::EndChild(); // BuildTopSection
 
@@ -164,10 +299,12 @@ void Engine::renderBuildSettingsWindow() {
     char buildNameBuf[256];
     char versionBuf[128];
     char splashBuf[512];
+    char outputFolderBuf[512];
     std::snprintf(companyBuf,   sizeof(companyBuf),   "%s", buildSettings.companyName.c_str());
     std::snprintf(buildNameBuf, sizeof(buildNameBuf), "%s", buildSettings.buildName.c_str());
     std::snprintf(versionBuf,   sizeof(versionBuf),   "%s", buildSettings.version.c_str());
     std::snprintf(splashBuf,    sizeof(splashBuf),    "%s", buildSettings.splashImagePath.c_str());
+    std::snprintf(outputFolderBuf, sizeof(outputFolderBuf), "%s", buildSettings.outputFolder.c_str());
 
     // Three-column row: Company | Build Name | Version
     if (ImGui::BeginTable("OutputFieldsTable", 3, ImGuiTableFlags_None)) {
@@ -202,6 +339,14 @@ void Engine::renderBuildSettingsWindow() {
         ImGui::EndTable();
     }
 
+    ImGui::Spacing();
+
+    ImGui::TextDisabled("Output Folder");
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("##outputFolder", outputFolderBuf, sizeof(outputFolderBuf))) {
+        buildSettings.outputFolder = outputFolderBuf;
+        changed = true;
+    }
     ImGui::Spacing();
 
     // Splash settings
@@ -262,7 +407,8 @@ void Engine::renderBuildSettingsWindow() {
         if (ImGui::Button("Bake", ImVec2(bakeW, 0.0f))) {
             exportRunAfter = false;
             if (exportOutputPath[0] == '\0') {
-                fs::path defaultOut = projectManager.currentProject.projectPath / "Builds";
+                fs::path defaultOut = projectManager.currentProject.projectPath /
+                    (buildSettings.outputFolder.empty() ? fs::path("Builds") : fs::path(buildSettings.outputFolder));
                 std::snprintf(exportOutputPath, sizeof(exportOutputPath), "%s", defaultOut.string().c_str());
             }
             showExportDialog = true;
@@ -271,7 +417,8 @@ void Engine::renderBuildSettingsWindow() {
         if (ImGui::Button("Bake + Run", ImVec2(bakeRunW, 0.0f))) {
             exportRunAfter = true;
             if (exportOutputPath[0] == '\0') {
-                fs::path defaultOut = projectManager.currentProject.projectPath / "Builds";
+                fs::path defaultOut = projectManager.currentProject.projectPath /
+                    (buildSettings.outputFolder.empty() ? fs::path("Builds") : fs::path(buildSettings.outputFolder));
                 std::snprintf(exportOutputPath, sizeof(exportOutputPath), "%s", defaultOut.string().c_str());
             }
             showExportDialog = true;
@@ -330,7 +477,8 @@ void Engine::renderBuildSettingsWindow() {
             }
             ImGui::SameLine();
             if (ImGui::Button("Use Project Folder")) {
-                fs::path folder = projectManager.currentProject.projectPath / "Builds";
+                fs::path folder = projectManager.currentProject.projectPath /
+                    (buildSettings.outputFolder.empty() ? fs::path("Builds") : fs::path(buildSettings.outputFolder));
                 std::snprintf(exportOutputPath, sizeof(exportOutputPath), "%s", folder.string().c_str());
             }
         }

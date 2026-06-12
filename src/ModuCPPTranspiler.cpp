@@ -22,6 +22,7 @@ namespace {
         String,
         ObjectRef,
         ObjectList,
+        SpriteRef,
         DialogueLines,
         Custom
     };
@@ -821,6 +822,12 @@ namespace {
         }
 
         const std::string normalized = toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(baseType)));
+        // A single Sprite is a sheet-relative handle (SpriteRef). Sprite arrays /
+        // List<Sprite> stay Custom so they ride the proven BindArray clip path,
+        // exactly like int[N] clip fields — they just need a BindSetting(Sprite&).
+        if (dims.empty() && (normalized == "sprite" || normalized == "::sprite")) {
+            return FieldKind::SpriteRef;
+        }
         if (dims.size() == 1 && trimCopy(dims[0]).empty()) {
             if (normalized == "dialogueport::dialogueline") return FieldKind::DialogueLines;
             if (normalized == "sceneobj*" || normalized == "sceneobject*" ||
@@ -1668,6 +1675,38 @@ namespace {
                 std::regex("([^A-Za-z0-9_.])!\\s*" + esc + "(?=[\\s\\|\\&\\)])"),
                 "$1" + field + ".empty()");
         }
+        return out;
+    }
+
+    // Lowers sprite assignment `<target>.Sprite = <expr>;` to SetObjectSprite.
+    //   self.Sprite = E;       -> SetObjectSprite(Scene::Current(), E);
+    //   refField.Sprite = E;   -> SetObjectSprite(Scene::Resolve(Field::Text("refField")), E);
+    //   handle.Sprite = E;     -> SetObjectSprite(handle, E);   (handle is a SceneObject*)
+    // The `[^;=]` first RHS char keeps `.Sprite == x` comparisons from matching.
+    std::string transformSpriteAssignment(const std::string& body,
+                                          const std::unordered_set<std::string>& objectRefFields) {
+        if (body.find("Sprite") == std::string::npos) return body;
+        std::string out = body;
+
+        // self first.
+        replaceRegexAll(out,
+            std::regex("\\bself\\s*\\.\\s*Sprite\\s*=\\s*([^;=][^;]*);"),
+            "::ModuCPP::SetObjectSprite(::ModuCPP::Scene::Current(), $1);");
+
+        // ObjectRef string fields resolve to a SceneObject* before assigning.
+        for (const std::string& field : objectRefFields) {
+            const std::string esc = regexEscape(field);
+            replaceRegexAll(out,
+                std::regex("\\b" + esc + "\\s*\\.\\s*Sprite\\s*=\\s*([^;=][^;]*);"),
+                "::ModuCPP::SetObjectSprite(::ModuCPP::Scene::Resolve(::ModuCPP::Field::Text(\"" +
+                    field + "\")), $1);");
+        }
+
+        // Remaining `handle.Sprite = E;` — handle is a SceneObject* expression. Runs
+        // last so the rewrites above (which emit no `.Sprite =`) are never re-matched.
+        replaceRegexAll(out,
+            std::regex("\\b([A-Za-z_]\\w*)\\s*\\.\\s*Sprite\\s*=\\s*([^;=][^;]*);"),
+            "::ModuCPP::SetObjectSprite($1, $2);");
         return out;
     }
 
@@ -4832,6 +4871,7 @@ namespace {
             // Narrow rewrite for known [ObjectRef] field truthiness + UI access.
             // Runs before transformEachSyntax so the each-loop pass sees the same body.
             rewrittenBody = transformObjectRefAccess(rewrittenBody, objectRefFields);
+            rewrittenBody = transformSpriteAssignment(rewrittenBody, objectRefFields);
             std::string transformedBody = transformEachSyntax(rewrittenBody, listFields, supportNs,
                                                             method.hasContext, error);
             if (!error.empty()) {

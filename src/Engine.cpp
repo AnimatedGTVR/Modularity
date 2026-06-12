@@ -1,10 +1,14 @@
 #include "Engine.h"
+#ifdef __ANDROID__
+#include "AndroidRuntime/AndroidRuntime.h"
+#endif
 #include "SceneSerializationInternal.h"
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
 #include "DragPreviewOverlay.h"
 #include "MaterialAssetUtils.h"
 #include "ModelLoader.h"
+#include "../include/Platform/AssetSource.h"
 #include "Render25D/MMeshLoader.h"
 #include "RuntimeContent.h"
 #include <iostream>
@@ -23,6 +27,7 @@
 #include <cstring>
 #include <ctime>
 #include <regex>
+#include <set>
 #include <sstream>
 #if defined(_WIN32)
 #include <winhttp.h>
@@ -1832,7 +1837,7 @@ bool applyTemplateProject(const fs::path& templateProjectRoot,
     return true;
 }
 
-bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, std::string& error) {
+bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, bool leanRuntimeExport, std::string& error) {
     std::error_code ec;
     if (!fs::exists(buildRoot)) return true;
 
@@ -1849,7 +1854,9 @@ bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, 
         return false;
     }
 
-    const std::vector<std::string> exts = { ".a", ".so", ".dylib", ".lib", ".dll" };
+    const std::vector<std::string> exts = leanRuntimeExport
+        ? std::vector<std::string>{ ".so", ".dylib", ".dll" }
+        : std::vector<std::string>{ ".a", ".so", ".dylib", ".lib", ".dll" };
     for (const auto& entry : fs::recursive_directory_iterator(buildRoot)) {
         if (!entry.is_regular_file()) continue;
         fs::path src = entry.path();
@@ -1869,7 +1876,7 @@ bool copyPrecompiledPackages(const fs::path& buildRoot, const fs::path& outDir, 
     return true;
 }
 
-bool copyPrecompiledEnginePackages(const fs::path& buildRoot, const fs::path& outDir, std::string& error) {
+bool copyPrecompiledEnginePackages(const fs::path& buildRoot, const fs::path& outDir, bool leanRuntimeExport, std::string& error) {
     std::error_code ec;
     if (!fs::exists(buildRoot)) return true;
 
@@ -1895,7 +1902,9 @@ bool copyPrecompiledEnginePackages(const fs::path& buildRoot, const fs::path& ou
                name.rfind("core_player.", 0) == 0;
     };
 
-    const std::vector<std::string> exts = { ".a", ".so", ".dylib", ".lib", ".dll" };
+    const std::vector<std::string> exts = leanRuntimeExport
+        ? std::vector<std::string>{ ".so", ".dylib", ".dll" }
+        : std::vector<std::string>{ ".a", ".so", ".dylib", ".lib", ".dll" };
     for (const auto& entry : fs::recursive_directory_iterator(buildRoot)) {
         if (!entry.is_regular_file()) continue;
         fs::path src = entry.path();
@@ -1952,6 +1961,503 @@ std::string quotePath(const fs::path& path) {
         pos += 2;
     }
     return "\"" + value + "\"";
+}
+
+std::string xmlEscape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
+std::string makeAndroidPackageSegment(const std::string& value, const char* fallback) {
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char c : value) {
+        if (std::isalnum(c)) {
+            out.push_back(static_cast<char>(std::tolower(c)));
+        } else if (c == '_' && !out.empty()) {
+            out.push_back('_');
+        }
+    }
+    while (!out.empty() && out.front() == '_') out.erase(out.begin());
+    if (out.empty() || !std::isalpha(static_cast<unsigned char>(out.front()))) {
+        out = std::string(fallback) + (out.empty() ? "" : ("_" + out));
+    }
+    return out;
+}
+
+std::string makeAndroidPackageName(const std::string& companyName, const std::string& buildName) {
+    return "com." +
+        makeAndroidPackageSegment(companyName, "company") + "." +
+        makeAndroidPackageSegment(buildName, "game");
+}
+
+std::string joinStrings(const std::vector<std::string>& values, const char* separator) {
+    std::ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << separator;
+        out << values[i];
+    }
+    return out.str();
+}
+
+std::string lowerExtension(const fs::path& path) {
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
+}
+
+bool appendAssimpImporterForExtension(const std::string& ext, std::set<std::string>& importers) {
+    if (ext == ".fbx") {
+        importers.insert("FBX");
+    } else if (ext == ".blend") {
+        importers.insert("BLEND");
+    } else if (ext == ".gltf" || ext == ".glb") {
+        importers.insert("GLTF");
+    } else if (ext == ".obj") {
+        importers.insert("OBJ");
+    } else if (ext == ".dae") {
+        importers.insert("COLLADA");
+    } else if (ext == ".3ds") {
+        importers.insert("3DS");
+    } else if (ext == ".stl") {
+        importers.insert("STL");
+    } else if (ext == ".ply") {
+        importers.insert("PLY");
+    } else if (ext == ".x") {
+        importers.insert("X");
+    } else if (ext == ".x3d") {
+        importers.insert("X3D");
+    } else if (ext == ".rmesh" || ext == ".mmesh") {
+        importers.insert("OBJ");
+    } else {
+        return false;
+    }
+    return true;
+}
+
+void scanTextForAndroidModelImporters(const std::string& text, std::set<std::string>& importers) {
+    auto trim = [](std::string& s) {
+        auto start = s.find_first_not_of(" \t\r\n");
+        auto end = s.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos || end == std::string::npos) {
+            s.clear();
+            return;
+        }
+        s = s.substr(start, end - start + 1);
+    };
+
+    std::istringstream stream(text);
+    std::string line;
+    while (std::getline(stream, line)) {
+        trim(line);
+        if (line.rfind("meshPath=", 0) != 0) continue;
+        std::string value = line.substr(9);
+        trim(value);
+        if (value.empty()) continue;
+        appendAssimpImporterForExtension(lowerExtension(value), importers);
+    }
+}
+
+std::vector<std::string> detectAndroidAssimpImporters(const fs::path& projectRoot,
+                                                      const fs::path& scenesPath,
+                                                      const std::vector<std::string>& runtimeSceneNames) {
+    std::set<std::string> importers;
+    for (const std::string& sceneName : runtimeSceneNames) {
+        if (sceneName.empty()) continue;
+        const fs::path scenePath = scenesPath / (sceneName + ".scene");
+        std::ifstream in(scenePath);
+        if (!in.is_open()) continue;
+        std::ostringstream text;
+        text << in.rdbuf();
+        scanTextForAndroidModelImporters(text.str(), importers);
+    }
+
+    std::error_code ec;
+    const fs::path assetsRoot = projectRoot / "Assets";
+    if (fs::is_directory(assetsRoot, ec)) {
+        for (auto it = fs::recursive_directory_iterator(assetsRoot, ec);
+             !ec && it != fs::recursive_directory_iterator();
+             it.increment(ec)) {
+            if (ec || !it->is_regular_file()) continue;
+            appendAssimpImporterForExtension(lowerExtension(it->path()), importers);
+        }
+    }
+
+    return std::vector<std::string>(importers.begin(), importers.end());
+}
+
+bool writeTextFileForExport(const fs::path& path, const std::string& text, std::string& error) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        error = "Failed to create directory: " + path.parent_path().string();
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        error = "Failed to write file: " + path.string();
+        return false;
+    }
+    out << text;
+    return static_cast<bool>(out);
+}
+
+fs::path findExecutableInPath(const std::string& name) {
+    const char* rawPath = std::getenv("PATH");
+    if (!rawPath || !*rawPath) return {};
+#ifdef _WIN32
+    constexpr char separator = ';';
+    const std::vector<std::string> suffixes = {".exe", ".bat", ".cmd", ""};
+#else
+    constexpr char separator = ':';
+    const std::vector<std::string> suffixes = {""};
+#endif
+    std::stringstream ss(rawPath);
+    std::string dir;
+    while (std::getline(ss, dir, separator)) {
+        if (dir.empty()) continue;
+        for (const std::string& suffix : suffixes) {
+            fs::path candidate = fs::path(dir) / (name + suffix);
+            std::error_code ec;
+            if (fs::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+        }
+    }
+    return {};
+}
+
+std::string androidToolName(const char* name) {
+#ifdef _WIN32
+    return std::string(name) + ".exe";
+#else
+    return name;
+#endif
+}
+
+fs::path findAndroidSdkRoot() {
+    const char* envVars[] = {
+        "ANDROID_SDK_ROOT",
+        "ANDROID_HOME",
+        "ANDROID_SDK_HOME",
+        "ANDROID_SDK",
+    };
+    for (const char* var : envVars) {
+        const char* value = std::getenv(var);
+        if (!value || !*value) continue;
+        std::error_code ec;
+        fs::path candidate(value);
+        if (fs::is_directory(candidate / "platforms", ec) &&
+            fs::is_directory(candidate / "build-tools", ec)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+fs::path findLatestAndroidJar(const fs::path& sdkRoot, int& outApiLevel) {
+    outApiLevel = 0;
+    fs::path best;
+    std::error_code ec;
+    const fs::path platformsRoot = sdkRoot / "platforms";
+    if (!fs::is_directory(platformsRoot, ec)) return {};
+    for (const auto& entry : fs::directory_iterator(platformsRoot, ec)) {
+        if (ec || !entry.is_directory()) continue;
+        const std::string name = entry.path().filename().string();
+        constexpr const char* prefix = "android-";
+        if (name.rfind(prefix, 0) != 0) continue;
+        int api = std::atoi(name.c_str() + std::strlen(prefix));
+        if (api <= outApiLevel) continue;
+        fs::path jar = entry.path() / "android.jar";
+        if (!fs::exists(jar, ec) || ec) continue;
+        outApiLevel = api;
+        best = jar;
+    }
+    return best;
+}
+
+fs::path findLatestAndroidJarInRoots(const std::vector<fs::path>& sdkRoots,
+                                     fs::path& outSdkRoot,
+                                     int& outApiLevel) {
+    outSdkRoot.clear();
+    outApiLevel = 0;
+    fs::path best;
+    for (const fs::path& sdkRoot : sdkRoots) {
+        if (sdkRoot.empty()) continue;
+        int apiLevel = 0;
+        fs::path jar = findLatestAndroidJar(sdkRoot, apiLevel);
+        if (jar.empty() || apiLevel <= outApiLevel) continue;
+        outApiLevel = apiLevel;
+        outSdkRoot = sdkRoot;
+        best = jar;
+    }
+    return best;
+}
+
+struct AndroidBuildTools {
+    fs::path aapt2;
+    fs::path zipalign;
+    fs::path apksigner;
+};
+
+AndroidBuildTools findLatestAndroidBuildTools(const fs::path& sdkRoot) {
+    AndroidBuildTools best;
+    std::string bestVersion;
+    std::error_code ec;
+    const fs::path toolsRoot = sdkRoot / "build-tools";
+    if (!fs::is_directory(toolsRoot, ec)) return best;
+    for (const auto& entry : fs::directory_iterator(toolsRoot, ec)) {
+        if (ec || !entry.is_directory()) continue;
+        fs::path aapt2 = entry.path() / androidToolName("aapt2");
+        fs::path zipalign = entry.path() / androidToolName("zipalign");
+        fs::path apksigner = entry.path() / androidToolName("apksigner");
+#ifdef _WIN32
+        if (!fs::exists(apksigner, ec)) {
+            apksigner = entry.path() / "apksigner.bat";
+        }
+#endif
+        if (!fs::exists(aapt2, ec) || !fs::exists(zipalign, ec) || !fs::exists(apksigner, ec)) {
+            continue;
+        }
+        const std::string version = entry.path().filename().string();
+        if (version > bestVersion) {
+            bestVersion = version;
+            best = {aapt2, zipalign, apksigner};
+        }
+    }
+    return best;
+}
+
+fs::path findAndroidLlvmStrip(const fs::path& ndkRoot) {
+    const std::vector<std::string> hosts = {
+        "linux-x86_64",
+        "windows-x86_64",
+        "darwin-x86_64",
+        "darwin-arm64"
+    };
+    const std::string stripName = androidToolName("llvm-strip");
+    for (const std::string& host : hosts) {
+        fs::path candidate =
+            ndkRoot / "toolchains" / "llvm" / "prebuilt" / host / "bin" / stripName;
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate;
+        }
+    }
+    return findExecutableInPath("llvm-strip");
+}
+
+fs::path findAndroidSharedLibrary(const fs::path& buildRoot) {
+    std::error_code ec;
+    const fs::path direct = buildRoot / "libModularityPlayer.so";
+    if (fs::exists(direct, ec) && !ec) return direct;
+    for (auto it = fs::recursive_directory_iterator(buildRoot, ec);
+         it != fs::recursive_directory_iterator(); ++it) {
+        if (ec) break;
+        if (it->is_regular_file() && it->path().filename() == "libModularityPlayer.so") {
+            return it->path();
+        }
+    }
+    return {};
+}
+
+bool writeAndroidManifest(const fs::path& manifestPath,
+                          const std::string& packageName,
+                          const std::string& appLabel,
+                          const std::string& versionName,
+                          bool debuggable,
+                          const std::string& iconRef,
+                          std::string& error) {
+    std::ostringstream manifest;
+    manifest << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    manifest << "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n";
+    manifest << "    package=\"" << xmlEscape(packageName) << "\"\n";
+    manifest << "    android:versionCode=\"1\"\n";
+    manifest << "    android:versionName=\"" << xmlEscape(versionName) << "\">\n";
+    // PackageManager rejects APKs with no <uses-sdk> declaration on Android
+    // 14+ (the read targetSdkVersion is 0 in that case). minSdk matches the
+    // ANDROID_PLATFORM=26 we configure with; targetSdk=34 is a recent
+    // compatible value that satisfies modern install gates without forcing
+    // an SDK-Manager dependency on a specific API platform.
+    manifest << "    <uses-sdk android:minSdkVersion=\"26\" android:targetSdkVersion=\"34\" />\n";
+    manifest << "    <uses-feature android:glEsVersion=\"0x00030000\" android:required=\"true\" />\n";
+    manifest << "    <application\n";
+    manifest << "        android:label=\"" << xmlEscape(appLabel) << "\"\n";
+    manifest << "        android:debuggable=\"" << (debuggable ? "true" : "false") << "\"\n";
+    manifest << "        android:extractNativeLibs=\"true\"\n";
+    manifest << "        android:hasCode=\"false\"\n";
+    manifest << "        android:icon=\"" << iconRef << "\">\n";
+    manifest << "        <activity\n";
+    manifest << "            android:name=\"android.app.NativeActivity\"\n";
+    manifest << "            android:configChanges=\"keyboard|keyboardHidden|orientation|screenSize|uiMode\"\n";
+    manifest << "            android:exported=\"true\"\n";
+    manifest << "            android:screenOrientation=\"landscape\">\n";
+    manifest << "            <meta-data android:name=\"android.app.lib_name\" android:value=\"ModularityPlayer\" />\n";
+    manifest << "            <intent-filter>\n";
+    manifest << "                <action android:name=\"android.intent.action.MAIN\" />\n";
+    manifest << "                <category android:name=\"android.intent.category.LAUNCHER\" />\n";
+    manifest << "            </intent-filter>\n";
+    manifest << "        </activity>\n";
+    manifest << "    </application>\n";
+    manifest << "</manifest>\n";
+    return writeTextFileForExport(manifestPath, manifest.str(), error);
+}
+
+bool writeAndroidLauncherIcon(const fs::path& resRoot,
+                              const fs::path& sourceRoot,
+                              std::string& iconRef,
+                              std::string& error) {
+    std::error_code ec;
+    const fs::path logoPath = sourceRoot / "Resources" / "Engine-Root" / "Modu-Logo.png";
+    if (fs::exists(logoPath, ec) && !ec) {
+        fs::path iconPath = resRoot / "mipmap-xxxhdpi" / "ic_launcher.png";
+        fs::create_directories(iconPath.parent_path(), ec);
+        if (ec) {
+            error = "Failed to create icon directory.";
+            return false;
+        }
+        fs::copy_file(logoPath, iconPath, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Failed to copy Android launcher icon.";
+            return false;
+        }
+        iconRef = "@mipmap/ic_launcher";
+        return true;
+    }
+
+    iconRef = "@drawable/ic_launcher";
+    const std::string vectorIcon =
+        "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n"
+        "    android:width=\"48dp\" android:height=\"48dp\"\n"
+        "    android:viewportWidth=\"48\" android:viewportHeight=\"48\">\n"
+        "    <path android:fillColor=\"#202124\" android:pathData=\"M0,0h48v48h-48z\"/>\n"
+        "    <path android:fillColor=\"#7CFFB2\" android:pathData=\"M9,12h8l7,14l7,-14h8v24h-7v-13l-6,13h-4l-6,-13v13h-7z\"/>\n"
+        "</vector>\n";
+    return writeTextFileForExport(resRoot / "drawable" / "ic_launcher.xml", vectorIcon, error);
+}
+
+bool ensureAndroidDebugKeystore(const fs::path& keystorePath,
+                                const std::function<void(const std::string&)>& appendLog,
+                                std::string& error) {
+    std::error_code ec;
+    if (fs::exists(keystorePath, ec) && !ec) {
+        return true;
+    }
+    fs::create_directories(keystorePath.parent_path(), ec);
+    if (ec) {
+        error = "Failed to create Android signing directory.";
+        return false;
+    }
+
+    fs::path keytool = findExecutableInPath("keytool");
+    if (keytool.empty()) {
+        error = "Android debug keystore is missing and keytool was not found in PATH.";
+        return false;
+    }
+
+    std::string command =
+        quotePath(keytool) +
+        " -genkeypair -v -keystore " + quotePath(keystorePath) +
+        " -storepass android -alias androiddebugkey -keypass android"
+        " -keyalg RSA -keysize 2048 -validity 10000"
+        " -dname \"CN=Android Debug,O=Android,C=US\"";
+    int exitCode = 0;
+    if (appendLog) appendLog("Running: " + command);
+    if (!runCommandStreaming(command + " 2>&1", appendLog, &exitCode)) {
+        error = "Failed to generate Android debug keystore (exit code " + std::to_string(exitCode) + ").";
+        return false;
+    }
+    return true;
+}
+
+bool packageAndroidApk(const fs::path& apkStageRoot,
+                       const fs::path& outputApk,
+                       const fs::path& androidJar,
+                       const AndroidBuildTools& tools,
+                       const fs::path& keystorePath,
+                       const std::function<void(const std::string&)>& appendLog,
+                       std::string& error) {
+    std::error_code ec;
+    fs::remove(outputApk, ec);
+
+    const fs::path compiledResources = apkStageRoot / "compiled-res.zip";
+    const fs::path unsignedApk = apkStageRoot / "unsigned.apk";
+    const fs::path alignedApk = apkStageRoot / "aligned.apk";
+    const fs::path generatedJava = apkStageRoot / "gen";
+    fs::create_directories(generatedJava, ec);
+    if (ec) {
+        error = "Failed to create Android generated-source directory.";
+        return false;
+    }
+
+    auto runStep = [&](const std::string& command, const std::string& failure) {
+        int exitCode = 0;
+        if (appendLog) appendLog("Running: " + command);
+        if (!runCommandStreaming(command + " 2>&1", appendLog, &exitCode)) {
+            error = failure + " (exit code " + std::to_string(exitCode) + ").";
+            return false;
+        }
+        return true;
+    };
+
+    if (!runStep(quotePath(tools.aapt2) + " compile --dir " +
+                 quotePath(apkStageRoot / "res") + " -o " + quotePath(compiledResources),
+                 "aapt2 resource compile failed")) {
+        return false;
+    }
+
+    if (!runStep(quotePath(tools.aapt2) + " link -o " + quotePath(unsignedApk) +
+                 " -I " + quotePath(androidJar) +
+                 " --manifest " + quotePath(apkStageRoot / "AndroidManifest.xml") +
+                 " --java " + quotePath(generatedJava) +
+                 " -A " + quotePath(apkStageRoot / "assets") +
+                 " " + quotePath(compiledResources),
+                 "aapt2 link failed")) {
+        return false;
+    }
+
+    fs::path zipTool = findExecutableInPath("zip");
+    if (zipTool.empty()) {
+        error = "zip was not found in PATH; needed to add native libraries to the APK.";
+        return false;
+    }
+    if (!runStep("cd " + quotePath(apkStageRoot) + " && " +
+                 quotePath(zipTool) + " -q -r " + quotePath(unsignedApk) + " lib",
+                 "Failed to add native libraries to APK")) {
+        return false;
+    }
+
+    if (!runStep(quotePath(tools.zipalign) + " -f 4 " +
+                 quotePath(unsignedApk) + " " + quotePath(alignedApk),
+                 "zipalign failed")) {
+        return false;
+    }
+
+    if (!ensureAndroidDebugKeystore(keystorePath, appendLog, error)) {
+        return false;
+    }
+
+    if (!runStep(quotePath(tools.apksigner) +
+                 " sign --ks " + quotePath(keystorePath) +
+                 " --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android" +
+                 " --out " + quotePath(outputApk) + " " + quotePath(alignedApk),
+                 "apksigner failed")) {
+        return false;
+    }
+
+    return true;
 }
 
 fs::path resolveCurrentExecutablePath() {
@@ -2479,6 +2985,7 @@ bool StageRuntimeScene(const fs::path& sourceScenePath,
 
 bool CopyRuntimeResourcesSubset(const fs::path& sourceRoot,
                                 const fs::path& runtimeRoot,
+                                bool leanRuntimeExport,
                                 std::string& error) {
     const fs::path resourcesRoot = sourceRoot / "Resources";
     const fs::path docsRoot = sourceRoot / "docs";
@@ -2494,13 +3001,42 @@ bool CopyRuntimeResourcesSubset(const fs::path& sourceRoot,
         }
     }
 
-    const fs::path logoPath = resourcesRoot / "Engine-Root" / "Modu-Logo.png";
-    if (fs::exists(logoPath)) {
-        if (!CopyFileIntoRuntimeRoot(logoPath, runtimeRoot, fs::path("Resources") / "Engine-Root" / "Modu-Logo.png", error)) {
-            return false;
+    if (fs::exists(resourcesRoot / "Engine-Root")) {
+        if (leanRuntimeExport) {
+            if (fs::exists(resourcesRoot / "Engine-Root" / "Modu-Logo.png")) {
+                if (!CopyFileIntoRuntimeRoot(resourcesRoot / "Engine-Root" / "Modu-Logo.png",
+                                             runtimeRoot,
+                                             fs::path("Resources") / "Engine-Root" / "Modu-Logo.png",
+                                             error)) {
+                    return false;
+                }
+            }
+            if (fs::exists(resourcesRoot / "Engine-Root" / "Skybox")) {
+                if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Engine-Root" / "Skybox",
+                                                  runtimeRoot,
+                                                  fs::path("Resources") / "Engine-Root" / "Skybox",
+                                                  error)) {
+                    return false;
+                }
+            }
+            if (fs::exists(resourcesRoot / "Engine-Root" / "Textures")) {
+                if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Engine-Root" / "Textures",
+                                                  runtimeRoot,
+                                                  fs::path("Resources") / "Engine-Root" / "Textures",
+                                                  error)) {
+                    return false;
+                }
+            }
+        } else {
+            if (!CopyDirectoryIntoRuntimeRoot(resourcesRoot / "Engine-Root",
+                                              runtimeRoot,
+                                              fs::path("Resources") / "Engine-Root",
+                                              error)) {
+                return false;
+            }
         }
     }
-    if (fs::exists(docsRoot)) {
+    if (!leanRuntimeExport && fs::exists(docsRoot)) {
         if (!CopyDirectoryIntoRuntimeRoot(docsRoot, runtimeRoot, "docs", error)) {
             return false;
         }
@@ -2524,6 +3060,206 @@ std::vector<RuntimeBundleEntry> CollectRuntimeBundleEntries(const fs::path& runt
                   return a.archivePath.generic_string() < b.archivePath.generic_string();
               });
     return entries;
+}
+
+std::string BuildSizeCategoryForPath(const fs::path& archivePath) {
+    std::string p = archivePath.generic_string();
+    std::string lower = p;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string ext = archivePath.extension().string();
+    std::string lowerExt = ext;
+    std::transform(lowerExt.begin(), lowerExt.end(), lowerExt.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (lower.find("docs/") == 0 ||
+        lower.find("template-projects/") == 0 ||
+        lower.find("resources/scriptsdk/") == 0 ||
+        lower.find("resources/engine-root/ai") == 0 ||
+        lower.find("editor") != std::string::npos) {
+        return "editor-only";
+    }
+    if (lowerExt == ".pdb" || lowerExt == ".ilk" || lowerExt == ".exp" ||
+        lowerExt == ".map" || lowerExt == ".debug" || lower.find(".dsym/") != std::string::npos) {
+        return "debug-symbols";
+    }
+    if (lower.find("packages/") == 0 ||
+        lower.find("library/compiledscripts/") == 0 ||
+        lower.find("library/installedpackages/") == 0 ||
+        lower.find("scripts/managed/bin/") == 0) {
+        return "modules";
+    }
+    if (lower.find("resources/") == 0) {
+        return "engine-resources";
+    }
+    if (lower.find("assets/") == 0) {
+        return "assets";
+    }
+    if (lowerExt == ".so" || lowerExt == ".dll" || lowerExt == ".dylib" ||
+        lower.find("modularityplayer") != std::string::npos) {
+        return "runtime";
+    }
+    return "other";
+}
+
+bool WriteBuildSizeReports(const fs::path& exportRoot,
+                           const std::vector<RuntimeBundleEntry>& bundleEntries,
+                           const std::vector<fs::path>& looseFiles,
+                           const fs::path& archivePath,
+                           const fs::path& projectRoot,
+                           std::string& error) {
+    struct SizeItem {
+        fs::path sourcePath;
+        fs::path displayPath;
+        std::string category;
+        uint64_t bytes = 0;
+    };
+    std::vector<SizeItem> items;
+    std::map<std::string, uint64_t> totals;
+    uint64_t totalBytes = 0;
+    std::error_code ec;
+
+    auto addItem = [&](const fs::path& source, const fs::path& display, const std::string& category) {
+        if (source.empty() || !fs::exists(source, ec) || ec || !fs::is_regular_file(source, ec)) {
+            ec.clear();
+            return;
+        }
+        uint64_t bytes = static_cast<uint64_t>(fs::file_size(source, ec));
+        if (ec) {
+            ec.clear();
+            return;
+        }
+        items.push_back({source, display, category, bytes});
+        totals[category] += bytes;
+        totalBytes += bytes;
+    };
+
+    for (const RuntimeBundleEntry& entry : bundleEntries) {
+        addItem(entry.sourcePath, entry.archivePath, BuildSizeCategoryForPath(entry.archivePath));
+    }
+    for (const fs::path& loose : looseFiles) {
+        std::error_code relEc;
+        fs::path rel = fs::relative(loose, exportRoot, relEc);
+        addItem(loose, relEc ? loose.filename() : rel, BuildSizeCategoryForPath(relEc ? loose.filename() : rel));
+    }
+    if (!archivePath.empty()) {
+        addItem(archivePath, archivePath.filename(), "archive");
+    }
+
+    std::sort(items.begin(), items.end(), [](const SizeItem& a, const SizeItem& b) {
+        return a.bytes > b.bytes;
+    });
+
+    std::vector<std::string> warnings;
+    for (const SizeItem& item : items) {
+        if (item.category == "debug-symbols") {
+            warnings.push_back("Debug/build artifact in export: " + item.displayPath.generic_string());
+        } else if (item.category == "editor-only") {
+            warnings.push_back("Editor/development file in export: " + item.displayPath.generic_string());
+        } else {
+            std::string ext = item.displayPath.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".a" || ext == ".lib") {
+                warnings.push_back("Static/import library in runtime payload: " + item.displayPath.generic_string());
+            }
+        }
+        if (warnings.size() >= 40) break;
+    }
+
+    std::vector<fs::path> unusedCandidates;
+    fs::path assetsRoot = projectRoot / "Assets";
+    if (fs::exists(assetsRoot)) {
+        std::unordered_set<std::string> stagedAssetNames;
+        for (const RuntimeBundleEntry& entry : bundleEntries) {
+            if (entry.archivePath.generic_string().find("Assets/") == 0) {
+                stagedAssetNames.insert(entry.archivePath.filename().string());
+            }
+        }
+        for (auto it = fs::recursive_directory_iterator(assetsRoot, ec);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            std::string ext = it->path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".scene" || ext == ".moducpp" || ext == ".cpp" || ext == ".h") continue;
+            if (stagedAssetNames.find(it->path().filename().string()) == stagedAssetNames.end()) {
+                unusedCandidates.push_back(it->path());
+                if (unusedCandidates.size() >= 40) break;
+            }
+        }
+    }
+
+    fs::path mdPath = exportRoot / "BuildSizeReport.md";
+    fs::create_directories(exportRoot, ec);
+    std::ofstream md(mdPath, std::ios::trunc);
+    if (!md.is_open()) {
+        error = "Failed to write build size report: " + mdPath.string();
+        return false;
+    }
+    md << "# Build Size Report\n\n";
+    md << "Total scanned size: " << totalBytes << " bytes\n\n";
+    md << "## Categories\n\n";
+    for (const auto& [category, bytes] : totals) {
+        md << "- " << category << ": " << bytes << " bytes\n";
+    }
+    md << "\n## Largest Files\n\n";
+    const size_t topCount = std::min<size_t>(20, items.size());
+    for (size_t i = 0; i < topCount; ++i) {
+        md << "- " << items[i].displayPath.generic_string()
+           << " (" << items[i].category << ", " << items[i].bytes << " bytes)\n";
+    }
+    if (!warnings.empty()) {
+        md << "\n## Warnings\n\n";
+        for (const std::string& warning : warnings) md << "- " << warning << "\n";
+    }
+    if (!unusedCandidates.empty()) {
+        md << "\n## Possible Unused Assets\n\n";
+        for (const fs::path& path : unusedCandidates) {
+            std::error_code relEc;
+            fs::path rel = fs::relative(path, projectRoot, relEc);
+            md << "- " << (relEc ? path.generic_string() : rel.generic_string()) << "\n";
+        }
+    }
+
+    fs::path jsonPath = exportRoot / "BuildSizeReport.json";
+    std::ofstream json(jsonPath, std::ios::trunc);
+    if (!json.is_open()) {
+        error = "Failed to write build size JSON report: " + jsonPath.string();
+        return false;
+    }
+    auto jsonEscape = [](const std::string& value) {
+        std::string out;
+        for (char c : value) {
+            if (c == '"' || c == '\\') out.push_back('\\');
+            if (c == '\n') out += "\\n";
+            else out.push_back(c);
+        }
+        return out;
+    };
+    json << "{\n  \"totalBytes\": " << totalBytes << ",\n  \"categories\": {";
+    bool first = true;
+    for (const auto& [category, bytes] : totals) {
+        json << (first ? "\n" : ",\n") << "    \"" << jsonEscape(category) << "\": " << bytes;
+        first = false;
+    }
+    json << "\n  },\n  \"largestFiles\": [\n";
+    for (size_t i = 0; i < topCount; ++i) {
+        json << "    {\"path\": \"" << jsonEscape(items[i].displayPath.generic_string())
+             << "\", \"category\": \"" << jsonEscape(items[i].category)
+             << "\", \"bytes\": " << items[i].bytes << "}";
+        if (i + 1 < topCount) json << ",";
+        json << "\n";
+    }
+    json << "  ],\n  \"warnings\": [\n";
+    for (size_t i = 0; i < warnings.size(); ++i) {
+        json << "    \"" << jsonEscape(warnings[i]) << "\"";
+        if (i + 1 < warnings.size()) json << ",";
+        json << "\n";
+    }
+    json << "  ]\n}\n";
+    return true;
 }
 
 fs::path BuildRuntimeCacheRoot(const fs::path& appDataPath,
@@ -3505,6 +4241,52 @@ float Engine::getSceneViewportInternalAspect() const {
 }
 
 void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
+    // One-time diagnostic so logcat / stderr tells us exactly which preset
+    // the runtime resolved to at startup (helps catch "did the Native
+    // dropdown selection actually persist into the bake?" without
+    // squinting at screenshots).
+    // Log on change (not just first call) — the runtime resolution gets
+    // re-decided each frame and may genuinely shift across startup (e.g.
+    // index=0 on frame 1 before build.modu has loaded, then index=5 after
+    // finishProjectLoad runs ~180ms later). Tracking only the first value
+    // is misleading.
+    static int _lastIndex = -2;
+    static int _lastNative = -1;
+    static int _lastW = -1, _lastH = -1;
+    auto _finish = [&]() {
+        const int curNative = (int)projectManager.currentProject.playerSettings.nativeDisplayResolution;
+        if (_lastIndex != gameViewportResolutionIndex ||
+            _lastNative != curNative ||
+            _lastW != outWidth || _lastH != outHeight) {
+            std::fprintf(stderr, "[Runtime] resolution index=%d native=%d -> %dx%d (custom=%dx%d)\n",
+                         gameViewportResolutionIndex, curNative,
+                         outWidth, outHeight,
+                         gameViewportCustomWidth, gameViewportCustomHeight);
+            _lastIndex = gameViewportResolutionIndex;
+            _lastNative = curNative;
+            _lastW = outWidth;
+            _lastH = outHeight;
+        }
+    };
+
+    // Project-level override: when "Native Display Resolution" is on in
+    // Project Settings, ignore the dropdown and use the actual display
+    // surface size. This is the discoverable place users expect runtime
+    // resolution behaviour to live; the dropdown stays a per-editor
+    // preview hint.
+    if (projectManager.currentProject.playerSettings.nativeDisplayResolution) {
+        int w = 0, h = 0;
+#ifdef __ANDROID__
+        Modularity::AndroidRuntime::GetSurfaceSize(&w, &h);
+#else
+        if (editorWindow) glfwGetFramebufferSize(editorWindow, &w, &h);
+#endif
+        outWidth  = (w > 0) ? w : kRuntimeInternalWidth;
+        outHeight = (h > 0) ? h : kRuntimeInternalHeight;
+        _finish();
+        return;
+    }
+
     switch (gameViewportResolutionIndex) {
         case 1:
             outWidth = 1920;
@@ -3522,12 +4304,27 @@ void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
             outWidth = std::clamp(gameViewportCustomWidth, 64, 8192);
             outHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
             break;
+        case 5: {
+            // Native — match the actual display surface. On Android the
+            // EGL surface size is the source of truth (GLFW's null backend
+            // returns 0). On desktop GLFW's framebuffer size is correct.
+            int w = 0, h = 0;
+#ifdef __ANDROID__
+            Modularity::AndroidRuntime::GetSurfaceSize(&w, &h);
+#else
+            if (editorWindow) glfwGetFramebufferSize(editorWindow, &w, &h);
+#endif
+            outWidth  = (w > 0) ? w : kRuntimeInternalWidth;
+            outHeight = (h > 0) ? h : kRuntimeInternalHeight;
+            break;
+        }
         case 0:
         default:
             outWidth = kRuntimeInternalWidth;
             outHeight = kRuntimeInternalHeight;
             break;
     }
+    _finish();
 }
 
 float Engine::getRuntimeInternalAspect() const {
@@ -3786,6 +4583,19 @@ void Engine::run() {
 
         const auto __preStart = std::chrono::steady_clock::now();
         glfwPollEvents();
+#ifdef __ANDROID__
+        // Drain Android lifecycle + input events alongside GLFW. If the
+        // activity is being destroyed, exit the loop immediately.
+        if (!Modularity::AndroidRuntime::PollEvents()) {
+            glfwSetWindowShouldClose(editorWindow, GLFW_TRUE);
+            break;
+        }
+        // No render surface means we're backgrounded or between
+        // activity windows — skip the entire frame, don't burn cycles.
+        if (!Modularity::AndroidRuntime::HasRenderSurface()) {
+            continue;
+        }
+#endif
         pollProjectLoad();
         pollSceneLoad();
 
@@ -3940,12 +4750,12 @@ void Engine::run() {
             }
         }
 
-        bool simulatePhysics = physics.isReady() &&
+        bool simulatePhysics = physics->isReady() &&
                                ((isPlaying && !isPaused) || (!isPlaying && specMode)) &&
                                hasRuntime3DPhysics;
         if (simulatePhysics) {
             MODU_PROFILE_SCOPE("Physics 3D", ProfilerSampleCategory::Physics);
-            physics.simulate(deltaTime, sceneObjects);
+            physics->simulate(deltaTime, sceneObjects);
         }
         bool runAI = (isPlaying || specMode || testMode) && hasRuntimeAIAgent;
         if (runAI) {
@@ -4047,7 +4857,13 @@ void Engine::run() {
         if (playerMode && !showLauncher) {
             int displayW = 0;
             int displayH = 0;
+#ifdef __ANDROID__
+            // GLFW's null backend returns 0x0 for framebuffer size; use the
+            // EGL surface dimensions that AndroidRuntime owns instead.
+            Modularity::AndroidRuntime::GetSurfaceSize(&displayW, &displayH);
+#else
             glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
+#endif
             if (displayW > 0 && displayH > 0) {
                 int runtimeRenderWidth = kRuntimeInternalWidth;
                 int runtimeRenderHeight = kRuntimeInternalHeight;
@@ -4139,6 +4955,23 @@ void Engine::run() {
                 ImGui_ImplOpenGL3_NewFrame();
             }
             ImGui_ImplGlfw_NewFrame();
+#ifdef __ANDROID__
+            // ImGui_ImplGlfw_NewFrame is a no-op stub on Android, so
+            // io.DisplaySize would otherwise stay 0x0 and the entire ImGui
+            // surface (including PlayerViewport, GameViewport, etc.) would
+            // render nothing. Feed it the EGL surface size directly.
+            {
+                int eglW = 0, eglH = 0;
+                Modularity::AndroidRuntime::GetSurfaceSize(&eglW, &eglH);
+                if (eglW > 0 && eglH > 0) {
+                    ImGuiIO& __io = ImGui::GetIO();
+                    __io.DisplaySize = ImVec2(static_cast<float>(eglW),
+                                              static_cast<float>(eglH));
+                    __io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+                    __io.DeltaTime = std::max(0.0001f, deltaTime);
+                }
+            }
+#endif
             ImGui::NewFrame();
             const double __preMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - __preStart).count();
@@ -4189,6 +5022,7 @@ void Engine::run() {
                     if (showVisualScriptingWindow) MODU_TIME_PANEL("VisualScript", renderVisualScriptingWindow());
                     if (showProjectBrowser) MODU_TIME_PANEL("ProjectBrowser", renderProjectBrowserPanel());
                     if (showGameProfilerWindow) MODU_TIME_PANEL("Profiler", renderGameProfilerWindow());
+                    if (showModularityDoctorWindow) MODU_TIME_PANEL("Doctor", renderModularityDoctorWindow());
                     if (showRegistryPackagesWindow) MODU_TIME_PANEL("Registry", renderRegistryPackagesWindow());
                 }
 
@@ -4279,7 +5113,11 @@ void Engine::run() {
         } else {
             int displayW = 0;
             int displayH = 0;
+#ifdef __ANDROID__
+            Modularity::AndroidRuntime::GetSurfaceSize(&displayW, &displayH);
+#else
             glfwGetFramebufferSize(editorWindow, &displayW, &displayH);
+#endif
             glViewport(0, 0, displayW, displayH);
             glClearColor(0.1f, 0.1f, 0.12f, 1.00f);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -4366,12 +5204,20 @@ void Engine::run() {
         }
 
         if (!usingVulkan()) {
+            auto presentBuffers = [&]() {
+#ifdef __ANDROID__
+                // GLFW's null backend doesn't actually present; route to EGL.
+                Modularity::AndroidRuntime::PresentFrame();
+#else
+                glfwSwapBuffers(editorWindow);
+#endif
+            };
             if (runtime2DProfileThisFrame) {
                 const auto presentStart = Runtime2DClock::now();
-                glfwSwapBuffers(editorWindow);
+                presentBuffers();
                 gRuntime2DProfileFrame.presentWaitMs += Runtime2DMsSince(presentStart, Runtime2DClock::now());
             } else {
-                glfwSwapBuffers(editorWindow);
+                presentBuffers();
             }
         }
 
@@ -4467,10 +5313,10 @@ void Engine::shutdown() {
         compileWorker.join();
     }
 
-    physics.onPlayStop();
+    physics->onPlayStop();
     audio.onPlayStop();
     audio.shutdown();
-    physics.shutdown();
+    physics->shutdown();
 
     for (auto& entry : uiCanvas3DContexts) {
         if (!entry.second.context) continue;
@@ -6326,7 +7172,7 @@ void Engine::updatePlayerController(float delta) {
     float groundProbeDepth = std::max(0.45f, capsuleHalf * 0.35f);
     float groundSnap = std::clamp(capsuleHalf * 0.12f, 0.2f, 0.45f);
     glm::vec3 physVel;
-    bool havePhysVel = physics.getLinearVelocity(player->id, physVel);
+    bool havePhysVel = physics->getLinearVelocity(player->id, physVel);
     if (havePhysVel) pc.verticalVelocity = physVel.y;
 
     // Ground check via PhysX scene query so mesh colliders work, not just the plane
@@ -6340,7 +7186,7 @@ void Engine::updatePlayerController(float delta) {
     glm::vec3 rayStart = player->position + glm::vec3(0.0f, -capsuleHalf + groundProbeLead, 0.0f);
     float probeDist = groundProbeLead + groundProbeDepth;
     glm::vec3 rayEnd = rayStart + glm::vec3(0.0f, -probeDist, 0.0f);
-    bool hitGround = physics.raycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
+    bool hitGround = physics->raycastClosest(rayStart, glm::vec3(0.0f, -1.0f, 0.0f), probeDist,
                                             player->id, &hitPos, &hitNormal, &hitDist,
                                             &hitActorId, &hitActorVelocity,
                                             &hitStaticFriction, &hitDynamicFriction);
@@ -6442,10 +7288,10 @@ void Engine::updatePlayerController(float delta) {
     velocity.y = std::clamp(velocity.y, -30.0f, 30.0f);
 
     // Apply yaw to physics actor and keep collider aligned
-    physics.setActorYaw(player->id, pc.yaw);
+    physics->setActorYaw(player->id, pc.yaw);
     player->rotation = glm::vec3(pc.pitch, pc.yaw, 0.0f);
 
-    if (!physics.setLinearVelocity(player->id, velocity)) {
+    if (!physics->setLinearVelocity(player->id, velocity)) {
         player->position += velocity * delta;
     }
     syncLocalTransform(*player);
@@ -8086,7 +8932,7 @@ void Engine::finalizeDeferredSceneLoad() {
     // Rebuild runtime systems so physics/audio always match the loaded scene.
     if (isPlaying || specMode || testMode) {
         updateHierarchyWorldTransforms();
-        physics.onPlayStart(sceneObjects);
+        physics->onPlayStart(sceneObjects);
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
         if (playerMode) {
@@ -8129,10 +8975,23 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     }
 
     projectManager.currentProject = std::move(result.project);
-    physics.setProjectSettings(projectManager.currentProject.physicsSettings);
+    // Swap in the backend the loaded project asked for. Always recreate so
+    // any stale Jolt-vs-PhysX state from a previous project is dropped.
+    if (physics) physics->shutdown();
+    physics = CreatePhysicsBackend(projectManager.currentProject.physicsSettings.backend);
+    physics->setProjectSettings(projectManager.currentProject.physicsSettings);
     projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
     vulkanMaterialFeatureWarningShown = false;
     packageManager.setProjectRoot(projectManager.currentProject.projectPath);
+    // Push the project's saved per-texture format overrides into the live
+    // renderer. Keys are stored project-relative, so anchor the renderer's key
+    // root at the project path to match. Reset first so a previous project's
+    // overrides don't leak into this one.
+    renderer.clearTextureFormatOverrides();
+    renderer.setTextureKeyRoot(projectManager.currentProject.projectPath.string());
+    for (const auto& [texPath, format] : projectManager.currentProject.textureFormatOverrides) {
+        renderer.setTextureFormatOverride(texPath, TextureFormatPolicyFromString(format));
+    }
     clampOptionalPackageState(true);
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
@@ -8142,6 +9001,12 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
         fileBrowser.currentPath = contentRoot;
     }
 
+#ifndef __ANDROID__
+    // Android has no concept of "relaunch the editor with a different
+    // backend" — the player is the only binary and it's already running
+    // GLES. Returning early here on backend mismatch would silently skip
+    // loadBuildSettings() below, leaving runtime values (resolution
+    // dropdown, scene list, etc.) at their compile-time defaults.
     if (projectManager.currentProject.rendererBackend != graphicsBackend) {
         const Modularity::GraphicsBackend targetBackend = projectManager.currentProject.rendererBackend;
         std::string relaunchError;
@@ -8160,6 +9025,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
             ". Automatic backend switch failed (" + relaunchError + "). Restart editor to apply project renderer.",
             ConsoleMessageType::Warning);
     }
+#endif
 
     // Make sure project folders exist even for older/minimal projects
     if (!fs::exists(projectManager.currentProject.assetsPath)) {
@@ -8175,7 +9041,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
         return;
     }
 
-    if (!physics.isReady() && !physics.init()) {
+    if (!physics->isReady() && !physics->init()) {
         addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
     }
 
@@ -8252,10 +9118,21 @@ void Engine::loadAutoStartConfig() {
     autoStartSceneName.clear();
 
     fs::path configPath = fs::current_path() / "autostart.modu";
-    if (!fs::exists(configPath)) return;
-
-    std::ifstream file(configPath);
-    if (!file.is_open()) return;
+    bool configFromAsset = false;
+    std::string configText;
+    if (fs::exists(configPath)) {
+        std::ifstream file(configPath);
+        if (!file.is_open()) return;
+        std::ostringstream ss;
+        ss << file.rdbuf();
+        configText = ss.str();
+    } else {
+        std::vector<uint8_t> bytes =
+            Modularity::Platform::GetAssetSource().ReadAll("autostart.modu");
+        if (bytes.empty()) return;
+        configText.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        configFromAsset = true;
+    }
 
     auto trim = [](std::string& s) {
         auto start = s.find_first_not_of(" \t\r\n");
@@ -8271,6 +9148,7 @@ void Engine::loadAutoStartConfig() {
     bool modeSpecified = false;
     bool sawKey = false;
     bool oneShot = false;
+    std::istringstream file(configText);
     while (std::getline(file, line)) {
         trim(line);
         if (line.empty() || line[0] == '#') continue;
@@ -8317,7 +9195,7 @@ void Engine::loadAutoStartConfig() {
 
     if (!autoStartBundlePath.empty()) {
         fs::path bundlePath = autoStartBundlePath;
-        if (bundlePath.is_relative()) {
+        if (bundlePath.is_relative() && !configFromAsset) {
             bundlePath = fs::current_path() / bundlePath;
         }
         autoStartBundlePath = bundlePath.lexically_normal().string();
@@ -8329,7 +9207,9 @@ void Engine::loadAutoStartConfig() {
 
     if (oneShot) {
         std::error_code removeEc;
-        fs::remove(configPath, removeEc);
+        if (!configFromAsset) {
+            fs::remove(configPath, removeEc);
+        }
     }
 }
 
@@ -8375,7 +9255,7 @@ void Engine::applyAutoStartMode() {
         }
     }
     updateHierarchyWorldTransforms();
-    physics.onPlayStart(sceneObjects);
+    physics->onPlayStart(sceneObjects);
     audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
     audio.onPlayStart(sceneObjects);
     startupSplashStartTime = glfwGetTime();
@@ -8425,12 +9305,29 @@ void Engine::applyBuildWindowTitle() {
 }
 
 void Engine::resetBuildSettings() {
+    buildSettings.profileName = "Default";
+    buildSettings.activeProfilePath = "BuildProfiles/Default.modubuild";
 #ifdef _WIN32
     buildSettings.platform = BuildPlatform::Windows;
 #else
     buildSettings.platform = BuildPlatform::Linux;
 #endif
     buildSettings.architecture = "x86_64";
+    buildSettings.configuration = "Release";
+    buildSettings.includeEditor = false;
+    buildSettings.runtimeOnly = true;
+    buildSettings.leanRuntimeExport = false;
+    buildSettings.shipScriptSdk = false;
+    buildSettings.outputFolder = "Builds";
+    buildSettings.outputName = "{buildName}-{version}-{platform}";
+    buildSettings.moduleAssimp = "auto";
+    buildSettings.modulePhysX = "auto";
+    buildSettings.moduleJolt = "auto";
+    buildSettings.moduleVulkan = "auto";
+    buildSettings.moduleSndfile = "auto";
+    buildSettings.moduleOpusfile = "auto";
+    buildSettings.moduleMono = "auto";
+    buildSettings.moduleOpenGLES = "auto";
     buildSettings.companyName = "DefaultCompany";
     buildSettings.buildName = projectManager.currentProject.name.empty()
         ? "MyProject"
@@ -8469,6 +9366,9 @@ bool Engine::addSceneToBuildSettings(const std::string& sceneName, bool enabled)
 }
 
 void Engine::loadBuildSettings() {
+    std::fprintf(stderr, "[BuildSettings] loadBuildSettings() projectPath='%s'\n",
+                 projectManager.currentProject.projectPath.string().c_str());
+
     resetBuildSettings();
     gameViewportResolutionIndex = 0;
     gameViewportCustomWidth = 1920;
@@ -8476,6 +9376,8 @@ void Engine::loadBuildSettings() {
     if (!projectManager.currentProject.isLoaded) return;
 
     fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
+    std::fprintf(stderr, "[BuildSettings] checking '%s' exists=%d\n",
+                 buildPath.string().c_str(), (int)fs::exists(buildPath));
     if (!fs::exists(buildPath)) {
         if (!projectManager.currentProject.currentSceneName.empty()) {
             addSceneToBuildSettings(projectManager.currentProject.currentSceneName, true);
@@ -8494,18 +9396,96 @@ void Engine::loadBuildSettings() {
         s = s.substr(start, end - start + 1);
     };
 
+    std::string activeProfileToken;
+    {
+        std::ifstream mirrorFile(buildPath);
+        std::string mirrorLine;
+        while (std::getline(mirrorFile, mirrorLine)) {
+            trim(mirrorLine);
+            if (mirrorLine.rfind("activeProfile=", 0) == 0) {
+                activeProfileToken = mirrorLine.substr(14);
+                trim(activeProfileToken);
+                break;
+            }
+        }
+    }
+    if (!activeProfileToken.empty()) {
+        fs::path profilePath(activeProfileToken);
+        if (profilePath.is_relative()) profilePath = projectManager.currentProject.projectPath / profilePath;
+        if (fs::exists(profilePath)) {
+            buildPath = profilePath;
+            std::error_code relEc;
+            fs::path rel = fs::relative(profilePath, projectManager.currentProject.projectPath, relEc);
+            buildSettings.activeProfilePath = relEc ? activeProfileToken : rel.generic_string();
+        }
+    }
+
     std::ifstream file(buildPath);
     std::string line;
     while (std::getline(file, line)) {
         trim(line);
         if (line.empty() || line[0] == '#') continue;
-        if (line.rfind("platform=", 0) == 0) {
+        if (line.rfind("profileName=", 0) == 0) {
+            buildSettings.profileName = line.substr(12);
+            trim(buildSettings.profileName);
+        } else if (line.rfind("profileId=", 0) == 0) {
+            // Profile IDs are currently informational; the path is the stable identifier.
+        } else if (line.rfind("activeProfile=", 0) == 0) {
+            buildSettings.activeProfilePath = line.substr(14);
+            trim(buildSettings.activeProfilePath);
+        } else if (line.rfind("platform=", 0) == 0) {
             std::string value = line.substr(9);
+            trim(value);
+            buildSettings.platform = buildPlatformFromSerializedName(value, buildSettings.platform);
+        } else if (line.rfind("target.platform=", 0) == 0) {
+            std::string value = line.substr(16);
             trim(value);
             buildSettings.platform = buildPlatformFromSerializedName(value, buildSettings.platform);
         } else if (line.rfind("architecture=", 0) == 0) {
             buildSettings.architecture = line.substr(13);
             trim(buildSettings.architecture);
+        } else if (line.rfind("target.architecture=", 0) == 0) {
+            buildSettings.architecture = line.substr(20);
+            trim(buildSettings.architecture);
+        } else if (line.rfind("configuration=", 0) == 0) {
+            buildSettings.configuration = line.substr(14);
+            trim(buildSettings.configuration);
+        } else if (line.rfind("includeEditor=", 0) == 0) {
+            buildSettings.includeEditor = line.substr(14) == "1";
+        } else if (line.rfind("runtimeOnly=", 0) == 0) {
+            buildSettings.runtimeOnly = line.substr(12) == "1";
+        } else if (line.rfind("leanRuntimeExport=", 0) == 0) {
+            buildSettings.leanRuntimeExport = line.substr(18) == "1";
+        } else if (line.rfind("shipScriptSdk=", 0) == 0) {
+            buildSettings.shipScriptSdk = line.substr(14) == "1";
+        } else if (line.rfind("output.folder=", 0) == 0) {
+            buildSettings.outputFolder = line.substr(14);
+            trim(buildSettings.outputFolder);
+        } else if (line.rfind("output.name=", 0) == 0) {
+            buildSettings.outputName = line.substr(12);
+            trim(buildSettings.outputName);
+        } else if (line.rfind("module=", 0) == 0) {
+            std::string value = line.substr(7);
+            trim(value);
+            size_t comma = value.find(',');
+            if (comma != std::string::npos) {
+                std::string name = value.substr(0, comma);
+                std::string state = value.substr(comma + 1);
+                trim(name);
+                trim(state);
+                std::transform(name.begin(), name.end(), name.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                std::transform(state.begin(), state.end(), state.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (name == "assimp") buildSettings.moduleAssimp = state;
+                else if (name == "physx") buildSettings.modulePhysX = state;
+                else if (name == "jolt") buildSettings.moduleJolt = state;
+                else if (name == "vulkan") buildSettings.moduleVulkan = state;
+                else if (name == "sndfile") buildSettings.moduleSndfile = state;
+                else if (name == "opusfile") buildSettings.moduleOpusfile = state;
+                else if (name == "mono") buildSettings.moduleMono = state;
+                else if (name == "opengl_es") buildSettings.moduleOpenGLES = state;
+            }
         } else if (line.rfind("companyName=", 0) == 0) {
             buildSettings.companyName = line.substr(12);
             trim(buildSettings.companyName);
@@ -8539,6 +9519,11 @@ void Engine::loadBuildSettings() {
         } else if (line.rfind("compressionMethod=", 0) == 0) {
             buildSettings.compressionMethod = line.substr(18);
             trim(buildSettings.compressionMethod);
+        } else if (line.rfind("package.compression=", 0) == 0) {
+            buildSettings.compressionMethod = line.substr(20);
+            trim(buildSettings.compressionMethod);
+        } else if (line.rfind("package.enabled=", 0) == 0) {
+            buildSettings.packageStandaloneArchive = line.substr(16) == "1";
         } else if (line.rfind("rendererAmbient=", 0) == 0) {
             std::string value = line.substr(16);
             trim(value);
@@ -8558,7 +9543,9 @@ void Engine::loadBuildSettings() {
         } else if (line.rfind("editorCameraFar=", 0) == 0) {
             buildSettings.editorCameraFar = std::max(buildSettings.editorCameraNear + 1.0f, std::stof(line.substr(16)));
         } else if (line.rfind("gameViewportResolutionIndex=", 0) == 0) {
-            gameViewportResolutionIndex = std::clamp(std::atoi(line.substr(28).c_str()), 0, 4);
+            gameViewportResolutionIndex = std::clamp(std::atoi(line.substr(28).c_str()), 0, 5);
+            std::fprintf(stderr, "[BuildSettings] loaded gameViewportResolutionIndex=%d\n",
+                         gameViewportResolutionIndex);
         } else if (line.rfind("gameViewportCustomWidth=", 0) == 0) {
             gameViewportCustomWidth = std::clamp(std::atoi(line.substr(24).c_str()), 64, 8192);
         } else if (line.rfind("gameViewportCustomHeight=", 0) == 0) {
@@ -8593,6 +9580,28 @@ void Engine::loadBuildSettings() {
     if (buildSettings.version.empty()) {
         buildSettings.version = "0.1.0";
     }
+    if (buildSettings.profileName.empty()) {
+        buildSettings.profileName = "Default";
+    }
+    if (buildSettings.activeProfilePath.empty()) {
+        buildSettings.activeProfilePath = "BuildProfiles/" + buildSettings.profileName + ".modubuild";
+    }
+    if (buildSettings.configuration != "Debug") {
+        buildSettings.configuration = "Release";
+    }
+    auto normalizeModuleState = [](std::string& state) {
+        std::transform(state.begin(), state.end(), state.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (state != "on" && state != "off" && state != "auto") state = "auto";
+    };
+    normalizeModuleState(buildSettings.moduleAssimp);
+    normalizeModuleState(buildSettings.modulePhysX);
+    normalizeModuleState(buildSettings.moduleJolt);
+    normalizeModuleState(buildSettings.moduleVulkan);
+    normalizeModuleState(buildSettings.moduleSndfile);
+    normalizeModuleState(buildSettings.moduleOpusfile);
+    normalizeModuleState(buildSettings.moduleMono);
+    normalizeModuleState(buildSettings.moduleOpenGLES);
     if (buildSettings.editorCameraFar <= buildSettings.editorCameraNear + 0.01f) {
         buildSettings.editorCameraFar = buildSettings.editorCameraNear + 0.01f;
     }
@@ -8602,48 +9611,131 @@ void Engine::loadBuildSettings() {
         renderer.setShadowMapResolution(buildSettings.rendererShadowResolution);
         renderer.setShaderAutoReload(buildSettings.rendererAutoReloadShaders);
     }
+    if (activeProfileToken.empty()) {
+        saveBuildSettings();
+    }
     applyBuildWindowTitle();
     buildSettingsDirty = false;
 }
 
 void Engine::saveBuildSettings() {
     if (!projectManager.currentProject.isLoaded) return;
-    fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
-    std::ofstream file(buildPath);
-    file << "# build.modu\n";
-    file << "platform=" << buildPlatformSerializedName(buildSettings.platform) << "\n";
-    file << "architecture=" << buildSettings.architecture << "\n";
-    file << "companyName=" << buildSettings.companyName << "\n";
-    file << "buildName=" << buildSettings.buildName << "\n";
-    file << "version=" << buildSettings.version << "\n";
-    file << "splashImage=" << buildSettings.splashImagePath << "\n";
-    file << "splashEnabled=" << (buildSettings.splashEnabled ? "1" : "0") << "\n";
-    file << "splashDuration=" << buildSettings.splashDurationSeconds << "\n";
-    file << "packageStandaloneArchive=" << (buildSettings.packageStandaloneArchive ? "1" : "0") << "\n";
-    file << "developmentBuild=" << (buildSettings.developmentBuild ? "1" : "0") << "\n";
-    file << "autoConnectProfiler=" << (buildSettings.autoConnectProfiler ? "1" : "0") << "\n";
-    file << "scriptDebugging=" << (buildSettings.scriptDebugging ? "1" : "0") << "\n";
-    file << "deepProfiling=" << (buildSettings.deepProfiling ? "1" : "0") << "\n";
-    file << "scriptsOnlyBuild=" << (buildSettings.scriptsOnlyBuild ? "1" : "0") << "\n";
-    file << "serverBuild=" << (buildSettings.serverBuild ? "1" : "0") << "\n";
-    file << "compressionMethod=" << buildSettings.compressionMethod << "\n";
-    file << "rendererAmbient="
-         << buildSettings.rendererAmbientColor.x << ","
-         << buildSettings.rendererAmbientColor.y << ","
-         << buildSettings.rendererAmbientColor.z << "\n";
-    file << "rendererShadowResolution=" << buildSettings.rendererShadowResolution << "\n";
-    file << "rendererAutoReloadShaders=" << (buildSettings.rendererAutoReloadShaders ? "1" : "0") << "\n";
-    file << "editorCameraFov=" << buildSettings.editorCameraFov << "\n";
-    file << "editorCameraNear=" << buildSettings.editorCameraNear << "\n";
-    file << "editorCameraFar=" << buildSettings.editorCameraFar << "\n";
-    file << "gameViewportResolutionIndex=" << std::clamp(gameViewportResolutionIndex, 0, 4) << "\n";
-    file << "gameViewportCustomWidth=" << std::clamp(gameViewportCustomWidth, 64, 8192) << "\n";
-    file << "gameViewportCustomHeight=" << std::clamp(gameViewportCustomHeight, 64, 8192) << "\n";
-    for (const auto& scene : buildSettings.scenes) {
-        file << "scene=" << scene.name << "," << (scene.enabled ? "1" : "0") << "\n";
+    if (buildSettings.profileName.empty()) buildSettings.profileName = "Default";
+    std::string safeProfileName = buildSettings.profileName;
+    for (char& c : safeProfileName) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) c = '_';
     }
+    if (safeProfileName.empty()) safeProfileName = "Default";
+    buildSettings.profileName = safeProfileName;
+    buildSettings.activeProfilePath = "BuildProfiles/" + safeProfileName + ".modubuild";
+
+    fs::path profilesDir = projectManager.currentProject.projectPath / "BuildProfiles";
+    std::error_code ec;
+    fs::create_directories(profilesDir, ec);
+    fs::path profilePath = projectManager.currentProject.projectPath / buildSettings.activeProfilePath;
+    fs::path buildPath = projectManager.currentProject.projectPath / "build.modu";
+
+    auto writeSettings = [&](const fs::path& path, bool mirror) {
+        std::ofstream file(path);
+        file << (mirror ? "# build.modu\n" : "# Modularity build profile\n");
+        file << "schemaVersion=1\n";
+        file << "profileName=" << buildSettings.profileName << "\n";
+        file << "profileId=" << buildSettings.profileName << "\n";
+        if (mirror) file << "activeProfile=" << buildSettings.activeProfilePath << "\n";
+        file << "platform=" << buildPlatformSerializedName(buildSettings.platform) << "\n";
+        file << "target.platform=" << buildPlatformSerializedName(buildSettings.platform) << "\n";
+        file << "architecture=" << buildSettings.architecture << "\n";
+        file << "target.architecture=" << buildSettings.architecture << "\n";
+        file << "configuration=" << buildSettings.configuration << "\n";
+        file << "includeEditor=" << (buildSettings.includeEditor ? "1" : "0") << "\n";
+        file << "runtimeOnly=" << (buildSettings.runtimeOnly ? "1" : "0") << "\n";
+        file << "leanRuntimeExport=" << (buildSettings.leanRuntimeExport ? "1" : "0") << "\n";
+        file << "shipScriptSdk=" << (buildSettings.shipScriptSdk ? "1" : "0") << "\n";
+        file << "output.folder=" << buildSettings.outputFolder << "\n";
+        file << "output.name=" << buildSettings.outputName << "\n";
+        file << "module=assimp," << buildSettings.moduleAssimp << "\n";
+        file << "module=physx," << buildSettings.modulePhysX << "\n";
+        file << "module=jolt," << buildSettings.moduleJolt << "\n";
+        file << "module=vulkan," << buildSettings.moduleVulkan << "\n";
+        file << "module=sndfile," << buildSettings.moduleSndfile << "\n";
+        file << "module=opusfile," << buildSettings.moduleOpusfile << "\n";
+        file << "module=mono," << buildSettings.moduleMono << "\n";
+        file << "module=opengl_es," << buildSettings.moduleOpenGLES << "\n";
+        file << "companyName=" << buildSettings.companyName << "\n";
+        file << "buildName=" << buildSettings.buildName << "\n";
+        file << "version=" << buildSettings.version << "\n";
+        file << "splashImage=" << buildSettings.splashImagePath << "\n";
+        file << "splashEnabled=" << (buildSettings.splashEnabled ? "1" : "0") << "\n";
+        file << "splashDuration=" << buildSettings.splashDurationSeconds << "\n";
+        file << "packageStandaloneArchive=" << (buildSettings.packageStandaloneArchive ? "1" : "0") << "\n";
+        file << "package.enabled=" << (buildSettings.packageStandaloneArchive ? "1" : "0") << "\n";
+        file << "package.compression=" << buildSettings.compressionMethod << "\n";
+        file << "developmentBuild=" << (buildSettings.developmentBuild ? "1" : "0") << "\n";
+        file << "autoConnectProfiler=" << (buildSettings.autoConnectProfiler ? "1" : "0") << "\n";
+        file << "scriptDebugging=" << (buildSettings.scriptDebugging ? "1" : "0") << "\n";
+        file << "deepProfiling=" << (buildSettings.deepProfiling ? "1" : "0") << "\n";
+        file << "scriptsOnlyBuild=" << (buildSettings.scriptsOnlyBuild ? "1" : "0") << "\n";
+        file << "serverBuild=" << (buildSettings.serverBuild ? "1" : "0") << "\n";
+        file << "compressionMethod=" << buildSettings.compressionMethod << "\n";
+        file << "rendererAmbient="
+             << buildSettings.rendererAmbientColor.x << ","
+             << buildSettings.rendererAmbientColor.y << ","
+             << buildSettings.rendererAmbientColor.z << "\n";
+        file << "rendererShadowResolution=" << buildSettings.rendererShadowResolution << "\n";
+        file << "rendererAutoReloadShaders=" << (buildSettings.rendererAutoReloadShaders ? "1" : "0") << "\n";
+        file << "editorCameraFov=" << buildSettings.editorCameraFov << "\n";
+        file << "editorCameraNear=" << buildSettings.editorCameraNear << "\n";
+        file << "editorCameraFar=" << buildSettings.editorCameraFar << "\n";
+        file << "gameViewportResolutionIndex=" << std::clamp(gameViewportResolutionIndex, 0, 5) << "\n";
+        file << "gameViewportCustomWidth=" << std::clamp(gameViewportCustomWidth, 64, 8192) << "\n";
+        file << "gameViewportCustomHeight=" << std::clamp(gameViewportCustomHeight, 64, 8192) << "\n";
+        for (const auto& scene : buildSettings.scenes) {
+            file << "scene=" << scene.name << "," << (scene.enabled ? "1" : "0") << "\n";
+        }
+    };
+    writeSettings(profilePath, false);
+    writeSettings(buildPath, true);
     applyBuildWindowTitle();
     buildSettingsDirty = false;
+}
+
+void Engine::selectBuildSettingsProfile(const fs::path& relativeProfilePath) {
+    if (!projectManager.currentProject.isLoaded || relativeProfilePath.empty()) return;
+    fs::path mirrorPath = projectManager.currentProject.projectPath / "build.modu";
+    std::ofstream mirror(mirrorPath, std::ios::trunc);
+    if (!mirror.is_open()) {
+        addConsoleMessage("Failed to select build profile: could not write build.modu", ConsoleMessageType::Error);
+        return;
+    }
+    mirror << "# build.modu\n";
+    mirror << "activeProfile=" << relativeProfilePath.generic_string() << "\n";
+    mirror.close();
+    loadBuildSettings();
+}
+
+void Engine::saveBuildSettingsProfileAs(const std::string& profileName) {
+    buildSettings.profileName = profileName.empty() ? "Default" : profileName;
+    saveBuildSettings();
+}
+
+void Engine::duplicateBuildSettingsProfile(const std::string& profileName) {
+    saveBuildSettingsProfileAs(profileName);
+}
+
+bool Engine::deleteBuildSettingsProfile(const std::string& profileName) {
+    if (!projectManager.currentProject.isLoaded || profileName.empty() || profileName == "Default") {
+        return false;
+    }
+    std::string safeName = profileName;
+    for (char& c : safeName) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) c = '_';
+    }
+    std::error_code ec;
+    fs::remove(projectManager.currentProject.projectPath / "BuildProfiles" / (safeName + ".modubuild"), ec);
+    buildSettings.profileName = "Default";
+    buildSettings.activeProfilePath = "BuildProfiles/Default.modubuild";
+    saveBuildSettings();
+    return !ec;
 }
 
 void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
@@ -8715,30 +9807,6 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
     std::string executableStem = sanitizeBuildToken(buildNameDisplay, "Game");
     std::string safeVersion = sanitizeBuildToken(buildVersionDisplay, "0.1.0");
     std::string platformLabel = buildPlatformSerializedName(buildSettings.platform);
-
-    if (buildSettings.platform == BuildPlatform::Android) {
-        std::string ndkPath = resolveAndroidNdkPath();
-        if (ndkPath.empty()) {
-            addConsoleMessage(
-                "Android build aborted: no Android NDK found. "
-                "Set ANDROID_NDK_ROOT (or ANDROID_NDK_HOME / ANDROID_NDK) to a valid NDK install before exporting.",
-                ConsoleMessageType::Error);
-        } else {
-            addConsoleMessage(
-                "Android export is experimental: NDK located at " + ndkPath +
-                ", but the APK packaging pipeline is not implemented yet. "
-                "See docs/AndroidRuntime.md for the planned bring-up.",
-                ConsoleMessageType::Warning);
-        }
-        std::lock_guard<std::mutex> lock(exportMutex);
-        exportJob = ExportJobState{};
-        exportJob.done = true;
-        exportJob.success = false;
-        exportJob.status = ndkPath.empty()
-            ? "Android NDK not found. Set ANDROID_NDK_ROOT."
-            : "Android export pipeline not implemented yet.";
-        return;
-    }
     std::string packageStem = executableStem + "-" + safeVersion + "-" + platformLabel;
     fs::path exportRoot = normalizedOut / packageStem;
     fs::path archivePath = normalizedOut / (packageStem + ".tar.gz");
@@ -8746,19 +9814,6 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
 #ifdef _WIN32
     executableFileName += ".exe";
 #endif
-
-    {
-        std::lock_guard<std::mutex> lock(exportMutex);
-        exportJob = ExportJobState{};
-        exportJob.active = true;
-        exportJob.runAfter = runAfter;
-        exportJob.progress = 0.02f;
-        exportJob.status = "Preparing export...";
-        exportJob.outputDir = exportRoot;
-        exportJob.executableName = executableFileName;
-        exportJob.archivePath = buildSettings.packageStandaloneArchive ? archivePath : fs::path{};
-    }
-    exportCancelRequested = false;
 
     fs::path projectRoot = projectManager.currentProject.projectPath;
     fs::path scenesPath = projectManager.currentProject.scenesPath;
@@ -8794,12 +9849,507 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         }
     }
     bool packageStandaloneArchive = buildSettings.packageStandaloneArchive;
+    bool leanRuntimeExport = buildSettings.leanRuntimeExport;
+    bool includeEditorInExport = buildSettings.includeEditor;
+    bool shipScriptSdk = buildSettings.shipScriptSdk || buildSettings.developmentBuild;
+    std::string buildConfiguration = buildSettings.configuration == "Debug" ? "Debug" : "Release";
+    auto moduleState = [](std::string state) {
+        std::transform(state.begin(), state.end(), state.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return (state == "on" || state == "off" || state == "auto") ? state : std::string("auto");
+    };
+    std::string moduleAssimp = moduleState(buildSettings.moduleAssimp);
+    std::string modulePhysX = moduleState(buildSettings.modulePhysX);
+    std::string moduleJolt = moduleState(buildSettings.moduleJolt);
+    std::string moduleVulkan = moduleState(buildSettings.moduleVulkan);
+    std::string moduleSndfile = moduleState(buildSettings.moduleSndfile);
+    std::string moduleOpusfile = moduleState(buildSettings.moduleOpusfile);
+    std::string moduleMono = moduleState(buildSettings.moduleMono);
+    std::string moduleOpenGLES = moduleState(buildSettings.moduleOpenGLES);
+    auto appendCMakeModuleFlags = [moduleAssimp, modulePhysX, moduleJolt, moduleVulkan,
+                                   moduleSndfile, moduleOpusfile, moduleMono, moduleOpenGLES]
+                                  (std::string& command, bool androidTarget) {
+        auto appendBool = [&](const char* key, const std::string& state) {
+            if (state == "on") command += std::string(" -D") + key + "=ON";
+            if (state == "off") command += std::string(" -D") + key + "=OFF";
+        };
+        appendBool("MODULARITY_ENABLE_PHYSX", modulePhysX);
+        appendBool("MODULARITY_ENABLE_JOLT", moduleJolt);
+        appendBool("MODULARITY_ENABLE_VULKAN", moduleVulkan);
+        appendBool("MODULARITY_ENABLE_SNDFILE", moduleSndfile);
+        appendBool("MODULARITY_ENABLE_OPUSFILE", moduleOpusfile);
+        appendBool("MODULARITY_USE_MONO", moduleMono);
+        appendBool("MODULARITY_USE_OPENGL_ES", moduleOpenGLES);
+        if (!androidTarget) {
+            appendBool("MODULARITY_ENABLE_ASSIMP", moduleAssimp);
+        }
+    };
+    const bool androidExport = buildSettings.platform == BuildPlatform::Android;
+    std::string androidAbi = buildSettings.architecture.empty()
+        ? std::string(defaultArchitectureForPlatform(BuildPlatform::Android))
+        : buildSettings.architecture;
+    fs::path androidApkPath = normalizedOut / (packageStem + ".apk");
+    std::string exportOutputName = androidExport ? androidApkPath.filename().string() : executableFileName;
+    std::string androidPackageName = makeAndroidPackageName(buildSettings.companyName, buildNameDisplay);
+    bool androidDebuggable = buildSettings.developmentBuild;
+    std::vector<std::string> androidAssimpImporters;
+    if (androidExport) {
+        androidAssimpImporters = detectAndroidAssimpImporters(projectRoot, scenesPath, runtimeSceneNames);
+        if (moduleAssimp == "off") {
+            androidAssimpImporters.clear();
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        exportJob = ExportJobState{};
+        exportJob.active = true;
+        exportJob.runAfter = androidExport ? false : runAfter;
+        exportJob.progress = 0.02f;
+        exportJob.status = "Preparing export...";
+        exportJob.outputDir = androidExport ? normalizedOut : exportRoot;
+        exportJob.executableName = exportOutputName;
+        exportJob.archivePath = androidExport
+            ? androidApkPath
+            : (packageStandaloneArchive ? archivePath : fs::path{});
+    }
+    exportCancelRequested = false;
+
+    if (androidExport) {
+        auto future = std::async(std::launch::async,
+            [this, normalizedOut, exportRoot, sourceRoot, projectRoot, startScene,
+             scenesPath, scriptsConfigPath, runtimeSceneNames, exportSplashImagePath,
+             packageStem, androidAbi, androidApkPath, androidPackageName,
+             buildNameDisplay, buildVersionDisplay, androidDebuggable,
+             androidAssimpImporters, buildConfiguration, leanRuntimeExport,
+             appendCMakeModuleFlags, moduleAssimp]() {
+            ExportJobResult result;
+            result.outputDir = normalizedOut;
+            result.executableName = androidApkPath.filename().string();
+            result.archivePath = androidApkPath;
+
+            auto setStatus = [this](float value, const std::string& status) {
+                std::lock_guard<std::mutex> lock(exportMutex);
+                exportJob.progress = value;
+                exportJob.status = status;
+            };
+            auto appendLog = [this](const std::string& text) {
+                std::lock_guard<std::mutex> lock(exportMutex);
+                exportJob.log += text;
+                if (!exportJob.log.empty() && exportJob.log.back() != '\n') {
+                    exportJob.log += '\n';
+                }
+            };
+
+            std::error_code ec;
+            const fs::path ndkRoot = resolveAndroidNdkPath();
+            if (ndkRoot.empty()) {
+                result.message = "Android NDK not found. Set ANDROID_NDK_ROOT, ANDROID_NDK_HOME, or ANDROID_NDK.";
+                return result;
+            }
+            const fs::path toolchainFile = ndkRoot / "build" / "cmake" / "android.toolchain.cmake";
+            if (!fs::exists(toolchainFile, ec) || ec) {
+                result.message = "Android NDK is missing android.toolchain.cmake: " + toolchainFile.string();
+                return result;
+            }
+
+            const fs::path sdkRoot = findAndroidSdkRoot();
+            if (sdkRoot.empty()) {
+                result.message = "Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME.";
+                return result;
+            }
+            std::vector<fs::path> androidJarSdkRoots;
+            androidJarSdkRoots.push_back(sdkRoot);
+            for (const fs::path& localSdkRoot : {
+                     sourceRoot / "build" / "android-sdk",
+                     sourceRoot / "build" / "android-sdk-smoke"
+                 }) {
+                if (localSdkRoot != sdkRoot) {
+                    androidJarSdkRoots.push_back(localSdkRoot);
+                }
+            }
+            fs::path androidJarSdkRoot;
+            int targetApi = 0;
+            const fs::path androidJar =
+                findLatestAndroidJarInRoots(androidJarSdkRoots, androidJarSdkRoot, targetApi);
+            if (androidJar.empty()) {
+                const fs::path localSdkRoot = sourceRoot / "build" / "android-sdk";
+                result.message =
+                    "Android SDK platform android.jar not found under: " + sdkRoot.string() +
+                    "\nInstall one with: " +
+                    quotePath(sdkRoot / "cmdline-tools" / "latest" / "bin" / androidToolName("sdkmanager")) +
+                    " --sdk_root=" + quotePath(localSdkRoot) + " \"platforms;android-35\"";
+                return result;
+            }
+            if (androidJarSdkRoot != sdkRoot) {
+                appendLog("Using Android platform from fallback SDK root: " + androidJarSdkRoot.string());
+            }
+            AndroidBuildTools buildTools = findLatestAndroidBuildTools(sdkRoot);
+            if (buildTools.aapt2.empty() || buildTools.zipalign.empty() || buildTools.apksigner.empty()) {
+                result.message = "Android SDK build-tools missing aapt2, zipalign, or apksigner.";
+                return result;
+            }
+
+            fs::remove_all(exportRoot, ec);
+            ec.clear();
+            fs::create_directories(exportRoot, ec);
+            if (ec) {
+                result.message = "Failed to create Android export directory.";
+                return result;
+            }
+            fs::remove(androidApkPath, ec);
+
+            const fs::path buildRoot = normalizedOut / ("_android_build_" + androidAbi);
+            fs::create_directories(buildRoot, ec);
+            if (ec) {
+                result.message = "Failed to create Android build directory.";
+                return result;
+            }
+
+            setStatus(0.08f, "Configuring Android build...");
+            const bool androidEnableAssimp = moduleAssimp == "on" || !androidAssimpImporters.empty();
+            if (androidEnableAssimp) {
+                appendLog("Android model importers: " + joinStrings(androidAssimpImporters, ", "));
+            } else {
+                appendLog("No model assets detected for Android export; Assimp disabled.");
+            }
+            std::string configureCmd =
+                "cmake -S " + quotePath(sourceRoot) +
+                " -B " + quotePath(buildRoot) +
+                " -DCMAKE_BUILD_TYPE=" + buildConfiguration +
+                " -DMODULARITY_BUILD_EDITOR=OFF"
+                " -DCMAKE_TOOLCHAIN_FILE=" + quotePath(toolchainFile) +
+                " -DANDROID_ABI=" + androidAbi +
+                " -DANDROID_PLATFORM=android-26"
+                " -DANDROID_STL=c++_static"
+                " -DMODULARITY_ENABLE_ASSIMP=" + std::string(androidEnableAssimp ? "ON" : "OFF");
+            appendCMakeModuleFlags(configureCmd, true);
+            if (androidEnableAssimp) {
+                configureCmd +=
+                    " -DMODULARITY_ASSIMP_IMPORTERS=" +
+                    quotePath(joinStrings(androidAssimpImporters, ";"));
+            }
+            int configureExit = 0;
+            appendLog("Running: " + configureCmd);
+            if (!runCommandStreaming(configureCmd + " 2>&1", appendLog, &configureExit)) {
+                result.message = "Android CMake configure failed (exit code " + std::to_string(configureExit) + ").";
+                return result;
+            }
+
+            if (exportCancelRequested.load()) {
+                result.message = "Export cancelled.";
+                return result;
+            }
+
+            setStatus(0.32f, "Building Android player library...");
+            std::string buildCmd = "cmake --build " + quotePath(buildRoot) +
+                                   " --config " + buildConfiguration + " --target core_player";
+            int buildExit = 0;
+            appendLog("Running: " + buildCmd);
+            auto onBuildChunk = [this, &appendLog](const std::string& chunk) {
+                appendLog(chunk);
+                size_t open = chunk.find('[');
+                size_t pct = chunk.find('%');
+                if (open != std::string::npos && pct != std::string::npos && pct > open) {
+                    std::string num = chunk.substr(open + 1, pct - open - 1);
+                    num.erase(0, num.find_first_not_of(" \t"));
+                    num.erase(num.find_last_not_of(" \t") + 1);
+                    int value = std::atoi(num.c_str());
+                    if (value >= 0 && value <= 100) {
+                        float progress = 0.32f + (value / 100.0f) * 0.28f;
+                        std::lock_guard<std::mutex> lock(exportMutex);
+                        exportJob.progress = progress;
+                        exportJob.status = "Building Android player library (" + std::to_string(value) + "%)";
+                    }
+                }
+            };
+            if (!runCommandStreaming(buildCmd + " 2>&1", onBuildChunk, &buildExit)) {
+                result.message = "Android player build failed (exit code " + std::to_string(buildExit) + ").";
+                return result;
+            }
+
+            if (exportCancelRequested.load()) {
+                result.message = "Export cancelled.";
+                return result;
+            }
+
+            const fs::path playerSo = findAndroidSharedLibrary(buildRoot);
+            if (playerSo.empty()) {
+                result.message = "Built Android player library not found: libModularityPlayer.so";
+                return result;
+            }
+
+            const fs::path apkStageRoot = exportRoot / "apk";
+            const fs::path assetsRoot = apkStageRoot / "assets";
+            const fs::path libDir = apkStageRoot / "lib" / androidAbi;
+            fs::create_directories(assetsRoot, ec);
+            fs::create_directories(libDir, ec);
+            if (ec) {
+                result.message = "Failed to create APK staging directories.";
+                return result;
+            }
+            fs::copy_file(playerSo, libDir / "libModularityPlayer.so",
+                          fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                result.message = "Failed to stage Android player library.";
+                return result;
+            }
+            const fs::path stagedPlayerSo = libDir / "libModularityPlayer.so";
+            const fs::path stripTool = findAndroidLlvmStrip(ndkRoot);
+            if (!stripTool.empty()) {
+                int stripExit = 0;
+                const std::string stripCmd =
+                    quotePath(stripTool) + " --strip-unneeded " + quotePath(stagedPlayerSo);
+                appendLog("Running: " + stripCmd);
+                if (!runCommandStreaming(stripCmd + " 2>&1", appendLog, &stripExit)) {
+                    appendLog("Warning: Android symbol stripping failed (exit code " +
+                              std::to_string(stripExit) + "); APK will include unstripped native library.");
+                }
+            } else {
+                appendLog("Warning: llvm-strip not found; APK will include unstripped native library.");
+            }
+
+            std::string copyError;
+            const fs::path runtimeStageRoot = exportRoot / "_runtime_stage";
+            fs::create_directories(runtimeStageRoot, ec);
+            if (ec) {
+                result.message = "Failed to create runtime staging directory.";
+                return result;
+            }
+            RuntimeExportStager runtimeStager(projectRoot, runtimeStageRoot);
+
+            setStatus(0.62f, "Staging Android runtime resources...");
+            if (!CopyRuntimeResourcesSubset(sourceRoot, runtimeStageRoot, leanRuntimeExport, copyError)) {
+                result.message = copyError;
+                return result;
+            }
+            appendLog("Skipping desktop package cache copy for Android; native code is staged into apk/lib/" + androidAbi + ".");
+            if (!CopyFileIntoRuntimeRoot(projectRoot / "project.modu", runtimeStageRoot, "project.modu", copyError)) {
+                result.message = copyError;
+                return result;
+            }
+
+            if (!runtimeSceneNames.empty()) {
+                const float sceneCount = static_cast<float>(runtimeSceneNames.size());
+                for (size_t i = 0; i < runtimeSceneNames.size(); ++i) {
+                    if (exportCancelRequested.load()) {
+                        result.message = "Export cancelled.";
+                        return result;
+                    }
+                    const std::string& sceneName = runtimeSceneNames[i];
+                    const fs::path sourceScenePath = scenesPath / (sceneName + ".scene");
+                    const float progress = 0.66f + 0.06f * static_cast<float>(i) / std::max(1.0f, sceneCount);
+                    setStatus(progress, "Serializing runtime scene: " + sceneName + "...");
+                    if (!StageRuntimeScene(sourceScenePath, sceneName, runtimeStager, runtimeStageRoot, copyError)) {
+                        result.message = copyError;
+                        return result;
+                    }
+                }
+            }
+
+            std::string stagedSplashPath = exportSplashImagePath;
+            if (!stagedSplashPath.empty()) {
+                if (!runtimeStager.stageFileReference(stagedSplashPath, "Splash", copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+
+            {
+                const fs::path buildSettingsSource = projectRoot / "build.modu";
+                if (fs::exists(buildSettingsSource)) {
+                    std::ifstream in(buildSettingsSource);
+                    if (!in.is_open()) {
+                        result.message = "Failed to read build.modu for Android export.";
+                        return result;
+                    }
+                    std::vector<std::string> lines;
+                    std::string line;
+                    bool replacedSplash = false;
+                    while (std::getline(in, line)) {
+                        if (line.rfind("splashImage=", 0) == 0) {
+                            lines.push_back("splashImage=" + stagedSplashPath);
+                            replacedSplash = true;
+                        } else {
+                            lines.push_back(line);
+                        }
+                    }
+                    if (!replacedSplash && !stagedSplashPath.empty()) {
+                        lines.push_back("splashImage=" + stagedSplashPath);
+                    }
+                    const fs::path buildSettingsDest = runtimeStageRoot / "build.modu";
+                    if (!EnsureDirectoryForFile(buildSettingsDest, copyError)) {
+                        result.message = copyError;
+                        return result;
+                    }
+                    std::ofstream out(buildSettingsDest, std::ios::trunc);
+                    if (!out.is_open()) {
+                        result.message = "Failed to write staged build.modu.";
+                        return result;
+                    }
+                    for (const std::string& entry : lines) {
+                        out << entry << "\n";
+                    }
+                }
+            }
+
+            std::vector<fs::path> projectFiles = {
+                projectRoot / "scripts.modu",
+                projectRoot / "Scripts.modu",
+                projectRoot / "packages.modu"
+            };
+            if (!scriptsConfigPath.empty()) {
+                projectFiles.push_back(scriptsConfigPath);
+            }
+            std::unordered_set<std::string> seenProjectFiles;
+            for (const auto& src : projectFiles) {
+                std::error_code srcAbsEc;
+                fs::path srcAbs = fs::absolute(src, srcAbsEc);
+                if (srcAbsEc) srcAbs = src;
+                std::string srcKey = srcAbs.lexically_normal().string();
+                if (!seenProjectFiles.insert(srcKey).second) continue;
+                if (!fs::exists(src)) continue;
+                if (!CopyFileIntoRuntimeRoot(src, runtimeStageRoot, src.filename(), copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+
+            fs::path compiledScriptsSrc;
+            fs::path compiledScriptsDstRelative;
+            {
+                ScriptBuildConfig scriptConfig;
+                std::string configError;
+                if (scriptCompiler.loadConfig(scriptsConfigPath, scriptConfig, configError)) {
+                    compiledScriptsSrc = scriptConfig.outDir;
+                    if (!compiledScriptsSrc.is_absolute()) {
+                        compiledScriptsSrc = projectRoot / compiledScriptsSrc;
+                    }
+                    std::error_code relEc;
+                    fs::path relOutDir = fs::relative(compiledScriptsSrc, projectRoot, relEc);
+                    if (!relEc && !relOutDir.empty()) {
+                        bool hasDotDot = false;
+                        for (const auto& part : relOutDir) {
+                            if (part == "..") {
+                                hasDotDot = true;
+                                break;
+                            }
+                        }
+                        if (!hasDotDot) {
+                            compiledScriptsDstRelative = relOutDir;
+                        }
+                    }
+                    if (compiledScriptsDstRelative.empty()) {
+                        compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
+                    }
+                }
+            }
+            if (compiledScriptsSrc.empty()) {
+                compiledScriptsSrc = projectRoot / "Library" / "CompiledScripts";
+                compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
+            }
+            if (fs::exists(compiledScriptsSrc)) {
+                if (!CopyDirectoryIntoRuntimeRoot(compiledScriptsSrc, runtimeStageRoot,
+                                                  compiledScriptsDstRelative, copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+                appendLog("Warning: Android export copied existing compiled script binaries only; native script cross-compilation is not part of this packaging step yet.");
+            }
+            if (fs::exists(projectRoot / "Library" / "InstalledPackages")) {
+                if (!CopyDirectoryIntoRuntimeRoot(projectRoot / "Library" / "InstalledPackages",
+                                                  runtimeStageRoot,
+                                                  fs::path("Library") / "InstalledPackages",
+                                                  copyError)) {
+                    result.message = copyError;
+                    return result;
+                }
+            }
+
+            setStatus(0.76f, "Packing Android runtime content...");
+            std::vector<RuntimeBundleEntry> bundleEntries = CollectRuntimeBundleEntries(runtimeStageRoot);
+            if (bundleEntries.empty()) {
+                result.message = "Runtime bundle staging produced no files.";
+                return result;
+            }
+            if (!WriteRuntimeContentBundle(assetsRoot / "content.modbundle", bundleEntries, copyError)) {
+                result.message = copyError;
+                return result;
+            }
+            fs::remove_all(runtimeStageRoot, ec);
+            if (ec) {
+                result.message = "Failed to clean runtime staging directory.";
+                return result;
+            }
+
+            std::ostringstream autoStart;
+            autoStart << "bundle=content.modbundle\n";
+            autoStart << "project=project.modu\n";
+            if (!startScene.empty()) {
+                autoStart << "scene=" << startScene << "\n";
+            }
+            autoStart << "mode=player\n";
+            if (!writeTextFileForExport(assetsRoot / "autostart.modu", autoStart.str(), copyError)) {
+                result.message = copyError;
+                return result;
+            }
+
+            setStatus(0.82f, "Generating Android manifest...");
+            std::string iconRef;
+            if (!writeAndroidLauncherIcon(apkStageRoot / "res", sourceRoot, iconRef, copyError)) {
+                result.message = copyError;
+                return result;
+            }
+            if (!writeAndroidManifest(apkStageRoot / "AndroidManifest.xml",
+                                      androidPackageName,
+                                      buildNameDisplay,
+                                      buildVersionDisplay,
+                                      androidDebuggable,
+                                      iconRef,
+                                      copyError)) {
+                result.message = copyError;
+                return result;
+            }
+
+            setStatus(0.88f, "Packaging APK...");
+            const fs::path keystorePath = exportRoot / "signing" / "debug.keystore";
+            if (!packageAndroidApk(apkStageRoot, androidApkPath, androidJar,
+                                   buildTools, keystorePath, appendLog, copyError)) {
+                result.message = copyError;
+                return result;
+            }
+            {
+                std::vector<fs::path> looseFiles = {
+                    stagedPlayerSo,
+                    assetsRoot / "content.modbundle"
+                };
+                std::string reportError;
+                if (!WriteBuildSizeReports(exportRoot, bundleEntries, looseFiles,
+                                           androidApkPath, projectRoot, reportError)) {
+                    appendLog("Warning: " + reportError);
+                }
+            }
+
+            setStatus(1.0f, "APK export complete.");
+            result.success = true;
+            result.message = "Android APK export complete: " + androidApkPath.string();
+            return result;
+        });
+
+        {
+            std::lock_guard<std::mutex> lock(exportMutex);
+            exportJob.future = std::move(future);
+        }
+        return;
+    }
 
     auto future = std::async(std::launch::async,
         [this, normalizedOut, exportRoot, archivePath, sourceRoot, projectRoot, startScene,
          scenesPath, scriptsPath, scriptsConfigPath, runtimeSceneNames, exportSplashImagePath,
          assignedNativeScriptSources,
-         packageStandaloneArchive, executableStem, executableFileName, packageStem]() {
+         packageStandaloneArchive, executableStem, executableFileName, packageStem,
+         buildConfiguration, includeEditorInExport, shipScriptSdk, leanRuntimeExport,
+         appendCMakeModuleFlags]() {
         ExportJobResult result;
         result.outputDir = exportRoot;
         result.executableName = executableFileName;
@@ -8860,7 +10410,9 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         setStatus(0.1f, useSharedBuild ? "Configuring cached build..." : "Configuring build...");
         int configureExit = 0;
         std::string configureCmd = "cmake -S \"" + sourceRoot.string() + "\" -B \"" +
-                                   buildRoot.string() + "\" -DCMAKE_BUILD_TYPE=Release -DMODULARITY_BUILD_EDITOR=OFF";
+                                   buildRoot.string() + "\" -DCMAKE_BUILD_TYPE=" + buildConfiguration +
+                                   " -DMODULARITY_BUILD_EDITOR=" + std::string(includeEditorInExport ? "ON" : "OFF");
+        appendCMakeModuleFlags(configureCmd, false);
         appendLog("Running: " + configureCmd);
         if (!runCommandStreaming(configureCmd + " 2>&1", appendLog, &configureExit)) {
             result.message = "CMake configure failed (exit code " + std::to_string(configureExit) + ").";
@@ -8875,7 +10427,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
 
         setStatus(0.45f, "Building...");
         int buildExit = 0;
-        std::string buildCmd = "cmake --build \"" + buildRoot.string() + "\" --config Release --target ModularityPlayer";
+        std::string buildCmd = "cmake --build \"" + buildRoot.string() + "\" --config " + buildConfiguration + " --target ModularityPlayer";
         appendLog("Running: " + buildCmd);
         auto onBuildChunk = [this, &appendLog](const std::string& chunk) {
             appendLog(chunk);
@@ -8973,7 +10525,7 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             if (!fs::exists(scriptSdkSource)) {
                 scriptSdkSource = buildRoot / "Resources" / "ScriptSDK";
             }
-            if (fs::exists(scriptSdkSource)) {
+            if (shipScriptSdk && fs::exists(scriptSdkSource)) {
                 if (!CopyDirectoryIntoRuntimeRoot(scriptSdkSource,
                                                   exportRoot,
                                                   fs::path("Resources") / "ScriptSDK",
@@ -8994,19 +10546,19 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
         RuntimeExportStager runtimeStager(projectRoot, runtimeStageRoot);
 
         setStatus(0.74f, "Staging runtime resources...");
-        if (!CopyRuntimeResourcesSubset(sourceRoot, runtimeStageRoot, copyError)) {
+        if (!CopyRuntimeResourcesSubset(sourceRoot, runtimeStageRoot, leanRuntimeExport, copyError)) {
             result.message = copyError;
             return result;
         }
 
         setStatus(0.78f, "Collecting precompiled packages...");
-        if (!copyPrecompiledPackages(buildRoot, runtimeStageRoot / "Packages" / "ThirdParty", copyError)) {
+        if (!copyPrecompiledPackages(buildRoot, runtimeStageRoot / "Packages" / "ThirdParty", leanRuntimeExport, copyError)) {
             result.message = copyError;
             return result;
         }
 
         setStatus(0.82f, "Collecting engine cache...");
-        if (!copyPrecompiledEnginePackages(buildRoot, runtimeStageRoot / "Packages" / "Engine", copyError)) {
+        if (!copyPrecompiledEnginePackages(buildRoot, runtimeStageRoot / "Packages" / "Engine", leanRuntimeExport, copyError)) {
             result.message = copyError;
             return result;
         }
@@ -9360,6 +10912,17 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
             result.message = copyError;
             return result;
         }
+        {
+            std::vector<fs::path> looseFiles = {
+                destExe,
+                exportRoot / "content.modbundle"
+            };
+            std::string reportError;
+            if (!WriteBuildSizeReports(exportRoot, bundleEntries, looseFiles, {},
+                                       projectRoot, reportError)) {
+                appendLog("Warning: " + reportError);
+            }
+        }
 
         fs::remove_all(runtimeStageRoot, ec);
         if (ec) {
@@ -9501,6 +11064,60 @@ void Engine::createNewProject(const char* name, const char* location) {
     }
 #endif
     if (newProject.create()) {
+        const std::string presetId = projectManager.newProjectPresetId.empty()
+            ? std::string("empty")
+            : projectManager.newProjectPresetId;
+        auto writeStarterScript = [&](const fs::path& relativePath,
+                                      const std::string& className,
+                                      const std::string& purpose) {
+            fs::path path = newProject.projectPath / relativePath;
+            if (fs::exists(path)) return;
+            std::error_code scriptEc;
+            fs::create_directories(path.parent_path(), scriptEc);
+            std::ofstream script(path, std::ios::trunc);
+            if (!script.is_open()) return;
+            script << "add ModuCPP;\n";
+            script << "add ModuEngine;\n\n";
+            script << "public class " << className << " : ModuBehaviour {\n";
+            script << "    void Begin() {\n";
+            script << "        // TODO: " << purpose << "\n";
+            script << "    }\n\n";
+            script << "    void Update() {\n";
+            script << "    }\n";
+            script << "}\n";
+        };
+
+        if (projectManager.newProjectTemplatePath.empty()) {
+            if (presetId == "2d-game") {
+                newProject.pipeline = ProjectPipeline::Pipeline2D;
+                newProject.physicsSettings.enable2DPhysics = true;
+                newProject.physicsSettings.enable3DPhysics = false;
+                newProject.playerSettings.defaultScene = "Main";
+                newProject.playerSettings.startupWidth = 1280;
+                newProject.playerSettings.startupHeight = 720;
+                fs::create_directories(newProject.assetsPath / "Sprites");
+                writeStarterScript(fs::path("Assets") / "Scripts" / "Runtime" / "PlayerController2D.moducpp",
+                                   "PlayerController2D",
+                                   "move the player sprite here");
+            } else if (presetId == "tool-app") {
+                newProject.pipeline = ProjectPipeline::Pipeline2D;
+                newProject.playerSettings.defaultScene = "Main";
+                newProject.playerSettings.startupWidth = 1280;
+                newProject.playerSettings.startupHeight = 800;
+                newProject.playerSettings.cursorLocked = false;
+                newProject.playerSettings.cursorVisible = true;
+                fs::create_directories(newProject.assetsPath / "UI");
+                writeStarterScript(fs::path("Assets") / "Scripts" / "Runtime" / "AppController.moducpp",
+                                   "AppController",
+                                   "wire app state and UI actions here");
+            } else if (presetId == "runtime-only") {
+                newProject.playerSettings.defaultScene = "Main";
+                newProject.playerSettings.cursorLocked = false;
+                newProject.playerSettings.cursorVisible = true;
+            }
+            newProject.saveProjectFile();
+        }
+
         if (!projectManager.newProjectTemplatePath.empty()) {
             std::string templateError;
             if (!applyTemplateProject(fs::path(projectManager.newProjectTemplatePath),
@@ -9541,7 +11158,7 @@ void Engine::createNewProject(const char* name, const char* location) {
             return;
         }
 
-        if (!physics.isReady() && !physics.init()) {
+        if (!physics->isReady() && !physics->init()) {
             addConsoleMessage("Warning: PhysX failed to initialize; physics disabled for this session", ConsoleMessageType::Warning);
         }
 
@@ -9549,7 +11166,23 @@ void Engine::createNewProject(const char* name, const char* location) {
         clearSelection();
         nextObjectId = 0;
 
-        createPipelineDefaultSceneObjects();
+        if (projectManager.newProjectTemplatePath.empty()) {
+            if (presetId == "2d-game") {
+                addObject(ObjectType::Canvas, "Canvas");
+                addObject(ObjectType::Sprite2D, "Player");
+                addObject(ObjectType::Light2D, "Global Light");
+            } else if (presetId == "tool-app") {
+                addObject(ObjectType::Canvas, "Canvas");
+                addObject(ObjectType::UIText, "Title Text");
+                addObject(ObjectType::UIButton, "Primary Button");
+            } else if (presetId == "runtime-only") {
+                addObject(ObjectType::Camera, "Runtime Camera");
+            } else if (presetId != "empty") {
+                createPipelineDefaultSceneObjects();
+            }
+        } else {
+            createPipelineDefaultSceneObjects();
+        }
 
         fs::path contentRoot = projectManager.currentProject.usesNewLayout
             ? projectManager.currentProject.assetsPath
@@ -9586,6 +11219,20 @@ void Engine::createNewProject(const char* name, const char* location) {
 
         saveCurrentScene();
         loadBuildSettings();
+        if (projectManager.newProjectTemplatePath.empty()) {
+            if (presetId == "runtime-only") {
+                buildSettings.runtimeOnly = true;
+                buildSettings.includeEditor = false;
+                buildSettings.leanRuntimeExport = true;
+                buildSettings.shipScriptSdk = false;
+                buildSettings.outputFolder = "Builds";
+                saveBuildSettings();
+            } else if (presetId == "2d-game" || presetId == "tool-app") {
+                buildSettings.runtimeOnly = true;
+                buildSettings.includeEditor = false;
+                saveBuildSettings();
+            }
+        }
         applyProjectPipelineDefaults(true);
     } else {
         projectManager.errorMessage = "Failed to create project directory";
@@ -11122,6 +12769,48 @@ std::string Engine::readFileTextFromScript(const std::string& path) const {
     return content.str();
 }
 
+std::string Engine::readFileBase64FromScript(const std::string& path, size_t maxBytes) const {
+    const fs::path resolved = resolveProjectPathFromScript(path);
+    if (resolved.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    const uintmax_t fileSize = fs::file_size(resolved, ec);
+    if (ec || fileSize > static_cast<uintmax_t>(maxBytes)) {
+        return {};
+    }
+
+    std::ifstream in(resolved, std::ios::binary);
+    if (!in.is_open()) {
+        return {};
+    }
+
+    std::vector<unsigned char> bytes(static_cast<size_t>(fileSize));
+    if (!bytes.empty()) {
+        in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!in) {
+            return {};
+        }
+    }
+
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((bytes.size() + 2) / 3) * 4);
+    for (size_t i = 0; i < bytes.size(); i += 3) {
+        const unsigned int b0 = bytes[i];
+        const unsigned int b1 = (i + 1 < bytes.size()) ? bytes[i + 1] : 0;
+        const unsigned int b2 = (i + 2 < bytes.size()) ? bytes[i + 2] : 0;
+        const unsigned int triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push_back(kAlphabet[(triple >> 18) & 0x3F]);
+        out.push_back(kAlphabet[(triple >> 12) & 0x3F]);
+        out.push_back((i + 1 < bytes.size()) ? kAlphabet[(triple >> 6) & 0x3F] : '=');
+        out.push_back((i + 2 < bytes.size()) ? kAlphabet[triple & 0x3F] : '=');
+    }
+    return out;
+}
+
 bool Engine::writeFileTextFromScript(const std::string& path, const std::string& content) {
     const fs::path resolved = resolveProjectPathFromScript(path);
     if (resolved.empty()) {
@@ -11309,6 +12998,132 @@ std::string Engine::searchFilesFromScript(const std::string& root,
     return out.str();
 }
 
+ImTextureID Engine::getUIImageTextureFromScript(const std::string& path, int* outWidth, int* outHeight) {
+    if (outWidth) *outWidth = 0;
+    if (outHeight) *outHeight = 0;
+
+    const fs::path resolved = resolveProjectPathFromScript(path);
+    if (resolved.empty()) {
+        return ImTextureID_Invalid;
+    }
+
+    const std::string resolvedPath = resolved.string();
+    if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+        return vulkanRenderer->getOrCreateUIImage(resolvedPath, outWidth, outHeight);
+    }
+
+    if (Texture* tex = renderer.getTexture(resolvedPath, MaterialProperties::TextureFilter::Point);
+        tex && tex->GetID() != 0) {
+        if (outWidth) *outWidth = tex->GetWidth();
+        if (outHeight) *outHeight = tex->GetHeight();
+        return static_cast<ImTextureID>(tex->GetID());
+    }
+
+    return ImTextureID_Invalid;
+}
+
+std::string Engine::getSelectedFilePathFromScript() const {
+    const fs::path& sel = fileBrowser.selectedFile;
+    if (sel.empty()) {
+        return {};
+    }
+    // Prefer a project-relative path so it reads like "Assets/Scripts/Foo.moducpp".
+    const Project& proj = projectManager.currentProject;
+    if (proj.isLoaded && !proj.projectPath.empty()) {
+        std::error_code ec;
+        const fs::path rel = fs::relative(sel, proj.projectPath, ec);
+        const std::string relStr = rel.generic_string();
+        if (!ec && !relStr.empty() && relStr.rfind("..", 0) != 0) {
+            return relStr;
+        }
+    }
+    return sel.generic_string();
+}
+
+std::string Engine::getProjectNameFromScript() const {
+    const Project& proj = projectManager.currentProject;
+    if (!proj.name.empty()) {
+        return proj.name;
+    }
+    if (!proj.projectPath.empty()) {
+        return proj.projectPath.filename().generic_string();
+    }
+    return {};
+}
+
+std::string Engine::getCurrentSceneNameFromScript() const {
+    return projectManager.currentProject.currentSceneName;
+}
+
+std::string Engine::getSelectedObjectInfoFromScript() const {
+    if (selectedObjectId == -1) {
+        return {};
+    }
+    const auto it = std::find_if(sceneObjects.begin(), sceneObjects.end(),
+        [this](const SceneObject& obj) { return obj.id == selectedObjectId; });
+    if (it == sceneObjects.end()) {
+        return {};
+    }
+    const SceneObject& o = *it;
+
+    std::ostringstream out;
+    out << "Selected object: \"" << o.name << "\" (id " << o.id << ")\n";
+    out << "  enabled: " << (o.enabled ? "true" : "false")
+        << ", tag: " << o.tag << ", layer: " << o.layer << "\n";
+    out << "  position: (" << o.position.x << ", " << o.position.y << ", " << o.position.z << ")"
+        << "  rotation: (" << o.rotation.x << ", " << o.rotation.y << ", " << o.rotation.z << ")"
+        << "  scale: (" << o.scale.x << ", " << o.scale.y << ", " << o.scale.z << ")\n";
+
+    std::vector<std::string> comps;
+    if (o.hasRenderer) comps.push_back("Renderer");
+    if (o.hasCamera) comps.push_back("Camera");
+    if (o.hasLight) comps.push_back("Light");
+    if (o.hasLight2D) comps.push_back("Light2D");
+    if (o.hasRigidbody) comps.push_back("Rigidbody");
+    if (o.hasRigidbody2D) comps.push_back("Rigidbody2D");
+    if (o.hasCollider) comps.push_back("Collider");
+    if (o.hasCollider2D) comps.push_back("Collider2D");
+    if (o.hasParallaxLayer2D) comps.push_back("ParallaxLayer2D");
+    if (o.hasCameraFollow2D) comps.push_back("CameraFollow2D");
+    if (o.hasShadowCaster2D) comps.push_back("ShadowCaster2D");
+    if (o.hasAudioSource) comps.push_back("AudioSource");
+    if (o.hasPlayerController) comps.push_back("PlayerController");
+    if (o.hasUI) comps.push_back("UI");
+    if (!o.meshPath.empty()) {
+        comps.push_back("Mesh(" + fs::path(o.meshPath).filename().generic_string() + ")");
+    }
+    out << "  components: ";
+    if (comps.empty()) {
+        out << "(none)";
+    } else {
+        for (size_t i = 0; i < comps.size(); ++i) {
+            if (i > 0) out << ", ";
+            out << comps[i];
+        }
+    }
+    out << "\n";
+
+    if (o.scripts.empty()) {
+        out << "  scripts: (none)\n";
+    } else {
+        out << "  scripts:\n";
+        for (const ScriptComponent& sc : o.scripts) {
+            out << "    - " << (sc.path.empty() ? sc.managedType : sc.path);
+            if (!sc.enabled) out << " [disabled]";
+            if (!sc.settings.empty()) {
+                out << " {";
+                for (size_t i = 0; i < sc.settings.size(); ++i) {
+                    if (i > 0) out << ", ";
+                    out << sc.settings[i].key << "=" << sc.settings[i].value;
+                }
+                out << "}";
+            }
+            out << "\n";
+        }
+    }
+    return out.str();
+}
+
 bool Engine::saveProjectFromScript() {
     if (!projectManager.currentProject.isLoaded) {
         return false;
@@ -11317,23 +13132,23 @@ bool Engine::saveProjectFromScript() {
 }
 
 bool Engine::setRigidbodyVelocityFromScript(int id, const glm::vec3& velocity) {
-    return physics.setLinearVelocity(id, velocity);
+    return physics->setLinearVelocity(id, velocity);
 }
 
 bool Engine::getRigidbodyVelocityFromScript(int id, glm::vec3& outVelocity) {
-    return physics.getLinearVelocity(id, outVelocity);
+    return physics->getLinearVelocity(id, outVelocity);
 }
 
 bool Engine::setRigidbodyAngularVelocityFromScript(int id, const glm::vec3& velocity) {
-    return physics.setAngularVelocity(id, velocity);
+    return physics->setAngularVelocity(id, velocity);
 }
 
 bool Engine::getRigidbodyAngularVelocityFromScript(int id, glm::vec3& outVelocity) {
-    return physics.getAngularVelocity(id, outVelocity);
+    return physics->getAngularVelocity(id, outVelocity);
 }
 
 bool Engine::teleportPhysicsActorFromScript(int id, const glm::vec3& position, const glm::vec3& rotationDeg) {
-    return physics.setActorPose(id, position, rotationDeg);
+    return physics->setActorPose(id, position, rotationDeg);
 }
 
 float Engine::getProjectGravityScaleFromScript() const {
@@ -11346,27 +13161,27 @@ void Engine::setProjectGravityScaleFromScript(float scale) {
     projectManager.currentProject.physicsSettings.globalGravityScale = std::max(0.0f, scale);
     projectManager.currentProject.saveProjectFile();
     projectManager.currentProject.hasUnsavedChanges = true;
-    physics.setProjectSettings(projectManager.currentProject.physicsSettings);
+    physics->setProjectSettings(projectManager.currentProject.physicsSettings);
 }
 
 bool Engine::addRigidbodyForceFromScript(int id, const glm::vec3& force) {
-    return physics.addForce(id, force);
+    return physics->addForce(id, force);
 }
 
 bool Engine::addRigidbodyImpulseFromScript(int id, const glm::vec3& impulse) {
-    return physics.addImpulse(id, impulse);
+    return physics->addImpulse(id, impulse);
 }
 
 bool Engine::addRigidbodyTorqueFromScript(int id, const glm::vec3& torque) {
-    return physics.addTorque(id, torque);
+    return physics->addTorque(id, torque);
 }
 
 bool Engine::addRigidbodyAngularImpulseFromScript(int id, const glm::vec3& impulse) {
-    return physics.addAngularImpulse(id, impulse);
+    return physics->addAngularImpulse(id, impulse);
 }
 
 bool Engine::setRigidbodyYawFromScript(int id, float yawDegrees) {
-    return physics.setActorYaw(id, yawDegrees);
+    return physics->setActorYaw(id, yawDegrees);
 }
 
 int Engine::getSelectedObjectId() const {
@@ -11379,7 +13194,7 @@ bool Engine::raycastClosestFromScript(const glm::vec3& origin, const glm::vec3& 
                                       glm::vec3* hitActorVelocity,
                                       float* hitStaticFriction,
                                       float* hitDynamicFriction) const {
-    return physics.raycastClosest(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance,
+    return physics->raycastClosest(origin, dir, distance, ignoreId, hitPos, hitNormal, hitDistance,
                                   hitActorId, hitActorVelocity, hitStaticFriction, hitDynamicFriction);
 }
 
@@ -12612,6 +14427,7 @@ void Engine::preloadUIFontCatalogForContext(ImGuiContext* context) {
             defaultFont = io.Fonts->Fonts.back();
         }
         if (defaultFont) {
+            mergeModularityEmojiFont(io, kUIFontAtlasBaseSize, nullptr);
             state.loadedFonts[kDefaultUIFontAssetId] = defaultFont;
         }
     }
@@ -12627,6 +14443,7 @@ void Engine::preloadUIFontCatalogForContext(ImGuiContext* context) {
         }
         ImFont* font = io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), kUIFontAtlasBaseSize);
         if (font) {
+            mergeModularityEmojiFont(io, kUIFontAtlasBaseSize, nullptr);
             state.loadedFonts[entry.id] = font;
         }
     }

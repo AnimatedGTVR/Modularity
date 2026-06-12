@@ -6683,6 +6683,13 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::Checkbox("##EnabledVHS", &obj.postFx.vhsOverlayEnabled)) { changed = true; }
                     ImGui::TableSetColumnIndex(1); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("Enabled");
                     ImGui::BeginDisabled(!obj.postFx.vhsOverlayEnabled);
+                    fieldRow("Signal Mode");
+                    static const char* vhsSignalModeNames[] = { "NTSC Composite", "NTSC S-Video", "NTSC RF (Antenna)", "VHS SP", "VHS LP", "VHS EP (Worn)" };
+                    int vhsSignalMode = static_cast<int>(obj.postFx.vhsOverlaySignalMode);
+                    if (ImGui::Combo("##VHSSignalMode", &vhsSignalMode, vhsSignalModeNames, IM_ARRAYSIZE(vhsSignalModeNames))) {
+                        obj.postFx.vhsOverlaySignalMode = static_cast<PostFXVhsSignalMode>(vhsSignalMode);
+                        changed = true;
+                    }
                     fieldRow("Intensity");
                     if (ImGui::SliderFloat("##VHSOpacity", &obj.postFx.vhsOverlayOpacity, 0.0f, 1.0f, "%.2f")) { changed = true; }
                     fieldRow("Noise Amount");
@@ -6701,8 +6708,10 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::SliderFloat("##VHSColorBleed", &obj.postFx.vhsOverlayColorBleed, 0.0f, 1.0f, "%.2f")) { changed = true; }
                     fieldRow("Color Banding");
                     if (ImGui::SliderFloat("##VHSBanding", &obj.postFx.vhsOverlayBanding, 0.0f, 1.0f, "%.2f")) { changed = true; }
-                    fieldRow("Static Bursts");
+                    fieldRow("Head Switching");
                     if (ImGui::SliderFloat("##VHSBandIntensity", &obj.postFx.vhsOverlayBottomNoiseBandIntensity, 0.0f, 2.0f, "%.2f")) { changed = true; }
+                    fieldRow("Dropouts");
+                    if (ImGui::SliderFloat("##VHSDropouts", &obj.postFx.vhsOverlayDropouts, 0.0f, 1.0f, "%.2f")) { changed = true; }
                     ImGui::EndDisabled();
                     endCompFields();
                 }
@@ -9804,6 +9813,8 @@ void Engine::renderInspectorPanel() {
             APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayAnimationSpeed);
             APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayColorBleed);
             APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayBanding);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlaySignalMode);
+            APPLY_CHANGED_COMPONENT_FIELD(postFx, vhsOverlayDropouts);
             APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyEnabled);
             APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyAmplitude);
             APPLY_CHANGED_COMPONENT_FIELD(postFx, wavyFrequency);

@@ -299,6 +299,8 @@ PostFXSettings MakeNeutralPostFXSettings() {
     settings.vhsOverlayAnimationSpeed = 0.0f;
     settings.vhsOverlayColorBleed = 0.0f;
     settings.vhsOverlayBanding = 0.0f;
+    settings.vhsOverlaySignalMode = PostFXVhsSignalMode::VhsSP;
+    settings.vhsOverlayDropouts = 0.0f;
     settings.wavyEnabled = false;
     settings.wavyAmplitude = 0.0f;
     settings.wavyFrequency = 16.0f;
@@ -1376,7 +1378,8 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
 
     GLenum minFilter = point ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
     GLenum magFilter = point ? GL_NEAREST : GL_LINEAR;
-    auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter);
+    TextureFormatPolicy policy = getTextureFormatOverride(path);
+    auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter, policy);
     if (!tex->GetID()) {
         missingTextureRetryAfter[path] = nowSec + 1.0;
         return nullptr;
@@ -1405,6 +1408,50 @@ void Renderer::invalidateTexture(const std::string& path) {
     };
     eraseFromCache(textureCacheBilinear);
     eraseFromCache(textureCachePoint);
+}
+
+std::string Renderer::normalizeTextureKey(const std::string& path) const {
+    if (path.empty()) return path;
+    std::error_code ec;
+    fs::path p(path);
+    if (p.is_relative() && !textureKeyRoot.empty()) {
+        p = fs::path(textureKeyRoot) / p;
+    }
+    fs::path canon = fs::weakly_canonical(p, ec);
+    if (ec) canon = p.lexically_normal();
+    return canon.generic_string();
+}
+
+void Renderer::setTextureFormatOverride(const std::string& path, TextureFormatPolicy policy) {
+    if (path.empty()) return;
+    const std::string key = normalizeTextureKey(path);
+    if (policy == TextureFormatPolicy::Auto) {
+        textureFormatOverrides.erase(key);
+    } else {
+        textureFormatOverrides[key] = policy;
+    }
+    // Drop any cached copy so the next request reloads at the new format. Cache
+    // entries are keyed by the original (un-normalized) request string, which can
+    // differ from the caller's path here, so evict every entry whose normalized
+    // key matches rather than relying on an exact string hit.
+    auto evictMatching = [this, &key](auto& cache) {
+        for (auto it = cache.begin(); it != cache.end();) {
+            if (normalizeTextureKey(it->first) == key) {
+                textureCacheUsageBytes = (textureCacheUsageBytes > it->second.approxBytes)
+                    ? (textureCacheUsageBytes - it->second.approxBytes) : 0;
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    evictMatching(textureCacheBilinear);
+    evictMatching(textureCachePoint);
+}
+
+TextureFormatPolicy Renderer::getTextureFormatOverride(const std::string& path) const {
+    auto it = textureFormatOverrides.find(normalizeTextureKey(path));
+    return it == textureFormatOverrides.end() ? TextureFormatPolicy::Auto : it->second;
 }
 
 void Renderer::purgeTextureCacheIfNeeded() {
@@ -3262,19 +3309,21 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         return key;
     };
 
+    using RenderPathRef = const std::string*;
+
     struct RenderItem {
         const SceneObject* obj = nullptr;
         const StaticMergeBatch* staticBatch = nullptr;
         Mesh* mesh = nullptr;
         glm::mat4 model = glm::mat4(1.0f);
         glm::vec3 sortCenter = glm::vec3(0.0f);
-        const std::string* vertPath = nullptr;
-        const std::string* fragPath = nullptr;
-        MaterialProperties material;
-        const std::string* materialPath = nullptr;
-        const std::string* albedoTexturePath = nullptr;
-        const std::string* overlayTexturePath = nullptr;
-        const std::string* normalMapPath = nullptr;
+        RenderPathRef vertPath = nullptr;
+        RenderPathRef fragPath = nullptr;
+        MaterialProperties material = MaterialProperties{};
+        RenderPathRef materialPath = nullptr;
+        RenderPathRef albedoTexturePath = nullptr;
+        RenderPathRef overlayTexturePath = nullptr;
+        RenderPathRef normalMapPath = nullptr;
         bool useOverlay = false;
         int boneLimit = 0;
         int availableBones = 0;
@@ -4199,6 +4248,9 @@ Renderer::ResolvedPostFX Renderer::gatherPostFX(const Camera& camera, const std:
             glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayColorBleed, weight);
         settings.vhsOverlayBanding =
             glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayBanding, weight);
+        settings.vhsOverlaySignalMode = resolvedVolume->postFx.vhsOverlaySignalMode;
+        settings.vhsOverlayDropouts =
+            glm::mix(0.0f, resolvedVolume->postFx.vhsOverlayDropouts, weight);
     }
     if (resolvedVolume->postFx.wavyEnabled) {
         settings.wavyEnabled = true;
@@ -4465,6 +4517,10 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
                              std::clamp(settings.vhsOverlayColorBleed, 0.0f, 1.0f));
         postShader->setFloat("vhsOverlayBanding",
                              std::clamp(settings.vhsOverlayBanding, 0.0f, 1.0f));
+        postShader->setInt("vhsOverlaySignalMode",
+                           std::clamp(static_cast<int>(settings.vhsOverlaySignalMode), 0, 5));
+        postShader->setFloat("vhsOverlayDropouts",
+                             std::clamp(settings.vhsOverlayDropouts, 0.0f, 1.0f));
         postShader->setBool("enableWavyEffect", settings.wavyEnabled);
         postShader->setFloat("wavyAmplitude", std::max(0.0f, settings.wavyAmplitude));
         postShader->setFloat("wavyFrequency", std::max(0.0f, settings.wavyFrequency));

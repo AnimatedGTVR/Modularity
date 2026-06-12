@@ -1612,6 +1612,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         wrapper << "MODULARITY_SCRIPT_EXPORT int Modularity_ScriptAbiVersion() {\n";
         wrapper << "    return " << MODULARITY_NATIVE_SCRIPT_ABI_VERSION << ";\n";
         wrapper << "}\n\n";
+        wrapper << "MODULARITY_SCRIPT_EXPORT unsigned long long Modularity_ScriptLayoutSignature() {\n";
+        wrapper << "    return MODULARITY_SCRIPT_LAYOUT_SIGNATURE();\n";
+        wrapper << "}\n\n";
 
         auto emitScriptBridge = [&](const char* exportedName, const char* implName,
                                     const FunctionSpec& spec) {
@@ -1767,6 +1770,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             wrapper << "extern \"C\" {\n";
             wrapper << "MODULARITY_SCRIPT_EXPORT int Modularity_ScriptAbiVersion() {\n";
             wrapper << "    return " << MODULARITY_NATIVE_SCRIPT_ABI_VERSION << ";\n";
+            wrapper << "}\n\n";
+            wrapper << "MODULARITY_SCRIPT_EXPORT unsigned long long Modularity_ScriptLayoutSignature() {\n";
+            wrapper << "    return MODULARITY_SCRIPT_LAYOUT_SIGNATURE();\n";
             wrapper << "}\n\n";
 
             auto emitTickBridge = [&](const char* exportedName, const char* implName,

@@ -1,7 +1,9 @@
 # Android Runtime Plan
+## *Note: Written by Anémunt and Claude Code*
+-# *(NEEDS UPDATE!)*
+---
 
 Status: **structural scaffold only** — no APK/AAB output yet.
-
 OpenGL ES is already routed through [`include/Graphics/OpenGL.h`](../include/Graphics/OpenGL.h)
 and `MODULARITY_USE_OPENGL_ES` in [`CMakeLists.txt`](../CMakeLists.txt) selects the
 GLES headers/link path. The pieces below are what remains before the editor's

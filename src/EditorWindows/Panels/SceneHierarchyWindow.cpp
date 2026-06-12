@@ -703,37 +703,7 @@ void Engine::renderHierarchyPanel() {
     ImGui::InputTextWithHint("##Search", "Search...", searchBuffer, sizeof(searchBuffer));
 
     if (ImGui::BeginPopup("HierarchyCreatePopup")) {
-        if (ImGui::MenuItem("Empty")) addObject(ObjectType::Empty, "Empty");
-        ImGui::Separator();
-        if (ImGui::BeginMenu("Primitives")) {
-            if (ImGui::MenuItem("Cube")) addObject(ObjectType::Cube, "Cube");
-            if (ImGui::MenuItem("Sphere")) addObject(ObjectType::Sphere, "Sphere");
-            if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
-            if (ImGui::MenuItem("Plane")) addObject(ObjectType::Plane, "Plane");
-            if (ImGui::MenuItem("Torus")) addObject(ObjectType::Torus, "Torus");
-            if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
-            if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
-            if (ImGui::MenuItem("Particle System 2D")) addObject(ObjectType::ParticleSystem2D, "Particle System 2D");
-            if (ImGui::MenuItem("Mirror")) addObject(ObjectType::Mirror, "Mirror");
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("MMesh")) {
-            if (ImGui::MenuItem("Cube")) createMMeshPrimitive("Cube");
-            if (ImGui::MenuItem("Sphere")) createMMeshPrimitive("Sphere");
-            if (ImGui::MenuItem("Plane")) createMMeshPrimitive("Plane");
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Lights")) {
-            if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
-            if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
-            if (ImGui::MenuItem("Point Light")) addObject(ObjectType::PointLight, "Point Light");
-            if (ImGui::MenuItem("Spot Light")) addObject(ObjectType::SpotLight, "Spot Light");
-            if (ImGui::MenuItem("Area Light")) addObject(ObjectType::AreaLight, "Area Light");
-            if (ImGui::MenuItem("Reflection Cast")) addObject(ObjectType::ReflectionCast, "Reflection Cast");
-            ImGui::EndMenu();
-        }
-        if (ImGui::MenuItem("ModuVolume")) addObject(ObjectType::PostFXNode, "ModuVolume");
-        if (ImGui::MenuItem("Canvas")) addObject(ObjectType::Canvas, "Canvas");
+        renderSceneObjectCreateMenu();
         ImGui::EndPopup();
     }
 
@@ -831,137 +801,9 @@ void Engine::renderHierarchyPanel() {
             ImGuiPopupFlags_MouseButtonRight |
             ImGuiPopupFlags_NoOpenOverItems))
     {
-        auto createUIWithCanvas = [&](ObjectType type, const std::string& baseName) {
-            int canvasId = -1;
-            for (const auto& obj : sceneObjects) {
-                if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
-                    canvasId = obj.id;
-                    break;
-                }
-            }
-            if (canvasId < 0) {
-                addObject(ObjectType::Canvas, "Canvas");
-                if (!sceneObjects.empty()) {
-                    canvasId = sceneObjects.back().id;
-                }
-            }
-            addObject(type, baseName);
-            if (!sceneObjects.empty() && canvasId >= 0) {
-                setParent(sceneObjects.back().id, canvasId);
-            }
-        };
-        auto createReverbZoneObject = [&]() {
-            addObject(ObjectType::Empty, "Reverb Zone");
-            if (!sceneObjects.empty()) {
-                sceneObjects.back().hasReverbZone = true;
-                sceneObjects.back().reverbZone = ReverbZoneComponent{};
-                sceneObjects.back().reverbZone.boxSize = glm::max(sceneObjects.back().scale, glm::vec3(1.0f));
-            }
-        };
         if (ImGui::BeginMenu("Create"))
         {
-            if (ImGui::MenuItem("Empty")) addObject(ObjectType::Empty, "Empty");
-            // ── Primitives ─────────────────────────────
-            if (ImGui::BeginMenu("Primitives"))
-            {
-                if (ImGui::MenuItem("Cube"))    addObject(ObjectType::Cube, "Cube");
-                if (ImGui::MenuItem("Sphere"))  addObject(ObjectType::Sphere, "Sphere");
-                if (ImGui::MenuItem("Capsule")) addObject(ObjectType::Capsule, "Capsule");
-                if (ImGui::MenuItem("Plane"))   addObject(ObjectType::Plane, "Plane");
-                if (ImGui::MenuItem("Torus"))   addObject(ObjectType::Torus, "Torus");
-                if (ImGui::MenuItem("Sprite (Quad)")) addObject(ObjectType::Sprite, "Sprite");
-                if (ImGui::MenuItem("2.5D Sprite")) addObject(ObjectType::Sprite25D, "2.5D Sprite");
-                if (ImGui::MenuItem("Particle System 2D")) addObject(ObjectType::ParticleSystem2D, "Particle System 2D");
-                if (ImGui::MenuItem("Mirror"))  addObject(ObjectType::Mirror, "Mirror");
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("RMesh"))
-            {
-                if (ImGui::BeginMenu("Primitives"))
-                {
-                    if (ImGui::MenuItem("Cube"))   createRMeshPrimitive("Cube");
-                    if (ImGui::MenuItem("Sphere")) createRMeshPrimitive("Sphere");
-                    if (ImGui::MenuItem("Plane"))  createRMeshPrimitive("Plane");
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("MMesh"))
-            {
-                if (ImGui::BeginMenu("Primitives"))
-                {
-                    if (ImGui::MenuItem("Cube"))   createMMeshPrimitive("Cube");
-                    if (ImGui::MenuItem("Sphere")) createMMeshPrimitive("Sphere");
-                    if (ImGui::MenuItem("Plane"))  createMMeshPrimitive("Plane");
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMenu();
-            }
-
-            // ── Lights ────────────────────────────────
-            if (ImGui::BeginMenu("Lights"))
-            {
-                if (ImGui::MenuItem("Directional Light")) addObject(ObjectType::DirectionalLight, "Directional Light");
-                if (ImGui::MenuItem("Point Light"))       addObject(ObjectType::PointLight, "Point Light");
-                if (ImGui::MenuItem("Spot Light"))        addObject(ObjectType::SpotLight, "Spot Light");
-                if (ImGui::MenuItem("Area Light"))        addObject(ObjectType::AreaLight, "Area Light");
-                if (ImGui::MenuItem("Reflection Cast"))   addObject(ObjectType::ReflectionCast, "Reflection Cast");
-                if (has2DWorldPackage()) {
-                    ImGui::Separator();
-                    if (ImGui::MenuItem("2D Point Light"))    addObject(ObjectType::Light2D, "2D Point Light");
-                    if (ImGui::MenuItem("2D Spot Light")) {
-                        addObject(ObjectType::Light2D, "2D Spot Light");
-                        if (!sceneObjects.empty()) {
-                            sceneObjects.back().light2D.type = Light2DType::Spot;
-                        }
-                    }
-                    if (ImGui::MenuItem("2D Freeform Light")) {
-                        addObject(ObjectType::Light2D, "2D Freeform Light");
-                        if (!sceneObjects.empty()) {
-                            sceneObjects.back().light2D.type = Light2DType::Freeform;
-                            sceneObjects.back().light2D.shapePoints = {
-                                glm::vec2(-2.0f, -1.5f),
-                                glm::vec2(2.0f, -1.5f),
-                                glm::vec2(2.5f, 1.0f),
-                                glm::vec2(0.0f, 2.5f),
-                                glm::vec2(-2.5f, 1.0f)
-                            };
-                        }
-                    }
-                    if (ImGui::MenuItem("2D Global Light")) {
-                        addObject(ObjectType::Light2D, "2D Global Light");
-                        if (!sceneObjects.empty()) {
-                            sceneObjects.back().light2D.type = Light2DType::Global;
-                            sceneObjects.back().light2D.intensity = 0.35f;
-                            sceneObjects.back().light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
-                        }
-                    }
-                    if (ImGui::MenuItem("2D Shadow Caster")) addObject(ObjectType::ShadowCaster2D, "2D Shadow Caster");
-                }
-                ImGui::EndMenu();
-            }
-
-            // ── Other / Effects ───────────────────────
-            if (ImGui::BeginMenu("Effects"))
-            {
-                if (ImGui::MenuItem("ModuVolume")) addObject(ObjectType::PostFXNode, "ModuVolume");
-                if (ImGui::MenuItem("Audio Reverb Zone")) createReverbZoneObject();
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("2D/UI"))
-            {
-                if (ImGui::MenuItem("Canvas")) addObject(ObjectType::Canvas, "Canvas");
-                if (ImGui::MenuItem("UI Image")) createUIWithCanvas(ObjectType::UIImage, "UI Image");
-                if (ImGui::MenuItem("UI Slider")) createUIWithCanvas(ObjectType::UISlider, "UI Slider");
-                if (ImGui::MenuItem("UI Button")) createUIWithCanvas(ObjectType::UIButton, "UI Button");
-                if (ImGui::MenuItem("UI Text")) createUIWithCanvas(ObjectType::UIText, "UI Text");
-                if (has2DWorldPackage() && ImGui::MenuItem("Sprite2D")) createUIWithCanvas(ObjectType::Sprite2D, "Sprite2D");
-                ImGui::EndMenu();
-            }
-            if (ImGui::MenuItem("Camera")) addObject(ObjectType::Camera, "Camera");
-
+            renderSceneObjectCreateMenu();
             ImGui::EndMenu();
         }
         ImGui::EndPopup();

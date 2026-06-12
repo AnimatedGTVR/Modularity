@@ -3,9 +3,14 @@
 #include "Rendering.h"
 #include <cstdint>
 #include <unordered_map>
+#ifndef MODULARITY_ENABLE_ASSIMP
+#define MODULARITY_ENABLE_ASSIMP 1
+#endif
+#if MODULARITY_ENABLE_ASSIMP
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#endif
 
 // Supported file extensions for model import
 struct ModelFormat {
@@ -150,6 +155,7 @@ private:
     ModelLoader(const ModelLoader&) = delete;
     ModelLoader& operator=(const ModelLoader&) = delete;
     
+#if MODULARITY_ENABLE_ASSIMP
     // Process Assimp scene
     void processNode(aiNode* node, const aiScene* scene, const aiMatrix4x4& parentTransform,
                      std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
@@ -159,13 +165,13 @@ private:
                      std::vector<float>& vertices, std::vector<glm::vec3>& triPositions,
                      std::vector<glm::vec3>& positions, std::vector<uint32_t>& indices,
                      glm::vec3& boundsMin, glm::vec3& boundsMax);
-    
+    // Assimp importer (kept for resource management)
+    Assimp::Importer importer;
+#endif
+
     // Storage for loaded meshes (reusing OBJLoader::LoadedMesh structure)
     std::vector<OBJLoader::LoadedMesh> loadedMeshes;
     std::unordered_map<std::string, ModelSceneData> cachedScenes;
-    
-    // Assimp importer (kept for resource management)
-    Assimp::Importer importer;
 };
 
 // Global accessor

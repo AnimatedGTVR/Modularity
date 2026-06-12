@@ -73,6 +73,32 @@ inline float Distance(const Vector3& a, const Vector3& b) {
 
 inline float Length(const Vector2& v) { return glm::length(v); }
 inline float Length(const Vector3& v) { return glm::length(v); }
+
+inline float Sqrt(float v) { return std::sqrt(v); }
+inline float Pow(float base, float exponent) { return std::pow(base, exponent); }
+inline float Exp(float v) { return std::exp(v); }
+inline float Sin(float radians) { return std::sin(radians); }
+inline float Cos(float radians) { return std::cos(radians); }
+inline float Tan(float radians) { return std::tan(radians); }
+inline float Asin(float v) { return std::asin(v); }
+inline float Acos(float v) { return std::acos(v); }
+inline float Atan(float v) { return std::atan(v); }
+inline float Atan2(float y, float x) { return std::atan2(y, x); }
+inline float Round(float v) { return std::round(v); }
+inline float Floor(float v) { return std::floor(v); }
+inline float Ceil(float v) { return std::ceil(v); }
+template <typename T> inline T Sign(const T& v) { return (v > T(0)) ? T(1) : ((v < T(0)) ? T(-1) : T(0)); }
+
+inline float Radians(float degrees) { return glm::radians(degrees); }
+inline float Degrees(float radians) { return glm::degrees(radians); }
+inline float Pi() { return glm::pi<float>(); }
+inline float TwoPi() { return glm::two_pi<float>(); }
+
+inline float Dot(const Vector2& a, const Vector2& b) { return glm::dot(a, b); }
+inline float Dot(const Vector3& a, const Vector3& b) { return glm::dot(a, b); }
+inline Vector2 Normalize(const Vector2& v) { return glm::normalize(v); }
+inline Vector3 Normalize(const Vector3& v) { return glm::normalize(v); }
+inline Vector3 Cross(const Vector3& a, const Vector3& b) { return glm::cross(a, b); }
 } // namespace Math
 
 namespace UI {
@@ -419,6 +445,45 @@ inline void BindSetting(const char* key, std::string& value) {
     if (ScriptContext* scriptCtx = ctxPtr()) BindSetting(*scriptCtx, key, value);
 }
 
+// Sheet-relative Sprite <-> setting string. Format: "sheetAssetPath|clipName|clipIndex".
+// clipName is primary (reorder-stable); clipIndex is a fallback/cache.
+inline std::string SerializeSprite(const Sprite& sprite) {
+    return sprite.sheetAssetPath + "|" + sprite.clipName + "|" + std::to_string(sprite.clipIndex);
+}
+
+inline Sprite DeserializeSprite(const std::string& encoded) {
+    Sprite sprite;
+    const size_t firstBar = encoded.find('|');
+    if (firstBar == std::string::npos) {
+        // Back-compat: a bare integer is a self-sheet clip index (old Field::Clip
+        // settings + the index-based inspector still decode correctly).
+        if (!encoded.empty() && (std::isdigit(static_cast<unsigned char>(encoded[0])) || encoded[0] == '-')) {
+            sprite.clipIndex = std::atoi(encoded.c_str());
+        } else {
+            sprite.clipName = encoded;
+        }
+        return sprite;
+    }
+    sprite.sheetAssetPath = encoded.substr(0, firstBar);
+    const size_t secondBar = encoded.find('|', firstBar + 1);
+    if (secondBar == std::string::npos) { sprite.clipName = encoded.substr(firstBar + 1); return sprite; }
+    sprite.clipName = encoded.substr(firstBar + 1, secondBar - firstBar - 1);
+    const std::string index = encoded.substr(secondBar + 1);
+    sprite.clipIndex = index.empty() ? -1 : std::atoi(index.c_str());
+    return sprite;
+}
+
+// Sprite isn't an AutoSetting primitive, so this loads from the string setting
+// (Field::SetSprite / the inspector write it back on edit). Declared before
+// BindArray so BindArray<Sprite,N> resolves it via unqualified lookup.
+inline void BindSetting(ScriptContext& ctx, const std::string& key, Sprite& value) {
+    value = DeserializeSprite(ctx.GetSetting(key, SerializeSprite(value)));
+}
+
+inline void BindSetting(ScriptContext& ctx, const char* key, Sprite& value) {
+    BindSetting(ctx, std::string(key ? key : ""), value);
+}
+
 inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::string& objectRef) {
     bool changed = false;
     ModuGUI::PushID(label ? label : "ObjectRef");
@@ -755,6 +820,8 @@ struct Rigidbody3DAccess {
     SceneObject* target() const { return detail::resolveAccessTarget(pp); }
     int targetId() const { auto* t = target(); return t ? t->id : -1; }
     bool Exists() const;
+    bool IsKinematic() const { auto* t = target(); return t && t->hasRigidbody && t->rigidbody.isKinematic; }
+    bool IsEnabled() const { auto* t = target(); return t && t->hasRigidbody && t->rigidbody.enabled; }
     void Accelerate(const Vector3& direction, float targetSpeed,
                     float acceleration, float deceleration) const;
     void FlattenY() const;
@@ -874,6 +941,17 @@ inline void AddLog(const char* message, ConsoleMessageType type = ConsoleMessage
     AddLog(std::string(message ? message : ""), type);
 }
 
+// Read-side access to an object's audio component (direct field reads). The
+// action side (play/stop/loop changes) stays in the ObjectAudio:: helpers.
+struct AudioAccess {
+    SceneObject* const* pp = nullptr;
+    SceneObject* target() const { return detail::resolveAccessTarget(pp); }
+    bool Exists() const { auto* t = target(); return t && t->hasAudioSource; }
+    bool Enabled() const { auto* t = target(); return t && t->hasAudioSource && t->audioSource.enabled; }
+    bool Loop() const { auto* t = target(); return t && t->hasAudioSource && t->audioSource.loop; }
+    std::string ClipPath() const { auto* t = target(); return (t && t->hasAudioSource) ? t->audioSource.clipPath : std::string(); }
+};
+
 // Thin pointer-handle around SceneObject. Implicit conversion to/from
 // SceneObject* keeps it interchangeable with existing pointer-based code.
 struct SceneObj {
@@ -882,19 +960,34 @@ struct SceneObj {
     Rigidbody3DAccess Rigidbody3D{&ptr};
     TransformAccess   Transform{&ptr};
     PhysicsAccess     Physics{&ptr};
+    AudioAccess       Audio{&ptr};
+
+    // Direct-read identity/state (C#-like, no ctx round-trip).
+    int Id() const { return ptr ? ptr->id : -1; }
+    std::string Name() const { return ptr ? ptr->name : std::string(); }
+    bool Enabled() const { return ptr && ptr->enabled; }
+    bool HasRigidbody() const { return ptr && ptr->hasRigidbody; }
+    bool HasAudio() const { return ptr && ptr->hasAudioSource; }
+    // Enable/disable this object, mirroring the list `each X.state(b)` form.
+    void State(bool enabled) const {
+        if (ptr && ptr->enabled != enabled) {
+            ptr->enabled = enabled;
+            if (ScriptContext* c = ctxPtr()) c->MarkDirty();
+        }
+    }
 
     SceneObj() = default;
     SceneObj(SceneObject* p) : ptr(p) {}
     SceneObj(std::nullptr_t) : ptr(nullptr) {}
 
     SceneObj(const SceneObj& o)
-        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr) {}
+        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr), Audio(&ptr) {}
     SceneObj& operator=(const SceneObj& o) {
         ptr = o.ptr;
         return *this;
     }
     SceneObj(SceneObj&& o) noexcept
-        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr) {}
+        : ptr(o.ptr), Rigidbody3D(&ptr), Transform(&ptr), Physics(&ptr), Audio(&ptr) {}
     SceneObj& operator=(SceneObj&& o) noexcept {
         ptr = o.ptr;
         return *this;

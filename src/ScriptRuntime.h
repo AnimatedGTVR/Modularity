@@ -22,7 +22,20 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 25
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 31
+
+// Layout drift guard. Scripts dereference SceneObject/ScriptComponent/ScriptContext
+// directly, so any size change in these types silently breaks every previously
+// compiled script binary (fields read at wrong offsets -> heap corruption/hangs).
+// The wrapper bakes this value in at script-compile time and the loader compares
+// it against the engine's current value, so stale binaries are rejected even when
+// nobody remembers to bump MODULARITY_NATIVE_SCRIPT_ABI_VERSION.
+// Defined as a macro so it is evaluated against whichever headers the script was
+// compiled with, not the engine's.
+#define MODULARITY_SCRIPT_LAYOUT_SIGNATURE() \
+    ((static_cast<unsigned long long>(sizeof(SceneObject)) << 40) ^ \
+     (static_cast<unsigned long long>(sizeof(ScriptComponent)) << 20) ^ \
+     static_cast<unsigned long long>(sizeof(ScriptContext)))
 
 struct MODULARITY_SCRIPT_API ScriptContext {
     Engine* engine = nullptr;
@@ -132,6 +145,11 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     std::string GetSpriteClipNameAt(int index) const;
     bool SetSpriteClipIndex(int index);
     bool SetSpriteClipName(const std::string& name);
+    // Assign a sheet-relative Sprite to any object's sprite component. Same-sheet
+    // (or sheet-less) assignment fast-paths to a clip-index change; a differing
+    // sheet loads its frame table first. Returns false (and logs) if the target
+    // has no sprite component, mirroring the other Set*ClipIndex helpers.
+    bool SetObjectSprite(int objectId, const Sprite& sprite);
     float GetSpriteAlpha() const;
     void SetSpriteAlpha(float alpha);
     bool FadeSpriteAlpha(float targetAlpha, float duration, float deltaTime);
@@ -220,13 +238,20 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     bool PollHttpPost(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess);
     void CancelHttpPost(int requestId);
     std::string ReadFileText(const std::string& path) const;
+    std::string ReadFileBase64(const std::string& path, size_t maxBytes = 16 * 1024 * 1024) const;
     bool WriteFileText(const std::string& path, const std::string& content);
     bool DeleteFile(const std::string& path);
     std::string ListFiles(const std::string& path, bool recursive = false, int maxEntries = 200) const;
     std::string SearchFiles(const std::string& root, const std::string& query, int maxResults = 50) const;
     std::string GetProgramRootPath() const;
     std::string GetEngineDocsRootPath() const;
+    ImTextureID GetUIImageTexture(const std::string& path, int* outWidth = nullptr, int* outHeight = nullptr) const;
     bool SaveProject();
+    // Editor context (for AI/agent tooling): what the user currently has selected.
+    std::string GetSelectedFilePath() const;     // file selected in the file browser (project-relative)
+    std::string GetSelectedObjectInfo() const;    // human-readable dump of the selected scene object
+    std::string GetProjectName() const;
+    std::string GetCurrentSceneName() const;
     // Console helper
     void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
     // Auto-binding helpers: bind once per call, optionally load stored value.
@@ -249,6 +274,7 @@ struct MODULARITY_SCRIPT_API ScriptContext {
 class ScriptRuntime {
 public:
     using AbiVersionFn = int(*)();
+    using LayoutSignatureFn = unsigned long long(*)();
     using BeginFn = void(*)(ScriptContext&, float);
     using SpecFn = void(*)(ScriptContext&, float);
     using TestEditorFn = void(*)(ScriptContext&, float);

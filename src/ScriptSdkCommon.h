@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+#include <string>
 #if defined(_MSVC_LANG)
 #define MODULARITY_CPLUSPLUS _MSVC_LANG
 #else
@@ -54,4 +55,24 @@ class Project;
 class ProjectManager;
 class Engine;
 extern OBJLoader g_objLoader;
+
+// Sheet-relative sprite reference. sheetAssetPath empty = the target object's
+// own sheet. clipName is the serialized identity (survives reordering); the
+// runtime resolves it to clipIndex on assignment and caches it here.
+// Stays back-compatible with the former clip-index Sprite (int <-> Sprite) so
+// the self-sheet, index-based call sites keep working.
+struct Sprite {
+    std::string sheetAssetPath;
+    std::string clipName;
+    mutable int clipIndex = -1;
+
+    Sprite() = default;
+    Sprite(int clip) : clipIndex(clip) {}
+    Sprite& operator=(int clip) { sheetAssetPath.clear(); clipName.clear(); clipIndex = clip; return *this; }
+    operator int() const { return clipIndex; }
+
+    bool IsValid() const { return !clipName.empty() || clipIndex >= 0; }
+    bool IsAssigned() const { return IsValid(); }
+    explicit operator bool() const { return IsValid(); }
+};
 #endif

@@ -1,4 +1,5 @@
 #include "RuntimeContent.h"
+#include "../include/Platform/AssetSource.h"
 
 #include <algorithm>
 #include <cstring>
@@ -19,6 +20,22 @@ template <typename T>
 bool ReadPod(std::ifstream& in, T& value) {
     in.read(reinterpret_cast<char*>(&value), sizeof(T));
     return static_cast<bool>(in);
+}
+
+template <typename T>
+bool ReadPodStream(Modularity::Platform::AssetStream& s, T& value) {
+    return s.Read(&value, sizeof(T)) == sizeof(T);
+}
+
+bool ReadStreamExact(Modularity::Platform::AssetStream& s, void* dst, size_t bytes) {
+    size_t total = 0;
+    auto* out = static_cast<unsigned char*>(dst);
+    while (total < bytes) {
+        const size_t n = s.Read(out + total, bytes - total);
+        if (n == 0) return false; // short read / EOF
+        total += n;
+    }
+    return true;
 }
 
 bool EnsureParentDirectory(const fs::path& path, std::string& error) {
@@ -165,22 +182,28 @@ bool WriteRuntimeContentBundle(const fs::path& bundlePath,
 bool ExtractRuntimeContentBundle(const fs::path& bundlePath,
                                  const fs::path& outputRoot,
                                  std::string& error) {
-    std::ifstream in(bundlePath, std::ios::binary);
-    if (!in.is_open()) {
+    // Read the bundle through the engine's AssetSource so the same
+    // extraction path works on desktop (filesystem) and Android (APK
+    // assets/ via AAssetManager). The destination is still a real
+    // writable filesystem directory (/data/data/<pkg>/files/... on
+    // Android).
+    auto stream = Modularity::Platform::GetAssetSource().Open(bundlePath.string());
+    if (!stream) {
         error = "Failed to open runtime bundle: " + bundlePath.string();
         return false;
     }
 
     char magic[sizeof(kBundleMagic) - 1] = {};
-    in.read(magic, sizeof(magic));
-    if (!in || std::memcmp(magic, kBundleMagic, sizeof(magic)) != 0) {
+    if (!ReadStreamExact(*stream, magic, sizeof(magic)) ||
+        std::memcmp(magic, kBundleMagic, sizeof(magic)) != 0) {
         error = "Invalid runtime bundle header: " + bundlePath.string();
         return false;
     }
 
     uint32_t version = 0;
     uint32_t entryCount = 0;
-    if (!ReadPod(in, version) || version != kBundleVersion || !ReadPod(in, entryCount)) {
+    if (!ReadPodStream(*stream, version) || version != kBundleVersion ||
+        !ReadPodStream(*stream, entryCount)) {
         error = "Unsupported runtime bundle format: " + bundlePath.string();
         return false;
     }
@@ -202,14 +225,13 @@ bool ExtractRuntimeContentBundle(const fs::path& bundlePath,
     for (uint32_t entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
         uint32_t pathLength = 0;
         uint64_t fileSize = 0;
-        if (!ReadPod(in, pathLength) || !ReadPod(in, fileSize) || pathLength == 0) {
+        if (!ReadPodStream(*stream, pathLength) || !ReadPodStream(*stream, fileSize) || pathLength == 0) {
             error = "Failed to read runtime bundle entry metadata.";
             return false;
         }
 
         std::string archivePath(pathLength, '\0');
-        in.read(archivePath.data(), static_cast<std::streamsize>(archivePath.size()));
-        if (!in) {
+        if (!ReadStreamExact(*stream, archivePath.data(), archivePath.size())) {
             error = "Failed to read runtime bundle entry path.";
             return false;
         }
@@ -239,14 +261,13 @@ bool ExtractRuntimeContentBundle(const fs::path& bundlePath,
 
         uint64_t remaining = fileSize;
         while (remaining > 0) {
-            const std::streamsize chunk = static_cast<std::streamsize>(
+            const size_t chunk = static_cast<size_t>(
                 std::min<uint64_t>(remaining, static_cast<uint64_t>(buffer.size())));
-            in.read(buffer.data(), chunk);
-            if (!in) {
+            if (!ReadStreamExact(*stream, buffer.data(), chunk)) {
                 error = "Runtime bundle payload truncated for: " + archivePath;
                 return false;
             }
-            out.write(buffer.data(), chunk);
+            out.write(buffer.data(), static_cast<std::streamsize>(chunk));
             if (!out) {
                 error = "Failed to write extracted runtime file: " + outPath.string();
                 return false;

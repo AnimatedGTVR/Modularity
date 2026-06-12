@@ -5,10 +5,10 @@
 #include <cstring>
 
 namespace {
-void modu_copy_string(const std::string& value, char* outBuffer, int outBufferSize) {
-    if (!outBuffer || outBufferSize <= 0) return;
-    std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), "%s", value.c_str());
-}
+    void modu_copy_string(const std::string& value, char* outBuffer, int outBufferSize) {
+        if (!outBuffer || outBufferSize <= 0) return;
+        std::snprintf(outBuffer, static_cast<size_t>(outBufferSize), "%s", value.c_str());
+    }
 }
 
 int modu_ctx_get_object_id(ScriptContext* ctx) {

@@ -36,6 +36,16 @@ Engine stack and architecture:
 - Respect the current renderer, editor, scene, scripting, serialization, and asset pipelines
 - Do not invent a new rendering path, UI framework, math layer, or audio backend unless explicitly requested
 
+Build and run:
+- `./build.sh` is the entry point: it locates the repo root, installs system deps, syncs git submodules + git-lfs, configures CMake, and builds
+- Default packaging is `.zip` (fast to compress) — this is the right choice for normal dev builds
+- Pass `--7z` only for final/release builds: smaller artifact, but MUCH slower to compress
+- Other useful flags: `--clean`, `--build-type=Debug`, `--fsanitize` (ASan + UBSan), `--Windows` (MinGW cross-build), `--jobs=N`, `--generator=Ninja`
+- `./buildandrun.sh` builds then launches the binary
+- Editor target is `Modularity` (open a project with `./Modularity --project <path.modu>`); standalone runtime target is `ModularityPlayer`
+- There is no automated test suite — verify by building and running the editor/player
+- The editor is compile-time removable: editor-only code is guarded by `#if !MODULARITY_RUNTIME_ONLY` (the player defines `MODULARITY_RUNTIME_ONLY=1`). Never break standalone player rendering, scripting, or scene loading when editing editor code
+
 Rendering rules:
 - Prefer existing renderer abstractions, texture handling, and material flow over raw one-off OpenGL usage
 - If raw OpenGL is required, keep it localized and compatible with the current renderer

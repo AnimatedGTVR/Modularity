@@ -4,7 +4,16 @@
 #include "../../include/Skybox/Skybox.h"
 #include <array>
 #include <unordered_map>
+
+// Vulkan is off entirely on Android (no SDK, GLES only). We still allow
+// this header to be included there because Engine.h references the type
+// behind a gated unique_ptr — but we can't pull in GLFW's header, so we
+// forward-declare the window handle instead.
+#ifndef __ANDROID__
 #include "../ThirdParty/glfw/include/GLFW/glfw3.h"
+#else
+struct GLFWwindow;
+#endif
 
 namespace Modularity {
 

@@ -2,6 +2,9 @@
 #include "SceneSerializationInternal.h"
 #include "Rendering.h"
 #include "ModelLoader.h"
+#ifdef __ANDROID__
+#include "AndroidRuntime/AndroidRuntime.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -295,6 +298,9 @@ bool Project::load(const fs::path& projectFilePath) {
                 pipeline = ParseProjectPipeline(value);
             } else if (line.find("renderer=") == 0) {
                 rendererBackend = Modularity::GraphicsBackendFromString(value);
+            } else if (key == "physicsBackend") {
+                if (value == "PhysX") physicsSettings.backend = PhysicsBackendType::PhysX;
+                else physicsSettings.backend = PhysicsBackendType::Jolt;
             } else if (line.find("physicsMassUnit=") == 0) {
                 physicsSettings.massUnit = ParseProjectMassUnit(value);
             } else if (line.find("physicsGlobalGravityScale=") == 0) {
@@ -326,6 +332,11 @@ bool Project::load(const fs::path& projectFilePath) {
                         physicsSettings.collisionLayers.resize(static_cast<size_t>(index) + 1);
                     }
                     physicsSettings.collisionLayers[static_cast<size_t>(index)] = value;
+                }
+            } else if (key == "textureFormatOverride") {
+                const size_t bar = value.rfind('|');
+                if (bar != std::string::npos && bar > 0 && bar + 1 < value.size()) {
+                    textureFormatOverrides[value.substr(0, bar)] = value.substr(bar + 1);
                 }
             } else if (key.rfind("tag", 0) == 0 && key.size() > 5 && key.substr(key.size() - 5) == "_name") {
                 int index = std::stoi(key.substr(3, key.size() - 8));
@@ -373,6 +384,8 @@ bool Project::load(const fs::path& projectFilePath) {
                 playerSettings.startupHeight = std::clamp(std::stoi(value), 64, 8192);
             } else if (key == "playerFullscreenStartup") {
                 playerSettings.fullscreenStartup = ParseProjectBool(value);
+            } else if (key == "playerNativeDisplayResolution") {
+                playerSettings.nativeDisplayResolution = ParseProjectBool(value);
             } else if (key == "playerCursorLocked") {
                 playerSettings.cursorLocked = ParseProjectBool(value);
             } else if (key == "playerCursorVisible") {
@@ -415,6 +428,7 @@ void Project::saveProjectFile() const {
     file << "lastScene=" << currentSceneName << "\n";
     file << "pipeline=" << SerializeProjectPipeline(pipeline) << "\n";
     file << "renderer=" << Modularity::ToString(rendererBackend) << "\n";
+    file << "physicsBackend=" << PhysicsBackendLabel(physicsSettings.backend) << "\n";
     file << "physicsMassUnit=" << SerializeProjectMassUnit(physicsSettings.massUnit) << "\n";
     file << "physicsGlobalGravityScale=" << std::max(0.0f, physicsSettings.globalGravityScale) << "\n";
     file << "physicsFixedTimestep=" << std::clamp(physicsSettings.fixedTimestep, 0.001f, 0.1f) << "\n";
@@ -435,6 +449,11 @@ void Project::saveProjectFile() const {
     for (size_t i = 0; i < tags.size(); ++i) {
         file << "tag" << i << "_name=" << tags[i] << "\n";
     }
+    // Per-texture format overrides as "<asset-relative path>|<format>" lines.
+    for (const auto& [texPath, format] : textureFormatOverrides) {
+        if (texPath.empty() || format.empty() || format == "Auto") continue;
+        file << "textureFormatOverride=" << texPath << "|" << format << "\n";
+    }
     file << "graphicsVSync=" << (graphicsSettings.vsync ? 1 : 0) << "\n";
     file << "graphicsTargetFps=" << std::clamp(graphicsSettings.targetFps, 1, 500) << "\n";
     file << "graphicsShadowQuality=" << std::clamp(graphicsSettings.shadowQuality, 0, 3) << "\n";
@@ -454,6 +473,7 @@ void Project::saveProjectFile() const {
     file << "playerStartupWidth=" << std::clamp(playerSettings.startupWidth, 64, 8192) << "\n";
     file << "playerStartupHeight=" << std::clamp(playerSettings.startupHeight, 64, 8192) << "\n";
     file << "playerFullscreenStartup=" << (playerSettings.fullscreenStartup ? 1 : 0) << "\n";
+    file << "playerNativeDisplayResolution=" << (playerSettings.nativeDisplayResolution ? 1 : 0) << "\n";
     file << "playerCursorLocked=" << (playerSettings.cursorLocked ? 1 : 0) << "\n";
     file << "playerCursorVisible=" << (playerSettings.cursorVisible ? 1 : 0) << "\n";
     file << "playerBuildTarget=" << playerSettings.buildTarget << "\n";
@@ -480,7 +500,21 @@ fs::path Project::getSceneFilePath(const std::string& sceneName) const {
 
 // ProjectManager implementation
 ProjectManager::ProjectManager() {
-    #ifdef _WIN32
+    #if defined(__ANDROID__)
+    // Android has no HOME / APPDATA, and the process cwd is the read-only
+    // system root ("/"). The NativeActivity hands us a per-app writable
+    // directory at /data/data/<pkg>/files which is the right home for
+    // recent-projects metadata, launcher state, runtime caches, etc.
+    if (const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath()) {
+        appDataPath = fs::path(dataPath) / ".Modularity";
+    } else {
+        // AndroidRuntime hasn't installed the activity pointer yet —
+        // /data/local/tmp is world-writable and survives the activity
+        // lifecycle, so use it as a defensive fallback rather than the
+        // read-only "/".
+        appDataPath = fs::path("/data/local/tmp/.Modularity");
+    }
+    #elif defined(_WIN32)
     const char* appdata = std::getenv("APPDATA");
     if (appdata) {
         appDataPath = fs::path(appdata) / ".Modularity";
@@ -1314,6 +1348,8 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
                 file << "postVHSOverlayAnimationSpeed=" << obj.postFx.vhsOverlayAnimationSpeed << "\n";
                 file << "postVHSOverlayColorBleed=" << obj.postFx.vhsOverlayColorBleed << "\n";
                 file << "postVHSOverlayBanding=" << obj.postFx.vhsOverlayBanding << "\n";
+                file << "postVHSOverlaySignalMode=" << static_cast<int>(obj.postFx.vhsOverlaySignalMode) << "\n";
+                file << "postVHSOverlayDropouts=" << obj.postFx.vhsOverlayDropouts << "\n";
                 file << "postWavyEnabled=" << (obj.postFx.wavyEnabled ? 1 : 0) << "\n";
                 file << "postWavyAmplitude=" << obj.postFx.wavyAmplitude << "\n";
                 file << "postWavyFrequency=" << obj.postFx.wavyFrequency << "\n";
@@ -2065,6 +2101,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"postVHSOverlayAnimationSpeed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayAnimationSpeed = std::stof(value); }},
         {"postVHSOverlayColorBleed", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayColorBleed = std::stof(value); }},
         {"postVHSOverlayBanding", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayBanding = std::stof(value); }},
+        {"postVHSOverlaySignalMode", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlaySignalMode = static_cast<PostFXVhsSignalMode>(std::clamp(std::stoi(value), 0, 5)); }},
+        {"postVHSOverlayDropouts", +[](SceneObject& obj, const std::string& value) { obj.postFx.vhsOverlayDropouts = std::stof(value); }},
         {"postWavyEnabled", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyEnabled = (std::stoi(value) != 0); }},
         {"postWavyAmplitude", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyAmplitude = std::stof(value); }},
         {"postWavyFrequency", +[](SceneObject& obj, const std::string& value) { obj.postFx.wavyFrequency = std::stof(value); }},

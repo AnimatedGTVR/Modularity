@@ -2,6 +2,7 @@
 
 #include "ScriptSdkCommon.h"
 #include "Lighting2DTypes.h"
+#include <algorithm>
 #include <unordered_set>
 
 enum class ObjectType {
@@ -385,6 +386,15 @@ enum class PostFXDitherPattern {
     HybridPS1 = 4
 };
 
+enum class PostFXVhsSignalMode {
+    Composite = 0,
+    SVideo = 1,
+    RF = 2,
+    VhsSP = 3,
+    VhsLP = 4,
+    VhsEP = 5
+};
+
 struct CameraComponent {
     SceneCameraType type = SceneCameraType::Player;
     float fov = FOV;
@@ -464,6 +474,8 @@ struct PostFXSettings {
     float vhsOverlayAnimationSpeed = 1.0f;
     float vhsOverlayColorBleed = 0.4f;
     float vhsOverlayBanding = 0.25f;
+    PostFXVhsSignalMode vhsOverlaySignalMode = PostFXVhsSignalMode::VhsSP;
+    float vhsOverlayDropouts = 0.35f;
     bool wavyEnabled = false;
     float wavyAmplitude = 0.006f;
     float wavyFrequency = 16.0f;
@@ -610,6 +622,7 @@ struct UIElementComponent {
     std::vector<glm::ivec4> spriteCustomFrames;
     std::vector<std::string> spriteCustomFrameNames;
     std::vector<glm::vec2> spriteCustomFrameScales;
+    std::string spriteSheetAssetPath; // provenance: sheet asset the frames came from (empty = baked/legacy)
     bool nineSliceEnabled = false;
     glm::vec4 nineSliceBorder = glm::vec4(12.0f, 12.0f, 12.0f, 12.0f); // left, right, top, bottom in source pixels
     bool nineSliceTileEdges = true;

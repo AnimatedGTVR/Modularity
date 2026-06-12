@@ -15,6 +15,7 @@
 #include "ScriptLanguageService.h"
 #include "ScriptRuntime.h"
 #include "PhysicsSystem.h"
+#include "PhysicsBackendFactory.h"
 #include "AudioSystem.h"
 #include "PackageManager.h"
 #include "ModuPak.h"
@@ -201,6 +202,7 @@ private:
     bool showProjectBrowser = true;  // Now merged into file browser
     bool projectSettingsCompactSidebar = true;
     bool showRegistryPackagesWindow = false;
+    bool showModularityDoctorWindow = false;
     bool showMeshBuilder = false;
     bool showBuildSettings = false;
     bool showStyleEditor = false;
@@ -685,7 +687,9 @@ private:
     ScriptCompiler scriptCompiler;
     ScriptRuntime scriptRuntime;
     ManagedScriptRuntime managedRuntime;
-    PhysicsSystem physics;
+    // Default to Jolt; the actual backend the project wants is swapped in
+    // when a project loads or the user changes the dropdown in settings.
+    std::unique_ptr<IPhysicsBackend> physics = CreatePhysicsBackend(PhysicsBackendType::Jolt);
     AudioSystem audio;
     struct EditorToastState {
         bool visible = false;
@@ -793,8 +797,25 @@ private:
         bool enabled = true;
     };
     struct BuildSettings {
+        std::string profileName = "Default";
+        std::string activeProfilePath = "BuildProfiles/Default.modubuild";
         BuildPlatform platform = BuildPlatform::Windows;
         std::string architecture = "x86_64";
+        std::string configuration = "Release";
+        bool includeEditor = false;
+        bool runtimeOnly = true;
+        bool leanRuntimeExport = false;
+        bool shipScriptSdk = false;
+        std::string outputFolder = "Builds";
+        std::string outputName = "{buildName}-{version}-{platform}";
+        std::string moduleAssimp = "auto";
+        std::string modulePhysX = "auto";
+        std::string moduleJolt = "auto";
+        std::string moduleVulkan = "auto";
+        std::string moduleSndfile = "auto";
+        std::string moduleOpusfile = "auto";
+        std::string moduleMono = "auto";
+        std::string moduleOpenGLES = "auto";
         std::string companyName = "DefaultCompany";
         std::string buildName = "MyProject";
         std::string version = "0.1.0";
@@ -1071,6 +1092,7 @@ private:
     void renderNewProjectDialog();
     void renderOpenProjectDialog();
     void renderMainMenuBar();
+    void renderSceneObjectCreateMenu();
     void renderPlayControlsBar();
     void renderEnvironmentWindow();
     void renderCameraWindow();
@@ -1095,6 +1117,7 @@ private:
     void renderGameProfilerWindow();
     void renderUiCanvas3DTargets();
     void renderBuildSettingsWindow();
+    void renderModularityDoctorWindow();
     void renderScriptingWindow();
     void renderModuPakExportDialog();
     void renderModuPakImportDialog();
@@ -1202,6 +1225,10 @@ private:
     void resetBuildSettings();
     void loadBuildSettings();
     void saveBuildSettings();
+    void selectBuildSettingsProfile(const fs::path& relativeProfilePath);
+    void saveBuildSettingsProfileAs(const std::string& profileName);
+    void duplicateBuildSettingsProfile(const std::string& profileName);
+    bool deleteBuildSettingsProfile(const std::string& profileName);
     bool addSceneToBuildSettings(const std::string& sceneName, bool enabled);
     fs::path resolveSplashImagePath() const;
     void applyBuildWindowTitle();
@@ -1336,6 +1363,10 @@ public:
     fs::path resolveProjectPathFromScript(const std::string& rawPath) const;
     fs::path getProgramRootPathFromScript() const;
     fs::path getEngineDocsRootPathFromScript() const;
+    std::string getSelectedFilePathFromScript() const;
+    std::string getSelectedObjectInfoFromScript() const;
+    std::string getProjectNameFromScript() const;
+    std::string getCurrentSceneNameFromScript() const;
     std::string httpPostFromScript(const std::string& url, const std::string& contentType,
                                    const std::string& body, const std::string& headers);
     int startHttpPostFromScript(const std::string& url, const std::string& contentType,
@@ -1343,10 +1374,12 @@ public:
     bool pollHttpPostFromScript(int requestId, std::string& outChunk, bool& outDone, bool& outSuccess);
     void cancelHttpPostFromScript(int requestId);
     std::string readFileTextFromScript(const std::string& path) const;
+    std::string readFileBase64FromScript(const std::string& path, size_t maxBytes = 16 * 1024 * 1024) const;
     bool writeFileTextFromScript(const std::string& path, const std::string& content);
     bool deleteFileFromScript(const std::string& path);
     std::string listFilesFromScript(const std::string& path, bool recursive, int maxEntries) const;
     std::string searchFilesFromScript(const std::string& root, const std::string& query, int maxResults) const;
+    ImTextureID getUIImageTextureFromScript(const std::string& path, int* outWidth = nullptr, int* outHeight = nullptr);
     bool saveProjectFromScript();
     // Runtime input queries for script helpers.
     bool isRuntimeKeyDown(int key) const;

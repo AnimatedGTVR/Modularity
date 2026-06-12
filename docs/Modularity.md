@@ -1,4 +1,7 @@
 # Modularity Engine Documentation
+## *Note: Written by Anémunt and Codex*
+
+---
 
 This document explains how the Modularity C++ engine is structured, how projects and scenes work, and how to use the editor/runtime to build content. It is written to match the current codebase.
 

@@ -2,7 +2,7 @@
 
 #include "Rendering.h"
 #include "Skybox/Skybox.h"
-#include "ThirdParty/glfw/include/GLFW/glfw3.h"
+#include "Platform/PlatformTime.h"
 
 #include <cstddef>
 #include <cmath>
@@ -126,7 +126,7 @@ void TMOpenGLRenderer::invalidateCaches() {
 }
 
 bool TMOpenGLRenderer::ensureInitialized(std::string& error) {
-    if (glfwGetCurrentContext() == nullptr) {
+    if (!Modularity::Platform::HasCurrentGLContext()) {
         error = "TM renderer requires an active OpenGL context";
         return false;
     }
@@ -493,7 +493,7 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
     meshShader->setMat4("u_model", command.modelMatrix);
     meshShader->setVec3("u_cameraPosition", activeContext->cameraPosition);
     meshShader->setVec3("u_lightDirection", glm::normalize(glm::vec3(-0.45f, 0.85f, -0.30f)));
-    meshShader->setFloat("u_time", static_cast<float>(glfwGetTime()));
+    meshShader->setFloat("u_time", static_cast<float>(Modularity::Platform::GetTimeSeconds()));
     meshShader->setFloat("u_presentationPitchDegrees", getPresentationPitchDegrees());
     meshShader->setFloat("u_pitchStretchStrength",
                          presentationSettings.lookPitchStretchEnabled

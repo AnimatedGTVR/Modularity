@@ -134,6 +134,22 @@ void Engine::renderPlayControlsBar() {
       "##PlayModeToolbarButton", "Resources/Engine-Root/Editor/Play Button.png",
       "Resources/Engine-Root/Editor/Play Button Gray.png", "P", playTooltip,
       isPlaying);
+  // Debug helper: MODULARITY_DEBUG_AUTOPLAY=<frames> presses Play once that
+  // many frames after this bar starts rendering with a loaded project.
+  {
+    static int autoplayCountdown = []() {
+      const char *v = std::getenv("MODULARITY_DEBUG_AUTOPLAY");
+      const int frames = v ? std::atoi(v) : 0;
+      return frames > 0 ? frames : -1;
+    }();
+    if (autoplayCountdown > 0 && !isPlaying &&
+        projectManager.currentProject.isLoaded) {
+      if (--autoplayCountdown == 0) {
+        playPressed = true;
+        std::fprintf(stderr, "[Debug] MODULARITY_DEBUG_AUTOPLAY entering play mode\n");
+      }
+    }
+  }
   ImGui::SameLine(0.0f, spacing);
   bool specPressed =
       iconButton("##SpecModeToolbarButton",
@@ -187,8 +203,8 @@ void Engine::renderPlayControlsBar() {
         }
         __markPlayStep("animations", __stepStart);
         __stepStart = std::chrono::steady_clock::now();
-        if (physics.isReady() || physics.init()) {
-          physics.onPlayStart(sceneObjects);
+        if (physics->isReady() || physics->init()) {
+          physics->onPlayStart(sceneObjects);
         } else {
           addConsoleMessage(
               "PhysX failed to initialize; physics disabled for play mode",
@@ -227,14 +243,14 @@ void Engine::renderPlayControlsBar() {
         clearVideoPlayers();
         videoAssetPreviewPlayer.reset();
         videoAssetPreviewPath.clear();
-        physics.onPlayStop();
+        physics->onPlayStop();
         audio.onPlayStop();
         restorePlayModeSnapshot();
         deferInspectorRefresh = true;
         resetScriptRuntimeStateForReload(false);
         isPaused = false;
-        if (specMode && (physics.isReady() || physics.init())) {
-          physics.onPlayStart(sceneObjects);
+        if (specMode && (physics->isReady() || physics->init())) {
+          physics->onPlayStart(sceneObjects);
         }
         const double __stopMs = std::chrono::duration<double, std::milli>(
                                     std::chrono::steady_clock::now() -
@@ -252,7 +268,7 @@ void Engine::renderPlayControlsBar() {
   if (specPressed) {
     ImGui::ClearActiveID();
     bool enable = !specMode;
-    if (enable && !physics.isReady() && !physics.init()) {
+    if (enable && !physics->isReady() && !physics->init()) {
       addConsoleMessage("PhysX failed to initialize; spec mode disabled",
                         ConsoleMessageType::Warning);
       enable = false;
@@ -267,14 +283,14 @@ void Engine::renderPlayControlsBar() {
         clearVideoPlayers();
         videoAssetPreviewPlayer.reset();
         videoAssetPreviewPath.clear();
-        physics.onPlayStart(sceneObjects);
+        physics->onPlayStart(sceneObjects);
         audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
         audio.onPlayStart(sceneObjects);
       } else {
         clearVideoPlayers();
         videoAssetPreviewPlayer.reset();
         videoAssetPreviewPath.clear();
-        physics.onPlayStop();
+        physics->onPlayStop();
         audio.onPlayStop();
       }
     }

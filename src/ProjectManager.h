@@ -3,6 +3,8 @@
 #include "Common.h"
 #include "SceneObject.h"
 #include "../include/Skybox/Skybox.h"
+#include <map>
+#include <string>
 
 struct RecentProject {
     std::string name;
@@ -109,7 +111,26 @@ inline const char* ProjectMassUnitSuffix(ProjectMassUnit unit) {
     }
 }
 
+// Which physics engine the project's 3D simulation runs on. Jolt is the
+// default — it ships on every platform Modularity targets (including
+// Android). PhysX remains available on desktop as a familiar fallback,
+// but is unavailable on Android.
+enum class PhysicsBackendType {
+    Jolt = 0,
+    PhysX = 1
+};
+
+inline const char* PhysicsBackendLabel(PhysicsBackendType t) {
+    switch (t) {
+        case PhysicsBackendType::PhysX: return "PhysX";
+        case PhysicsBackendType::Jolt:
+        default:
+            return "Jolt";
+    }
+}
+
 struct ProjectPhysicsSettings {
+    PhysicsBackendType backend = PhysicsBackendType::Jolt;
     ProjectMassUnit massUnit = ProjectMassUnit::Kilograms;
     float globalGravityScale = 1.0f;
     float fixedTimestep = 1.0f / 60.0f;
@@ -174,6 +195,13 @@ struct ProjectPlayerSettings {
     int startupWidth = 1280;
     int startupHeight = 720;
     bool fullscreenStartup = false;
+    // When true the player ignores startupWidth/startupHeight and renders
+    // at the actual display surface size. On Android that's the EGL
+    // surface size (typically the tablet's native resolution); on desktop
+    // it's the GLFW window framebuffer size. Use this when you want the
+    // game to look crisp on whatever device runs it without manually
+    // configuring resolutions per target.
+    bool nativeDisplayResolution = false;
     bool cursorLocked = false;
     bool cursorVisible = true;
     std::string buildTarget = "Windows";
@@ -200,6 +228,9 @@ public:
     std::vector<std::string> tags = { "Untagged" };
     ProjectConsoleSettings consoleSettings;
     ProjectPlayerSettings playerSettings;
+    // Per-texture GPU storage-format overrides: asset-relative path -> format
+    // name (see TextureFormatPolicy ToString). Absent entries use Auto.
+    std::map<std::string, std::string> textureFormatOverrides;
 
     Project() = default;
     Project(const std::string& projectName, const fs::path& basePath);
@@ -229,6 +260,7 @@ public:
     bool newProjectImportLastPackages = true;
     std::string newProjectTemplatePath;
     std::string newProjectTemplateName;
+    std::string newProjectPresetId = "empty";
     std::string errorMessage;
     Project currentProject;
 

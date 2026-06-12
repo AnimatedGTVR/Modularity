@@ -62,44 +62,8 @@ void Engine::renderMainMenuBar() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, chrome.menuItemSpacing);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, chrome.menuFramePadding);
     ImGui::SetWindowFontScale(chrome.fontScale);
-    const bool project25DPipeline = isProject25DPipeline();
-    auto allocateRig25DNodeId = [&]() {
-      int nextNodeId = 0;
-      for (const SceneObject &obj : sceneObjects) {
-        if (!obj.hasRig25DNode || obj.rig25DNode.nodeId < 0) {
-          continue;
-        }
-        nextNodeId = std::max(nextNodeId, obj.rig25DNode.nodeId + 1);
-      }
-      return nextNodeId;
-    };
-    auto createRig25DObject = [&](bool isRoot) {
-      if (!project25DPipeline) {
-        return;
-      }
-      addObject(ObjectType::Empty, isRoot ? "Rig Root" : "Rig Node");
-      if (SceneObject *created = getSelectedObject()) {
-        created->type = ObjectType::Empty;
-        created->hasRenderer = false;
-        created->renderType = RenderType::None;
-        created->faceCamera = false;
-        created->hasRig25DRoot = isRoot;
-        created->rig25DRoot.enabled = isRoot;
-        created->hasRig25DNode = !isRoot;
-        created->rig25DNode.enabled = !isRoot;
-        created->rig25DNode.nodeId =
-            isRoot ? -1 : allocateRig25DNodeId();
-        created->rig25DNode.nodeName = isRoot ? std::string() : created->name;
-        created->localPosition = created->position;
-        created->localRotation = NormalizeEulerDegrees(created->rotation);
-        created->localScale = created->scale;
-        created->localInitialized = true;
-        EnsureInspectorComponentMetadata(*created);
-        projectManager.currentProject.hasUnsavedChanges = true;
-      }
-    };
 
-    if (ImGui::BeginMenu("File")) {
+    if (ImGui::BeginMenu("Engine")) {
       if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
         showNewSceneDialog = true;
         memset(newSceneName, 0, sizeof(newSceneName));
@@ -113,23 +77,27 @@ void Engine::renderMainMenuBar() {
                 projectManager.currentProject.currentSceneName.c_str(),
                 sizeof(saveSceneAsName) - 1);
       }
-      if (ImGui::MenuItem("Build Settings...")) {
-        showBuildSettings = true;
-      }
-      if (ImGui::BeginMenu("ModuPAK")) {
-        if (ImGui::MenuItem("Export Into ModuPAK...")) {
-          openModuPakExportDialog(fileBrowser.selectedFiles);
+      if (ImGui::BeginMenu("Load Scene",
+                           projectManager.currentProject.isLoaded)) {
+        const auto scenes = projectManager.currentProject.getSceneList();
+        if (scenes.empty()) {
+          ImGui::TextDisabled("No scenes");
         }
-        if (ImGui::MenuItem("Import ModuPAK...")) {
-          openModuPakImportDialog();
-        }
-        if (ImGui::MenuItem("Import ModuOBJ...")) {
-          openModuObjImportDialog();
+        for (const auto &scene : scenes) {
+          const bool isCurrentScene =
+              scene == projectManager.currentProject.currentSceneName;
+          if (ImGui::MenuItem(scene.c_str(), nullptr, isCurrentScene,
+                              !isCurrentScene)) {
+            loadScene(scene);
+          }
         }
         ImGui::EndMenu();
       }
+      if (ImGui::MenuItem("Build Settings...")) {
+        showBuildSettings = true;
+      }
       ImGui::Separator();
-      if (ImGui::MenuItem("Close Project")) {
+      if (ImGui::MenuItem("Return to Project Manager")) {
         if (projectManager.currentProject.hasUnsavedChanges) {
           requestSceneSave(projectManager.currentProject.currentSceneName,
                            PendingScenePostAction::CloseProject,
@@ -146,15 +114,37 @@ void Engine::renderMainMenuBar() {
       ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Edit")) {
-      if (ImGui::MenuItem("Undo", "Ctrl+Z", false, false)) {
+    if (ImGui::BeginMenu("Actions")) {
+      if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undoStack.empty())) {
+        undo();
       }
-      if (ImGui::MenuItem("Redo", "Ctrl+Y", false, false)) {
+      if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack.empty())) {
+        redo();
+      }
+      ImGui::Separator();
+      const bool hasSelection =
+          !selectedObjectIds.empty() || selectedObjectId >= 0;
+      if (ImGui::MenuItem("Copy", "Ctrl+C", false, hasSelection)) {
+        copySelected();
+      }
+      if (ImGui::MenuItem("Paste", "Ctrl+V", false, !objectClipboard.empty())) {
+        pasteClipboard();
+      }
+      if (ImGui::MenuItem("Duplicate", nullptr, false, hasSelection)) {
+        duplicateSelected();
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Select All", "Ctrl+A", false,
+                          !sceneObjects.empty())) {
+        selectAllObjects();
+      }
+      if (ImGui::MenuItem("Clear Selection", nullptr, false, hasSelection)) {
+        clearSelection();
       }
       ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("View")) {
+    if (ImGui::BeginMenu("Workflow")) {
       if (ImGui::BeginMenu("Workspace")) {
         const bool workspaceTransitionActive =
             pendingWorkspaceReload || workspaceLayoutDirty ||
@@ -208,16 +198,6 @@ void Engine::renderMainMenuBar() {
       if (prevProjectBrowser != showProjectBrowser) {
         saveEditorUserSettings();
       }
-      bool prevRegistryPackages = showRegistryPackagesWindow;
-      ImGui::MenuItem("Modupak Manager", nullptr, &showRegistryPackagesWindow);
-      if (prevRegistryPackages != showRegistryPackagesWindow) {
-        saveEditorUserSettings();
-      }
-      bool prevProfilerWindow = showGameProfilerWindow;
-      ImGui::MenuItem("Profiler", nullptr, &showGameProfilerWindow);
-      if (prevProfilerWindow != showGameProfilerWindow) {
-        saveEditorUserSettings();
-      }
       /*if (hasMeshBuilderPackage()) {
         ImGui::MenuItem("Mesh Builder (Legacy Window)", nullptr,
                         &showMeshBuilder);
@@ -253,6 +233,101 @@ void Engine::renderMainMenuBar() {
         ImGui::MenuItem("UI World Overlay", nullptr, &uiWorldMode);
       }
       ImGui::MenuItem("3D Grid", nullptr, &showSceneGrid3D);
+      ImGui::Separator();
+      if (ImGui::MenuItem("Fullscreen Viewport", "F11", viewportFullscreen)) {
+        viewportFullscreen = !viewportFullscreen;
+      }
+      ImGui::Separator();
+      if (ImGui::BeginMenu("Style")) {
+        ImGui::TextDisabled("Editor Styles");
+        for (size_t i = 0; i < uiStylePresets.size(); ++i) {
+          bool selected = static_cast<int>(i) == uiStylePresetIndex;
+          if (ImGui::MenuItem(uiStylePresets[i].name.c_str(), nullptr,
+                              selected)) {
+            applyUIStylePresetByName(uiStylePresets[i].name);
+            saveEditorUserSettings();
+          }
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("UI Scale")) {
+          const auto selectScale = [&](EditorChromeScale scale) {
+            if (uiChromeScale == scale) {
+              return;
+            }
+            uiChromeScale = scale;
+            saveEditorUserSettings();
+          };
+          if (ImGui::MenuItem("Big", nullptr,
+                              uiChromeScale == EditorChromeScale::Big)) {
+            selectScale(EditorChromeScale::Big);
+          }
+          if (ImGui::MenuItem("Default", nullptr,
+                              uiChromeScale == EditorChromeScale::Default)) {
+            selectScale(EditorChromeScale::Default);
+          }
+          if (ImGui::MenuItem("Compact", nullptr,
+                              uiChromeScale == EditorChromeScale::Compact)) {
+            selectScale(EditorChromeScale::Compact);
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::TextDisabled("UI Animations");
+        if (ImGui::MenuItem("Fluid", nullptr,
+                            uiAnimationMode == UIAnimationMode::Fluid)) {
+          uiAnimationMode = UIAnimationMode::Fluid;
+          saveEditorUserSettings();
+        }
+        if (ImGui::MenuItem("Snappy", nullptr,
+                            uiAnimationMode == UIAnimationMode::Snappy)) {
+          uiAnimationMode = UIAnimationMode::Snappy;
+          saveEditorUserSettings();
+        }
+        if (ImGui::MenuItem("Off", nullptr,
+                            uiAnimationMode == UIAnimationMode::Off)) {
+          uiAnimationMode = UIAnimationMode::Off;
+          saveEditorUserSettings();
+        }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Feedback Sounds")) {
+          bool feedbackSettingsChanged = false;
+          feedbackSettingsChanged |= ImGui::MenuItem("Enable All Feedback Sounds", nullptr, &feedbackSoundsEnabled);
+          ImGui::Separator();
+          feedbackSettingsChanged |= ImGui::MenuItem("Click Sounds", nullptr, &feedbackClickSoundsEnabled);
+          feedbackSettingsChanged |= ImGui::MenuItem("Error Sounds", nullptr, &feedbackErrorSoundsEnabled);
+          feedbackSettingsChanged |= ImGui::MenuItem("Other Feedback Sounds", nullptr, &feedbackOtherSoundsEnabled);
+          ImGui::Separator();
+          ImGui::TextDisabled("Boot intro sound is always enabled.");
+          if (feedbackSettingsChanged) {
+            saveEditorUserSettings();
+          }
+          ImGui::EndMenu();
+        }
+        ImGui::Separator();
+        ImGui::MenuItem("Style Editor", nullptr, &showStyleEditor);
+        if (ImGui::MenuItem("Export Theme + Layout")) {
+          exportEditorThemeLayout();
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Packages")) {
+      bool prevRegistryPackages = showRegistryPackagesWindow;
+      ImGui::MenuItem("ModuPAK Manager", nullptr, &showRegistryPackagesWindow);
+      if (prevRegistryPackages != showRegistryPackagesWindow) {
+        saveEditorUserSettings();
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Export Into ModuPAK...")) {
+        openModuPakExportDialog(fileBrowser.selectedFiles);
+      }
+      if (ImGui::MenuItem("Import ModuPAK...")) {
+        openModuPakImportDialog();
+      }
+      if (ImGui::MenuItem("Import ModuOBJ...")) {
+        openModuObjImportDialog();
+      }
       if (!scriptEditorWindows.empty()) {
         ImGui::Separator();
         ImGui::TextDisabled("Scripted Windows");
@@ -260,90 +335,22 @@ void Engine::renderMainMenuBar() {
           ImGui::MenuItem(window.label.c_str(), nullptr, &window.open);
         }
       }
-      ImGui::Separator();
-      if (ImGui::MenuItem("Fullscreen Viewport", "F11", viewportFullscreen)) {
-        viewportFullscreen = !viewportFullscreen;
-      }
       ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Style")) {
-      ImGui::TextDisabled("Editor Styles");
-      for (size_t i = 0; i < uiStylePresets.size(); ++i) {
-        bool selected = static_cast<int>(i) == uiStylePresetIndex;
-        if (ImGui::MenuItem(uiStylePresets[i].name.c_str(), nullptr,
-                            selected)) {
-          applyUIStylePresetByName(uiStylePresets[i].name);
-          saveEditorUserSettings();
-        }
-      }
-      ImGui::Separator();
-      if (ImGui::BeginMenu("UI Scale")) {
-        const auto selectScale = [&](EditorChromeScale scale) {
-          if (uiChromeScale == scale) {
-            return;
-          }
-          uiChromeScale = scale;
-          saveEditorUserSettings();
-        };
-        if (ImGui::MenuItem("Big", nullptr,
-                            uiChromeScale == EditorChromeScale::Big)) {
-          selectScale(EditorChromeScale::Big);
-        }
-        if (ImGui::MenuItem("Default", nullptr,
-                            uiChromeScale == EditorChromeScale::Default)) {
-          selectScale(EditorChromeScale::Default);
-        }
-        if (ImGui::MenuItem("Compact", nullptr,
-                            uiChromeScale == EditorChromeScale::Compact)) {
-          selectScale(EditorChromeScale::Compact);
-        }
-        ImGui::EndMenu();
-      }
-      ImGui::TextDisabled("UI Animations");
-      if (ImGui::MenuItem("Fluid", nullptr,
-                          uiAnimationMode == UIAnimationMode::Fluid)) {
-        uiAnimationMode = UIAnimationMode::Fluid;
-        saveEditorUserSettings();
-      }
-      if (ImGui::MenuItem("Snappy", nullptr,
-                          uiAnimationMode == UIAnimationMode::Snappy)) {
-        uiAnimationMode = UIAnimationMode::Snappy;
-        saveEditorUserSettings();
-      }
-      if (ImGui::MenuItem("Off", nullptr,
-                          uiAnimationMode == UIAnimationMode::Off)) {
-        uiAnimationMode = UIAnimationMode::Off;
+    if (ImGui::BeginMenu("Tools")) {
+      ImGui::MenuItem("Modularity Doctor", nullptr, &showModularityDoctorWindow);
+      bool prevProfilerWindow = showGameProfilerWindow;
+      ImGui::MenuItem("Profiler", nullptr, &showGameProfilerWindow);
+      if (prevProfilerWindow != showGameProfilerWindow) {
         saveEditorUserSettings();
       }
       ImGui::Separator();
-      if (ImGui::BeginMenu("Feedback Sounds")) {
-        bool feedbackSettingsChanged = false;
-        feedbackSettingsChanged |= ImGui::MenuItem("Enable All Feedback Sounds", nullptr, &feedbackSoundsEnabled);
-        ImGui::Separator();
-        feedbackSettingsChanged |= ImGui::MenuItem("Click Sounds", nullptr, &feedbackClickSoundsEnabled);
-        feedbackSettingsChanged |= ImGui::MenuItem("Error Sounds", nullptr, &feedbackErrorSoundsEnabled);
-        feedbackSettingsChanged |= ImGui::MenuItem("Other Feedback Sounds", nullptr, &feedbackOtherSoundsEnabled);
-        ImGui::Separator();
-        ImGui::TextDisabled("Boot intro sound is always enabled.");
-        if (feedbackSettingsChanged) {
-          saveEditorUserSettings();
-        }
-        ImGui::EndMenu();
-      }
-      ImGui::Separator();
-      ImGui::MenuItem("Style Editor", nullptr, &showStyleEditor);
-      if (ImGui::MenuItem("Export Theme + Layout")) {
-        exportEditorThemeLayout();
-      }
-      ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Scripts")) {
+      ImGui::TextDisabled("Script Modes");
       auto toggleSpec = [&](bool enabled) {
         if (specMode == enabled)
           return;
-        if (enabled && !physics.isReady() && !physics.init()) {
+        if (enabled && !physics->isReady() && !physics->init()) {
           addConsoleMessage("PhysX failed to initialize; spec mode disabled",
                             ConsoleMessageType::Warning);
           specMode = false;
@@ -354,11 +361,11 @@ void Engine::renderMainMenuBar() {
         specMode = enabled;
         if (!isPlaying) {
           if (specMode) {
-            physics.onPlayStart(sceneObjects);
+            physics->onPlayStart(sceneObjects);
             audio.setPrefer2DSpatialAudio(isProject2DPipeline() || uiWorldMode);
             audio.onPlayStart(sceneObjects);
           } else {
-            physics.onPlayStop();
+            physics->onPlayStop();
             audio.onPlayStop();
           }
         }
@@ -379,67 +386,8 @@ void Engine::renderMainMenuBar() {
       ImGui::EndMenu();
     }
 
-    if (ImGui::BeginMenu("Create")) {
-      if (ImGui::MenuItem("Empty"))
-        addObject(ObjectType::Empty, "Empty");
-      if (ImGui::MenuItem("Cube"))
-        addObject(ObjectType::Cube, "Cube");
-      if (ImGui::MenuItem("Sphere"))
-        addObject(ObjectType::Sphere, "Sphere");
-      if (ImGui::MenuItem("Capsule"))
-        addObject(ObjectType::Capsule, "Capsule");
-      if (ImGui::MenuItem("Plane"))
-        addObject(ObjectType::Plane, "Plane");
-      if (ImGui::MenuItem("Torus"))
-        addObject(ObjectType::Torus, "Torus");
-      if (ImGui::MenuItem("2.5D Sprite"))
-        addObject(ObjectType::Sprite25D, "2.5D Sprite");
-      if (ImGui::MenuItem("Mirror"))
-        addObject(ObjectType::Mirror, "Mirror");
-      if (project25DPipeline && ImGui::BeginMenu("2.5D Rig")) {
-        ImGui::TextDisabled("Rig nodes are Empty objects.");
-        ImGui::TextDisabled("Animate them with the normal transform tracks.");
-        ImGui::Separator();
-        if (ImGui::MenuItem("Create Rig Root (Empty)")) {
-          createRig25DObject(true);
-        }
-        if (ImGui::MenuItem("Create Rig Node (Empty)")) {
-          createRig25DObject(false);
-        }
-        ImGui::EndMenu();
-      }
-      if (ImGui::BeginMenu("MMesh")) {
-        if (ImGui::MenuItem("Cube"))
-          createMMeshPrimitive("Cube");
-        if (ImGui::MenuItem("Sphere"))
-          createMMeshPrimitive("Sphere");
-        if (ImGui::MenuItem("Plane"))
-          createMMeshPrimitive("Plane");
-        ImGui::EndMenu();
-      }
-      if (ImGui::MenuItem("Camera"))
-        addObject(ObjectType::Camera, "Camera");
-      if (ImGui::MenuItem("Directional Light"))
-        addObject(ObjectType::DirectionalLight, "Directional Light");
-      if (ImGui::MenuItem("Point Light"))
-        addObject(ObjectType::PointLight, "Point Light");
-      if (ImGui::MenuItem("Spot Light"))
-        addObject(ObjectType::SpotLight, "Spot Light");
-      if (ImGui::MenuItem("Area Light"))
-        addObject(ObjectType::AreaLight, "Area Light");
-      if (ImGui::MenuItem("Reflection Cast"))
-        addObject(ObjectType::ReflectionCast, "Reflection Cast");
-      if (ImGui::MenuItem("ModuVolume"))
-        addObject(ObjectType::PostFXNode, "ModuVolume");
-      if (ImGui::MenuItem("Audio Reverb Zone")) {
-        addObject(ObjectType::Empty, "Reverb Zone");
-        if (!sceneObjects.empty()) {
-          sceneObjects.back().hasReverbZone = true;
-          sceneObjects.back().reverbZone = ReverbZoneComponent{};
-          sceneObjects.back().reverbZone.boxSize =
-              glm::max(sceneObjects.back().scale, glm::vec3(1.0f));
-        }
-      }
+    if (ImGui::BeginMenu("SceneOBJ")) {
+      renderSceneObjectCreateMenu();
       ImGui::EndMenu();
     }
 
@@ -818,6 +766,313 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
   workspaceLayoutDirty = false;
   workspaceLayoutSavePending = false;
   workspaceLayoutStabilizeUntil = glfwGetTime() + 0.75;
+}
+
+// Shared SceneOBJ creation entries used by the "SceneOBJ" menu bar entry and
+// the hierarchy create popups. Category names are ModuPAK extension points
+// (packages inject entries by category name, especially "Lights") — keep them
+// stable.
+void Engine::renderSceneObjectCreateMenu() {
+  // TODO: "Search SceneOBJ..." quick-create filter, once the editor has a
+  // reusable in-menu search pattern.
+  auto lastCreated = [&]() -> SceneObject * {
+    return sceneObjects.empty() ? nullptr : &sceneObjects.back();
+  };
+  auto allocateRig25DNodeId = [&]() {
+    int nextNodeId = 0;
+    for (const SceneObject &obj : sceneObjects) {
+      if (!obj.hasRig25DNode || obj.rig25DNode.nodeId < 0) {
+        continue;
+      }
+      nextNodeId = std::max(nextNodeId, obj.rig25DNode.nodeId + 1);
+    }
+    return nextNodeId;
+  };
+  auto createRig25DObject = [&](bool isRoot) {
+    addObject(ObjectType::Empty, isRoot ? "Rig Root" : "Rig Node");
+    if (SceneObject *created = getSelectedObject()) {
+      created->type = ObjectType::Empty;
+      created->hasRenderer = false;
+      created->renderType = RenderType::None;
+      created->faceCamera = false;
+      created->hasRig25DRoot = isRoot;
+      created->rig25DRoot.enabled = isRoot;
+      created->hasRig25DNode = !isRoot;
+      created->rig25DNode.enabled = !isRoot;
+      created->rig25DNode.nodeId = isRoot ? -1 : allocateRig25DNodeId();
+      created->rig25DNode.nodeName = isRoot ? std::string() : created->name;
+      created->localPosition = created->position;
+      created->localRotation = NormalizeEulerDegrees(created->rotation);
+      created->localScale = created->scale;
+      created->localInitialized = true;
+      EnsureInspectorComponentMetadata(*created);
+      projectManager.currentProject.hasUnsavedChanges = true;
+    }
+  };
+  auto createTaggedMarker = [&](const std::string &label,
+                                const std::string &tag) {
+    addObject(ObjectType::Empty, label);
+    if (SceneObject *created = lastCreated()) {
+      created->tag = tag;
+    }
+  };
+  auto createUIWithCanvas = [&](ObjectType type, const std::string &baseName) {
+    int canvasId = -1;
+    for (const auto &obj : sceneObjects) {
+      if (obj.hasUI && obj.ui.type == UIElementType::Canvas) {
+        canvasId = obj.id;
+        break;
+      }
+    }
+    if (canvasId < 0) {
+      addObject(ObjectType::Canvas, "Canvas");
+      if (SceneObject *created = lastCreated()) {
+        canvasId = created->id;
+      }
+    }
+    addObject(type, baseName);
+    if (!sceneObjects.empty() && canvasId >= 0) {
+      setParent(sceneObjects.back().id, canvasId);
+    }
+  };
+
+  if (ImGui::MenuItem("Empty SceneOBJ"))
+    addObject(ObjectType::Empty, "Empty");
+  ImGui::Separator();
+
+  if (ImGui::BeginMenu("3D Primitives")) {
+    if (ImGui::MenuItem("Cube"))
+      addObject(ObjectType::Cube, "Cube");
+    if (ImGui::MenuItem("Sphere"))
+      addObject(ObjectType::Sphere, "Sphere");
+    if (ImGui::MenuItem("Capsule"))
+      addObject(ObjectType::Capsule, "Capsule");
+    if (ImGui::MenuItem("Plane"))
+      addObject(ObjectType::Plane, "Plane");
+    if (ImGui::MenuItem("Torus"))
+      addObject(ObjectType::Torus, "Torus");
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("2D Objects")) {
+    if (ImGui::MenuItem("Sprite (Quad)"))
+      addObject(ObjectType::Sprite, "Sprite");
+    if (ImGui::MenuItem("2.5D Sprite"))
+      addObject(ObjectType::Sprite25D, "2.5D Sprite");
+    if (ImGui::MenuItem("Particle System 2D"))
+      addObject(ObjectType::ParticleSystem2D, "Particle System 2D");
+    if (ImGui::MenuItem("Mirror"))
+      addObject(ObjectType::Mirror, "Mirror");
+    ImGui::EndMenu();
+  }
+
+  if (isProject25DPipeline() && ImGui::BeginMenu("2.5D Rig")) {
+    ImGui::TextDisabled("Rig nodes are Empty objects.");
+    ImGui::TextDisabled("Animate them with the normal transform tracks.");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Create Rig Root (Empty)")) {
+      createRig25DObject(true);
+    }
+    if (ImGui::MenuItem("Create Rig Node (Empty)")) {
+      createRig25DObject(false);
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("MMesh")) {
+    if (ImGui::MenuItem("Cube"))
+      createMMeshPrimitive("Cube");
+    if (ImGui::MenuItem("Sphere"))
+      createMMeshPrimitive("Sphere");
+    if (ImGui::MenuItem("Plane"))
+      createMMeshPrimitive("Plane");
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("RMesh")) {
+    if (ImGui::MenuItem("Cube"))
+      createRMeshPrimitive("Cube");
+    if (ImGui::MenuItem("Sphere"))
+      createRMeshPrimitive("Sphere");
+    if (ImGui::MenuItem("Plane"))
+      createRMeshPrimitive("Plane");
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Cameras")) {
+    if (ImGui::MenuItem("Camera"))
+      addObject(ObjectType::Camera, "Camera");
+    if (ImGui::MenuItem("2D Camera")) {
+      addObject(ObjectType::Camera, "2D Camera");
+      if (SceneObject *created = lastCreated()) {
+        created->camera.use2D = true;
+      }
+    }
+    ImGui::EndMenu();
+  }
+
+  // "Lights" is a public create-menu category that ModuPAKs (e.g. the 2D
+  // world package) extend — do not rename it.
+  if (ImGui::BeginMenu("Lights")) {
+    if (ImGui::MenuItem("Directional Light"))
+      addObject(ObjectType::DirectionalLight, "Directional Light");
+    if (ImGui::MenuItem("Point Light"))
+      addObject(ObjectType::PointLight, "Point Light");
+    if (ImGui::MenuItem("Spot Light"))
+      addObject(ObjectType::SpotLight, "Spot Light");
+    if (ImGui::MenuItem("Area Light"))
+      addObject(ObjectType::AreaLight, "Area Light");
+    if (ImGui::MenuItem("Reflection Cast"))
+      addObject(ObjectType::ReflectionCast, "Reflection Cast");
+    if (has2DWorldPackage()) {
+      ImGui::Separator();
+      if (ImGui::MenuItem("2D Point Light"))
+        addObject(ObjectType::Light2D, "2D Point Light");
+      if (ImGui::MenuItem("2D Spot Light")) {
+        addObject(ObjectType::Light2D, "2D Spot Light");
+        if (SceneObject *created = lastCreated()) {
+          created->light2D.type = Light2DType::Spot;
+        }
+      }
+      if (ImGui::MenuItem("2D Freeform Light")) {
+        addObject(ObjectType::Light2D, "2D Freeform Light");
+        if (SceneObject *created = lastCreated()) {
+          created->light2D.type = Light2DType::Freeform;
+          created->light2D.shapePoints = {
+              glm::vec2(-2.0f, -1.5f), glm::vec2(2.0f, -1.5f),
+              glm::vec2(2.5f, 1.0f), glm::vec2(0.0f, 2.5f),
+              glm::vec2(-2.5f, 1.0f)};
+        }
+      }
+      if (ImGui::MenuItem("2D Global Light")) {
+        addObject(ObjectType::Light2D, "2D Global Light");
+        if (SceneObject *created = lastCreated()) {
+          created->light2D.type = Light2DType::Global;
+          created->light2D.intensity = 0.35f;
+          created->light2D.color = glm::vec4(0.45f, 0.52f, 0.72f, 1.0f);
+        }
+      }
+      if (ImGui::MenuItem("2D Shadow Caster"))
+        addObject(ObjectType::ShadowCaster2D, "2D Shadow Caster");
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Audio")) {
+    if (ImGui::MenuItem("Audio Source")) {
+      addObject(ObjectType::Empty, "Audio Source");
+      if (SceneObject *created = lastCreated()) {
+        created->hasAudioSource = true;
+        created->audioSource = AudioSourceComponent{};
+      }
+    }
+    if (ImGui::MenuItem("Audio Reverb Zone")) {
+      addObject(ObjectType::Empty, "Reverb Zone");
+      if (SceneObject *created = lastCreated()) {
+        created->hasReverbZone = true;
+        created->reverbZone = ReverbZoneComponent{};
+        created->reverbZone.boxSize = glm::max(created->scale, glm::vec3(1.0f));
+      }
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Gameplay")) {
+    if (ImGui::MenuItem("Player Controller")) {
+      addObject(ObjectType::Capsule, "Player Controller");
+      if (SceneObject *created = lastCreated()) {
+        created->hasPlayerController = true;
+        created->playerController = PlayerControllerComponent{};
+        created->hasCollider = true;
+        created->collider.type = ColliderType::Capsule;
+        created->collider.boxSize =
+            glm::vec3(created->playerController.radius * 2.0f,
+                      created->playerController.height,
+                      created->playerController.radius * 2.0f);
+        created->collider.convex = true;
+        created->hasRigidbody = true;
+        created->rigidbody.enabled = true;
+        created->rigidbody.useGravity = true;
+        created->rigidbody.isKinematic = false;
+        created->rigidbody.lockRotationX = true;
+        created->rigidbody.lockRotationY = false;
+        created->rigidbody.lockRotationZ = true;
+        created->scale = glm::vec3(created->playerController.radius * 2.0f,
+                                   created->playerController.height,
+                                   created->playerController.radius * 2.0f);
+        syncLocalTransform(*created);
+      }
+    }
+    if (ImGui::MenuItem("Spawn Point"))
+      createTaggedMarker("Spawn Point", "SpawnPoint");
+    if (ImGui::MenuItem("Trigger Zone"))
+      createTaggedMarker("Trigger Zone", "TriggerZone");
+    if (ImGui::MenuItem("Checkpoint"))
+      createTaggedMarker("Checkpoint", "Checkpoint");
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("AI")) {
+    if (ImGui::MenuItem("AI Agent")) {
+      addObject(ObjectType::Capsule, "AI Agent");
+      if (SceneObject *created = lastCreated()) {
+        created->hasAIAgent = true;
+        created->aiAgent = AIAgentComponent{};
+        created->aiAgent.destination = created->position;
+      }
+    }
+    if (ImGui::MenuItem("Nav Area")) {
+      addObject(ObjectType::Plane, "Nav Area");
+      if (SceneObject *created = lastCreated()) {
+        created->hasGroundBakedType = true;
+        created->groundBakedType = GroundBakedTypeComponent{};
+      }
+    }
+    if (ImGui::MenuItem("Off-Mesh Link")) {
+      addObject(ObjectType::Empty, "Off-Mesh Link");
+      if (SceneObject *created = lastCreated()) {
+        created->hasOffMeshLink = true;
+        created->offMeshLink = OffMeshLinkComponent{};
+        created->offMeshLink.startPoint = created->position;
+        created->offMeshLink.endPoint =
+            created->position + glm::vec3(2.0f, 0.0f, 0.0f);
+      }
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Video")) {
+    if (ImGui::MenuItem("Video Player Plane")) {
+      addObject(ObjectType::Plane, "Video Player Plane");
+      if (SceneObject *created = lastCreated()) {
+        created->hasVideoPlayer = true;
+        created->videoPlayer = VideoPlayerComponent{};
+      }
+    }
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Environment / Volumes")) {
+    if (ImGui::MenuItem("ModuVolume"))
+      addObject(ObjectType::PostFXNode, "ModuVolume");
+    ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("UI")) {
+    if (ImGui::MenuItem("Canvas"))
+      addObject(ObjectType::Canvas, "Canvas");
+    if (ImGui::MenuItem("UI Image"))
+      createUIWithCanvas(ObjectType::UIImage, "UI Image");
+    if (ImGui::MenuItem("UI Slider"))
+      createUIWithCanvas(ObjectType::UISlider, "UI Slider");
+    if (ImGui::MenuItem("UI Button"))
+      createUIWithCanvas(ObjectType::UIButton, "UI Button");
+    if (ImGui::MenuItem("UI Text"))
+      createUIWithCanvas(ObjectType::UIText, "UI Text");
+    if (has2DWorldPackage() && ImGui::MenuItem("Sprite2D"))
+      createUIWithCanvas(ObjectType::Sprite2D, "Sprite2D");
+    ImGui::EndMenu();
+  }
 }
 
 #pragma endregion

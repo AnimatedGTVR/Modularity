@@ -411,10 +411,14 @@ Options:
   --clean                 Remove existing build directories first
   --Windows               Cross-build a Windows target with MinGW-w64
   --build-type=<type>     CMake build type (default: Release)
+  --cpu-target=<level>    x86-64 ISA target: baseline (default, ships to everyone),
+                          x86-64-v2, x86-64-v3, x86-64-v4, or native
+  --native                Shorthand for --cpu-target=native (DEV ONLY; do not ship)
   --generator=<name>      Force CMake generator (e.g. Ninja, "Unix Makefiles")
   --jobs=<N>              Parallel compile jobs (default: nproc - 2, min 1)
   --skip-deps             Skip automatic dependency checks/install
-  --zip                   Package as .zip instead of the default .7z
+  --zip                   Package as .zip (default; fast to compress)
+  --7z                    Package as .7z (smaller, but much slower to compress)
   --fsanitize             Build with AddressSanitizer + UBSan (-DMODULARITY_ENABLE_ASAN=ON)
   --help                  Show this help message
 EOF
@@ -423,8 +427,11 @@ EOF
 clean_build=0
 build_type="Release"
 build_cpp_standard="c++23"
+# Default to baseline x86-64 so public Linux releases run on any 64-bit x86 CPU.
+# Higher levels (or --native) are developer-only and must not be shipped.
+cpu_target="baseline"
 skip_deps=0
-package_format="7Z"
+package_format="ZIP"
 enable_asan=0
 ncpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
 jobs=$(( ncpus - 2 ))
@@ -448,6 +455,15 @@ for arg in "$@"; do
             ;;
         --build-type=*)
             build_type="${arg#*=}"
+            ;;
+        --cpu-target=*)
+            cpu_target="${arg#*=}"
+            ;;
+        --native)
+            # Developer convenience: tune for the building machine. NEVER use
+            # this for a public release — the binary will require the host CPU's
+            # ISA and crash elsewhere with "CPU ISA level is lower than required".
+            cpu_target="native"
             ;;
         --generator=*)
             preferred_generator="${arg#*=}"
@@ -867,6 +883,7 @@ configure_editor_build() {
         "${cmake_platform_args[@]}" \
         -DMONO_ROOT=/usr \
         -DMODULARITY_BUILD_CPP_STANDARD="${build_cpp_standard}" \
+        -DMODULARITY_CPU_TARGET="${cpu_target}" \
         -DCMAKE_BUILD_TYPE="${build_type}"
 }
 
@@ -908,6 +925,7 @@ configure_player_build() {
         "${cmake_platform_args[@]}" \
         -DMONO_ROOT=/usr \
         -DMODULARITY_BUILD_CPP_STANDARD="${build_cpp_standard}" \
+        -DMODULARITY_CPU_TARGET="${cpu_target}" \
         -DCMAKE_BUILD_TYPE="${build_type}" \
         -DMODULARITY_BUILD_EDITOR=OFF
 }
@@ -972,6 +990,39 @@ finalize_packaging() {
     (cd "${build_dir}" && cpack -G "${package_format}")
 }
 
+verify_release_isa() {
+    # Gate the packaged binaries against the requested CPU target so a stray
+    # AVX/AVX-512 dependency can never silently ship a release that crashes on
+    # older CPUs with "CPU ISA level is lower than required".
+    local script="${script_dir}/tools/verify-cpu-isa.sh"
+    if [[ ! -x "${script}" ]]; then
+        log_warn "verify-cpu-isa.sh not found or not executable; skipping ISA verification."
+        return 0
+    fi
+    if [[ "${cpu_target}" == "native" ]]; then
+        log_warn "CPU target is 'native' — skipping ISA verification (dev build, do not ship)."
+        return 0
+    fi
+
+    # Scan the concrete release artifacts only (executables + the staged
+    # Packages/ trees), not the whole build tree — that avoids tripping over
+    # unrelated scratch/cross-compile output dirs.
+    local -a scan=()
+    [[ -f "${build_dir}/Modularity" ]] && scan+=("${build_dir}/Modularity")
+    [[ -f "${build_dir}/ModularityPlayer" ]] && scan+=("${build_dir}/ModularityPlayer")
+    [[ -d "${build_dir}/Packages" ]] && scan+=("${build_dir}/Packages")
+    [[ -d "${player_cache_dir}/Packages" ]] && scan+=("${player_cache_dir}/Packages")
+    if [[ -f "${player_cache_dir}/ModularityPlayer" ]]; then
+        scan+=("${player_cache_dir}/ModularityPlayer")
+    fi
+
+    if [[ "${#scan[@]}" -eq 0 ]]; then
+        log_warn "No packaged binaries found to verify; skipping ISA check."
+        return 0
+    fi
+    "${script}" --max-level="${cpu_target}" "${scan[@]}"
+}
+
 show_stage_hierarchy() {
     local -a stages=()
 
@@ -996,6 +1047,7 @@ show_stage_hierarchy() {
         "Package artifacts and resources"
     )
     if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
+        stages+=("Verify CPU/ISA compatibility of packaged binaries")
         stages+=("Install desktop icon and .desktop entries")
     fi
 
@@ -1020,7 +1072,8 @@ if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" 
     total_steps=$((total_steps + 1))
 fi
 if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
-    total_steps=$((total_steps + 1))
+    # +1 for desktop integration, +1 for the CPU/ISA verification step.
+    total_steps=$((total_steps + 2))
 fi
 
 build_started=1
@@ -1037,6 +1090,11 @@ if [[ -n "${cmake_generator}" ]]; then
     log_info "CMake generator: ${cmake_generator}"
 fi
 log_info "Package format: ${package_format}"
+if [[ "${cpu_target}" == "native" ]]; then
+    log_warn "CPU target: native (DEV ONLY — host-specific ISA; do not ship this build)"
+else
+    log_info "CPU target: ${cpu_target} (x86-64 ISA level for shipped binaries)"
+fi
 if [[ "${enable_asan}" -eq 1 ]]; then
     log_info "Sanitizers: AddressSanitizer + UBSan enabled (consider --build-type=Debug for richer reports)"
 fi
@@ -1070,5 +1128,6 @@ run_long_step "Collecting Player Libs" copy_third_party_libraries "${player_cach
 run_long_step "Collecting Player Engine Libs" copy_engine_libraries "${player_cache_dir}"
 run_long_step "Packaging Engine" finalize_packaging
 if [[ "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then
+    run_step "Verifying CPU/ISA" verify_release_isa
     run_long_step "Installing Desktop Icon" install_desktop_integration
 fi

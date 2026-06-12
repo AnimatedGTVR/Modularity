@@ -231,6 +231,8 @@ private:
     std::unordered_map<std::string, CachedTextureEntry> textureCacheBilinear;
     std::unordered_map<std::string, CachedTextureEntry> textureCachePoint;
     std::unordered_map<std::string, double> missingTextureRetryAfter;
+    std::unordered_map<std::string, TextureFormatPolicy> textureFormatOverrides;
+    std::string textureKeyRoot;
     struct ShaderEntry {
         std::unique_ptr<Shader> shader;
         fs::file_time_type vertTime;
@@ -335,6 +337,21 @@ public:
     Texture* getTexture(const std::string& path, MaterialProperties::TextureFilter filter = MaterialProperties::TextureFilter::Bilinear);
     unsigned int getDebugWhiteTextureId() const { return debugWhiteTexture; }
     void invalidateTexture(const std::string& path);
+
+    // Per-texture GPU storage-format overrides. getTexture consults these when it
+    // first loads a path; Auto (the absence of an override) means adaptive 16bpp.
+    // Setting an override invalidates the cached texture so the next request
+    // reloads it at the new format. The project layer owns persistence; this map
+    // is just the live runtime view, repopulated on project load.
+    void setTextureFormatOverride(const std::string& path, TextureFormatPolicy policy);
+    TextureFormatPolicy getTextureFormatOverride(const std::string& path) const;
+    const std::unordered_map<std::string, TextureFormatPolicy>& getTextureFormatOverrides() const { return textureFormatOverrides; }
+    void clearTextureFormatOverrides() { textureFormatOverrides.clear(); }
+    // Root that relative texture paths are resolved against when forming override
+    // keys, so the editor's absolute paths and runtime-resolved paths collapse to
+    // the same key. Set on project load.
+    void setTextureKeyRoot(const std::string& root) { textureKeyRoot = root; }
+    std::string normalizeTextureKey(const std::string& path) const;
     Shader* getShader(const std::string& vert, const std::string& frag);
     bool forceReloadShader(const std::string& vert, const std::string& frag);
     void setAmbientColor(const glm::vec3& color) { ambientColor = color; }

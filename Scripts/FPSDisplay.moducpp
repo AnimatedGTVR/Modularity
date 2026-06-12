@@ -1,13 +1,6 @@
 add ModuCPP;
 add ModuEngine;
-
-public class FPSDisplay : ModuBehaviour
-{
+public class FPSDisplay : ModuBehaviour {
     public bool clampTo120 = false;
-
-    void TickUpdate()
-    {
-        SetFPSCap(clampTo120, 120.0f);
-        obj.UILabel = "FPS: " + IntR(ModuEngine.FPS);
-    }
+    void TickUpdate() {SetFPSCap(clampTo120, 120.0f); obj.UILabel = "FPS: " + IntR(ModuEngine.FPS);}
 }

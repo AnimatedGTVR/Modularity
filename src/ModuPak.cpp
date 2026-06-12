@@ -1,5 +1,7 @@
 #include "ModuPak.h"
 #include "ProjectManager.h"
+#include "../include/Platform/AssetSource.h"
+#include "ThirdParty/assimp/contrib/unzip/unzip.h"
 
 #include <array>
 #include <cctype>
@@ -130,15 +132,166 @@ bool runZipCreate(const fs::path& stagingRoot, const fs::path& outputPath, std::
 bool runZipExtract(const fs::path& archivePath, const fs::path& destination, std::string& error) {
     std::error_code ec;
     fs::create_directories(destination, ec);
-#ifdef _WIN32
-    std::string command = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -Path " +
-                          quotePath(archivePath) + " -DestinationPath " + quotePath(destination) + " -Force\"";
-#else
-    std::string command = "unzip -oq " + quotePath(archivePath) + " -d " + quotePath(destination);
-#endif
-    int rc = std::system(command.c_str());
-    if (rc != 0) {
-        error = "Failed to extract archive. Ensure unzip/PowerShell archive support is available.";
+    if (ec) {
+        error = "Failed to create folder: " + destination.string() + " (" + ec.message() + ")";
+        return false;
+    }
+
+    fs::path stagedArchive = makeTempDirectory("modupak_archive");
+    if (stagedArchive.empty()) {
+        error = "Failed to create temporary archive directory.";
+        return false;
+    }
+    struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; if (!path.empty()) fs::remove_all(path, ec); } } cleanup{stagedArchive};
+    stagedArchive /= archivePath.filename().empty() ? fs::path("package.modupak") : archivePath.filename();
+
+    {
+        std::ofstream out(stagedArchive, std::ios::binary);
+        if (!out) {
+            error = "Failed to stage ModuPAK archive: " + stagedArchive.string();
+            return false;
+        }
+
+        std::array<char, 64 * 1024> buffer{};
+        auto stream = Modularity::Platform::GetAssetSource().Open(archivePath.generic_string());
+        if (stream) {
+            uint64_t totalRead = 0;
+            for (;;) {
+                const size_t bytesRead = stream->Read(buffer.data(), buffer.size());
+                if (bytesRead == 0) break;
+                out.write(buffer.data(), static_cast<std::streamsize>(bytesRead));
+                if (!out) {
+                    error = "Failed to write staged ModuPAK archive: " + stagedArchive.string();
+                    return false;
+                }
+                totalRead += bytesRead;
+            }
+
+            const int64_t expectedSize = stream->Size();
+            if (expectedSize >= 0 && totalRead != static_cast<uint64_t>(expectedSize)) {
+                error = "Failed to read complete ModuPAK archive: " + archivePath.string();
+                return false;
+            }
+        } else {
+            std::ifstream in(archivePath, std::ios::binary);
+            if (!in) {
+                error = "Failed to open ModuPAK archive: " + archivePath.string();
+                return false;
+            }
+            for (;;) {
+                in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                const std::streamsize bytesRead = in.gcount();
+                if (bytesRead > 0) {
+                    out.write(buffer.data(), bytesRead);
+                    if (!out) {
+                        error = "Failed to write staged ModuPAK archive: " + stagedArchive.string();
+                        return false;
+                    }
+                }
+                if (in.eof()) break;
+                if (!in) {
+                    error = "Failed to read ModuPAK archive: " + archivePath.string();
+                    return false;
+                }
+            }
+        }
+    }
+
+    unzFile zip = unzOpen64(stagedArchive.string().c_str());
+    if (!zip) {
+        error = "Failed to open ModuPAK zip data: " + archivePath.string();
+        return false;
+    }
+    struct ZipCleanup { unzFile zip; ~ZipCleanup() { if (zip) unzClose(zip); } } zipCleanup{zip};
+
+    int rc = unzGoToFirstFile(zip);
+    if (rc == UNZ_END_OF_LIST_OF_FILE) return true;
+    if (rc != UNZ_OK) {
+        error = "Failed to read ModuPAK archive entries: " + archivePath.string();
+        return false;
+    }
+
+    std::array<char, 64 * 1024> buffer{};
+    while (rc == UNZ_OK) {
+        unz_file_info64 info{};
+        std::vector<char> nameBuffer(512);
+        int infoRc = UNZ_OK;
+        for (;;) {
+            infoRc = unzGetCurrentFileInfo64(zip, &info, nameBuffer.data(),
+                                             static_cast<uLong>(nameBuffer.size()),
+                                             nullptr, 0, nullptr, 0);
+            if (infoRc != UNZ_OK) {
+                error = "Failed to read ModuPAK archive entry info.";
+                return false;
+            }
+            if (info.size_filename < nameBuffer.size()) break;
+            nameBuffer.assign(static_cast<size_t>(info.size_filename) + 1, '\0');
+        }
+
+        std::string entryName(nameBuffer.data());
+        std::replace(entryName.begin(), entryName.end(), '\\', '/');
+        fs::path rel = normalizeRelativePath(fs::path(entryName));
+        std::string reason;
+        if (!ModuPakImporter::isSafeArchivePath(rel, &reason)) {
+            error = "Rejected package: " + reason;
+            return false;
+        }
+
+        const bool isDirectory = !entryName.empty() && entryName.back() == '/';
+        fs::path outputPath = destination / rel;
+        if (isDirectory) {
+            fs::create_directories(outputPath, ec);
+            if (ec) {
+                error = "Failed to create folder: " + outputPath.string() + " (" + ec.message() + ")";
+                return false;
+            }
+        } else {
+            fs::create_directories(outputPath.parent_path(), ec);
+            if (ec) {
+                error = "Failed to create folder: " + outputPath.parent_path().string() + " (" + ec.message() + ")";
+                return false;
+            }
+
+            if (unzOpenCurrentFile(zip) != UNZ_OK) {
+                error = "Failed to open ModuPAK archive entry: " + rel.generic_string();
+                return false;
+            }
+
+            std::ofstream out(outputPath, std::ios::binary);
+            if (!out) {
+                unzCloseCurrentFile(zip);
+                error = "Failed to create extracted file: " + outputPath.string();
+                return false;
+            }
+
+            for (;;) {
+                const int bytesRead = unzReadCurrentFile(zip, buffer.data(),
+                                                         static_cast<unsigned int>(buffer.size()));
+                if (bytesRead < 0) {
+                    unzCloseCurrentFile(zip);
+                    error = "Failed to read ModuPAK archive entry: " + rel.generic_string();
+                    return false;
+                }
+                if (bytesRead == 0) break;
+                out.write(buffer.data(), bytesRead);
+                if (!out) {
+                    unzCloseCurrentFile(zip);
+                    error = "Failed to write extracted file: " + outputPath.string();
+                    return false;
+                }
+            }
+
+            const int closeRc = unzCloseCurrentFile(zip);
+            if (closeRc != UNZ_OK) {
+                error = "Failed to verify ModuPAK archive entry: " + rel.generic_string();
+                return false;
+            }
+        }
+
+        rc = unzGoToNextFile(zip);
+    }
+    if (rc != UNZ_END_OF_LIST_OF_FILE) {
+        error = "Failed while walking ModuPAK archive entries: " + archivePath.string();
         return false;
     }
     return true;

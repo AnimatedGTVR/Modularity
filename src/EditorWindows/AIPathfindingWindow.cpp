@@ -948,7 +948,7 @@ void Engine::updateAIAgents(float delta) {
             }
             obj.rotation.y = yaw;
             if (obj.hasRigidbody && obj.rigidbody.enabled && !obj.rigidbody.isKinematic) {
-                physics.setActorYaw(obj.id, yaw);
+                physics->setActorYaw(obj.id, yaw);
             }
         }
 
@@ -961,10 +961,10 @@ void Engine::updateAIAgents(float delta) {
         bool movedByPhysics = false;
         if (obj.hasRigidbody && obj.rigidbody.enabled && !obj.rigidbody.isKinematic) {
             glm::vec3 currentVelocity(0.0f);
-            physics.getLinearVelocity(obj.id, currentVelocity);
+            physics->getLinearVelocity(obj.id, currentVelocity);
             currentVelocity.x = desiredPlanarVelocity.x;
             currentVelocity.z = desiredPlanarVelocity.z;
-            movedByPhysics = physics.setLinearVelocity(obj.id, currentVelocity);
+            movedByPhysics = physics->setLinearVelocity(obj.id, currentVelocity);
         }
 
         if (!movedByPhysics) {
@@ -975,7 +975,7 @@ void Engine::updateAIAgents(float delta) {
             }
             syncLocalTransform(obj);
             if (obj.hasRigidbody && obj.rigidbody.enabled && obj.rigidbody.isKinematic) {
-                physics.setActorPose(obj.id, obj.position, obj.rotation);
+                physics->setActorPose(obj.id, obj.position, obj.rotation);
             }
         }
     }

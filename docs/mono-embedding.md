@@ -1,7 +1,9 @@
 # Mono Embedding Setup
+## *Note: Written by Anémunt and Codex*
+
+---
 
 This project uses Mono embedding for managed (C#) scripts.
-
 Expected layout (vendored):
 `src/ThirdParty/mono/`
 - `include/mono-2.0/`
