@@ -15,7 +15,6 @@ See `CLAUDE.md` for the full flag list. (it's human readable too, no worries!)
 ## CPU / ISA target (x86-64 compatibility)
 **Public Linux releases target baseline x86-64 so they run on any 64-bit x86
 CPU.** This is the default and you normally do not need to touch it.
-
 Higher microarchitecture levels bake in newer instruction sets (SSE4, AVX,
 AVX2, AVX-512). A binary built for a level the running CPU doesn't support is
 rejected by the dynamic loader at startup with:
