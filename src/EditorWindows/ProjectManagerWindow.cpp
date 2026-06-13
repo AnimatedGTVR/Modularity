@@ -2094,9 +2094,9 @@ void Engine::renderLauncher() {
                      (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                       selectedTemplate->projectRoot == entry.projectRoot));
 
-                ImGui::PushID(entry.isBlankPreset ? "BlankProjectTemplate" : entry.projectRoot.string().c_str());
+                ImGui::PushID(entry.isBlankPreset ? entry.presetId.c_str() : entry.projectRoot.string().c_str());
                 const ImVec2 rowPos = ImGui::GetCursorScreenPos();
-                const ImVec2 rowSize(ImGui::GetContentRegionAvail().x, 62.0f * uiScale);
+                const ImVec2 rowSize(std::max(48.0f * uiScale, ImGui::GetContentRegionAvail().x), 62.0f * uiScale);
                 ImGui::InvisibleButton("TemplateSelectRow", rowSize);
                 const bool hovered = ImGui::IsItemHovered();
                 if (ImGui::IsItemClicked()) {
@@ -2152,11 +2152,15 @@ void Engine::renderLauncher() {
                                   placeholder);
                 }
 
-                ImGui::SetCursorScreenPos(ImVec2(thumbMax.x + 12.0f * uiScale, rowPos.y + 10.0f * uiScale));
-                ImGui::TextColored(ImVec4(0.93f, 0.96f, 1.0f, 1.0f), "%s", entry.displayName.c_str());
-                ImGui::SetCursorScreenPos(ImVec2(thumbMax.x + 12.0f * uiScale, rowPos.y + 29.0f * uiScale));
-                ImGui::TextColored(ImVec4(0.61f, 0.68f, 0.77f, 1.0f), "%s", ProjectPipelineLabel(entry.pipeline));
-                ImGui::Dummy(ImVec2(rowSize.x, 2.0f * uiScale));
+                // Draw labels via the draw list so they do not submit ImGui items.
+                // The InvisibleButton above is the only real layout item for this row,
+                // so rows advance cleanly by the row height instead of by a displaced text item.
+                list->AddText(ImVec2(thumbMax.x + 12.0f * uiScale, rowPos.y + 10.0f * uiScale),
+                              ImGui::GetColorU32(ImVec4(0.93f, 0.96f, 1.0f, 1.0f)),
+                              entry.displayName.c_str());
+                list->AddText(ImVec2(thumbMax.x + 12.0f * uiScale, rowPos.y + 29.0f * uiScale),
+                              ImGui::GetColorU32(ImVec4(0.61f, 0.68f, 0.77f, 1.0f)),
+                              ProjectPipelineLabel(entry.pipeline));
                 ImGui::PopID();
             };
 
@@ -2181,11 +2185,11 @@ void Engine::renderLauncher() {
                      (!entry.isBlankPreset && !selectedTemplate->isBlankPreset &&
                       selectedTemplate->projectRoot == entry.projectRoot));
 
-                ImGui::PushID(entry.isBlankPreset ? "BlankProjectTemplateGrid" : entry.projectRoot.string().c_str());
+                ImGui::PushID(entry.isBlankPreset ? entry.presetId.c_str() : entry.projectRoot.string().c_str());
                 const float tileHeight = 114.0f * uiScale;
                 const float previewHeight = 64.0f * uiScale;
                 const ImVec2 tilePos = ImGui::GetCursorScreenPos();
-                const ImVec2 tileSize(tileWidth, tileHeight);
+                const ImVec2 tileSize(std::max(48.0f * uiScale, tileWidth), tileHeight);
                 ImGui::InvisibleButton("TemplateGridTile", tileSize);
                 const bool hovered = ImGui::IsItemHovered();
                 if (ImGui::IsItemClicked()) {
@@ -2232,12 +2236,17 @@ void Engine::renderLauncher() {
                                   placeholder);
                 }
 
-                ImGui::SetCursorScreenPos(ImVec2(tilePos.x + 8.0f * uiScale, thumbMax.y + 8.0f * uiScale));
-                ImGui::PushTextWrapPos(tilePos.x + tileSize.x - 8.0f * uiScale);
-                ImGui::TextColored(ImVec4(0.93f, 0.96f, 1.0f, 1.0f), "%s", entry.displayName.c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::SetCursorScreenPos(ImVec2(tilePos.x + 8.0f * uiScale, tileMax.y - 22.0f * uiScale));
-                ImGui::TextColored(ImVec4(0.61f, 0.68f, 0.77f, 1.0f), "%s", ProjectPipelineLabel(entry.pipeline));
+                // Draw labels via the draw list so they do not submit ImGui items.
+                // The InvisibleButton above is the only real layout item for this tile,
+                // which keeps SameLine()/row-wrapping anchored to the tile bounds.
+                const float titleWrapWidth = std::max(1.0f, tileSize.x - 16.0f * uiScale);
+                list->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                              ImVec2(tilePos.x + 8.0f * uiScale, thumbMax.y + 8.0f * uiScale),
+                              ImGui::GetColorU32(ImVec4(0.93f, 0.96f, 1.0f, 1.0f)),
+                              entry.displayName.c_str(), nullptr, titleWrapWidth);
+                list->AddText(ImVec2(tilePos.x + 8.0f * uiScale, tileMax.y - 22.0f * uiScale),
+                              ImGui::GetColorU32(ImVec4(0.61f, 0.68f, 0.77f, 1.0f)),
+                              ProjectPipelineLabel(entry.pipeline));
                 ImGui::PopID();
             };
 
@@ -2306,10 +2315,11 @@ void Engine::renderLauncher() {
                 if (templateViewMode == 0) {
                     int tileIndex = 0;
                     const float tileSpacing = 8.0f * uiScale;
-                    const float contentRegionWidth = ImGui::GetContentRegionAvail().x;
+                    const float contentRegionWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
                     const float minTileWidth = 146.0f * uiScale;
                     const int tileColumns = std::max(1, static_cast<int>((contentRegionWidth + tileSpacing) / (minTileWidth + tileSpacing)));
-                    const float tileWidth = (contentRegionWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns);
+                    const float tileWidth = std::max(48.0f * uiScale,
+                                                     (contentRegionWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns));
                     for (const auto& preset : builtInPresets) {
                         if (tileIndex > 0 && (tileIndex % tileColumns) != 0) ImGui::SameLine(0.0f, tileSpacing);
                         renderTemplateGridTile(preset, tileWidth);
@@ -2322,10 +2332,11 @@ void Engine::renderLauncher() {
                 bool hadVisible = false;
                 int tileIndex = 0;
                 const float tileSpacing = 8.0f * uiScale;
-                const float contentRegionWidth = ImGui::GetContentRegionAvail().x;
+                const float contentRegionWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
                 const float minTileWidth = 146.0f * uiScale;
                 const int tileColumns = std::max(1, static_cast<int>((contentRegionWidth + tileSpacing) / (minTileWidth + tileSpacing)));
-                const float tileWidth = (contentRegionWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns);
+                const float tileWidth = std::max(48.0f * uiScale,
+                                                 (contentRegionWidth - tileSpacing * static_cast<float>(tileColumns - 1)) / static_cast<float>(tileColumns));
                 for (const auto& t : templates) {
                     const std::string lowerName = toLower(t.displayName);
                     if (!templateFilter.empty() && lowerName.find(templateFilter) == std::string::npos) {

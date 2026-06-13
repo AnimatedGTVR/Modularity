@@ -455,6 +455,9 @@ void Engine::renderGameViewportWindow() {
                       IM_COL32(170, 184, 212, 255), line2);
     gameViewportFocused = ImGui::IsWindowFocused();
   } else if (playerCam && (rendererInitialized || hasVulkanSceneTexture)) {
+    // Phase A instrumentation: the Game viewport re-renders the scene every
+    // frame it is visible (a second full scene pass alongside the Scene panel).
+    Modu2DStats::CountViewportRedraw();
     ImTextureID texId = static_cast<ImTextureID>(0);
     Modularity::Render25D::TMRenderer::RenderStats tmStats;
     std::string tmError;

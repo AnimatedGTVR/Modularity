@@ -39,9 +39,18 @@ struct ProfilerFrameRecord {
     double gpuMs = 0.0;
     double gcMs = 0.0;
     double renderMs = 0.0;
+    double uiMs = 0.0;
     uint64_t drawCalls = 0;
     uint64_t textureBinds = 0;
     uint64_t stateBinds = 0;
+    // Immediate-mode 2D / editor-viewport counters (see Modu2DStats).
+    uint64_t sprite2DQuads = 0;
+    uint64_t sprite2DBatches = 0;
+    uint64_t postFxPasses = 0;
+    uint64_t viewportRedraws = 0;
+    uint64_t skippedRedraws = 0;
+    uint64_t cachedLayerReuses = 0;
+    uint64_t uiDirScans = 0;
     uint64_t managedHeapUsedBytes = 0;
     uint64_t managedHeapReservedBytes = 0;
     int64_t managedHeapDeltaBytes = 0;
@@ -88,6 +97,13 @@ public:
                                   const std::array<uint32_t, 3>& collectionCounts,
                                   const std::array<uint32_t, 3>& collectionDelta);
     void setCurrentFrameRenderCounters(uint64_t drawCalls, uint64_t textureBinds, uint64_t stateBinds);
+    void setCurrentFrame2DCounters(uint64_t spriteQuads,
+                                   uint64_t spriteBatches,
+                                   uint64_t postFxPasses,
+                                   uint64_t viewportRedraws,
+                                   uint64_t skippedRedraws,
+                                   uint64_t cachedLayerReuses,
+                                   uint64_t uiDirScans);
     void setCurrentFrameRenderMemory(uint64_t usedBytes, uint64_t budgetBytes);
     void setCurrentFrameGpuCapability(bool supported, bool partial);
 

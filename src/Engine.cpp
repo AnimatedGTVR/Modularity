@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "Modu2DStats.h"
 #ifdef __ANDROID__
 #include "AndroidRuntime/AndroidRuntime.h"
 #endif
@@ -4543,6 +4544,7 @@ void Engine::run() {
         renderer.setFrameSerial(renderFrameSerial);
         Profiler& profiler = Profiler::instance();
         profiler.beginFrame(renderFrameSerial);
+        Modu2DStats::Reset();
         double frameStart = glfwGetTime();
         const auto frameStartClock = Runtime2DClock::now();
         const bool runtime2DProfileThisFrame =
@@ -5275,6 +5277,14 @@ void Engine::run() {
             profilerStateBinds = gRuntime2DProfileFrame.stateBindCount;
         }
         profiler.setCurrentFrameRenderCounters(profilerDrawCalls, profilerTextureBinds, profilerStateBinds);
+        const Modu2DStats::Snapshot frame2DStats = Modu2DStats::Read();
+        profiler.setCurrentFrame2DCounters(frame2DStats.spriteQuads,
+                                           frame2DStats.spriteBatches,
+                                           frame2DStats.postFxPasses,
+                                           frame2DStats.viewportRedraws,
+                                           frame2DStats.skippedRedraws,
+                                           frame2DStats.cachedLayerReuses,
+                                           frame2DStats.uiDirScans);
         profiler.setCurrentFrameRenderMemory(renderer.getTextureCacheUsageBytes(),
                                              renderer.getTextureCacheBudgetBytes());
         if (usingVulkan()) {
@@ -11047,9 +11057,14 @@ void Engine::pollExportBuild() {
     }
 }
 
-void Engine::createNewProject(const char* name, const char* location) {
+void Engine::createNewProject(const char* name, const char* location) try {
     fs::path basePath(location);
-    fs::create_directories(basePath);
+    std::error_code baseDirEc;
+    fs::create_directories(basePath, baseDirEc);
+    if (baseDirEc) {
+        projectManager.errorMessage = "Could not create project location: " + baseDirEc.message();
+        return;
+    }
 
     Project newProject(name, basePath);
     newProject.pipeline = ProjectPipelineFromUiIndex(projectManager.newProjectPipelineMode);
@@ -11095,7 +11110,12 @@ void Engine::createNewProject(const char* name, const char* location) {
                 newProject.playerSettings.defaultScene = "Main";
                 newProject.playerSettings.startupWidth = 1280;
                 newProject.playerSettings.startupHeight = 720;
-                fs::create_directories(newProject.assetsPath / "Sprites");
+                std::error_code spritesDirEc;
+                fs::create_directories(newProject.assetsPath / "Sprites", spritesDirEc);
+                if (spritesDirEc) {
+                    addConsoleMessage("Could not create Sprites folder: " + spritesDirEc.message(),
+                                      ConsoleMessageType::Warning);
+                }
                 writeStarterScript(fs::path("Assets") / "Scripts" / "Runtime" / "PlayerController2D.moducpp",
                                    "PlayerController2D",
                                    "move the player sprite here");
@@ -11106,7 +11126,12 @@ void Engine::createNewProject(const char* name, const char* location) {
                 newProject.playerSettings.startupHeight = 800;
                 newProject.playerSettings.cursorLocked = false;
                 newProject.playerSettings.cursorVisible = true;
-                fs::create_directories(newProject.assetsPath / "UI");
+                std::error_code uiDirEc;
+                fs::create_directories(newProject.assetsPath / "UI", uiDirEc);
+                if (uiDirEc) {
+                    addConsoleMessage("Could not create UI folder: " + uiDirEc.message(),
+                                      ConsoleMessageType::Warning);
+                }
                 writeStarterScript(fs::path("Assets") / "Scripts" / "Runtime" / "AppController.moducpp",
                                    "AppController",
                                    "wire app state and UI actions here");
@@ -11237,6 +11262,8 @@ void Engine::createNewProject(const char* name, const char* location) {
     } else {
         projectManager.errorMessage = "Failed to create project directory";
     }
+} catch (const std::exception& e) {
+    projectManager.errorMessage = std::string("Failed to create project: ") + e.what();
 }
 #pragma endregion
 
@@ -14862,6 +14889,11 @@ void Engine::loadEditorUserSettings() {
             showViewportHintOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showLight2DStatsOverlay") {
             showLight2DStatsOverlay = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "sceneViewportRenderMode") {
+            try {
+                sceneViewportRenderMode = static_cast<SceneRenderMode>(
+                    std::clamp(std::stoi(value), 0, 2));
+            } catch (...) {}
         } else if (key == "light2DLightingBufferScale") {
             try { light2DLightingBufferScale = std::clamp(std::stof(value), 0.5f, 1.0f); } catch (...) {}
         } else if (key == "maxRealtimeLights") {
@@ -15099,6 +15131,8 @@ void Engine::loadEditorUserSettings() {
     fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, 160.0f, 360.0f);
     sceneGizmoIconScale = std::clamp(sceneGizmoIconScale, 0.4f, 3.0f);
     sceneGizmoOverlayScale = std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f);
+    sceneViewportRenderMode = static_cast<SceneRenderMode>(
+        std::clamp(static_cast<int>(sceneViewportRenderMode), 0, 2));
     camera.moveSpeed = std::max(0.01f, camera.moveSpeed);
     camera.sprintSpeed = std::max(camera.moveSpeed, camera.sprintSpeed);
     camera.acceleration = std::max(0.1f, camera.acceleration);
@@ -15241,6 +15275,7 @@ void Engine::saveEditorUserSettings() const {
     file << "gizmoShowLightIntensityLabels=" << (gizmoShowLightIntensityLabels ? "1" : "0") << "\n";
     file << "showViewportHintOverlay=" << (showViewportHintOverlay ? "1" : "0") << "\n";
     file << "showLight2DStatsOverlay=" << (showLight2DStatsOverlay ? "1" : "0") << "\n";
+    file << "sceneViewportRenderMode=" << static_cast<int>(sceneViewportRenderMode) << "\n";
     file << "light2DLightingBufferScale=" << std::clamp(light2DLightingBufferScale, 0.5f, 1.0f) << "\n";
     file << "maxRealtimeLights=" << renderer.getMaxRealtimeLights() << "\n";
     file << "world2DPostFxEnabled=" << (world2DPostFx.enabled ? "1" : "0") << "\n";

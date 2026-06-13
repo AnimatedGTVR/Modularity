@@ -64,6 +64,9 @@ void Engine::renderPlayerViewport() {
       ImVec2(cursorStart.x + imageOffsetX, cursorStart.y + imageOffsetY));
 
   if (rendererInitialized) {
+    // Phase A instrumentation: the player viewport presents the scene + 2D
+    // overlay every frame.
+    Modu2DStats::CountViewportRedraw();
     unsigned int tex = getActiveSceneTexture();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));

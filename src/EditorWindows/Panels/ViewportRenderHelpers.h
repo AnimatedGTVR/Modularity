@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine.h"
+#include "Modu2DStats.h"
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -404,6 +405,7 @@ public:
       flush();
     }
     currentTextureId = textureId;
+    Modu2DStats::CountSpriteQuads(1);
     BatchedSpriteQuad &quad = quads.emplace_back();
     quad.textureId = textureId;
     quad.pos[0] = p0;
@@ -424,6 +426,7 @@ public:
       return;
     }
 
+    Modu2DStats::CountSpriteBatch();
     drawList->PushTextureID(currentTextureId);
     drawList->PrimReserve(static_cast<int>(quads.size()) * 6,
                           static_cast<int>(quads.size()) * 4);

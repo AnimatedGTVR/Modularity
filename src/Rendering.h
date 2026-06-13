@@ -16,6 +16,8 @@ extern float mirrorPlaneVertices[48];
 
 constexpr int kRendererMaxRealtimeLights = 32;
 
+enum class SceneRenderMode { Normal = 0, ShadedWireframe = 1, Wireframe = 2 };
+
 // Primitive generation functions
 std::vector<float> generateSphere(int segments = 32, int rings = 16);
 std::vector<float> generateCapsule(int segments = 16, int rings = 8);
@@ -251,6 +253,7 @@ private:
     std::string postBlurFragPath = "Resources/Shaders/postfx_blur_frag.glsl";
     std::string selectionMaskVertPath = "Resources/Shaders/selection_mask_vert.glsl";
     std::string selectionMaskFragPath = "Resources/Shaders/selection_mask_frag.glsl";
+    std::string wireframeFragPath = "Resources/Shaders/wireframe_frag.glsl";
     std::string selectionOutlineFragPath = "Resources/Shaders/selection_outline_frag.glsl";
     std::string shadowDepthVertPath = "Resources/Shaders/shadow_depth_vert.glsl";
     std::string shadowDepthFragPath = "Resources/Shaders/shadow_depth_frag.glsl";
@@ -324,6 +327,10 @@ private:
     void clearHistory();
     void clearTarget(RenderTarget& target);
     void renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects, bool drawSkybox);
+    void renderWireframeOverlay(const Camera& camera,
+                                const std::vector<SceneObject>& sceneObjects,
+                                float fovDeg, float nearPlane, float farPlane,
+                                bool shadedSurface);
     unsigned int applyPostProcessing(const Camera& camera, const std::vector<SceneObject>& sceneObjects, unsigned int sourceTexture, int width, int height, bool allowHistory);
     ResolvedPostFX gatherPostFX(const Camera& camera, const std::vector<SceneObject>& sceneObjects) const;
     unsigned int findFramebufferForTexture(unsigned int texture) const;
@@ -370,7 +377,7 @@ public:
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
     void renderObject(const SceneObject& obj);
-    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false, const std::vector<int>* selectedIds = nullptr);
+    void renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId = -1, float fovDeg = FOV, float nearPlane = NEAR_PLANE, float farPlane = FAR_PLANE, bool drawColliders = false, const std::vector<int>* selectedIds = nullptr, SceneRenderMode renderMode = SceneRenderMode::Normal);
     void renderSelectionOutline(const Camera& camera, const std::vector<SceneObject>& sceneObjects, const std::vector<int>& selectedIds, float fovDeg, float nearPlane, float farPlane);
     unsigned int renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX = false, int previewSlot = 0, bool transparentBackground = false);
     void renderCollisionOverlay(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, const std::vector<int>* previewIds = nullptr);

@@ -473,6 +473,7 @@ private:
     bool gizmoShowShadowCaster2DBounds = true;
     float sceneGizmoIconScale = 1.0f;
     float sceneGizmoOverlayScale = 1.0f;
+    SceneRenderMode sceneViewportRenderMode = SceneRenderMode::Normal;
     struct PlayerControllerGroundProbeDebug {
         int playerId = -1;
         glm::vec3 rayStart = glm::vec3(0.0f);

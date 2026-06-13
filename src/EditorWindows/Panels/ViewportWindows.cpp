@@ -65,6 +65,198 @@ static constexpr std::array<ObjectType, static_cast<size_t>(LightType::Area) + 1
         ObjectType::AreaLight         // LightType::Area
     }};
 
+struct ViewportAxisArrow {
+  glm::vec3 direction;
+  ImU32 color;
+  const char *label;
+};
+
+struct ViewportAxisArrowGeometry {
+  ImVec2 origin;
+  ImVec2 tip;
+  ImVec2 shaftStartLeft;
+  ImVec2 shaftStartRight;
+  ImVec2 shaftEndLeft;
+  ImVec2 shaftEndRight;
+  ImVec2 coneBaseCenter;
+  ImVec2 coneBaseLeft;
+  ImVec2 coneBaseRight;
+  ImVec2 labelPosition;
+  ImVec2 circleCenter;
+  float geometryOpacity;
+  float circleRadius;
+  float labelOpacity;
+  float leftBrightness;
+  float rightBrightness;
+};
+
+struct ViewportAxisArrowRenderItem {
+  const ViewportAxisArrow *arrow = nullptr;
+  ViewportAxisArrowGeometry geometry;
+  float cameraDepth = 0.0f;
+};
+
+ImU32 ShadeViewportAxisColor(ImU32 color, float brightness, float opacity) {
+  ImVec4 shaded = ImGui::ColorConvertU32ToFloat4(color);
+  shaded.x = glm::clamp(shaded.x * brightness, 0.0f, 1.0f);
+  shaded.y = glm::clamp(shaded.y * brightness, 0.0f, 1.0f);
+  shaded.z = glm::clamp(shaded.z * brightness, 0.0f, 1.0f);
+  shaded.w *= opacity;
+  return ImGui::ColorConvertFloat4ToU32(shaded);
+}
+
+ViewportAxisArrowGeometry
+BuildViewportAxisArrowGeometry(const ImVec2 &center, float radius,
+                               const glm::vec3 &cameraDirection) {
+  constexpr float kMinimumDepthScale = 0.25f;
+  constexpr float kDepthScaleBase = 0.35f;
+  constexpr float kDepthScaleRange = 0.65f;
+  // Increase this to give the whole arrow more reach from the widget center.
+  constexpr float kArrowLengthScale = 1.0f;
+  // Increase this to make the cone/arrowhead longer.
+  constexpr float kArrowHeadLength = 14.0f;
+  constexpr float kShaftHalfWidth = 2.1f;
+  constexpr float kArrowHeadHalfWidth = 5.5f;
+  constexpr float kCenterGap = 7.0f;
+  constexpr float kLabelDistance = 1.08f;
+  constexpr float kCircleTransitionStart = 0.08f;
+  constexpr float kCircleTransitionEnd = 0.28f;
+  constexpr float kFaceOnCircleRadius = 6.0f;
+
+  const glm::vec2 projectedDirection(cameraDirection.x, -cameraDirection.y);
+  const float projectedLength =
+      glm::clamp(glm::length(projectedDirection), 0.0f, 1.0f);
+  const glm::vec2 screenDirection = projectedLength > 1e-4f
+                                        ? projectedDirection / projectedLength
+                                        : glm::vec2(1.0f, 0.0f);
+  const float normalizedDepth = (cameraDirection.z + 1.0f) * 0.5f;
+  const float depthScale =
+      glm::clamp(kDepthScaleBase + kDepthScaleRange * normalizedDepth,
+                 kMinimumDepthScale, 1.0f);
+  const float length =
+      radius * kArrowLengthScale * depthScale * projectedLength;
+  const float geometryOpacity = glm::smoothstep(
+      kCircleTransitionStart, kCircleTransitionEnd, projectedLength);
+  const bool facesCamera = cameraDirection.z > 0.0f;
+  const float circleRadius =
+      facesCamera ? kFaceOnCircleRadius * (1.0f - geometryOpacity) : 0.0f;
+  const float labelOpacity = facesCamera ? 1.0f : geometryOpacity;
+
+  const glm::vec2 screenPerpendicular(-screenDirection.y, screenDirection.x);
+  const float coneLength = std::min(kArrowHeadLength, length * 0.48f);
+  const float coneBaseDistance = std::max(0.0f, length - coneLength);
+  const float originDistance =
+      std::min(coneBaseDistance, kCenterGap * geometryOpacity);
+  const float shaftHalfWidth = kShaftHalfWidth * geometryOpacity;
+  const float arrowHeadHalfWidth = kArrowHeadHalfWidth * geometryOpacity;
+
+  const glm::vec2 lightDirection = glm::normalize(glm::vec2(-0.65f, -0.75f));
+  const float sideLight =
+      glm::clamp(glm::dot(screenPerpendicular, lightDirection), -1.0f, 1.0f);
+  const float depthBrightness = glm::mix(0.62f, 1.08f, normalizedDepth);
+  const float leftBrightness = depthBrightness * (0.88f + 0.20f * sideLight);
+  const float rightBrightness = depthBrightness * (0.88f - 0.20f * sideLight);
+
+  const ImVec2 tip(center.x + screenDirection.x * length,
+                   center.y + screenDirection.y * length);
+  const ImVec2 origin(center.x + screenDirection.x * originDistance,
+                      center.y + screenDirection.y * originDistance);
+  const ImVec2 coneBaseCenter(center.x + screenDirection.x * coneBaseDistance,
+                              center.y + screenDirection.y * coneBaseDistance);
+  const ImVec2 shaftOffset(screenPerpendicular.x * shaftHalfWidth,
+                           screenPerpendicular.y * shaftHalfWidth);
+  const ImVec2 arrowHeadOffset(screenPerpendicular.x * arrowHeadHalfWidth,
+                               screenPerpendicular.y * arrowHeadHalfWidth);
+
+  return {
+      origin,
+      tip,
+      ImVec2(origin.x + shaftOffset.x, origin.y + shaftOffset.y),
+      ImVec2(origin.x - shaftOffset.x, origin.y - shaftOffset.y),
+      ImVec2(coneBaseCenter.x + shaftOffset.x,
+             coneBaseCenter.y + shaftOffset.y),
+      ImVec2(coneBaseCenter.x - shaftOffset.x,
+             coneBaseCenter.y - shaftOffset.y),
+      coneBaseCenter,
+      ImVec2(coneBaseCenter.x + arrowHeadOffset.x,
+             coneBaseCenter.y + arrowHeadOffset.y),
+      ImVec2(coneBaseCenter.x - arrowHeadOffset.x,
+             coneBaseCenter.y - arrowHeadOffset.y),
+      ImVec2(center.x + screenDirection.x * (length * kLabelDistance),
+             center.y + screenDirection.y * (length * kLabelDistance)),
+      center,
+      geometryOpacity,
+      circleRadius,
+      labelOpacity,
+      leftBrightness,
+      rightBrightness,
+  };
+}
+
+void DrawViewportAxisArrow(ImDrawList *drawList,
+                           const ViewportAxisArrowGeometry &geometry,
+                           const ViewportAxisArrow &arrow) {
+  const ImU32 outlineColor =
+      ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
+  const ImU32 leftColor = ShadeViewportAxisColor(
+      arrow.color, geometry.leftBrightness, geometry.geometryOpacity);
+  const ImU32 rightColor = ShadeViewportAxisColor(
+      arrow.color, geometry.rightBrightness, geometry.geometryOpacity);
+  const ImU32 labelColor = ImGui::GetColorU32(
+      ImVec4(1.0f, 1.0f, 1.0f, 0.95f * geometry.labelOpacity));
+
+  // Screen-space offset for the X/Y/Z text; decrease Y to move it upward.
+  constexpr ImVec2 kLabelOffset(-4.0f, -14.0f);
+
+  if (geometry.circleRadius > 0.01f) {
+    const ImU32 circleShadow = ShadeViewportAxisColor(arrow.color, 0.62f, 1.0f);
+    const ImU32 circleLight = ShadeViewportAxisColor(arrow.color, 1.12f, 1.0f);
+    drawList->AddCircleFilled(geometry.circleCenter, geometry.circleRadius,
+                              circleShadow, 16);
+    drawList->AddCircleFilled(
+        ImVec2(geometry.circleCenter.x - geometry.circleRadius * 0.18f,
+               geometry.circleCenter.y - geometry.circleRadius * 0.18f),
+        geometry.circleRadius * 0.78f, circleLight, 16);
+    drawList->AddCircle(geometry.circleCenter, geometry.circleRadius,
+                        outlineColor, 16);
+  }
+
+  if (geometry.geometryOpacity > 0.01f) {
+    drawList->AddQuadFilled(geometry.origin, geometry.shaftStartLeft,
+                            geometry.shaftEndLeft, geometry.coneBaseCenter,
+                            leftColor);
+    drawList->AddQuadFilled(geometry.origin, geometry.coneBaseCenter,
+                            geometry.shaftEndRight, geometry.shaftStartRight,
+                            rightColor);
+    drawList->AddQuad(geometry.shaftStartLeft, geometry.shaftEndLeft,
+                      geometry.shaftEndRight, geometry.shaftStartRight,
+                      outlineColor);
+
+    drawList->AddTriangleFilled(geometry.coneBaseLeft, geometry.tip,
+                                geometry.coneBaseCenter, leftColor);
+    drawList->AddTriangleFilled(geometry.coneBaseCenter, geometry.tip,
+                                geometry.coneBaseRight, rightColor);
+    drawList->AddTriangle(geometry.coneBaseLeft, geometry.tip,
+                          geometry.coneBaseRight, outlineColor);
+    drawList->AddLine(geometry.coneBaseLeft, geometry.coneBaseRight,
+                      outlineColor);
+  }
+  /*drawList->AddCircleFilled(
+      geometry.labelPosition, 6.0f,
+      ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.5f)), 12);*/
+  if (geometry.labelOpacity > 0.01f && arrow.label[0] != '\0') {
+    drawList->AddText(ImVec2(geometry.labelPosition.x + kLabelOffset.x,
+                             geometry.labelPosition.y + kLabelOffset.y),
+                      labelColor, arrow.label);
+  }
+}
+
+bool IsPointWithinRadius(const ImVec2 &point, const ImVec2 &center,
+                         float radius) {
+  const float dx = point.x - center.x;
+  const float dy = point.y - center.y;
+  return std::sqrt(dx * dx + dy * dy) <= radius;
+}
 
 } // namespace
 
@@ -270,6 +462,9 @@ void Engine::renderViewport() {
   }
 
   if (rendererInitialized || hasVulkanSceneTexture) {
+    // Phase A instrumentation: the Scene viewport re-renders the scene every
+    // frame today (no redraw-skipping yet), so this counts exactly once here.
+    Modu2DStats::CountViewportRedraw();
     glm::mat4 proj = glm::perspective(
         glm::radians(buildSettings.editorCameraFov),
         (float)viewportWidth / (float)viewportHeight,
@@ -303,7 +498,7 @@ void Engine::renderViewport() {
             camera, sceneObjects, selectedObjectId,
             buildSettings.editorCameraFov, buildSettings.editorCameraNear,
             buildSettings.editorCameraFar, showSelected3DColliderPreview,
-            &selectedObjectIds);
+            &selectedObjectIds, sceneViewportRenderMode);
         tex = renderer.getViewportTexture();
       }
       ImGui::SetNextItemAllowOverlap();
@@ -500,7 +695,7 @@ void Engine::renderViewport() {
       ImVec2 center = ImVec2(imageMax.x - padding - widgetSize * 0.5f,
                              imageMin.y + padding + widgetSize * 0.5f);
       float radius = widgetSize * 0.46f;
-      ImU32 ringCol = ImGui::GetColorU32(ImVec4(0.07f, 0.07f, 0.1f, 0.9f));
+      /*ImU32 ringCol = ImGui::GetColorU32(ImVec4(0.07f, 0.07f, 0.1f, 0.9f));
       ImU32 ringBorder = ImGui::GetColorU32(ImVec4(1, 1, 1, 0.18f));
       viewportDrawList->AddCircleFilled(center, radius + 10.0f, ringCol, 48);
       viewportDrawList->AddCircle(center, radius + 10.0f, ringBorder, 48);
@@ -508,62 +703,77 @@ void Engine::renderViewport() {
                                   ImGui::GetColorU32(ImVec4(1, 1, 1, 0.08f)),
                                   32);
       viewportDrawList->AddCircleFilled(
-          center, 5.5f, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.6f)), 24);
+          center, 5.5f, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.6f)), 24);*/
 
-      glm::mat3 viewRot = glm::mat3(view);
-      ImVec2 widgetMin = ImVec2(center.x - widgetSize * 0.5f, center.y - widgetSize * 0.5f);
-      ImVec2 widgetMax = ImVec2(center.x + widgetSize * 0.5f, center.y + widgetSize * 0.5f);
-      bool widgetHover = ImGui::IsMouseHoveringRect(widgetMin, widgetMax);
-      struct AxisArrow {glm::vec3 dir; ImU32 color; const char *label;};
-      AxisArrow arrows[] = {
+      const glm::mat3 viewRotation = glm::mat3(view);
+      const ImVec2 widgetMin =
+          ImVec2(center.x - widgetSize * 0.5f, center.y - widgetSize * 0.5f);
+      const ImVec2 widgetMax =
+          ImVec2(center.x + widgetSize * 0.5f, center.y + widgetSize * 0.5f);
+      const bool widgetHover = ImGui::IsMouseHoveringRect(widgetMin, widgetMax);
+      const std::array<ViewportAxisArrow, 6> arrows = {{
           {glm::vec3(1, 0, 0),
            ImGui::GetColorU32(ImVec4(0.9f, 0.2f, 0.2f, 1.0f)), "X"},
           {glm::vec3(-1, 0, 0),
-           ImGui::GetColorU32(ImVec4(0.6f, 0.2f, 0.2f, 1.0f)), "-X"},
+           ImGui::GetColorU32(ImVec4(0.6f, 0.2f, 0.2f, 1.0f)), ""}, // -X
           {glm::vec3(0, 1, 0),
            ImGui::GetColorU32(ImVec4(0.2f, 0.9f, 0.2f, 1.0f)), "Y"},
           {glm::vec3(0, -1, 0),
-           ImGui::GetColorU32(ImVec4(0.2f, 0.6f, 0.2f, 1.0f)), "-Y"},
+           ImGui::GetColorU32(ImVec4(0.2f, 0.6f, 0.2f, 1.0f)), ""}, // -Y
           {glm::vec3(0, 0, 1),
            ImGui::GetColorU32(ImVec4(0.2f, 0.4f, 0.9f, 1.0f)), "Z"},
           {glm::vec3(0, 0, -1),
-           ImGui::GetColorU32(ImVec4(0.2f, 0.3f, 0.6f, 1.0f)), "-Z"},
-      };
+           ImGui::GetColorU32(ImVec4(0.2f, 0.3f, 0.6f, 1.0f)), ""}, // -Z
+      }};
 
-      ImVec2 mouse = ImGui::GetIO().MousePos;
-      int clickedIdx = -1;
-      float clickRadius = 12.0f;
+      const ImVec2 mouse = ImGui::GetIO().MousePos;
+      const float clickRadius = 12.0f;
+      const bool axisClickReleased =
+          widgetHover && ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+      const ViewportAxisArrow *clickedArrow = nullptr;
+      std::array<ViewportAxisArrowRenderItem, 6> renderedArrows;
 
-      for (int i = 0; i < 6; ++i) {
-        glm::vec3 camSpace = viewRot * arrows[i].dir;
-        glm::vec2 dir2 = glm::normalize(glm::vec2(camSpace.x, -camSpace.y));
-        float depthScale = glm::clamp(
-            0.35f + 0.65f * ((camSpace.z + 1.0f) * 0.5f), 0.25f, 1.0f);
-        float len = radius * depthScale;
-        ImVec2 tip = ImVec2(center.x + dir2.x * len, center.y + dir2.y * len);
+      for (size_t i = 0; i < arrows.size(); ++i) {
+        const ViewportAxisArrow &arrow = arrows[i];
+        const glm::vec3 cameraDirection = viewRotation * arrow.direction;
+        renderedArrows[i] = {
+            &arrow,
+            BuildViewportAxisArrowGeometry(center, radius, cameraDirection),
+            cameraDirection.z,
+        };
+      }
 
-        ImVec2 base1 = ImVec2(center.x + dir2.x * (len * 0.55f) + dir2.y * (len * 0.12f),
-                              center.y + dir2.y * (len * 0.55f) - dir2.x * (len * 0.12f));
-        ImVec2 base2 = ImVec2(center.x + dir2.x * (len * 0.55f) - dir2.y * (len * 0.12f),
-                              center.y + dir2.y * (len * 0.55f) + dir2.x * (len * 0.12f));
+      std::sort(renderedArrows.begin(), renderedArrows.end(),
+                [](const ViewportAxisArrowRenderItem &a,
+                   const ViewportAxisArrowRenderItem &b) {
+                  return a.cameraDepth < b.cameraDepth;
+                });
 
-        viewportDrawList->AddTriangleFilled(base1, tip, base2, arrows[i].color);
-        viewportDrawList->AddTriangle(base1, tip, base2, ImGui::GetColorU32(ImVec4(0, 0, 0, 0.35f)));
+      for (const ViewportAxisArrowRenderItem &renderedArrow : renderedArrows) {
+        DrawViewportAxisArrow(viewportDrawList, renderedArrow.geometry,
+                              *renderedArrow.arrow);
 
-        ImVec2 labelPos = ImVec2(center.x + dir2.x * (len * 0.78f), center.y + dir2.y * (len * 0.78f));
-        viewportDrawList->AddCircleFilled(
-            labelPos, 6.0f, ImGui::GetColorU32(ImVec4(0, 0, 0, 0.5f)), 12);
-        viewportDrawList->AddText(ImVec2(labelPos.x - 4.0f, labelPos.y - 7.0f), ImGui::GetColorU32(ImVec4(1, 1, 1, 0.95f)), arrows[i].label);
-
-        if (widgetHover) {
-          float dx = mouse.x - tip.x;
-          float dy = mouse.y - tip.y;
-          if (std::sqrt(dx * dx + dy * dy) <= clickRadius && ImGui::IsMouseReleased(0)) {clickedIdx = i;}
+        if (axisClickReleased &&
+            IsPointWithinRadius(mouse, renderedArrow.geometry.tip,
+                                clickRadius)) {
+          clickedArrow = renderedArrow.arrow;
         }
       }
 
-      if (clickedIdx >= 0) {setCameraFacing(arrows[clickedIdx].dir);}
-      if (widgetHover) blockSelection = true;
+      const char *projectionLabel = camera.orthographic ? "Ortho" : "Persp";
+      const ImVec2 projectionLabelSize = ImGui::CalcTextSize(projectionLabel);
+      viewportDrawList->AddText(
+          ImVec2(center.x - projectionLabelSize.x * 0.5f,
+                 center.y + radius * 0.72f),
+          ImGui::GetColorU32(ImVec4(0.72f, 0.76f, 0.84f, 0.8f)),
+          projectionLabel);
+
+      if (clickedArrow) {
+        setCameraFacing(clickedArrow->direction);
+      }
+      if (widgetHover) {
+        blockSelection = true;
+      }
     }
 
     ImGuiWindow *sceneViewportWindow = ImGui::GetCurrentWindow();
@@ -7152,6 +7362,17 @@ void Engine::renderViewport() {
           toolbarEditorSettingsChanged = true;
         }
 
+        const char *renderModeLabels[] = {
+            "Normal", "Shaded Wireframe", "Wireframe"};
+        int renderMode = static_cast<int>(sceneViewportRenderMode);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::Combo("Viewport Draw Mode", &renderMode, renderModeLabels,
+                         IM_ARRAYSIZE(renderModeLabels))) {
+          sceneViewportRenderMode =
+              static_cast<SceneRenderMode>(std::clamp(renderMode, 0, 2));
+          toolbarEditorSettingsChanged = true;
+        }
+
         ImGui::Separator();
         if (ImGui::SliderFloat("Gizmo Icon Size", &sceneGizmoIconScale, 0.4f,
                                3.0f, "%.2fx")) {
@@ -7168,6 +7389,7 @@ void Engine::renderViewport() {
           gizmoShowLightIntensityLabels = true;
           showViewportHintOverlay = true;
           showLight2DStatsOverlay = true;
+          sceneViewportRenderMode = SceneRenderMode::Normal;
           sceneGizmoIconScale = 1.0f;
           sceneGizmoOverlayScale = 1.0f;
           toolbarEditorSettingsChanged = true;

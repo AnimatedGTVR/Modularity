@@ -82,6 +82,25 @@ void Profiler::endFrame() {
         }
     }
 
+    // Editor/runtime UI render time. Only count UI samples whose parent is not
+    // itself a UI sample, so nested UI scopes (e.g. thumbnail renders inside the
+    // top-level "Editor UI" scope) are not double-counted.
+    currentFrame.uiMs = 0.0;
+    for (size_t i = 0; i < currentFrame.samples.size(); ++i) {
+        const ProfilerSampleRecord& sample = currentFrame.samples[i];
+        if (sample.category != ProfilerSampleCategory::UI) {
+            continue;
+        }
+        const int parentIndex = sample.parentIndex;
+        const bool parentIsUI =
+            parentIndex >= 0 &&
+            parentIndex < static_cast<int>(currentFrame.samples.size()) &&
+            currentFrame.samples[parentIndex].category == ProfilerSampleCategory::UI;
+        if (!parentIsUI) {
+            currentFrame.uiMs += sample.cpuMs;
+        }
+    }
+
     historyFrames[historyWriteIndex] = std::move(currentFrame);
     historyWriteIndex = (historyWriteIndex + 1) % kMaxHistoryFrames;
     historyCount = std::min(historyCount + 1, kMaxHistoryFrames);
@@ -188,6 +207,25 @@ void Profiler::setCurrentFrameRenderCounters(uint64_t drawCalls, uint64_t textur
     currentFrame.drawCalls = drawCalls;
     currentFrame.textureBinds = textureBinds;
     currentFrame.stateBinds = stateBinds;
+}
+
+void Profiler::setCurrentFrame2DCounters(uint64_t spriteQuads,
+                                         uint64_t spriteBatches,
+                                         uint64_t postFxPasses,
+                                         uint64_t viewportRedraws,
+                                         uint64_t skippedRedraws,
+                                         uint64_t cachedLayerReuses,
+                                         uint64_t uiDirScans) {
+    if (!frameActive) {
+        return;
+    }
+    currentFrame.sprite2DQuads = spriteQuads;
+    currentFrame.sprite2DBatches = spriteBatches;
+    currentFrame.postFxPasses = postFxPasses;
+    currentFrame.viewportRedraws = viewportRedraws;
+    currentFrame.skippedRedraws = skippedRedraws;
+    currentFrame.cachedLayerReuses = cachedLayerReuses;
+    currentFrame.uiDirScans = uiDirScans;
 }
 
 void Profiler::setCurrentFrameRenderMemory(uint64_t usedBytes, uint64_t budgetBytes) {

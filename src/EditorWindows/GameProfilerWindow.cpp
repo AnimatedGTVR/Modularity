@@ -195,6 +195,8 @@ void Engine::drawGameProfilerContent() {
     DrawGraphLegend("GC", IM_COL32(86, 211, 118, 255));
     ImGui::SameLine(0.0f, 18.0f);
     DrawGraphLegend("Rendering", IM_COL32(164, 124, 255, 255));
+    ImGui::SameLine(0.0f, 18.0f);
+    DrawGraphLegend("UI", IM_COL32(244, 184, 96, 255));
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
 
     const float graphHeight = 220.0f;
@@ -220,6 +222,7 @@ void Engine::drawGameProfilerContent() {
             maxValue = std::max(maxValue, frame->gpuMs);
             maxValue = std::max(maxValue, frame->gcMs);
             maxValue = std::max(maxValue, frame->renderMs);
+            maxValue = std::max(maxValue, frame->uiMs);
         }
         maxValue = std::max(8.0, maxValue * 1.15);
 
@@ -259,6 +262,7 @@ void Engine::drawGameProfilerContent() {
         drawSeries([](const ProfilerFrameRecord& frame) { return frame.gpuMs; }, IM_COL32(231, 94, 94, 255));
         drawSeries([](const ProfilerFrameRecord& frame) { return frame.gcMs; }, IM_COL32(86, 211, 118, 255));
         drawSeries([](const ProfilerFrameRecord& frame) { return frame.renderMs; }, IM_COL32(164, 124, 255, 255));
+        drawSeries([](const ProfilerFrameRecord& frame) { return frame.uiMs; }, IM_COL32(244, 184, 96, 255));
 
         size_t selectedHistoryIndex = historyCount - 1;
         for (size_t i = 0; i < historyCount; ++i) {
@@ -300,6 +304,10 @@ void Engine::drawGameProfilerContent() {
                 ImGui::Text("GPU: %.3f ms", hoveredFrame->gpuMs);
                 ImGui::Text("GC: %.3f ms", hoveredFrame->gcMs);
                 ImGui::Text("Render: %.3f ms", hoveredFrame->renderMs);
+                ImGui::Text("UI: %.3f ms", hoveredFrame->uiMs);
+                ImGui::Text("2D Quads: %llu | Batches: %llu",
+                            static_cast<unsigned long long>(hoveredFrame->sprite2DQuads),
+                            static_cast<unsigned long long>(hoveredFrame->sprite2DBatches));
                 ImGui::EndTooltip();
             }
         }
@@ -328,16 +336,18 @@ void Engine::drawGameProfilerContent() {
         ImGui::Text("Frame %llu", static_cast<unsigned long long>(selectedFrame->frameId));
         ImGui::TableNextColumn();
         if (selectedFrame->gpuTimingSupported) {
-            ImGui::TextDisabled("CPU %.3f ms | GPU %.3f ms | GC %.3f ms | Render %.3f ms",
+            ImGui::TextDisabled("CPU %.3f ms | GPU %.3f ms | GC %.3f ms | Render %.3f ms | UI %.3f ms",
                                 selectedFrame->cpuMs,
                                 selectedFrame->gpuMs,
                                 selectedFrame->gcMs,
-                                selectedFrame->renderMs);
+                                selectedFrame->renderMs,
+                                selectedFrame->uiMs);
         } else {
-            ImGui::TextDisabled("CPU %.3f ms | GPU unavailable | GC %.3f ms | Render %.3f ms",
+            ImGui::TextDisabled("CPU %.3f ms | GPU unavailable | GC %.3f ms | Render %.3f ms | UI %.3f ms",
                                 selectedFrame->cpuMs,
                                 selectedFrame->gcMs,
-                                selectedFrame->renderMs);
+                                selectedFrame->renderMs,
+                                selectedFrame->uiMs);
         }
 
         ImGui::TableNextRow();
@@ -362,6 +372,19 @@ void Engine::drawGameProfilerContent() {
                             selectedFrame->gcCollectionDelta[0],
                             selectedFrame->gcCollectionDelta[1],
                             selectedFrame->gcCollectionDelta[2]);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("2D Quads: %llu | 2D Batches: %llu | PostFX Passes: %llu",
+                            static_cast<unsigned long long>(selectedFrame->sprite2DQuads),
+                            static_cast<unsigned long long>(selectedFrame->sprite2DBatches),
+                            static_cast<unsigned long long>(selectedFrame->postFxPasses));
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("Viewport Redraws: %llu | Skipped: %llu | Cached Layer Reuse: %llu | UI Dir Scans: %llu",
+                            static_cast<unsigned long long>(selectedFrame->viewportRedraws),
+                            static_cast<unsigned long long>(selectedFrame->skippedRedraws),
+                            static_cast<unsigned long long>(selectedFrame->cachedLayerReuses),
+                            static_cast<unsigned long long>(selectedFrame->uiDirScans));
         ImGui::EndTable();
     }
 

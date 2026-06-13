@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "ModelLoader.h"
 #include "../DragPreviewOverlay.h"
+#include "../Modu2DStats.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -585,6 +586,57 @@ namespace {
 
     struct FileBrowserTextLayoutCache {
         std::unordered_map<FileBrowserTextLayoutKey, std::string, FileBrowserTextLayoutKeyHash> labels;
+    };
+
+    // Caches the sorted child-directory listing for each expanded folder-tree node so
+    // the Project sidebar does not run fs::directory_iterator (+ string allocs + sort)
+    // every frame for every open node. That per-frame filesystem walk was the dominant
+    // idle cost when the sidebar is open (collapsing it restored FPS). Re-scanned on a
+    // short TTL so externally created/removed folders still appear; CountDirScan() fires
+    // only on an actual scan, so the profiler's "UI Dir Scans" sits near 0 once warm.
+    struct FolderTreeChildCache {
+        struct Node {
+            std::vector<fs::path> childDirs;
+            double lastScanTime = -1.0;
+            bool scannedWithHidden = false;
+        };
+        std::unordered_map<std::string, Node> nodes;
+
+        const std::vector<fs::path>& children(const fs::path& path, bool showHidden, double now) {
+            Node& node = nodes[path.string()];
+            constexpr double kRescanIntervalSeconds = 1.0;
+            const bool stale = node.lastScanTime < 0.0 ||
+                               node.scannedWithHidden != showHidden ||
+                               (now - node.lastScanTime) > kRescanIntervalSeconds;
+            if (!stale) {
+                return node.childDirs;
+            }
+
+            node.childDirs.clear();
+            std::error_code ec;
+            for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                const fs::directory_entry& entry = *it;
+                std::error_code dirEc;
+                if (!entry.is_directory(dirEc) || dirEc) {
+                    continue;
+                }
+                const std::string dirName = entry.path().filename().string();
+                if (!showHidden && !dirName.empty() && dirName[0] == '.') {
+                    continue;
+                }
+                node.childDirs.push_back(entry.path());
+            }
+            std::sort(node.childDirs.begin(), node.childDirs.end(),
+                      [](const fs::path& a, const fs::path& b) {
+                          return a.filename().string() < b.filename().string();
+                      });
+
+            node.lastScanTime = now;
+            node.scannedWithHidden = showHidden;
+            Modu2DStats::CountDirScan();
+            return node.childDirs;
+        }
     };
 
     FileBrowserPreviewFrameBudget& GetFileBrowserPreviewBudget() {
@@ -2366,6 +2418,9 @@ void Engine::renderFileBrowserPanel() {
         ImGui::TextDisabled("Folders");
         ImGui::BeginChild("FolderTree", ImVec2(0, 0), false);
 
+        static FolderTreeChildCache sFolderTreeChildCache;
+        const double treeNow = ImGui::GetTime();
+
         auto drawFolderTree = [&](auto&& self, const fs::path& path) -> void {
             if (!fs::exists(path)) {
                 return;
@@ -2395,24 +2450,8 @@ void Engine::renderFileBrowserPanel() {
                 ImGui::EndDragDropTarget();
             }
             if (open) {
-                std::vector<fs::path> dirs;
-                std::error_code ec;
-                for (const auto& entry : fs::directory_iterator(path, ec)) {
-                    if (ec) {
-                        break;
-                    }
-                    if (!entry.is_directory()) {
-                        continue;
-                    }
-                    std::string dirName = entry.path().filename().string();
-                    if (!fileBrowser.showHiddenFiles && !dirName.empty() && dirName[0] == '.') {
-                        continue;
-                    }
-                    dirs.push_back(entry.path());
-                }
-                std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b) {
-                    return a.filename().string() < b.filename().string();
-                });
+                const std::vector<fs::path>& dirs =
+                    sFolderTreeChildCache.children(path, fileBrowser.showHiddenFiles, treeNow);
                 for (const auto& dir : dirs) {
                     self(self, dir);
                 }

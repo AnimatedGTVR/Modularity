@@ -1,5 +1,6 @@
 #include "Rendering.h"
 #include "Profiler.h"
+#include "Modu2DStats.h"
 #include "Camera.h"
 #include "ModelLoader.h"
 #include <algorithm>
@@ -4394,6 +4395,7 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
             glViewport(0, 0, width, height);
             glClear(GL_COLOR_BUFFER_BIT);
             drawFullscreenQuad();
+            Modu2DStats::CountPostFxPass();
             postStats.bloomExtractDestinationTextureId = bloomTargetA.texture;
             postStats.bloomExtractDestinationFramebufferId = bloomTargetA.fbo;
             postStats.bloomExtractMs = std::chrono::duration<float, std::milli>(Clock::now() - bloomExtractStart).count();
@@ -4420,6 +4422,7 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
                 glViewport(0, 0, width, height);
                 glClear(GL_COLOR_BUFFER_BIT);
                 drawFullscreenQuad();
+                Modu2DStats::CountPostFxPass();
 
                 pingTex = writeTarget->texture;
                 writeTarget = (writeTarget == &bloomTargetA) ? &bloomTargetB : &bloomTargetA;
@@ -4541,6 +4544,7 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         drawFullscreenQuad();
+        Modu2DStats::CountPostFxPass();
         postStats.compositeExecuted = true;
         postStats.compositeDestinationTextureId = target.texture;
         postStats.compositeDestinationFramebufferId = target.fbo;
@@ -4571,53 +4575,316 @@ unsigned int Renderer::applyPostProcessing(const Camera& camera, const std::vect
     return target.texture;
 }
 
-void Renderer::renderScene(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int selectedId, float fovDeg, float nearPlane, float farPlane, bool drawColliders, const std::vector<int>* selectedIds) {
-    resetStats(viewportStats);
-    activeStats = &viewportStats;
-    if (!camera.orthographic) {
-        MODU_PROFILE_SCOPE("Mirror Targets", ProfilerSampleCategory::RenderDetail);
-        updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
+void Renderer::renderWireframeOverlay(
+    const Camera &camera, const std::vector<SceneObject> &sceneObjects,
+    float fovDeg, float nearPlane, float farPlane, bool shadedSurface) {
+#if MODULARITY_OPENGL_ES
+  (void)camera;
+  (void)sceneObjects;
+  (void)fovDeg;
+  (void)nearPlane;
+  (void)farPlane;
+  (void)shadedSurface;
+  return;
+#else
+  if (camera.orthographic || currentWidth <= 0 || currentHeight <= 0)
+    return;
+
+  struct WireframeDrawItem {
+    const SceneObject *obj = nullptr;
+    Mesh *mesh = nullptr;
+    glm::mat4 model = glm::mat4(1.0f);
+    bool wantsGpuSkinning = false;
+    bool doubleSided = false;
+  };
+
+  auto resolveMesh = [this](const SceneObject &obj) -> Mesh * {
+    if (obj.renderType == RenderType::Cube)
+      return cubeMesh;
+    if (obj.renderType == RenderType::Sphere)
+      return sphereMesh;
+    if (obj.renderType == RenderType::Capsule)
+      return capsuleMesh;
+    if (obj.renderType == RenderType::Plane)
+      return planeMesh;
+    if (obj.renderType == RenderType::Mirror)
+      return planeMesh;
+    if (obj.renderType == RenderType::Sprite)
+      return planeMesh;
+    if (obj.renderType == RenderType::Torus)
+      return torusMesh;
+    if (obj.renderType == RenderType::OBJMesh && obj.meshId >= 0) {
+      return g_objLoader.getMesh(obj.meshId);
     }
-    {
-        MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
-        renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true, fovDeg, nearPlane, farPlane, true, true);
+    if (obj.renderType == RenderType::Model && obj.meshId >= 0) {
+      return getModelLoader().getMesh(obj.meshId);
     }
-    selectionOutlineSourceScratch.clear();
-    if (selectedIds && !selectedIds->empty()) {
-        selectionOutlineSourceScratch.insert(selectionOutlineSourceScratch.end(), selectedIds->begin(), selectedIds->end());
-    } else if (selectedId >= 0) {
-        selectionOutlineSourceScratch.push_back(selectedId);
+    return nullptr;
+  };
+
+  rebuildStaticMergeBatches(sceneObjects);
+  std::vector<WireframeDrawItem> drawItems;
+  drawItems.reserve(sceneObjects.size() + staticMergeBatches.size());
+  for (const SceneObject &obj : sceneObjects) {
+    if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj))
+      continue;
+    if (staticMergeSourceIds.find(obj.id) != staticMergeSourceIds.end())
+      continue;
+
+    Mesh *mesh = resolveMesh(obj);
+    if (!mesh)
+      continue;
+
+    bool wantsGpuSkinning = obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+                            obj.skeletal.useGpuSkinning;
+    const int boneLimit = std::max(0, obj.skeletal.maxBones);
+    const int availableBones =
+        static_cast<int>(obj.skeletal.finalMatrices.size());
+    if (obj.hasSkeletalAnimation && obj.skeletal.enabled &&
+        obj.skeletal.allowCpuFallback && boneLimit > 0 &&
+        availableBones > boneLimit) {
+      wantsGpuSkinning = false;
     }
-    if (!camera.orthographic && drawColliders) {
-        MODU_PROFILE_SCOPE("Collision Overlay", ProfilerSampleCategory::RenderDetail);
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        glViewport(0, 0, currentWidth, currentHeight);
-        renderCollisionOverlay(
-            camera,
-            sceneObjects,
-            currentWidth,
-            currentHeight,
-            fovDeg,
-            nearPlane,
-            farPlane,
-            selectionOutlineSourceScratch.empty() ? nullptr : &selectionOutlineSourceScratch);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    if (obj.renderType == RenderType::Model && obj.meshId >= 0 &&
+        obj.hasSkeletalAnimation && obj.skeletal.enabled && !wantsGpuSkinning) {
+      const auto *meshInfo = getModelLoader().getMeshInfo(obj.meshId);
+      if (meshInfo) {
+        applyCpuSkinning(*const_cast<OBJLoader::LoadedMesh *>(meshInfo),
+                         obj.skeletal.finalMatrices, obj.skeletal.maxBones);
+      }
     }
-    if (!camera.orthographic) {
-        {
-            MODU_PROFILE_SCOPE("Selection Outline", ProfilerSampleCategory::RenderDetail);
-            renderSelectionOutline(camera, sceneObjects, selectionOutlineSourceScratch, fovDeg, nearPlane, farPlane);
-        }
+
+    drawItems.push_back({
+        &obj,
+        mesh,
+        BuildSceneObjectModelMatrix(obj, &camera.position, &camera.up),
+        wantsGpuSkinning,
+        obj.renderType == RenderType::Sprite ||
+            obj.renderType == RenderType::Mirror,
+    });
+  }
+  for (const StaticMergeBatch &batch : staticMergeBatches) {
+    if (!batch.mesh)
+      continue;
+    drawItems.push_back(
+        {nullptr, batch.mesh.get(), glm::mat4(1.0f), false, batch.doubleSided});
+  }
+  if (drawItems.empty())
+    return;
+
+  Shader *staticWireShader =
+      getShader(selectionMaskVertPath, wireframeFragPath);
+  Shader *skinnedWireShader = getShader(skinnedVertPath, wireframeFragPath);
+  if (!staticWireShader || !skinnedWireShader)
+    return;
+
+  GLint previousFramebuffer = 0;
+  GLint previousViewport[4] = {0, 0, currentWidth, currentHeight};
+  GLint previousDepthFunc = GL_LESS;
+  GLint previousCullMode = GL_BACK;
+  GLint previousPolygonMode[2] = {GL_FILL, GL_FILL};
+  GLfloat previousLineWidth = 1.0f;
+  GLfloat previousPolygonOffsetFactor = 0.0f;
+  GLfloat previousPolygonOffsetUnits = 0.0f;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+  glGetIntegerv(GL_VIEWPORT, previousViewport);
+  glGetIntegerv(GL_DEPTH_FUNC, &previousDepthFunc);
+  glGetIntegerv(GL_CULL_FACE_MODE, &previousCullMode);
+  glGetIntegerv(GL_POLYGON_MODE, previousPolygonMode);
+  glGetFloatv(GL_LINE_WIDTH, &previousLineWidth);
+  glGetFloatv(GL_POLYGON_OFFSET_FACTOR, &previousPolygonOffsetFactor);
+  glGetFloatv(GL_POLYGON_OFFSET_UNITS, &previousPolygonOffsetUnits);
+
+  const GLboolean previousDepthTest = glIsEnabled(GL_DEPTH_TEST);
+  const GLboolean previousCullFace = glIsEnabled(GL_CULL_FACE);
+  const GLboolean previousBlend = glIsEnabled(GL_BLEND);
+  const GLboolean previousStencil = glIsEnabled(GL_STENCIL_TEST);
+  const GLboolean previousPolygonOffsetLine =
+      glIsEnabled(GL_POLYGON_OFFSET_LINE);
+  GLboolean previousDepthMask = GL_TRUE;
+  GLboolean previousColorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+  glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
+  glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+  glViewport(0, 0, currentWidth, currentHeight);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glEnable(GL_DEPTH_TEST);
+  glDepthFunc(shadedSurface ? GL_LEQUAL : GL_LESS);
+  glDepthMask(shadedSurface ? GL_FALSE : GL_TRUE);
+  glDisable(GL_BLEND);
+  glDisable(GL_STENCIL_TEST);
+  glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+  glLineWidth(1.0f);
+  if (shadedSurface) {
+    glEnable(GL_POLYGON_OFFSET_LINE);
+    glPolygonOffset(-1.0f, -1.0f);
+  } else {
+    glDisable(GL_POLYGON_OFFSET_LINE);
+  }
+
+  const glm::mat4 view = camera.getViewMatrix();
+  const glm::mat4 projection = BuildCameraProjection(
+      camera, currentWidth, currentHeight, fovDeg, nearPlane, farPlane);
+  const glm::vec4 wireColor = shadedSurface
+                                  ? glm::vec4(0.035f, 0.045f, 0.065f, 1.0f)
+                                  : glm::vec4(0.72f, 0.78f, 0.88f, 1.0f);
+
+  Shader *activeShader = nullptr;
+  for (const WireframeDrawItem &item : drawItems) {
+    Shader *wireShader =
+        item.wantsGpuSkinning ? skinnedWireShader : staticWireShader;
+    if (wireShader != activeShader) {
+      activeShader = wireShader;
+      activeShader->use();
+      activeShader->setMat4("view", view);
+      activeShader->setMat4("projection", projection);
+      activeShader->setVec4("wireColor", wireColor);
     }
-    unsigned int result = applyPostProcessing(camera, sceneObjects, viewportTexture, currentWidth, currentHeight, true);
-    if (result) {
-        displayTexture = result;
+
+    if (item.doubleSided) {
+      glDisable(GL_CULL_FACE);
     } else {
-        displayTexture = viewportTexture;
-        viewportPostStats = {};
-        clearHistory();
+      glEnable(GL_CULL_FACE);
+      glCullFace(GL_BACK);
     }
-    activeStats = nullptr;
+
+    activeShader->setMat4("model", item.model);
+    if (item.wantsGpuSkinning && item.obj) {
+      const int boneCount = std::min<int>(
+          static_cast<int>(item.obj->skeletal.finalMatrices.size()),
+          std::max(0, item.obj->skeletal.maxBones));
+      activeShader->setInt("boneCount", boneCount);
+      activeShader->setBool("useSkinning", boneCount > 0);
+      activeShader->setVec4("uvRect", glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
+      if (boneCount > 0) {
+        activeShader->setMat4Array(
+            "bones", item.obj->skeletal.finalMatrices.data(), boneCount);
+      }
+    }
+
+    recordMeshDraw();
+    item.mesh->draw();
+  }
+
+  glColorMask(previousColorMask[0], previousColorMask[1], previousColorMask[2],
+              previousColorMask[3]);
+  if (previousDepthTest)
+    glEnable(GL_DEPTH_TEST);
+  else
+    glDisable(GL_DEPTH_TEST);
+  glDepthMask(previousDepthMask);
+  glDepthFunc(previousDepthFunc);
+  if (previousCullFace) {
+    glEnable(GL_CULL_FACE);
+    glCullFace(previousCullMode);
+  } else {
+    glDisable(GL_CULL_FACE);
+  }
+  if (previousBlend)
+    glEnable(GL_BLEND);
+  else
+    glDisable(GL_BLEND);
+  if (previousStencil)
+    glEnable(GL_STENCIL_TEST);
+  else
+    glDisable(GL_STENCIL_TEST);
+  if (previousPolygonOffsetLine) {
+    glEnable(GL_POLYGON_OFFSET_LINE);
+  } else {
+    glDisable(GL_POLYGON_OFFSET_LINE);
+  }
+  glPolygonOffset(previousPolygonOffsetFactor, previousPolygonOffsetUnits);
+  glPolygonMode(GL_FRONT, previousPolygonMode[0]);
+  glPolygonMode(GL_BACK, previousPolygonMode[1]);
+  glLineWidth(previousLineWidth);
+  glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
+  glViewport(previousViewport[0], previousViewport[1], previousViewport[2],
+             previousViewport[3]);
+#endif
+}
+
+void Renderer::renderScene(const Camera &camera,
+                           const std::vector<SceneObject> &sceneObjects,
+                           int selectedId, float fovDeg, float nearPlane,
+                           float farPlane, bool drawColliders,
+                           const std::vector<int> *selectedIds,
+                           SceneRenderMode renderMode) {
+  resetStats(viewportStats);
+  activeStats = &viewportStats;
+#if MODULARITY_OPENGL_ES
+  renderMode = SceneRenderMode::Normal;
+#endif
+  const bool drawShadedScene = renderMode != SceneRenderMode::Wireframe;
+  if (drawShadedScene && !camera.orthographic) {
+    MODU_PROFILE_SCOPE("Mirror Targets", ProfilerSampleCategory::RenderDetail);
+    updateMirrorTargets(camera, sceneObjects, currentWidth, currentHeight,
+                        fovDeg, nearPlane, farPlane);
+  }
+  if (drawShadedScene) {
+    MODU_PROFILE_SCOPE("Scene Draw", ProfilerSampleCategory::RenderDetail);
+    renderSceneInternal(camera, sceneObjects, currentWidth, currentHeight, true,
+                        fovDeg, nearPlane, farPlane, true, true);
+  } else if (!camera.orthographic) {
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glViewport(0, 0, currentWidth, currentHeight);
+    renderSkybox(camera.getViewMatrix(),
+                 BuildCameraProjection(camera, currentWidth, currentHeight,
+                                       fovDeg, nearPlane, farPlane));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+  if (renderMode != SceneRenderMode::Normal) {
+    MODU_PROFILE_SCOPE("Wireframe Overlay",
+                       ProfilerSampleCategory::RenderDetail);
+    renderWireframeOverlay(camera, sceneObjects, fovDeg, nearPlane, farPlane,
+                           renderMode == SceneRenderMode::ShadedWireframe);
+  }
+  selectionOutlineSourceScratch.clear();
+  if (selectedIds && !selectedIds->empty()) {
+    selectionOutlineSourceScratch.insert(selectionOutlineSourceScratch.end(),
+                                         selectedIds->begin(),
+                                         selectedIds->end());
+  } else if (selectedId >= 0) {
+    selectionOutlineSourceScratch.push_back(selectedId);
+  }
+  if (!camera.orthographic && drawColliders) {
+    MODU_PROFILE_SCOPE("Collision Overlay",
+                       ProfilerSampleCategory::RenderDetail);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glViewport(0, 0, currentWidth, currentHeight);
+    renderCollisionOverlay(camera, sceneObjects, currentWidth, currentHeight,
+                           fovDeg, nearPlane, farPlane,
+                           selectionOutlineSourceScratch.empty()
+                               ? nullptr
+                               : &selectionOutlineSourceScratch);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+  if (!camera.orthographic) {
+    {
+      MODU_PROFILE_SCOPE("Selection Outline",
+                         ProfilerSampleCategory::RenderDetail);
+      renderSelectionOutline(camera, sceneObjects,
+                             selectionOutlineSourceScratch, fovDeg, nearPlane,
+                             farPlane);
+    }
+  }
+  unsigned int result = 0;
+  if (renderMode == SceneRenderMode::Normal) {
+    result = applyPostProcessing(camera, sceneObjects, viewportTexture,
+                                 currentWidth, currentHeight, true);
+  } else {
+    viewportPostStats = {};
+    clearHistory();
+  }
+  if (result) {
+    displayTexture = result;
+  } else {
+    displayTexture = viewportTexture;
+    viewportPostStats = {};
+    clearHistory();
+  }
+  activeStats = nullptr;
 }
 
 unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot, bool transparentBackground) {
