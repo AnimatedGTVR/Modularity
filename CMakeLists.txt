@@ -1016,6 +1016,7 @@ if(MODULARITY_ENABLE_JOLT)
     set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
     set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
     set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+    set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
     # LTO inlines Jolt's hot paths into engine callers and is a real perf
     # win in Release. Turn it off in Debug to keep iteration fast.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
