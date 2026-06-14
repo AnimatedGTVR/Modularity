@@ -1,7 +1,8 @@
-# ModuCPP — The Complete Guide
+# NOTE: This ModuCPP folder is made for AI Agents in mind!
+## see `https://moduengine.xyz/docs` for a more format correct version.
 
+# ModuCPP: The Complete Guide
 A single, beginner-friendly walkthrough of the ModuCPP scripting language used by Modularity. Read it top to bottom and you should know enough to write, ship, and review real gameplay and editor scripts.
-
 If you want short reference tables instead, see [ModuCPP_Language_Reference.md](../ModuCPP_Language_Reference.md). If you want bite-sized topic pages, see the [manual](manual/README.md) and [API](api/README.md) folders. This document is the long-form tour.
 
 ---
@@ -9,30 +10,30 @@ If you want short reference tables instead, see [ModuCPP_Language_Reference.md](
 ## Table of contents
 
 1. [What ModuCPP is](#1-what-moducpp-is)
-2. [The mental model — how a script becomes engine code](#2-the-mental-model--how-a-script-becomes-engine-code)
+2. [The mental model: how a script becomes engine code](#2-the-mental-model-how-a-script-becomes-engine-code)
 3. [Your first script](#3-your-first-script)
 4. [Anatomy of a ModuCPP script](#4-anatomy-of-a-moducpp-script)
-5. [Imports — bringing in modules](#5-imports--bringing-in-modules)
-6. [Variables — public fields vs private fields](#6-variables--public-fields-vs-private-fields)
+5. [Imports: bringing in modules](#5-imports-bringing-in-modules)
+6. [Variables: public fields vs private fields](#6-variables-public-fields-vs-private-fields)
 7. [Types you can use](#7-types-you-can-use)
 8. [Lifecycle hooks](#8-lifecycle-hooks)
 9. [Collision hooks (`OnCollideEnter` / `OnCollideHold` / `OnCollideExit`)](#9-collision-hooks)
 10. [The built-ins available inside a hook](#10-the-built-ins-available-inside-a-hook)
 11. [Raw scene-object access via `obj->`](#11-raw-scene-object-access-via-obj-)
 12. [Timers and the `to` / `each` shorthand](#12-timers-and-the-to--each-shorthand)
-13. [The inspector — three ways to expose data](#13-the-inspector--three-ways-to-expose-data)
+13. [The inspector: three ways to expose data](#13-the-inspector-three-ways-to-expose-data)
 14. [The `inspector { … }` DSL reference](#14-the-inspector----dsl-reference)
-15. [The typed UI proxy — `obj.UI.*`](#15-the-typed-ui-proxy--objui)
+15. [The typed UI proxy: `obj.UI.*`](#15-the-typed-ui-proxy-objui)
 16. [Input](#16-input)
 17. [Engine helpers (`ModuEngine`)](#17-engine-helpers-moduengine)
 18. [Editor-window scripts](#18-editor-window-scripts)
-19. [The editor UI surface — `ModuGUI` / ImGui](#19-the-editor-ui-surface--modugui--imgui)
-20. [Coroutines — `IEnum`](#20-coroutines--ienum)
-21. [Sub-scripts — structured repeated data](#21-sub-scripts--structured-repeated-data)
-22. [Other recognized syntax — lambdas, `$` strings, `Calc`, `mark`, std:: passthrough](#22-other-recognized-syntax)
+19. [The editor UI surface: `ModuGUI` / ImGui](#19-the-editor-ui-surface-modugui--imgui)
+20. [Coroutines: `IEnum`](#20-coroutines-ienum)
+21. [Sub-scripts: structured repeated data](#21-sub-scripts-structured-repeated-data)
+22. [Other recognized syntax: lambdas, `$` strings, `Calc`, `mark`, std:: passthrough](#22-other-recognized-syntax)
 23. [Common patterns, with full examples](#23-common-patterns-with-full-examples)
 24. [Good practice checklist](#24-good-practice-checklist)
-25. [Bad practice — examples of what not to do](#25-bad-practice--examples-of-what-not-to-do)
+25. [Bad practice: examples of what not to do](#25-bad-practice-examples-of-what-not-to-do)
 26. [Experimental, reserved, and shared helpers](#26-experimental-reserved-and-shared-helpers)
 27. [Cheat sheet](#27-cheat-sheet)
 28. [Troubleshooting & FAQ](#28-troubleshooting--faq)
@@ -41,22 +42,22 @@ If you want short reference tables instead, see [ModuCPP_Language_Reference.md](
 
 ## 1. What ModuCPP is
 
-ModuCPP is the scripting language we use to write gameplay, UI, and editor logic in the Modularity engine. Scripts live in `.moducpp` files and look a bit like C# — you write a class, declare some fields, and implement a few well-known methods like `Begin()` and `TickUpdate()`.
+ModuCPP is the scripting language we use to write gameplay, UI, and editor logic in the Modularity engine. Scripts live in `.moducpp` files and look a bit like C#: you write a class, declare some fields, and implement a few well-known methods like `Begin()` and `TickUpdate()`.
 
 Where it differs from a typical scripting language: **there is no separate gameplay VM**. ModuCPP is transpiled to C++, that C++ is compiled with the rest of the engine, and the result runs through the same native script runtime as everything else. ModuCPP is *authoring syntax* on top of the engine, not a sandbox sitting next to it.
 
 That gives you a useful pair of properties:
 
 - The friendly, declarative front end (no boilerplate, no manual hook signatures, no manual inspector wiring).
-- The native back end (one runtime, one set of data structures, no marshalling cost between "script" and "engine"). Anything you can do in C++ in this codebase — call `std::`, use ImGui directly, read a raw `SceneObject*` — you can do in ModuCPP too.
+- The native back end (one runtime, one set of data structures, no marshalling cost between "script" and "engine"). Anything you can do in C++ in this codebase (call `std::`, use ImGui directly, read a raw `SceneObject*`) you can do in ModuCPP too.
 
 If your background is **Unity**, think "MonoBehaviour, but compiled into the engine directly." If your background is **Unreal**, think "a leaner equivalent of UObject scripts." If your background is **plain C++**, think of it as a focused front-end that hides the most repetitive parts of writing engine glue.
 
-ModuCPP is intentionally small at the front but wide at the back. The high-level keywords (`add`, `public class`, lifecycle hooks, attributes, `inspector { … }`) are a deliberately constrained set. Once you're past those, the underlying C++ surface — `ctx`, `obj`, every header in `include/`, the entire `std::` library, all of ImGui under `ModuGUI::` — is fully available.
+ModuCPP is intentionally small at the front but wide at the back. The high-level keywords (`add`, `public class`, lifecycle hooks, attributes, `inspector { … }`) are a deliberately constrained set. Once you're past those, the underlying C++ surface (`ctx`, `obj`, every header in `include/`, the entire `std::` library, all of ImGui under `ModuGUI::`) is fully available.
 
 ---
 
-## 2. The mental model — how a script becomes engine code
+## 2. The mental model: how a script becomes engine code
 
 It helps to know the pipeline before you write your first line:
 
@@ -76,7 +77,7 @@ What this means in practice:
 - **A `private` field becomes runtime-only state**, not saved to disk and not shown in the inspector.
 - **A hook like `void Begin()` is a recognized name**, not just any method. The transpiler emits a real native entry point and wires it to the runtime.
 - **Imports map to includes.** `add ModuEngine;` lowers to `#include "ModuEngineScriptApi.h"`. The set of helpers you can see is exactly the set the headers expose.
-- **Anything not recognized as ModuCPP syntax falls through as plain C++.** A free function, a `namespace { … }`, an `std::vector<int>`, a hand-rolled `ImGui::Begin()` call — all valid.
+- **Anything not recognized as ModuCPP syntax falls through as plain C++.** A free function, a `namespace { … }`, an `std::vector<int>`, a hand-rolled `ImGui::Begin()` call: all valid.
 
 You write the high-level shape. The transpiler handles the boring half. Everything else is just C++.
 
@@ -103,7 +104,7 @@ Five things to notice:
 
 1. The two `add …;` lines at the top are the imports. `ModuCPP` is the core; `ModuEngine` is what gives us `ModuEngine.FPS`.
 2. `public class FPSDisplay : ModuNode` is the standard declaration form. `ModuNode` is the recommended base.
-3. `TickUpdate` is a recognized hook — the runtime calls it every frame.
+3. `TickUpdate` is a recognized hook: the runtime calls it every frame.
 4. `obj` is the current scene object, made available for free inside the hook. Assigning to `obj.UILabel` sets the UI label on this object.
 5. `IntR(x)` rounds to the nearest integer.
 
@@ -134,7 +135,7 @@ public class FPSDisplay : ModuNode
 }
 ```
 
-This shape — *imports → public fields for configuration → `Begin` for setup → `TickUpdate` for per-frame work* — is the backbone of most real ModuCPP scripts.
+This shape (*imports → public fields for configuration → `Begin` for setup → `TickUpdate` for per-frame work*) is the backbone of most real ModuCPP scripts.
 
 ---
 
@@ -159,7 +160,7 @@ The full set of declaration keywords the transpiler recognizes:
 | `private` | Field is runtime-only state. |
 | `class` | Standard class declaration. |
 | `enum` | Standard enum declaration. Becomes `enum class` in the lowered output. |
-| `SubScript` | A nested, serializable data block (see [§21](#21-sub-scripts--structured-repeated-data)). |
+| `SubScript` | A nested, serializable data block (see [§21](#21-sub-scripts-structured-repeated-data)). |
 | `inspector` | Opens an `inspector { … }` block, the declarative inspector DSL. |
 | `to` | Expression-bodied method/hook shorthand (`void Begin() to timer.Start(0.5f);`). |
 | `Calc` | Declares a static helper method via `Calc Name(args) to expr;`. Uncommon. |
@@ -169,7 +170,7 @@ The full set of declaration keywords the transpiler recognizes:
 
 After the transpile step, ordinary C++ keywords pass through unchanged: `if`, `else`, `for`, `while`, `return`, `static`, `const`, `auto`, `struct`, `namespace`, `using`, `switch`, `case`, `break`, `continue`, `true`, `false`, `nullptr`. You'll use them whenever the high-level surface doesn't have a shorthand.
 
-Member access on the high-level surface uses `.` (not `->`) for the parts ModuCPP wraps (`obj.UILabel`, `obj.UI.Text`, `timer.Start(…)`, `Math.Clamp(…)`). When you reach into the raw `SceneObject` through `obj->name` or `obj->position`, that's normal C++ pointer access — see [§11](#11-raw-scene-object-access-via-obj-).
+Member access on the high-level surface uses `.` (not `->`) for the parts ModuCPP wraps (`obj.UILabel`, `obj.UI.Text`, `timer.Start(…)`, `Math.Clamp(…)`). When you reach into the raw `SceneObject` through `obj->name` or `obj->position`, that's normal C++ pointer access, see [§11](#11-raw-scene-object-access-via-obj-).
 
 Helper functions and small types can live outside the class:
 
@@ -185,7 +186,7 @@ public class MyScript : ModuNode { /* … */ }
 
 ---
 
-## 5. Imports — bringing in modules
+## 5. Imports: bringing in modules
 
 Every script begins with one or more `add …;` lines. Each maps to a single C++ include, so the rule of thumb is **import the smallest surface that solves your problem**:
 
@@ -197,20 +198,20 @@ Every script begins with one or more `add …;` lines. Each maps to a single C++
 | `add ModuCPP.Experimental;` | Opt-in: object-ref serialization, UI text targeting, parsing helpers, advanced editor widgets. | Tools, dialogue/menu/interaction scripts, prototype work. Treat as unstable. |
 | `add RMeshBuilder;` | Reserved. The import is recognized but the header currently exposes no script-facing helpers. | Don't import it yet. |
 
-A common mistake: adding `add ModuCPP;` and then expecting `input.WASD()` or `ModuEngine.FPS` to be in scope. They are not. Each module is independent, and importing what you actually use is a feature, not a chore — it makes a script's dependencies obvious at the top of the file.
+A common mistake: adding `add ModuCPP;` and then expecting `input.WASD()` or `ModuEngine.FPS` to be in scope. They are not. Each module is independent, and importing what you actually use is a feature, not a chore: it makes a script's dependencies obvious at the top of the file.
 
 Two niche import forms also work:
 
-- `using PackageName;` — synonym for `add`, accepted for readability.
-- `mark NamespaceName;` — forward-declares an empty namespace so another script can `add` it later. Rare; only used when scripts coordinate across files.
+- `using PackageName;`: synonym for `add`, accepted for readability.
+- `mark NamespaceName;`: forward-declares an empty namespace so another script can `add` it later. Rare; only used when scripts coordinate across files.
 
 ---
 
-## 6. Variables — public fields vs private fields
+## 6. Variables: public fields vs private fields
 
 This is the single most important distinction in ModuCPP. Get it right and most of the rest follows.
 
-**Public fields** are persisted and exposed to the inspector. They are configuration data — what a designer would change without rebuilding.
+**Public fields** are persisted and exposed to the inspector. They are configuration data: what a designer would change without rebuilding.
 
 **Private fields** are runtime-only state. They are not saved, not shown in the inspector, and reset back to their initializer between sessions.
 
@@ -243,7 +244,7 @@ Field types that work as public fields today, drawn from real scripts in the rep
 
 `bool`, `int`, `float`, `string`, `Vector2`, `Vector3`, `vec2`, `vec3`, enums, `string[]`, `int[4]`, `int[4][4]`, `string[6]`, `SceneObj[]`, `List<SceneObj*>`, `SubScript[]`, `DialoguePort::DialogueLine[]`.
 
-There is a second authoring family — `Config<T>()` plus `State<T>()` with manual settings binding — used mostly by tool/subsystem scripts. It's covered briefly in [§18](#18-editor-window-scripts). For ordinary gameplay scripts, prefer plain public/private fields.
+There is a second authoring family (`Config<T>()` plus `State<T>()` with manual settings binding) used mostly by tool/subsystem scripts. It's covered briefly in [§18](#18-editor-window-scripts). For ordinary gameplay scripts, prefer plain public/private fields.
 
 ---
 
@@ -274,12 +275,12 @@ Enum members can be accessed with `.`; the transpiler rewrites them to `::` when
 
 There is also a small set of numeric helpers in the core module:
 
-- `IntRD(x)` — round toward negative infinity (floor-like).
-- `IntR(x)`  — round to nearest.
-- `IntRU(x)` — round toward positive infinity (ceiling-like).
-- `FloatR(value, decimals = 2)` — format a float as a string with N decimals.
+- `IntRD(x)`: round toward negative infinity (floor-like).
+- `IntR(x)`: round to nearest.
+- `IntRU(x)`: round toward positive infinity (ceiling-like).
+- `FloatR(value, decimals = 2)`: format a float as a string with N decimals.
 - `Math.Max`, `Math.Min`, `Math.Clamp`, `Math.Abs`.
-- `Color(r, g, b, a = 1.0f)` / `Color(rgb, a = 1.0f)` — build a `vec4` colour.
+- `Color(r, g, b, a = 1.0f)` / `Color(rgb, a = 1.0f)`: build a `vec4` colour.
 
 `IntR` returns a small wrapper type that implicitly stringifies, which is why `"FPS: " + IntR(ModuEngine.FPS)` works as natural string concatenation. The same applies to `FloatR`.
 
@@ -287,14 +288,14 @@ There is also a small set of numeric helpers in the core module:
 
 ## 8. Lifecycle hooks
 
-A "hook" is a method with a recognized name. The transpiler turns it into a native entry point and the runtime calls it at the right time. You do not register, declare a signature, or wire it manually — naming it correctly is enough.
+A "hook" is a method with a recognized name. The transpiler turns it into a native entry point and the runtime calls it at the right time. You do not register, declare a signature, or wire it manually: naming it correctly is enough.
 
 The runtime-side hooks:
 
 | Hook | When it fires | Typical use |
 | --- | --- | --- |
 | `void Begin()` | Once, before the first update. | Setup: start timers, cache references, initialize state, ensure required components. |
-| `void TickUpdate()` | Every frame. (Variants: `TickUpdate(float dt)`, `TickUpdate(ScriptContext& ctx, float dt)`.) | The main per-frame body — input, movement, UI updates, timers. |
+| `void TickUpdate()` | Every frame. (Variants: `TickUpdate(float dt)`, `TickUpdate(ScriptContext& ctx, float dt)`.) | The main per-frame body: input, movement, UI updates, timers. |
 | `void Update()` | Every frame, older-style. | Supported for back-compat. Prefer `TickUpdate` for new scripts. |
 | `void Spec()` | When the engine runs the script in "spec mode". | Runtime-spec behavior. Most scripts don't need this. |
 | `void TestEditor()` | When the engine runs the script in editor test mode. | Editor-side tests. Most scripts don't need this. |
@@ -307,7 +308,7 @@ The editor-side hooks:
 | `void RenderEditorWindow()` | When this script is a standalone editor-window tool. | Drawing the contents of an editor window. |
 | `void ExitRenderEditorWindow()` | When the same editor window closes. | Cleanup for an editor window. |
 
-The collision hooks (`OnCollideEnter` / `OnCollideHold` / `OnCollideExit`) get their own section — see [§9](#9-collision-hooks).
+The collision hooks (`OnCollideEnter` / `OnCollideHold` / `OnCollideExit`) get their own section, see [§9](#9-collision-hooks).
 
 Each of the inspector/editor hooks also accepts an explicit `(ScriptContext& ctx)` overload if you want it.
 
@@ -350,10 +351,10 @@ When two physics objects collide, the runtime calls these on any script attached
 | Hook | When it fires |
 | --- | --- |
 | `void OnCollideEnter(Col other)` | The frame a new collision begins. |
-| `void OnCollideHold(Col other)` | Every ~2 seconds while still in contact (configurable per script — see below). |
+| `void OnCollideHold(Col other)` | Every ~2 seconds while still in contact (configurable per script, see below). |
 | `void OnCollideExit(Col other)` | The frame the collision ends. |
 
-`Col` is an alias for `SceneObject*` — it's just a pointer to the other object. The name is a shorthand for "collider" but there's no per-hit struct with normals, depth, or impact velocity. If you need those, raycast or query the physics state through `ctx` separately.
+`Col` is an alias for `SceneObject*`: it's just a pointer to the other object. The name is a shorthand for "collider" but there's no per-hit struct with normals, depth, or impact velocity. If you need those, raycast or query the physics state through `ctx` separately.
 
 The `OnCollideHold` interval is **2.0 seconds by default**. To change it on a per-script basis, add a trailing float to the parameter list:
 
@@ -386,7 +387,7 @@ That trailing `3.5f` looks unusual but it's the documented per-script firing int
 
 Collision hooks do not auto-inject `dt`. They only auto-inject `ctx` (so `ctx.AddConsoleMessage(…)` and the other engine calls still work inside them). The collision target object is `other`.
 
-For collision to fire at all, both objects need physics components — typically a `Rigidbody2D` and a `Collider2D` (or their 3D counterparts) — on at least one side. If a hook never runs, the object is missing physics, not the script is broken.
+For collision to fire at all, both objects need physics components, typically a `Rigidbody2D` and a `Collider2D` (or their 3D counterparts), on at least one side. If a hook never runs, the object is missing physics, not the script is broken.
 
 ---
 
@@ -394,7 +395,7 @@ For collision to fire at all, both objects need physics components — typically
 
 Inside any lifecycle hook, the following names are already in scope. You don't import them, declare them, or pass them around.
 
-### `ctx` — the script context
+### `ctx`: the script context
 
 `ctx` is your bridge to the engine. It is the most-used identifier in any non-trivial script. A short list of the categories of things it can do:
 
@@ -412,22 +413,22 @@ Inside any lifecycle hook, the following names are already in scope. You don't i
 - **Audio**: `ctx.HasAudioSource`, `ctx.PlayAudio`, `ctx.StopAudio`, `ctx.PlayAudioOneShot`, `ctx.SetAudioVolume`, `ctx.SetAudioLoop`, `ctx.SetAudioClip`.
 - **Settings & files**: `ctx.GetSetting`, `ctx.SetSetting`, `ctx.AutoSetting`, `ctx.SaveAutoSettings`, `ctx.ReadFileText`, `ctx.WriteFileText`, `ctx.DeleteFile`, `ctx.ListFiles`, `ctx.SearchFiles`, `ctx.SaveProject`, `ctx.GetProgramRootPath`, `ctx.GetEngineDocsRootPath`.
 - **HTTP**: `ctx.HttpPost`, `ctx.StartHttpPost`, `ctx.PollHttpPost`, `ctx.CancelHttpPost`.
-- **Console**: `ctx.AddConsoleMessage("…", ConsoleMessageType::Info)`. There is also a friendlier free-function form — `AddLog(message, Type.Info)` — covered below.
+- **Console**: `ctx.AddConsoleMessage("…", ConsoleMessageType::Info)`. There is also a friendlier free-function form (`AddLog(message, Type.Info)`) covered below.
 
 The full member list lives in [api/type-scriptcontext.md](api/type-scriptcontext.md). The names above cover what 90% of scripts ever need.
 
-### `obj` — the current scene object
+### `obj`: the current scene object
 
 `obj` is a small facade around `ctx.object`. You can:
 
 - Bool-check it: `if (!obj) return;`
 - Pointer-style read fields: `obj->name`, `obj->id`, `obj->position`, `obj->rotation`. See [§11](#11-raw-scene-object-access-via-obj-) for the full surface.
-- Use the typed UI proxy: `obj.UI.Text`, `obj.UI.Position`, `obj.UI.OnClick(…)`. See [§15](#15-the-typed-ui-proxy--objui).
+- Use the typed UI proxy: `obj.UI.Text`, `obj.UI.Position`, `obj.UI.OnClick(…)`. See [§15](#15-the-typed-ui-proxy-objui).
 - Assign UI labels directly with the legacy shorthand: `obj.UILabel = "Hello";`
 
 If a hook acts on the object the script is attached to, prefer `obj` over `ctx.object`.
 
-### `dt` — frame delta time
+### `dt`: frame delta time
 
 A `float` representing the seconds since the last frame, available inside update-style hooks. Use it for any time-scaled work:
 
@@ -440,7 +441,7 @@ void TickUpdate()
 
 You can also reach it via `time.deltaTime` from the `ModuCPP` core, or via the free function `DeltaTime()`.
 
-### `AddLog` and `Type` — the console shorthand
+### `AddLog` and `Type`: the console shorthand
 
 The friendly form of `ctx.AddConsoleMessage`:
 
@@ -453,16 +454,16 @@ AddLog("level loaded", Type.Success);
 
 `Type.Info`, `Type.Warning`, `Type.Error`, `Type.Success` are inline constants that map to `ConsoleMessageType` values. The `Type.X` syntax is rewritten to `Type::X` automatically.
 
-### `input` — the input facade (requires `add ModuInput;`)
+### `input`: the input facade (requires `add ModuInput;`)
 
 Convenient high-level input:
 
-- `input.WASD()` — raw `Vector2` from the WASD keys.
-- `input.WASDNormalized()` — unit-length when any key is held; zero when none. **Use this** for movement so diagonals are not faster.
-- `input.sprint()` — true while sprint (Shift) is held.
-- `input.jump()` — true while jump is held. This is *not* an edge — see [§16](#16-input) for a one-shot jump.
+- `input.WASD()`: raw `Vector2` from the WASD keys.
+- `input.WASDNormalized()`: unit-length when any key is held; zero when none. **Use this** for movement so diagonals are not faster.
+- `input.sprint()`: true while sprint (Shift) is held.
+- `input.jump()` (true while jump is held. This is *not* an edge) see [§16](#16-input) for a one-shot jump.
 
-### `audio` and `sprite` — component facades (require `add ModuEngine;`)
+### `audio` and `sprite`: component facades (require `add ModuEngine;`)
 
 Tiny wrappers around the corresponding components on the current object:
 
@@ -471,13 +472,13 @@ Tiny wrappers around the corresponding components on the current object:
 
 Both fail silently when the component is missing. Guard with the matching `Has*` check if the object might not have one.
 
-### `ModuEngine` — the engine facade
+### `ModuEngine`: the engine facade
 
 A namespaced value with engine-scope info such as `ModuEngine.FPS`.
 
-### `timer` — the timer shorthand
+### `timer`: the timer shorthand
 
-Not really a separate object — it's a rewrite around a `float` field you declared. See [§12](#12-timers-and-the-to--each-shorthand).
+Not really a separate object: it's a rewrite around a `float` field you declared. See [§12](#12-timers-and-the-to--each-shorthand).
 
 ---
 
@@ -485,7 +486,7 @@ Not really a separate object — it's a rewrite around a `float` field you decla
 
 `obj` implicitly converts to a `SceneObject*`, so you can dereference straight through with `obj->fieldName`. Same goes for `ctx.object->fieldName`, `myRef->fieldName` where `myRef` is a `SceneObj*`, or `other->fieldName` inside a collision hook.
 
-This is your escape hatch when the high-level facades don't cover a case. Use it carefully — the high-level surface exists for a reason — but know it's there.
+This is your escape hatch when the high-level facades don't cover a case. Use it carefully (the high-level surface exists for a reason) but know it's there.
 
 ### Identity / hierarchy
 
@@ -554,12 +555,12 @@ obj->useOverlay             // bool
 
 These come from `add ModuCPP;` and let you write less code than `ctx.…` calls when the target is something other than `ctx.object`:
 
-- `CurrentObject()` — `SceneObj` for `ctx.object`.
-- `ResolveObject(ref)` / `SmartResolveRef(ref)` — turn an object name or `"Object.ID-N"` string into a `SceneObject*`.
-- `HasUI(obj)` — UI-component check.
-- `SetActive(obj, active)` — toggles `obj->enabled` and dirties context.
-- `PlaySound(objectRef, volumeScale = 1.0f)` — plays the named object's audio source.
-- `PlaySoundClip(clipPath, volumeScale = 1.0f)` — plays a clip directly.
+- `CurrentObject()`: `SceneObj` for `ctx.object`.
+- `ResolveObject(ref)` / `SmartResolveRef(ref)`: turn an object name or `"Object.ID-N"` string into a `SceneObject*`.
+- `HasUI(obj)`: UI-component check.
+- `SetActive(obj, active)`: toggles `obj->enabled` and dirties context.
+- `PlaySound(objectRef, volumeScale = 1.0f)`: plays the named object's audio source.
+- `PlaySoundClip(clipPath, volumeScale = 1.0f)`: plays a clip directly.
 
 A few more free shorthands that operate on the current object (no `ctx.` prefix needed): `SetPosition`, `SetRotation`, `SetScale`, `MarkDirty`, `DeltaTime`, `SetFPSCap`, `GetSetting`/`SetSetting` and friends, `SaveAutoSettings`.
 
@@ -607,7 +608,7 @@ bool IsReady() to timer.Ready;                  // non-void → emits `return �
 int  ClampFrame(int f) to Math.Clamp(f, 0, 3);  // non-void → emits `return …;`
 ```
 
-It's a readability tool. Don't reach for it in branching or multi-statement code — write a normal body instead.
+It's a readability tool. Don't reach for it in branching or multi-statement code: write a normal body instead.
 
 ### The `each` shorthand for object lists
 
@@ -634,7 +635,7 @@ each ref item in toEnable then item.State(true);
 
 ### The `Calc` keyword
 
-`Calc Name(args) to expr;` declares a static helper method. Rare — most helpers go in `namespace { … }` instead — but available:
+`Calc Name(args) to expr;` declares a static helper method. Rare (most helpers go in `namespace { … }` instead) but available:
 
 ```cpp
 Calc int DoubleIt(int x) to x * 2;
@@ -642,11 +643,11 @@ Calc int DoubleIt(int x) to x * 2;
 
 ---
 
-## 13. The inspector — three ways to expose data
+## 13. The inspector: three ways to expose data
 
 Public fields are the contract between a script and a designer. ModuCPP gives you three escalating ways to draw them, and the right pick depends on how much control you need.
 
-### A) Automatic — declare and you're done
+### A) Automatic: declare and you're done
 
 If you don't need control over labels, ordering, or sections, just declare public fields and stop.
 
@@ -660,7 +661,7 @@ public class Mover : ModuNode
 
 You get a default inspector with both fields, in the order they were declared.
 
-### B) Attributes — tweak each field where it lives
+### B) Attributes: tweak each field where it lives
 
 When you want a slider, a header, a tooltip, or a different widget for an array, annotate the field. Attributes live on the line above the field:
 
@@ -691,7 +692,7 @@ Recognized attributes:
 | `[ObjectRef]` | A `string` field becomes a single object-reference picker. |
 | `[ObjectList]` | A `string[]` becomes an object-reference list. |
 | `[DialogueLines]` | Mark an array as dialogue data. |
-| `[ClipGridPair]` | For an `int[4]` followed by `int[4][4]` — animation grid. |
+| `[ClipGridPair]` | For an `int[4]` followed by `int[4][4]`: animation grid. |
 | `[Separator]` | Visual separator before the field. |
 | `[SoundSet("Label")]` | Sound-set editor on a `string[]`. |
 | `@range(min, max)` | Range metadata for numeric auto inspectors. |
@@ -730,11 +731,11 @@ public class Patroller : ModuNode
 }
 ```
 
-`AutoFields(...)` is a convenience — it draws the named *persisted public fields on this class* using their normal widgets. It does not see private fields, `Config<T>()` storage, or values from other classes; use the explicit `Slider`/`String`/`Number`/`ObjectRef`/etc. statements for those.
+`AutoFields(...)` is a convenience: it draws the named *persisted public fields on this class* using their normal widgets. It does not see private fields, `Config<T>()` storage, or values from other classes; use the explicit `Slider`/`String`/`Number`/`ObjectRef`/etc. statements for those.
 
 `Run(...)` is the escape hatch. Whatever you put inside is run when the inspector draws, so it can show ModuGUI/ImGui text, run migrations, or call any other helper.
 
-### D) Fully manual — `Script_OnInspector()`
+### D) Fully manual: `Script_OnInspector()`
 
 If even the DSL is not enough (which is rare), implement `void Script_OnInspector()` and draw the entire panel yourself with the engine's editor helpers. This is the path used by tool/subsystem scripts that build their own widgets from scratch. For ordinary gameplay scripts, you should not need this.
 
@@ -746,17 +747,17 @@ The DSL is statement-oriented. Statements end with a semicolon; containers use b
 
 ### Containers (open with `{ … }`)
 
-- `Tabs { … }` — a tab bar.
-- `Tab(title) { … }` — one tab inside `Tabs`.
-- `Section(title) { … }` — a labelled section.
-- `Group { … }`, `Group(title) { … }` — a logical group.
-- `Foldout(title) { … }` — collapsible section.
+- `Tabs { … }`: a tab bar.
+- `Tab(title) { … }`: one tab inside `Tabs`.
+- `Section(title) { … }`: a labelled section.
+- `Group { … }`, `Group(title) { … }`: a logical group.
+- `Foldout(title) { … }`: collapsible section.
 
 ### Field statements (each ends with `;`)
 
 - Storage: `Config(Type, varName);`, `AutoSave(configVar);`, `Save(configVar);`.
 - Layout: `Header(title);`, `Separator();`.
-- Logic escape hatch: `Run(expression);` — runs the expression when the inspector draws.
+- Logic escape hatch: `Run(expression);` runs the expression when the inspector draws.
 
 ### Widget statements
 
@@ -776,7 +777,7 @@ Each accepts both an unlabelled form and a labelled form:
 - `MenuActions(refs, actions);` / `MenuActions(label, refs, actions);`
 - `ClipGrid(idleClips, walkClips);`
 - `SoundSet(label, sounds);`
-- `AutoFields(field1, field2, …);` — auto-draw persisted public fields by name.
+- `AutoFields(field1, field2, …);`: auto-draw persisted public fields by name.
 
 ### Runtime-status helpers
 
@@ -788,7 +789,7 @@ These are no-arg widgets that print the current runtime state of a system. They 
 
 ---
 
-## 15. The typed UI proxy — `obj.UI.*`
+## 15. The typed UI proxy: `obj.UI.*`
 
 For objects that have a UI component, `obj.UI` is a typed proxy that lets you read and write UI fields with natural assignments and register input callbacks with lambdas. It comes with `add ModuCPP;`.
 
@@ -829,8 +830,8 @@ These work on any UI element:
 
 Plus two convenience methods:
 
-- `obj.UI.SetFront()` — sortingOrder = 1000.
-- `obj.UI.SetBack()`  — sortingOrder = -1000.
+- `obj.UI.SetFront()`: sortingOrder = 1000.
+- `obj.UI.SetBack()`: sortingOrder = -1000.
 
 ### Typed sub-proxies
 
@@ -857,7 +858,7 @@ obj.UI.Image.Texture;   // string path
 obj.UI.Image.Tint;      // vec4
 ```
 
-`obj.UI.Toggle` and `obj.UI.Input` exist as stubs. They warn once and return defaults — the engine doesn't have those UI types yet. Treat them as reserved.
+`obj.UI.Toggle` and `obj.UI.Input` exist as stubs. They warn once and return defaults: the engine doesn't have those UI types yet. Treat them as reserved.
 
 ### Event callbacks (lambdas)
 
@@ -902,7 +903,7 @@ The transpiler rewrites these into the appropriate engine helpers automatically.
 
 Input lives in `ModuInput`. There are two ergonomic styles.
 
-### High-level facade (`input.*`) — for movement and standard actions
+### High-level facade (`input.*`): for movement and standard actions
 
 ```cpp
 add ModuCPP;
@@ -927,7 +928,7 @@ public class Walker : ModuNode
 | `input.sprint()` | `bool` | True while Shift is held. |
 | `input.jump()` | `bool` | True while Space is held. **Held state, not an edge.** |
 
-### Key-level polling — for one-shots and bindings
+### Key-level polling: for one-shots and bindings
 
 For "press once" behaviour you need either `KeyPressed` (edge-triggered) or a manual previous-frame check:
 
@@ -964,12 +965,12 @@ Free functions: `KeyDown(key)`, `KeyPressed(key)`, `IsRuntimeKeyDown(glfwKey, im
 
 ### Movement (free functions on `ctx`)
 
-- `TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt[, outVelocity])` — accelerates and drags toward a target velocity. Fails silently if there is no `Rigidbody2D` on the object.
-- `moveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt)` — same shape, no `out` velocity.
-- `movePosition2D(ctx, delta)` — direct 2D position offset.
-- `moveTowards(current, target, maxDelta)` — clamp a step toward a target.
-- `EnsureRigidbody(useGravity = true, kinematic = false)` — create one if missing.
-- `EnsureCapsuleCollider(height, radius)` — same for a capsule collider.
+- `TryMoveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt[, outVelocity])`: accelerates and drags toward a target velocity. Fails silently if there is no `Rigidbody2D` on the object.
+- `moveRigidbody2D(ctx, targetVelocity, acceleration, drag, dt)`: same shape, no `out` velocity.
+- `movePosition2D(ctx, delta)`: direct 2D position offset.
+- `moveTowards(current, target, maxDelta)`: clamp a step toward a target.
+- `EnsureRigidbody(useGravity = true, kinematic = false)`: create one if missing.
+- `EnsureCapsuleCollider(height, radius)`: same for a capsule collider.
 
 ### Audio facade
 
@@ -994,13 +995,13 @@ For use inside `Script_OnInspector` and editor windows:
 
 ### Engine values
 
-- `ModuEngine.FPS` — current frame rate.
+- `ModuEngine.FPS`: current frame rate.
 - `GetProjectGravityScale()`, `SetProjectGravityScale(scale)`.
 
 ### Warnings (avoid log spam)
 
-- `warnOnce(ctx, alreadyWarned, message, type)` — log a one-time warning gated by a `bool`.
-- `warnMissingComponentOnce(ctx, alreadyWarned, scriptName, componentName)` — the same pattern, specialized for missing components.
+- `warnOnce(ctx, alreadyWarned, message, type)`: log a one-time warning gated by a `bool`.
+- `warnMissingComponentOnce(ctx, alreadyWarned, scriptName, componentName)`: the same pattern, specialized for missing components.
 
 ---
 
@@ -1008,8 +1009,8 @@ For use inside `Script_OnInspector` and editor windows:
 
 For scripts that act as standalone editor tools rather than scene components, two extra hooks come into play:
 
-- `void RenderEditorWindow()` — draw the window each frame the editor opens it.
-- `void ExitRenderEditorWindow()` — cleanup when the window closes.
+- `void RenderEditorWindow()`: draw the window each frame the editor opens it.
+- `void ExitRenderEditorWindow()`: cleanup when the window closes.
 
 Tool scripts often also use the `Config<T>()` + `State<T>()` storage pattern instead of public/private fields, because the script isn't attached to a scene object:
 
@@ -1044,20 +1045,20 @@ For ordinary gameplay scripts, you do not need any of this. Use public/private f
 
 ---
 
-## 19. The editor UI surface — `ModuGUI` / ImGui
+## 19. The editor UI surface: `ModuGUI` / ImGui
 
 Editor-window scripts and manual inspectors draw their UI with the engine's bundled ImGui. ModuCPP exposes the entire ImGui API under two interchangeable names:
 
-- `ModuGUI::Whatever(…)` — preferred.
-- `ImGui::Whatever(…)`   — same function, accepted everywhere.
+- `ModuGUI::Whatever(…)`: preferred.
+- `ImGui::Whatever(…)`: same function, accepted everywhere.
 
 They are literally aliases. Use either prefix; pick one and be consistent within a file.
 
 There is one Modularity-specific helper on top of ImGui:
 
-- `ModuGUI::SubsectionFoldout(label, flags = 0)` — a styled `TreeNodeEx` used by `inspector Foldout { … }` and `EditDirectionalClipGrid`.
+- `ModuGUI::SubsectionFoldout(label, flags = 0)`: a styled `TreeNodeEx` used by `inspector Foldout { … }` and `EditDirectionalClipGrid`.
 
-Everything else — `Begin`, `End`, `Text`, `TextWrapped`, `Button`, `Checkbox`, `InputText`, `SliderFloat`, `Combo`, `BeginChild`/`EndChild`, `BeginTabBar`, `BeginTable`, `BeginPopup`, drag-drop, style stacks, ID stacks — is the ImGui surface you already know.
+Everything else (`Begin`, `End`, `Text`, `TextWrapped`, `Button`, `Checkbox`, `InputText`, `SliderFloat`, `Combo`, `BeginChild`/`EndChild`, `BeginTabBar`, `BeginTable`, `BeginPopup`, drag-drop, style stacks, ID stacks) is the ImGui surface you already know.
 
 The supporting ImGui types and macros are also in scope:
 
@@ -1105,11 +1106,11 @@ public class TinyTool : ModuNode
 }
 ```
 
-For the full ImGui API, treat the upstream ImGui reference as authoritative — every function is callable through `ModuGUI::`.
+For the full ImGui API, treat the upstream ImGui reference as authoritative: every function is callable through `ModuGUI::`.
 
 ---
 
-## 20. Coroutines — `IEnum`
+## 20. Coroutines: `IEnum`
 
 For "do something across many frames" work, ModuCPP exposes a small coroutine-style helper layer built on free functions plus a few macros:
 
@@ -1138,17 +1139,17 @@ public class FadeOnClick : ModuNode
 
 The relevant pieces:
 
-- `IEnum` — empty marker macro on the function declaration; documents intent.
-- `IEnum_Start(fn)` → `ctx.StartIEnum(fn)` — begin running.
-- `IEnum_Stop(fn)`  → `ctx.StopIEnum(fn)`  — stop running.
-- `IEnum_Ensure(fn)` → `ctx.EnsureIEnum(fn)` — start if not already running.
-- `ctx.IsIEnumRunning(fn)`, `ctx.StopAllIEnums()` — query and bulk-stop.
+- `IEnum`: empty marker macro on the function declaration; documents intent.
+- `IEnum_Start(fn)` → `ctx.StartIEnum(fn)`: begin running.
+- `IEnum_Stop(fn)`  → `ctx.StopIEnum(fn)`: stop running.
+- `IEnum_Ensure(fn)` → `ctx.EnsureIEnum(fn)`: start if not already running.
+- `ctx.IsIEnumRunning(fn)`, `ctx.StopAllIEnums()`: query and bulk-stop.
 
 The function signature is fixed: `void fn(ScriptContext&, float dt)`. The runtime calls it every frame until it's stopped.
 
 ---
 
-## 21. Sub-scripts — structured repeated data
+## 21. Sub-scripts: structured repeated data
 
 When you need a list of structured items (a menu of options, an interaction with multiple branches, a wave of enemies with per-wave settings), use `SubScript`. It declares a named, serializable record type that can be used as a field type:
 
@@ -1178,7 +1179,7 @@ Helpers (in the `ModuCPP` module):
 
 - `SerializeSubScript(value)`, `DeserializeSubScript<T>(encoded)`
 - `SerializeSubScriptArray(values)`, `DeserializeSubScriptArray<T>(encoded)`
-- `EditSubScript(label, value)`, `EditSubScriptArray(label, values)` — for manual inspector drawing.
+- `EditSubScript(label, value)`, `EditSubScriptArray(label, values)`: for manual inspector drawing.
 
 ---
 
@@ -1186,7 +1187,7 @@ Helpers (in the `ModuCPP` module):
 
 A handful of small syntactic conveniences that don't fit cleanly into the sections above.
 
-### Arrow lambdas — `(args) => { body }`
+### Arrow lambdas: `(args) => { body }`
 
 The transpiler rewrites this into `[&](args) { body }`, so lambdas have natural capture-by-reference semantics:
 
@@ -1195,7 +1196,7 @@ obj.UI.OnClick(() => { AddLog("click"); });
 obj.UI.Slider.OnValueChanged((float v) => { AddLog(FloatR(v)); });
 ```
 
-### `$"…"` strings — newline normalization only
+### `$"…"` strings: newline normalization only
 
 `$` in front of a string literal lets the string contain raw newlines, which are normalized to `\n` for the compiler:
 
@@ -1210,11 +1211,11 @@ this is a multi-line greeting.";
 AddLog("Hello, " + name + "!");
 ```
 
-### `mark Foo;` — namespace forward-declaration
+### `mark Foo;`: namespace forward-declaration
 
 Declares an empty `namespace Foo {}` so that another script can `add Foo;` and see it. Rare; only needed when scripts coordinate across files.
 
-### `Calc Name(args) to expr;` — static helper
+### `Calc Name(args) to expr;`: static helper
 
 A one-line static-method declaration. Most helpers go in `namespace { … }` instead, but `Calc` is available if you want the shorter form.
 
@@ -1233,11 +1234,11 @@ So the following are available without an extra `#include` line:
 - Formatting: `std::snprintf`, `std::printf`
 - Regex: `std::regex`, `std::regex_replace`, `std::regex_search`, `std::regex_match`, `std::smatch`
 
-For anything else, add an `#include <header>` line at the top of the script — it passes straight through the transpiler.
+For anything else, add an `#include <header>` line at the top of the script: it passes straight through the transpiler.
 
-### `MODU_SCRIPT(ctx)` — manual prelude
+### `MODU_SCRIPT(ctx)`: manual prelude
 
-Lifecycle methods get this prelude injected automatically. If you write a free helper function and want `obj` available inside it without taking it as a parameter, call `MODU_SCRIPT(ctx)` at the top of the function body — it sets up the same `obj` facade. Advanced; rarely needed.
+Lifecycle methods get this prelude injected automatically. If you write a free helper function and want `obj` available inside it without taking it as a parameter, call `MODU_SCRIPT(ctx)` at the top of the function body: it sets up the same `obj` facade. Advanced; rarely needed.
 
 ---
 
@@ -1435,28 +1436,28 @@ public class Patroller : ModuNode
 - **Detect button presses with an edge**, not by reading the held-state on every frame.
 - **Guard against missing components** with the matching `Has*` check (`audio.HasSource()`, `ctx.HasRigidbody2D()`, `obj->hasRigidbody2D`). These calls fail silently.
 - **Move physics-driven objects through `ctx.SetPosition` or `ctx.TeleportRigidbody`**, not by writing `obj->position` directly. Direct writes skip physics sync.
-- **Use `obj.UI.*`** for UI-attached objects instead of raw `obj->ui.*` reads — it's a thinner, typed surface that auto-dirties.
+- **Use `obj.UI.*`** for UI-attached objects instead of raw `obj->ui.*` reads: it's a thinner, typed surface that auto-dirties.
 - **Use `each list.state(true|false);`** for object-list batches instead of a hand-written loop.
 - **Use the `inspector { … }` DSL** for tabs/sections/runtime status. Drop to `Script_OnInspector()` only when you genuinely need it.
 - **Call `ctx.MarkDirty()` after editor-time scene mutations** so the change is saved.
 - **Use `warnOnce` / `warnMissingComponentOnce`** when a script can't do its job without a component. Once per missing thing is enough; spamming logs hides real issues.
 - **`SubScript` over parallel arrays** any time the data has structure. The inspector and serialization will thank you.
-- **Pick one of `ModuGUI::` or `ImGui::` per file** — both work, but mixing them on adjacent lines is noisy.
+- **Pick one of `ModuGUI::` or `ImGui::` per file**: both work, but mixing them on adjacent lines is noisy.
 
 ---
 
-## 25. Bad practice — examples of what not to do
+## 25. Bad practice: examples of what not to do
 
 Side-by-side examples of common mistakes, with the right shape next to them.
 
 ### 25.1 Making runtime state public
 
 ```cpp
-// BAD — pollutes the inspector and gets serialized to disk.
+// BAD: pollutes the inspector and gets serialized to disk.
 public bool isJumping = false;
 public float jumpTimer = 0.0f;
 
-// GOOD — these are pure runtime state.
+// GOOD: these are pure runtime state.
 private bool isJumping = false;
 private float jumpTimer = 0.0f;
 ```
@@ -1464,7 +1465,7 @@ private float jumpTimer = 0.0f;
 ### 25.2 Initializing in `TickUpdate`
 
 ```cpp
-// BAD — runs every frame, allocates and resets repeatedly.
+// BAD: runs every frame, allocates and resets repeatedly.
 private bool started = false;
 void TickUpdate()
 {
@@ -1475,7 +1476,7 @@ void TickUpdate()
     // …
 }
 
-// GOOD — one-time work belongs in Begin.
+// GOOD: one-time work belongs in Begin.
 void Begin()
 {
     ctx.SetFPSCap(true, 120.0f);
@@ -1485,11 +1486,11 @@ void Begin()
 ### 25.3 Using `input.WASD()` for movement
 
 ```cpp
-// BAD — diagonal movement is sqrt(2) faster.
+// BAD: diagonal movement is sqrt(2) faster.
 Vector2 move = input.WASD();
 TryMoveRigidbody2D(ctx, move * speed, accel, drag, dt);
 
-// GOOD — same intent, consistent speed in all directions.
+// GOOD: same intent, consistent speed in all directions.
 Vector2 move = input.WASDNormalized();
 TryMoveRigidbody2D(ctx, move * speed, accel, drag, dt);
 ```
@@ -1497,7 +1498,7 @@ TryMoveRigidbody2D(ctx, move * speed, accel, drag, dt);
 ### 25.4 Treating a held-state helper as a press
 
 ```cpp
-// BAD — fires every frame the key is held.
+// BAD: fires every frame the key is held.
 void TickUpdate()
 {
     if (input.jump()) {
@@ -1505,7 +1506,7 @@ void TickUpdate()
     }
 }
 
-// GOOD — detect the press edge with a previous-frame state.
+// GOOD: detect the press edge with a previous-frame state.
 private bool prevJump = false;
 void TickUpdate()
 {
@@ -1520,33 +1521,33 @@ void TickUpdate()
 ### 25.5 Time-based code that ignores `dt`
 
 ```cpp
-// BAD — speed depends on frame rate.
+// BAD: speed depends on frame rate.
 obj->position = obj->position + Vector3(speed, 0, 0);
 
-// GOOD — speed is meters per second, regardless of FPS.
+// GOOD: speed is meters per second, regardless of FPS.
 ctx.SetPosition(obj->position + Vector3(speed * dt, 0, 0));
 ```
 
 ### 25.6 Writing `obj->position` directly on a physics object
 
 ```cpp
-// BAD — bypasses the physics sync; visuals and simulation drift apart.
+// BAD: bypasses the physics sync; visuals and simulation drift apart.
 obj->position = startPos;
 
-// GOOD — let the rigidbody know about the teleport.
+// GOOD: let the rigidbody know about the teleport.
 ctx.TeleportRigidbody(startPos, obj->rotation);
 ```
 
 ### 25.7 Mutating scene data in the editor without `MarkDirty`
 
 ```cpp
-// BAD — the change won't be saved.
+// BAD: the change won't be saved.
 void RenderEditorWindow()
 {
     target->position = target->position + Vector3(1, 0, 0);
 }
 
-// GOOD — let the editor know the scene changed.
+// GOOD: let the editor know the scene changed.
 void RenderEditorWindow()
 {
     target->position = target->position + Vector3(1, 0, 0);
@@ -1557,11 +1558,11 @@ void RenderEditorWindow()
 ### 25.8 Expecting `AutoFields` to see things it can't
 
 ```cpp
-// BAD — `currentWaypoint` is private; AutoFields will silently skip it.
+// BAD: `currentWaypoint` is private; AutoFields will silently skip it.
 private int currentWaypoint = 0;
 inspector { AutoFields(speed, currentWaypoint); }
 
-// GOOD — show runtime state with Run(...).
+// GOOD: show runtime state with Run(...).
 inspector
 {
     AutoFields(speed);
@@ -1572,11 +1573,11 @@ inspector
 ### 25.9 Forgetting `[ObjectRef]` / `[ObjectList]`
 
 ```cpp
-// BAD — looks like a free-form string in the inspector.
+// BAD: looks like a free-form string in the inspector.
 public string target;
 public string[] waypoints;
 
-// GOOD — designer sees an object picker / list.
+// GOOD: designer sees an object picker / list.
 [ObjectRef]  public string target;
 [ObjectList] public string[] waypoints;
 ```
@@ -1584,12 +1585,12 @@ public string[] waypoints;
 ### 25.10 Flattening structured data into parallel arrays
 
 ```cpp
-// BAD — three arrays that must stay in sync by index.
+// BAD: three arrays that must stay in sync by index.
 public string[]   optionName;
 public SceneObj[] optionEnable;
 public SceneObj[] optionDisable;
 
-// GOOD — one structured array.
+// GOOD: one structured array.
 SubScript Option
 {
     public string    name;
@@ -1602,13 +1603,13 @@ public Option[] options;
 ### 25.11 Assuming components exist
 
 ```cpp
-// BAD — silent failure on objects without a Rigidbody2D.
+// BAD: silent failure on objects without a Rigidbody2D.
 void TickUpdate()
 {
     TryMoveRigidbody2D(ctx, target, accel, drag, dt);
 }
 
-// GOOD — warn once and skip cleanly.
+// GOOD: warn once and skip cleanly.
 private bool warnedNoRb = false;
 void TickUpdate()
 {
@@ -1623,23 +1624,23 @@ void TickUpdate()
 ### 25.12 Importing speculatively
 
 ```cpp
-// BAD — misleading. Nothing in this script uses Engine, Input, or Experimental.
+// BAD: misleading. Nothing in this script uses Engine, Input, or Experimental.
 add ModuCPP;
 add ModuEngine;
 add ModuInput;
 add ModuCPP.Experimental;
 
-// GOOD — exactly the dependencies the script uses.
+// GOOD: exactly the dependencies the script uses.
 add ModuCPP;
 ```
 
 ### 25.13 Reaching for `to` when the body is not a single expression
 
 ```cpp
-// BAD — readable as a normal body, not as a shorthand.
+// BAD: readable as a normal body, not as a shorthand.
 void Begin() to ctx.AddConsoleMessage(complicated ? "a" : "b");
 
-// GOOD — use the shorthand only for genuinely one-expression methods.
+// GOOD: use the shorthand only for genuinely one-expression methods.
 void Begin()
 {
     if (complicated) AddLog("a");
@@ -1650,23 +1651,23 @@ void Begin()
 ### 25.14 Expecting `$"…"` to interpolate
 
 ```cpp
-// BAD — this prints the literal text "Hello, {name}!"
+// BAD: this prints the literal text "Hello, {name}!"
 AddLog($"Hello, {name}!");
 
-// GOOD — concatenate values explicitly.
+// GOOD: concatenate values explicitly.
 AddLog("Hello, " + name + "!");
 ```
 
 ### 25.15 Treating `Col` as a hit record
 
 ```cpp
-// BAD — Col has no .normal, .point, .impulse; it's just a SceneObject*.
+// BAD: Col has no .normal, .point, .impulse; it's just a SceneObject*.
 void OnCollideEnter(Col other)
 {
     Vector3 n = other.normal;   // does not compile
 }
 
-// GOOD — Col is the other object. Use it for identity / fields,
+// GOOD: Col is the other object. Use it for identity / fields,
 // and raycast separately if you need a normal or hit point.
 void OnCollideEnter(Col other)
 {
@@ -1680,21 +1681,21 @@ void OnCollideEnter(Col other)
 
 ### `add ModuCPP.Experimental;`
 
-Real, shipped, and used by dialogue/menu/interaction sample scripts — but explicitly **opt-in** and not part of the stable core. Treat its surface as a moving target.
+Real, shipped, and used by dialogue/menu/interaction sample scripts, but explicitly **opt-in** and not part of the stable core. Treat its surface as a moving target.
 
 Highlights:
 
-- **Object references** — `MakeObjectRef`, `SerializeObjectRefs`, `DeserializeObjectRefs`, `ResolveSceneObjectRef`, `ResolveUITextTarget`.
-- **Object/UI state** — `SetObjectEnabledState`, `SetObjectsEnabledState`, `SetUITextLabel`, `SetUITextEffects`, `SetRigidbody2DSimulated`, `TryPlayAnimationClipNamed`, `GetCurrentObjectName`, `GetObjectReferencePosition`.
-- **Script settings** — `GetScriptSetting`, `SetScriptSetting`.
-- **String / parse helpers** — `Trim`, `ParseInt`, `ParseFloat`, `ParseBool`, `EscapeField`, `UnescapeField`, `SplitEscaped`, `JoinEscaped`, `IsAllDigits`.
-- **Editor widgets** — `DrawStdStringInput`, `DrawObjectRefInput`, `DrawAudioClipInput`, `DrawObjectRefListEditor`.
+- **Object references**: `MakeObjectRef`, `SerializeObjectRefs`, `DeserializeObjectRefs`, `ResolveSceneObjectRef`, `ResolveUITextTarget`.
+- **Object/UI state**: `SetObjectEnabledState`, `SetObjectsEnabledState`, `SetUITextLabel`, `SetUITextEffects`, `SetRigidbody2DSimulated`, `TryPlayAnimationClipNamed`, `GetCurrentObjectName`, `GetObjectReferencePosition`.
+- **Script settings**: `GetScriptSetting`, `SetScriptSetting`.
+- **String / parse helpers**: `Trim`, `ParseInt`, `ParseFloat`, `ParseBool`, `EscapeField`, `UnescapeField`, `SplitEscaped`, `JoinEscaped`, `IsAllDigits`.
+- **Editor widgets**: `DrawStdStringInput`, `DrawObjectRefInput`, `DrawAudioClipInput`, `DrawObjectRefListEditor`.
 
 Import this only when you genuinely need a helper from it, and isolate the dependency to the script that uses it.
 
 ### `add RMeshBuilder;`
 
-Reserved. The import is recognized and the header exists, but it currently exposes no script-facing helpers. Do not write code against it yet — wait until the documented surface lands.
+Reserved. The import is recognized and the header exists, but it currently exposes no script-facing helpers. Do not write code against it yet: wait until the documented surface lands.
 
 ### `DialoguePort` namespace
 
@@ -1822,7 +1823,7 @@ Is it `public`? Private fields are runtime-only. Is its type supported (see [§7
 The current object probably has no `Rigidbody2D`. The helper fails silently. Gate with `if (!ctx.HasRigidbody2D()) { warnMissingComponentOnce(ctx, warnedNoRb, "MyScript", "Rigidbody2D"); return; }`.
 
 **`OnCollideEnter` never fires.**
-Both objects need physics components — a rigidbody plus a collider — and at least one of them needs to be moving. If the script is on a static prop with no collider, the collision system has nothing to detect.
+Both objects need physics components (a rigidbody plus a collider) and at least one of them needs to be moving. If the script is on a static prop with no collider, the collision system has nothing to detect.
 
 **`OnCollideHold` fires way too often / not often enough.**
 The default interval is 2 seconds. Override it per-script with `void OnCollideHold(Col other 0.5f) { … }` or whatever interval you want.
@@ -1834,7 +1835,7 @@ The default interval is 2 seconds. Override it per-script with `void OnCollideHo
 You forgot to multiply by `dt`. Time-based math should always be `value * dt` for per-second behaviour.
 
 **`add ModuCPP;` doesn't seem to include `input`.**
-Correct — it doesn't. Imports are independent. Add `add ModuInput;` (and `add ModuEngine;` for `ModuEngine.FPS`, audio, movement, etc.).
+Correct: it doesn't. Imports are independent. Add `add ModuInput;` (and `add ModuEngine;` for `ModuEngine.FPS`, audio, movement, etc.).
 
 **`AutoFields` doesn't show a value from `Config<T>()` or a private field.**
 That's by design. `AutoFields` is for persisted public fields on the current class. For everything else, draw it explicitly with the matching widget statement or with `Run(...)`.
@@ -1855,7 +1856,7 @@ Use `warnOnce(ctx, warned, "...", type)` or `warnMissingComponentOnce(ctx, warne
 Direct writes to `obj->position` bypass the physics sync. Use `ctx.SetPosition(…)` for non-physics objects and `ctx.TeleportRigidbody(pos, rotDeg)` for rigidbody-driven ones.
 
 **Can I use `ImGui::Button` instead of `ModuGUI::Button`?**
-Yes. `ModuGUI` is a `using namespace ImGui;` alias — the only Modularity-specific addition is `ModuGUI::SubsectionFoldout`. Pick one prefix per file and stick to it.
+Yes. `ModuGUI` is a `using namespace ImGui;` alias: the only Modularity-specific addition is `ModuGUI::SubsectionFoldout`. Pick one prefix per file and stick to it.
 
 **Can I include extra std headers?**
 Yes. `#include <header>` at the top of the file passes straight through. The common ones (`<string>`, `<vector>`, `<algorithm>`, `<cmath>`, `<regex>`, `<unordered_map>`, `<functional>`) are already in scope, so you usually don't need to.

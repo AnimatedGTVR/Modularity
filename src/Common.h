@@ -104,7 +104,7 @@ class Engine;
 extern OBJLoader g_objLoader;
 
 // Sheet-relative sprite reference (kept byte-identical to the copy in
-// ScriptSdkCommon.h — both live under MODULARITY_COMMON_SHARED_DECLS, so only
+// ScriptSdkCommon.h, and both live under MODULARITY_COMMON_SHARED_DECLS, so only
 // one is ever active per TU). int<->Sprite stays back-compatible with the
 // former clip-index Sprite.
 struct Sprite {

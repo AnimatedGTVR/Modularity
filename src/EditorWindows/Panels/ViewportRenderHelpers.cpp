@@ -756,8 +756,8 @@ void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
     if (style == UISliderStyle::Circle) {
       dl->AddCircleFilled(center, radius, bg, 32);
       if (clampedT > 0.001f) {
-        // Triangle fan from center — handles arcs > 180° (concave) and
-        // degenerate t=0 cases that the old PathFillConvex broke on.
+        // Triangle fan from center. Handles arcs > 180° (concave) and
+        // the degenerate t=0 cases that the old PathFillConvex choked on.
         const int segs =
             std::max(1, static_cast<int>(std::ceil(totalSegs * clampedT)));
         const float aStep = (arcEnd - start) / static_cast<float>(segs);
@@ -844,7 +844,7 @@ float ResolveViewportUITextFontSize(float baseFontSize, float textScale,
                                     float viewportRenderScale,
                                     float elementScaleY) {
   // obj.scale on a Text element is intentionally not applied to the glyph
-  // size here — it only changes the layout/wrap bounds (mirroring how
+  // size here; it only changes the layout/wrap bounds (mirroring how
   // RectTransform scale works in TextMeshPro). The elementScaleY parameter
   // is retained for callers that still want to bake transform scale into
   // the glyph height directly, but the standard viewport path passes 1.0.

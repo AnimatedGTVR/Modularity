@@ -1,24 +1,20 @@
 # ModuCPP Language Reference
-## *Note: Written by Anémunt and Codex*
-
----
-
 This file summarizes the ModuCPP surface currently implemented by the engine transpiler and script APIs. It is intended as source data for VS Code syntax highlighting, completions, and snippets.
 
 ## Source Files
 - ModuCPP scripts use `.moducpp`.
-- A file is treated as ModuCPP when it contains a high-level class declaration like `public class Name : ModuBehaviour` or `public class Name : ModuNode`.
-- Script-facing member access should use `.`, not `->`, where the ModuCPP surface supports it.
+- A file is automatically treated as a ModuCPP Script if it contains a high-level class declaration like `public class Name : ModuNode`.
+- A Script-facing member access should use `.`, not `->`, where the ModuCPP surface supports it.
 
-## Package Imports
-ModuCPP uses `add PackageName;` at the top of scripts. The transpiler lowers these to C++ includes.
-| ModuCPP import | Generated include |
-| --- | --- |
-| `add ModuCPP;` | `#include "ModuCPPScriptApi.h"` |
-| `add ModuEngine;` | `#include "ModuEngineScriptApi.h"` |
-| `add ModuInput;` | `#include "ModuInputScriptApi.h"` |
-| `add RMeshBuilder;` | `#include "RMeshBuilderScriptApi.h"` |
-| `add ModuCPP.Experimental;` | `#include "ModuCPPExperimentalScriptApi.h"` |
+## Modularity Package Types
+By Default, ModuCPP uses `add 'PackageName';` at the top of scripts.
+In Short: The transpiler lowers these to C++ includes.
+ModuCPP PackageTypes        | Generated includes
+`add ModuCPP;`              | `#include "ModuCPPScriptApi.h"`
+`add ModuEngine;`           | `#include "ModuEngineScriptApi.h"`
+`add ModuInput;`            | `#include "ModuInputScriptApi.h"`
+`add RMeshBuilder;`         | `#include "RMeshBuilderScriptApi.h"`
+`add ModuCPP.Experimental;` | `#include "ModuCPPExperimentalScriptApi.h"`
 
 ## Declaration Keywords
 These are ModuCPP-specific or required by the high-level script form:
@@ -31,43 +27,38 @@ enum
 SubScript
 inspector
 to
+then
 ref
 each
 state
 ```
 
-ModuCPP also passes through normal C++ syntax after lowering, so a VS Code grammar should also include C++ keywords such as `if`, `else`, `for`, `while`, `return`, `static`, `const`, `auto`, `struct`, `namespace`, `using`, `switch`, `case`, `break`, `continue`, `true`, `false`, and `nullptr`.
+ModuCPP also passes through normal C++ syntax after lowering,
+For example: VS Code grammar also includes C++ keywords such as `if`, `else`, `for`, `while`, `return`, `static`, `const`, `auto`, `struct`, `namespace`, `using`, `switch`, `case`, `break`, `continue`, `true`, `false`, `ctx`, and `nullptr`.
 
-## Script Base Types
-High-level script classes must derive from one of these:
-```text
-ModuBehaviour
-ModuNode
-```
-
+## Default Script Layout
+High-level script classes must derive from `ModuNode`, `ModuBehaviour` is deprecated as of V6.8
 Supported declaration form:
 ```moducpp
-public class MyScript : ModuBehaviour {
-}
+public class MyScript : ModuNode {}
 ```
 
 ## Primitive And Alias Types
 The transpiler maps these script-facing aliases:
-| ModuCPP type | C++ type |
-| --- | --- |
-| `string` | `std::string` |
-| `vec2` | `glm::vec2` |
-| `Vector2` | `glm::vec2` |
-| `vec3` | `glm::vec3` |
-| `Vector3` | `glm::vec3` |
-| `SceneObj` | `SceneObject` |
-| `SceneObject` | `SceneObject` |
-| `SceneObj*` | `SceneObject*` |
-| `SceneObject*` | `SceneObject*` |
-| `List<T>` | `std::vector<T>` |
-| `T[]` | `std::vector<T>` |
-| `T[N]` | `std::array<T, N>` |
-| `T[R][C]` | `std::array<std::array<T, C>, R>` |
+ModuCPP type   | C++ type
+`string`       | `std::string`
+`vec2`         | `glm::vec2`
+`Vector2`      | `glm::vec2`
+`vec3`         | `glm::vec3`
+`Vector3`      | `glm::vec3`
+`SceneObj`     | `SceneObject`
+`SceneObject`  | `SceneObject`
+`SceneObj*`    | `SceneObject*`
+`SceneObject*` | `SceneObject*`
+`List<T>`      | `std::vector<T>`
+`T[]`          | `std::vector<T>`
+`T[N]`         | `std::array<T, N>`
+`T[R][C]`      | `std::array<std::array<T, C>, R>`
 
 Inspector-backed primitive fields support:
 ```text
@@ -83,20 +74,19 @@ List<SceneObject*>
 DialoguePort::DialogueLine[]
 ```
 
-## Field Attributes
+## Inspector Attributes
 Attributes are written before a field declaration.
-| Attribute | Arguments | Notes |
-| --- | --- | --- |
-| `[Header(title)]` | one title expression | Emits inspector heading and separator. |
-| `[Slider(min, max)]` | two expressions | Works on `float`, `int`, and `vec3`. |
-| `[ObjectRef]` | none | Treats a `string` field as an object reference picker. |
-| `[ObjectList]` | none | Treats a string/object array as an object reference list. |
-| `[DialogueLines]` | none | Treats a field as dialogue line data. |
-| `[ClipGridPair]` | none | Requires an `int[4]` field followed by an `int[4][4]` field. |
-| `[Separator]` | none | Emits an inspector separator before the field. |
-| `[SoundSet(label)]` | one label expression | Requires a string array. |
-| `@range(min, max)` | two expressions | Adds range metadata for auto inspector numeric fields. |
-| `@step(value)` | one expression | Adds drag step metadata for auto inspector numeric fields. |
+Attribute            | Arguments            | Notes
+`[Header(title)]`    | one title expression | Emits inspector heading and separator.
+`[Slider(min, max)]` | two expressions      | Works on `float`, `int`, and `vec3`.
+`[ObjectRef]`        | none                 | Treats a `string` field as an object reference picker.
+`[ObjectList]`       | none                 | Treats a string/object array as an object reference list.
+`[DialogueLines]`    | none                 | Treats a field as dialogue line data.
+`[ClipGridPair]`     | none                 | Requires an `int[4]` field followed by an `int[4][4]` field.
+`[Separator]`        | none                 | Emits an inspector separator before the field.
+`[SoundSet(label)]`  | one label expression | Requires a string array.
+`@range(min, max)`   | two expressions      | Adds range metadata for auto inspector numeric fields.
+`@step(value)`       | one expression       | Adds drag step metadata for auto inspector numeric fields.
 
 Example:
 ```moducpp
@@ -108,7 +98,6 @@ private vec3 velocity = vec3(0.0f);
 
 ## Lifecycle Methods
 These method names are recognized by the transpiler/runtime. `ScriptContext& ctx` is auto-injected when omitted. `float dt` is auto-injected for runtime tick-style hooks where supported.
-
 ```text
 Begin
 TickUpdate
@@ -117,19 +106,19 @@ Spec
 TestEditor
 RenderEditorWindow
 ExitRenderEditorWindow
-Script_OnInspector
+Script_OnInspector (though, most of the time, this isn't needed.)
 ```
 
 Common signatures:
 ```moducpp
-void Begin() {}
-void TickUpdate() {}
-void TickUpdate(float dt) {}
-void TickUpdate(ScriptContext& ctx, float dt) {}
-void RenderEditorWindow(ScriptContext& ctx) {}
-void ExitRenderEditorWindow(ScriptContext& ctx) {}
-void Script_OnInspector() {}
-void Script_OnInspector(ScriptContext& ctx) {}
+void Begin()
+void TickUpdate()
+void TickUpdate(float dt)
+void TickUpdate(ScriptContext& ctx, float dt)
+void RenderEditorWindow(ScriptContext& ctx)
+void ExitRenderEditorWindow(ScriptContext& ctx)
+void Script_OnInspector()
+void Script_OnInspector(ScriptContext& ctx)
 ```
 `MODU_obj` (aka: SceneOBJ) is also accepted as a parameter alias and lowers to `ScriptContext& ctx`.
 
@@ -186,11 +175,11 @@ SoundSet(label, sounds)
 
 ### Inspector Containers
 ```text
-Tabs { ... }
-Tab(title) { ... }
+Tabs           { ... }
+Tab(title)     { ... }
 Section(title) { ... }
-Group { ... }
-Group(title) { ... }
+Group          { ... }
+Group(title)   { ... }
 Foldout(title) { ... }
 ```
 
@@ -206,25 +195,24 @@ inspector {
 
 ## Surface Syntax Rewrites
 The transpiler rewrites these convenience forms:
-| ModuCPP form | Lowered form |
-| --- | --- |
-| `Math.Max(a, b)` | `Math::Max(a, b)` |
-| `Math.Min(a, b)` | `Math::Min(a, b)` |
-| `Math.Clamp(v, min, max)` | `Math::Clamp(v, min, max)` |
-| `Math.Abs(v)` | `Math::Abs(v)` |
-| `SomeEnum.Value` | `SomeEnum::Value` when both names start uppercase |
-| `ConsoleMessageType.Warning` | `ConsoleMessageType::Warning` |
-| `Vector2` | `glm::vec2` |
-| `Vector3` | `glm::vec3` |
-| `string` | `std::string` |
-| `value.Length()` | `glm::length(value)` |
-| `a.Dot(b)` | `glm::dot(a, b)` |
-| `value.IsEmpty()` | `value.empty()` |
-| `timer.Start(interval)` | `::ModuCPP::StartTimer(timer, interval)` |
-| `timer.Ready` | `::ModuCPP::TimerReady(timer)` |
-| `timer.Ready(interval)` | `::ModuCPP::TimerReady(timer, interval)` |
-| `time.deltaTime` | `::ModuCPP::time.deltaTime` |
-| `ModuEngine.FPS` | `::ModuCPP::ModuEngine.FPS` |
+ModuCPP form                 | Lowered form
+`Math.Max(a, b)`             | `Math::Max(a, b)`
+`Math.Min(a, b)`             | `Math::Min(a, b)`
+`Math.Clamp(v, min, max)`    | `Math::Clamp(v, min, max)`
+`Math.Abs(v)`                | `Math::Abs(v)`
+`SomeEnum.Value`             | `SomeEnum::Value` (when both names start uppercase)
+`ConsoleMessageType.Warning` | `ConsoleMessageType::Warning`
+`Vector2`                    | `glm::vec2`
+`Vector3`                    | `glm::vec3`
+`string`                     | `std::string`
+`value.Length()`             | `glm::length(value)`
+`a.Dot(b)`                   | `glm::dot(a, b)`
+`value.IsEmpty()`            | `value.empty()`
+`timer.Start(interval)`      | `::ModuCPP::StartTimer(timer, interval)`
+`timer.Ready`                | `::ModuCPP::TimerReady(timer)`
+`timer.Ready(interval)`      | `::ModuCPP::TimerReady(timer, interval)`
+`time.deltaTime`             | `::ModuCPP::time.deltaTime`
+`ModuEngine.FPS`             | `::ModuCPP::ModuEngine.FPS`
 
 ## Object List Syntax
 For persisted object-list fields, this convenience statement is supported:
@@ -262,7 +250,6 @@ ModuCPP::Vector2
 ModuCPP::Vector3
 ModuCPP::string
 ```
-
 ### Math
 ```text
 Math.Max(a, b)
@@ -270,14 +257,12 @@ Math.Min(a, b)
 Math.Clamp(value, minValue, maxValue)
 Math.Abs(value)
 ```
-
 ### Conversion Helpers
 ```text
 IntRD(value)
 IntR(value)
 IntRU(value)
 ```
-
 ### Script State Helpers
 ```text
 ctx()

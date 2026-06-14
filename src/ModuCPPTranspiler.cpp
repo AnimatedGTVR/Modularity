@@ -824,7 +824,7 @@ namespace {
         const std::string normalized = toLowerCopy(removeWhitespaceCopy(mapScriptBaseTypeToCpp(baseType)));
         // A single Sprite is a sheet-relative handle (SpriteRef). Sprite arrays /
         // List<Sprite> stay Custom so they ride the proven BindArray clip path,
-        // exactly like int[N] clip fields — they just need a BindSetting(Sprite&).
+        // exactly like int[N] clip fields. They just need a BindSetting(Sprite&).
         if (dims.empty() && (normalized == "sprite" || normalized == "::sprite")) {
             return FieldKind::SpriteRef;
         }
@@ -1702,7 +1702,7 @@ namespace {
                     field + "\")), $1);");
         }
 
-        // Remaining `handle.Sprite = E;` — handle is a SceneObject* expression. Runs
+        // Remaining `handle.Sprite = E;` where handle is a SceneObject* expression. Runs
         // last so the rewrites above (which emit no `.Sprite =`) are never re-matched.
         replaceRegexAll(out,
             std::regex("\\b([A-Za-z_]\\w*)\\s*\\.\\s*Sprite\\s*=\\s*([^;=][^;]*);"),
@@ -1714,9 +1714,10 @@ namespace {
     //   each <var> in <listExpr> then <var>.State(<expr>);
     // to the existing short form
     //   each <listExpr>.state(<expr>);
-    // MUST run BEFORE rewriteThenSyntax — that pass strips `then` keywords, and
-    // without `then` this pattern can never match. Called from the method-body
-    // pipeline before cachedRewriteSurfaceSyntax.
+    // for future me: this MUST run BEFORE rewriteThenSyntax, because that pass rips the
+    // `then` keywords out, and without `then` this pattern can NEVER match. swap the order
+    // of these two and `each ... then` silently compiles to nothing.
+    // you will lose an evening to it. don't. (called from the method-body pipeline before cachedRewriteSurfaceSyntax.)
     std::string lowerEachInSyntax(const std::string& body) {
         if (body.find("each") == std::string::npos) return body;
 
@@ -1808,7 +1809,7 @@ namespace {
             const size_t closeParen = findMatchingParen(body, openParen);
             const std::string enabledExpr = trimCopy(body.substr(openParen + 1, closeParen - openParen - 1));
             // For dotted accesses (e.g. action.disable from a SubScript), skip the
-            // listFields registry check — the enclosing class doesn't own that name.
+            // listFields registry check, since the enclosing class doesn't own that name.
             // The C++ expression is still type-checked at compile time.
             const bool isDottedAccess = listName.find('.') != std::string::npos;
             if (!isDottedAccess && listFields.find(listName) == listFields.end()) {
@@ -1825,7 +1826,7 @@ namespace {
             const std::string indent = body.substr(indentStart, indentEnd - indentStart);
 
             if (hasContext) {
-                // Method has a ctx parameter — use it directly.
+                // Method has a ctx parameter, so use it directly.
                 out += indent + "for (SceneObject* _moduObj : " + supportNamespace +
                     "::ResolveObjectList(ctx, " + listName + ")) {\n";
                 out += indent + "    if (!_moduObj) continue;\n";
@@ -2617,7 +2618,7 @@ namespace {
         replaceRegexAll(out, std::regex(R"(\bMath\s*\.)"), "Math::");
         // Beginner-friendly namespaces that user scripts access with `.` even on
         // lowercase members (e.g. `Ensure.obj`). Convert ALL members of these
-        // specific namespaces — not just Pascal-cased ones.
+        // specific namespaces, not just the Pascal-cased ones.
         replaceRegexAll(out, std::regex(R"(\bEnsure\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Ensure::$1");
         replaceRegexAll(out, std::regex(R"(\bScene\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Scene::$1");
         replaceRegexAll(out, std::regex(R"(\bMovement\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\b)"), "Movement::$1");
@@ -4864,8 +4865,9 @@ namespace {
         out << "\n";
 
         for (const MethodSpec& method : spec.methods) {
-            // Lower `each X in LIST then X.State(EXPR);` BEFORE the surface rewrite —
-            // rewriteThenSyntax inside it strips the `then` keyword we depend on.
+            // lower `each X in LIST then X.State(EXPR);` BEFORE the surface rewrite here too,
+            // because rewriteThenSyntax inside it eats the `then` keyword we depend on. same
+            // exact trap as lowerEachInSyntax above, future me. ORDER MATTERS, leave it alone.
             const std::string preLoweredBody = lowerEachInSyntax(method.body);
             std::string rewrittenBody = cachedRewriteSurfaceSyntax(preLoweredBody);
             // Narrow rewrite for known [ObjectRef] field truthiness + UI access.

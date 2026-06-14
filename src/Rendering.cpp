@@ -3819,7 +3819,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             int safeLimit = std::max(0, item.boneLimit);
             int boneCount = std::min<int>(item.availableBones, safeLimit);
             if (item.wantsGpuSkinning && boneCount > 0) {
-                // Bones are per-object — always upload; can't safely cache mat4 array.
+                // Bones are per-object, so always upload; can't safely cache the mat4 array.
                 shader->setInt("boneCount", boneCount);
                 shader->setMat4Array("bones", objPtr->skeletal.finalMatrices.data(), boneCount);
                 matCache.boneCount = boneCount;

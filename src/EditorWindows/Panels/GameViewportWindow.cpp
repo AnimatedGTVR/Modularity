@@ -151,7 +151,7 @@ void Engine::renderGameViewportWindow() {
        {"1280x720 (720p)", 1280, 720, false, false},
        {"2560x1440 (1440p)", 2560, 1440, false, false},
        {"Custom", 0, 0, false, true},
-       // "Native" pulls the display size at runtime — on Android that's
+       // "Native" pulls the display size at runtime. On Android that's
        // the EGL surface size (AndroidRuntime::GetSurfaceSize), on desktop
        // the GLFW framebuffer size. Picks the natively right aspect ratio
        // so 16:9 content doesn't stretch into a 16:10 panel.
@@ -219,7 +219,7 @@ void Engine::renderGameViewportWindow() {
         if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
           gameViewportResolutionIndex = i;
           // Persist immediately. Without this, the in-memory value can
-          // revert between picking it and clicking Bake — and the bundle
+          // revert between picking it and clicking Bake, and then the bundle
           // ships whatever build.modu still has on disk.
           saveBuildSettings();
         }
@@ -2053,9 +2053,8 @@ void Engine::renderGameViewportWindow() {
             uiWorldCamera.zoom, viewportRenderScale);
         const float textRotationRad = glm::radians(obj.ui.rotation);
         const bool textIsRotated = std::abs(textRotationRad) > 1e-4f;
-        // Skip the axis-aligned clip when rotated — it'd crop the rotated quads
-        // back into the unrotated rect. The text is the user's responsibility
-        // to size correctly when rotated.
+        // Skip the axis-aligned clip when rotated, otherwise it'd crop the rotated quads
+        // back into the unrotated rect. Sizing rotated text correctly is on the user.
         if (!textIsRotated) {
           ImGui::PushClipRect(drawMin, drawMax, true);
         }

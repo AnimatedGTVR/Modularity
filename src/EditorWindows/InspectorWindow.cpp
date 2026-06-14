@@ -3798,7 +3798,7 @@ void Engine::renderInspectorPanel() {
     ImGui::PopStyleVar(2);
 
     // Inspector field layout helpers
-    // Label col = 40% of available width, value col = 60% — scales with panel width, no fixed clipping.
+    // Label col = 40% of available width, value col = 60%. Scales with panel width, no fixed clipping.
     auto beginCompFields = [](const char* id) -> bool {
         if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_NoPadOuterX))
             return false;

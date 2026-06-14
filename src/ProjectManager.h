@@ -112,7 +112,7 @@ inline const char* ProjectMassUnitSuffix(ProjectMassUnit unit) {
 }
 
 // Which physics engine the project's 3D simulation runs on. Jolt is the
-// default — it ships on every platform Modularity targets (including
+// default, since it ships on every platform Modularity targets (including
 // Android). PhysX remains available on desktop as a familiar fallback,
 // but is unavailable on Android.
 enum class PhysicsBackendType {

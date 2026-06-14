@@ -216,8 +216,10 @@ void Engine::renderBuildSettingsWindow() {
     // (e.g. an "x86_64" left over from a previous Linux config + a project
     // file loaded with platform=Android), snap it to the first valid entry.
     // Without this, the combo *displays* archList[0] but the build still
-    // reads the stale serialized value — which is how Android exports end
-    // up in lib/x86_64/ when the UI clearly shows arm64-v8a.
+    // reads the stale serialized value, which is how Android exports end
+    // up in lib/x86_64/ when the UI clearly shows arm64-v8a. future me: yes this snap looks
+    // redundant, no it is not. i chased "why is my arm64 build full of x86 libs" for way too
+    // long before this line existed. keep it.
     if (!archMatched && archLabelsUsed > 0) {
         buildSettings.architecture = archList[0].serializedName;
         changed = true;

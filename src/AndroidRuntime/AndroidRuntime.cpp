@@ -1,6 +1,6 @@
 #ifdef __ANDROID__
 
-// Modularity's native Android runtime — the body that drives the engine
+// Modularity's native Android runtime: the body that drives the engine
 // when it's loaded as a NativeActivity .so. Sets up EGL against the
 // ANativeWindow handed in by android_native_app_glue, pumps the Android
 // event loop (lifecycle + touch input), and renders frames.
@@ -199,7 +199,10 @@ bool CreateEGLSurface(ANativeWindow* window) {
 
     // Match the native window's buffer format to the EGL config so the
     // BufferQueue producer/consumer agree on layout (otherwise SurfaceFlinger
-    // composites the wrong thing — or refuses outright on some devices).
+    // composites the wrong thing, or refuses outright on some devices).
+    // future me: do NOT delete this setBuffersGeometry call. some phones just hand you a
+    // pure black screen with zero errors in logcat if the formats disagree. lost a whole
+    // night to a "blank" runtime that was rendering perfectly the entire time. never again.
     EGLint nativeVisualId = 0;
     eglGetConfigAttrib(g_ctx.display, g_ctx.config, EGL_NATIVE_VISUAL_ID, &nativeVisualId);
     ANativeWindow_setBuffersGeometry(window, 0, 0, nativeVisualId);
@@ -309,7 +312,7 @@ int32_t HandleInputEvent(android_app* /*app*/, AInputEvent* event) {
     if ((source & AINPUT_SOURCE_TOUCHSCREEN) == 0) return 0;
 
     const int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
-    // Primary pointer only — multi-touch is intentionally out of scope.
+    // Primary pointer only. Multi-touch is intentionally out of scope (for now).
     const size_t pointerIndex = 0;
     const float x = AMotionEvent_getX(event, pointerIndex);
     const float y = AMotionEvent_getY(event, pointerIndex);
@@ -341,7 +344,7 @@ int32_t HandleInputEvent(android_app* /*app*/, AInputEvent* event) {
 
 bool PollEvents() {
     if (!g_ctx.app || g_ctx.app->destroyRequested) return false;
-    // Non-blocking drain — Engine.cpp calls this every frame, so any
+    // Non-blocking drain. Engine.cpp calls this every frame, so any
     // pending lifecycle / input events get delivered, then the engine
     // immediately falls through to its own tick + render.
     return DrainEvents(0);
@@ -419,8 +422,8 @@ void Run(android_app* app) {
 
     // Hand off to the existing Engine bootstrap. The engine's own main
     // loop now polls AndroidRuntime::PollEvents() each iteration and
-    // presents via AndroidRuntime::PresentFrame() (see Engine::run() —
-    // the Android paths are gated with #ifdef __ANDROID__).
+    // presents via AndroidRuntime::PresentFrame() (see Engine::run(),
+    // where the Android paths are gated with #ifdef __ANDROID__).
     {
         Engine engine;
         if (!engine.init()) {

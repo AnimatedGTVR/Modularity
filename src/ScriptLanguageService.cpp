@@ -772,7 +772,7 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     std::unordered_set<std::string> uniqueCompletions;
     std::unordered_set<std::string> uniquePaths;
 
-    // Scan include dirs — qualified calls only, capped per file
+    // Scan include dirs: qualified calls only, capped per file
     size_t includeFilesScanned = 0;
     for (const auto& root : includeRoots) {
         std::error_code ec;
@@ -806,7 +806,7 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
             buffer << file.rdbuf();
             const std::string text = buffer.str();
 
-            // Only qualified calls — no bare identifiers flooding the pool
+            // Only qualified calls, no bare identifiers flooding the pool
             for (const auto& qualified : extractQualifiedCallIdentifiers(text)) {
                 uniqueCompletions.insert(qualified);
             }

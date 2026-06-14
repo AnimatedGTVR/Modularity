@@ -2,7 +2,7 @@
 
 // Android implementation of AssetSource. Reads from the APK's assets/
 // directory via AAssetManager. Installed by AndroidRuntime at startup,
-// before Engine::init() — the desktop fallback inside AssetSourceDesktop.cpp
+// before Engine::init(). The desktop fallback inside AssetSourceDesktop.cpp
 // covers the bootstrap window between SetAssetSource() and SetAssetSource(...).
 
 #include "../../include/Platform/AssetSource.h"
@@ -180,7 +180,7 @@ private:
 
 } // namespace
 
-// Factory used by AndroidRuntime — it owns the AAssetManager lifetime
+// Factory used by AndroidRuntime, which owns the AAssetManager lifetime
 // (NativeActivity hands it in), so we don't dup or release it here.
 std::unique_ptr<AssetSource> MakeAndroidAssetSource(AAssetManager* mgr) {
     return std::make_unique<AndroidAssetSource>(mgr);

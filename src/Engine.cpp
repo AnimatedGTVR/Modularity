@@ -4246,7 +4246,7 @@ void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
     // the runtime resolved to at startup (helps catch "did the Native
     // dropdown selection actually persist into the bake?" without
     // squinting at screenshots).
-    // Log on change (not just first call) — the runtime resolution gets
+    // Log on change (not just first call), because the runtime resolution gets
     // re-decided each frame and may genuinely shift across startup (e.g.
     // index=0 on frame 1 before build.modu has loaded, then index=5 after
     // finishProjectLoad runs ~180ms later). Tracking only the first value
@@ -4306,7 +4306,7 @@ void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
             outHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
             break;
         case 5: {
-            // Native — match the actual display surface. On Android the
+            // Native: match the actual display surface. On Android the
             // EGL surface size is the source of truth (GLFW's null backend
             // returns 0). On desktop GLFW's framebuffer size is correct.
             int w = 0, h = 0;
@@ -4593,7 +4593,7 @@ void Engine::run() {
             break;
         }
         // No render surface means we're backgrounded or between
-        // activity windows — skip the entire frame, don't burn cycles.
+        // activity windows, so skip the entire frame and don't burn cycles.
         if (!Modularity::AndroidRuntime::HasRenderSurface()) {
             continue;
         }
@@ -6925,11 +6925,14 @@ void Engine::updateAutoCompileScripts() {
         }
     }
 
-    // Cheap, deterministic derivation of the expected binary path — mirrors the
-    // path-building logic in ScriptCompiler::makeCommands without the regex scan
-    // of the source file. Used for the up-to-date check below; only sources that
+    // Cheap, deterministic derivation of the expected binary path. mirrors the
+    // path-building logic in ScriptCompiler::makeCommands but WITHOUT the regex scan
+    // of the source file. used for the up-to-date check below; only sources that
     // actually need a rebuild go through the full makeCommands path via
     // queueAutoCompile -> compileScriptFile.
+    // future me: do NOT just call makeCommands here to grab the path. it's ~250ms per script
+    // (it regex-scans the whole source), and calling it for every script on project load will
+    // nuke open times. that's the entire reason this little lambda exists. leave it. please.
     auto deriveBinaryPath = [&](const fs::path& scriptAbs) -> fs::path {
         std::error_code ec;
         fs::path relToScripts = fs::relative(scriptAbs, config.scriptsDir, ec);
@@ -9013,7 +9016,7 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
 
 #ifndef __ANDROID__
     // Android has no concept of "relaunch the editor with a different
-    // backend" — the player is the only binary and it's already running
+    // backend": the player is the only binary and it's already running
     // GLES. Returning early here on backend mismatch would silently skip
     // loadBuildSettings() below, leaving runtime values (resolution
     // dropdown, scene list, etc.) at their compile-time defaults.

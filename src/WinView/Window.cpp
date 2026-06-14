@@ -160,7 +160,7 @@ GLFWwindow* Window::makeWindow(Modularity::GraphicsBackend backend)
         // On Android the real EGL context is created by AndroidRuntime
         // against the ANativeWindow that the NativeActivity hands in. The
         // GLFW null backend can't create a GL context anyway, so ask for
-        // GLFW_NO_API — the resulting "window" is just a state holder
+        // GLFW_NO_API, so the resulting "window" is just a state holder
         // (callbacks, should-close flag, user pointer) that Engine code
         // expects to dereference.
         window = tryCreateVulkanWindow(); // GLFW_NO_API + invisible

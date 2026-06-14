@@ -14,6 +14,9 @@
 [submodule "src/ThirdParty/PhysX"]
 	path = src/ThirdParty/PhysX
 	url = https://github.com/NVIDIA-Omniverse/PhysX.git
+[submodule "src/ThirdParty/JoltPhysics"]
+	path = src/ThirdParty/JoltPhysics
+	url = https://github.com/jrouwe/JoltPhysics.git
 [submodule "src/ThirdParty/opengl_video_player"]
 	path = src/ThirdParty/opengl_video_player
 	url = https://github.com/tcottrill/opengl_video_player.git

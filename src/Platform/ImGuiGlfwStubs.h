@@ -17,4 +17,4 @@ float ImGui_ImplGlfw_GetContentScaleForMonitor(GLFWmonitor* monitor);
 
 // The raw glfw* functions used by the engine (glfwGetTime, glfwGetKey,
 // glfwSetWindowShouldClose, etc.) are provided by the real glfw3.h +
-// GLFW's null backend on Android — no stubs needed here.
+// GLFW's null backend on Android, so no stubs needed here.

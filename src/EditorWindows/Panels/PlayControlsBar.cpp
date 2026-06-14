@@ -263,7 +263,7 @@ void Engine::renderPlayControlsBar() {
   if (pausePressed) {
     isPaused = !isPaused;
     if (isPaused)
-      isPlaying = true; // placeholder: pausing implies we’re in play mode
+      isPlaying = true; // placeholder: pausing implies we're in play mode
   }
   if (specPressed) {
     ImGui::ClearActiveID();

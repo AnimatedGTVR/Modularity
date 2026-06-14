@@ -508,7 +508,7 @@ ProjectManager::ProjectManager() {
     if (const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath()) {
         appDataPath = fs::path(dataPath) / ".Modularity";
     } else {
-        // AndroidRuntime hasn't installed the activity pointer yet —
+        // AndroidRuntime hasn't installed the activity pointer yet, so fall back.
         // /data/local/tmp is world-writable and survives the activity
         // lifecycle, so use it as a defensive fallback rather than the
         // read-only "/".

@@ -747,8 +747,10 @@ void PhysicsSystem::simulate(float deltaTime, std::vector<SceneObject>& objects)
     // Sync actors to authoring transforms before stepping.
     // Zeroth pass: any SceneObject that just became hierarchyEnabled mid-play
     // (e.g. a parent group flipped on, or a script toggled the object back on)
-    // needs its actor lazily created — onPlayStart only spawns actors for
-    // objects that were enabled at play start.
+    // needs its actor lazily created, since onPlayStart only spawns actors for
+    // objects that were enabled at play start. future me: this whole zeroth pass exists because
+    // a script can flip an object on three seconds into play. kill it and those objects just sit
+    // there with no body, ghosting straight through the floor. ask me how i know.
     for (SceneObject& obj : objects) {
         if (mActors.find(obj.id) != mActors.end()) continue;
         if (!IsObjectEnabledInHierarchy(obj)) continue;

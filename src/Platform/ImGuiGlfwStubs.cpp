@@ -8,7 +8,7 @@
 // these resolve to inert symbols. Replace with a real Android-native ImGui
 // platform layer once we wire the runtime in Stage 2.
 
-// Both Init functions report success even though they do nothing — the
+// Both Init functions report success even though they do nothing, because the
 // engine's init path checks the return and would bail otherwise. The
 // runtime drives ImGui input via Android's event pump separately (see
 // Stage 2.5+ in docs/AndroidRuntime.md), so an inert "successful" init

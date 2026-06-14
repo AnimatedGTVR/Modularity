@@ -84,8 +84,8 @@ public:
 #if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
     const char* GetBroadPhaseLayerName(JPH::BroadPhaseLayer inLayer) const override {
         // JPH::BroadPhaseLayer::GetValue() isn't constexpr in Jolt 5.5, so
-        // a switch on these constants doesn't compile. if/else is fine —
-        // this is only called by the profiler.
+        // a switch on these constants doesn't compile. if/else is fine here,
+        // this is only ever called by the profiler.
         if (inLayer == JoltBPLayers::NON_MOVING) return "NON_MOVING";
         if (inLayer == JoltBPLayers::MOVING) return "MOVING";
         return "INVALID";
@@ -867,7 +867,7 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
                 bi.SetGravityFactor(rec.bodyId, gravityDisabled ? 0.0f : 1.0f);
                 rec.gravityDisabled = gravityDisabled;
             }
-            // Damping changes need a body lock — Jolt's BodyInterface doesn't
+            // Damping changes need a body lock, because Jolt's BodyInterface doesn't
             // expose damping setters in the convenience API.
             const bool dampingChanged =
                 std::abs(rec.linearDamping - obj.rigidbody.linearDamping) > 0.0001f ||
@@ -890,9 +890,11 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
                     }
                     if (massChanged) {
                         if (auto* mp = body.GetMotionPropertiesUnchecked()) {
-                            // ScaleToMass adjusts both mass and inertia
-                            // proportionally — the only correct way to do
-                            // a live mass change without rebuilding the body.
+                            // ScaleToMass adjusts both mass AND inertia proportionally.
+                            // it's the only correct way to do a live mass change without
+                            // rebuilding the whole body. future me: do NOT "simplify" this
+                            // into just setting the mass, the inertia tensor desyncs and your
+                            // boxes start spinning like they're possessed. trust me on this one.
                             mp->ScaleToMass(std::max(0.01f, massKg));
                         }
                         rec.massKg = massKg;
@@ -930,11 +932,13 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
     }
 
     // Fixed-step physics with render-time interpolation between ticks.
-    // Without interpolation, render frames falling between two physics
-    // steps would see no pose change — the body appears to freeze for a
-    // few render frames then jump on the next step. We snapshot prev/curr
+    // without interpolation, render frames falling between two physics
+    // steps would see no pose change, so the body appears to freeze for a
+    // few render frames then jump on the next step. we snapshot prev/curr
     // around the step(s) and lerp between them based on how far into the
     // *next* step the accumulator has progressed.
+    // future me: the prev/curr snapshot is the whole trick here. rip out the lerp and run physics
+    // straight off the render dt and everything gets jittery as hell on high-refresh monitors. don't.
     const float fixedDt = std::clamp(mProjectSettings.fixedTimestep, 0.001f, 0.1f);
     mTimeAccumulator += deltaTime;
     constexpr int kMaxSubsteps = 4;

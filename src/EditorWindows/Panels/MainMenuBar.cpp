@@ -770,8 +770,8 @@ void Engine::buildWorkspaceLayout(WorkspaceMode mode) {
 
 // Shared SceneOBJ creation entries used by the "SceneOBJ" menu bar entry and
 // the hierarchy create popups. Category names are ModuPAK extension points
-// (packages inject entries by category name, especially "Lights") — keep them
-// stable.
+// (packages inject entries by category name, especially "Lights"), so keep them
+// stable. Future you renaming a category WILL break someone's ModuPAK.
 void Engine::renderSceneObjectCreateMenu() {
   // TODO: "Search SceneOBJ..." quick-create filter, once the editor has a
   // reusable in-menu search pattern.
@@ -912,7 +912,7 @@ void Engine::renderSceneObjectCreateMenu() {
   }
 
   // "Lights" is a public create-menu category that ModuPAKs (e.g. the 2D
-  // world package) extend — do not rename it.
+  // world package) extend, so do not rename it.
   if (ImGui::BeginMenu("Lights")) {
     if (ImGui::MenuItem("Directional Light"))
       addObject(ObjectType::DirectionalLight, "Directional Light");

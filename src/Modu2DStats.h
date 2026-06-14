@@ -1,6 +1,6 @@
 #pragma once
 
-// Modu2DStats — lightweight per-frame counters for the immediate-mode 2D /
+// Modu2DStats: lightweight per-frame counters for the immediate-mode 2D /
 // editor-viewport rendering path.
 //
 // The normal GL scene renderer feeds the profiler via Renderer::RenderStats,

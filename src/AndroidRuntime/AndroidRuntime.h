@@ -23,7 +23,7 @@ void Run(android_app* app);
 // inside Engine.cpp).
 
 // Drain pending Android lifecycle + input events. Returns false if the
-// app has been asked to shut down — engine should break out of its loop.
+// app has been asked to shut down, meaning the engine should break out of its loop.
 bool PollEvents();
 
 // Present the current backbuffer via eglSwapBuffers. No-op (returns

@@ -2,7 +2,7 @@
 
 #ifdef __ANDROID__
 
-// Android crash reporter is just a logcat sink — the engine runs as a
+// Android crash reporter is just a logcat sink, because the engine runs as a
 // NativeActivity .so, so we don't relaunch a separate reporter process,
 // don't open a GLFW window, and don't generate a desktop minidump UI.
 // AppendLogLine routes to __android_log_print; the other entries are

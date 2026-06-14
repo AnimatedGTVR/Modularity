@@ -4,7 +4,7 @@
 
 // Camera's input-poll methods take a window handle so the camera can ask
 // GLFW about key state on desktop. Android has no window-keyed keyboard
-// polling — the impl in Camera.cpp guards those paths with #ifdef __ANDROID__
+// polling, so the impl in Camera.cpp guards those paths with #ifdef __ANDROID__
 // and the handle is only forward-declared here so this header stays
 // includable in the Android NDK build (which has no GLFW headers).
 struct GLFWwindow;

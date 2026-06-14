@@ -1,13 +1,4 @@
----
-title: Scripting (ModuCPP, C++, C, and C#)
-description: Entry point for Modularity scripting documentation, with focused ModuCPP manual and API reference pages plus native and managed bridge notes.
----
-
 # Scripting (ModuCPP, C++, C, and C#)
-## *Note: Written by Anémunt and Claude Code*
-
----
-
 Modularity supports four scripting layers:
 | Layer | Primary use | Main docs |
 | --- | --- | --- |

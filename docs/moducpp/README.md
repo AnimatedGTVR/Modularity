@@ -1,10 +1,11 @@
-# ModuCPP Documentation
+# NOTE: This ModuCPP folder is made for AI Agents in mind!
+## see `https://moduengine.xyz/docs` for a more format correct version.
 
+# ModuCPP Documentation
 ## Overview
 ModuCPP is the scripting layer used by Modularity for gameplay, tool, and inspector-facing logic. You write scripts in a C#-like syntax, but the scripting system does not run on a separate managed gameplay VM. Instead, the ModuCPP transpiler lowers supported script syntax into generated `C++`, and the result is compiled into the same native runtime as the rest of the engine.
 
 That design shapes the way the language feels:
-
 - scripts read like high-level engine code rather than raw `C++`
 - the runtime stays native and engine-facing
 - the supported syntax is intentional rather than open-ended
@@ -14,11 +15,9 @@ If you are approaching ModuCPP from Unity, Unreal Blueprints, or plain `C++`, it
 
 ## Why ModuCPP Exists
 Modularity already has a native runtime, native scene objects, native editor systems, and native gameplay helpers. Writing every small gameplay behavior directly in low-level engine code is possible, but it pushes everyday scripting work into a slower and more repetitive workflow.
-
 ModuCPP exists to solve that gap.
 
 Instead of forcing every gameplay script to manage native boilerplate, the language gives you:
-
 - a small set of recognized base classes such as `ModuNode`
 - declarative public fields that map cleanly into inspector and serialization workflows
 - well-known lifecycle hooks such as `Begin()` and `Update()`
@@ -29,21 +28,17 @@ That is why the documentation is split into a manual and an API reference. Most 
 
 ## When To Use This Documentation
 Use this documentation set in two passes.
-
 Read the manual first when you are still learning how ModuCPP scripts are organized, when to use public fields, how modules are separated, and how runtime hooks behave over time. The manual pages are written as teaching material. They explain what a feature is for before they explain syntax.
 
 Use the API reference when you already know what area of the scripting surface you need and you want details about exact types, helper facades, lifecycle hooks, or module-specific members.
-
 That workflow mirrors professional engine documentation for a reason. A direct type reference is only useful once the higher-level model is already clear.
 
 ## How ModuCPP Works
 At a high level, the scripting workflow looks like this:
-
 1. You write a `.moducpp` script and import the modules it needs.
 2. The transpiler recognizes supported declarations, hooks, fields, attributes, and helper access.
 3. The script is lowered into generated `C++` code that matches the engine's native runtime model.
 4. The generated code is compiled and used by the runtime/editor like any other native script logic.
-
 This means there are two important constraints to keep in mind.
 
 First, every documented feature must correspond to something the transpiler and runtime actually support. The docs in this section intentionally avoid inventing “future” language features that are not implemented.

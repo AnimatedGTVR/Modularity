@@ -107,9 +107,9 @@ static uint64_t computeAIPathSourceHash(const std::vector<SceneObject>& objects,
 }
 
 // Source footprint: full rotated OBB (mesh- or collider-derived) plus a precomputed world AABB
-// for cell-range queries and Y-overlap filtering. We keep both representations so the bake can:
+// for cell-range queries and Y-overlap filtering. We keep both shapes around so the bake can:
 //   1) use the AABB for broad-phase cell range,
-//   2) use the OBB for narrow-phase point-in-shadow testing — true rotation-aware carving.
+//   2) use the OBB for narrow-phase point-in-shadow testing (the actual rotation-aware carving).
 struct BakeFootprint {
     glm::vec3 worldCenter = glm::vec3(0.0f); // world position of OBB center (incl. collider/mesh offset)
     glm::vec3 halfLocal = glm::vec3(0.5f);   // half-extents in local frame
@@ -220,8 +220,11 @@ static void footprintAABB(const BakeFootprint& fp, glm::vec2& outMin, glm::vec2&
 }
 
 // True XZ-shadow containment for an arbitrarily rotated OBB.
-// Tests whether the world-Y line through (wx, wz) intersects the local AABB via the slabs method —
-// this is the exact projection of the rotated OBB onto the XZ plane, padded by `xzPad` world units.
+// Tests whether the world-Y line through (wx, wz) intersects the local AABB via the slabs method.
+// that gives us the exact projection of the rotated OBB onto the XZ plane, padded by `xzPad` world units.
+// for future me: this slab math is load-bearing for rotation-aware carving. i KNOW it looks like
+// overkill next to a plain AABB check. it is not. rotated obstacles stop carving the second you
+// "clean this up". please don't.
 static bool xzShadowContains(const BakeFootprint& fp, float wx, float wz, float xzPad = 0.0f) {
     const glm::vec3 worldRel(wx - fp.worldCenter.x, 0.0f, wz - fp.worldCenter.z);
     const glm::mat3 RT = glm::transpose(fp.rotation);
@@ -397,7 +400,7 @@ bool Engine::bakeAIPathGrid(bool logResult) {
     }
 
     // 2) Carve obstacles, but only against ground that vertically intersects the obstacle.
-    //    This is the Y-overlap filter — floating/buried obstacles no longer punch holes.
+    //    This is the Y-overlap filter, so floating/buried obstacles stop punching holes in the floor.
     const float verticalSlack = std::max(0.05f, aiPathGrid.cellSize * 0.5f);
     for (const BakeFootprint& fp : obstacleFootprints) {
         glm::vec2 fmin, fmax;
@@ -563,7 +566,7 @@ bool Engine::findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vect
         return std::max(0.1f, aiPathGrid.cellCost[static_cast<size_t>(idx)]);
     };
     // Snap to nearest cell satisfying the (optional) clearance predicate. Falls back to plain
-    // walkable if no padded cell is reachable — better an off-by-padding path than no path.
+    // walkable if no padded cell is reachable, since an off-by-padding path beats no path at all.
     auto nearestSatisfying = [&](int startIdx, bool requireClearance) {
         if (startIdx < 0 || startIdx >= cellCount) return -1;
         auto ok = [&](int idx) {
@@ -746,7 +749,7 @@ bool Engine::findAIPath(const glm::vec3& start, const glm::vec3& goal, std::vect
         return glm::vec3(xz.x, cellGroundY(idx), xz.y);
     };
 
-    // Walkability test for arbitrary world XZ — honors the clearance padding so smoothed
+    // Walkability test for arbitrary world XZ. Honors the clearance padding so smoothed
     // segments stay at least `padCells` away from any wall.
     auto pointClear = [&](float wx, float wz) {
         int ix = static_cast<int>(std::floor((wx - aiPathGrid.origin.x) / aiPathGrid.cellSize));

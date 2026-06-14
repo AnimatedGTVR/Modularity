@@ -1191,26 +1191,26 @@ void Engine::renderLauncher() {
     // Smooth S-curve ease so the zoom feels like it accelerates and decelerates.
     const float transitionEase = EaseInOutCubic(transitionT);
 
-    // "Loading screen" expansion — held at fully-expanded for the entire duration of
+    // "Loading screen" expansion. We hold it fully-expanded for the entire duration of
     // the project/scene load, not just the 0.42s zoom. Otherwise the cards pop back
-    // into view as soon as the zoom timer elapses while assets are still loading.
+    // into view the instant the zoom timer elapses while assets are still loading. Ugly.
     const bool isLoadingActive = projectLoadInProgress || sceneLoadInProgress;
     float loadingScreenT = launcherTransitionActive ? transitionEase : 0.0f;
     if (!launcherTransitionActive && isLoadingActive && launcherTransitionStartTime > 0.0) {
         loadingScreenT = 1.0f;
     }
-    // Launcher content fades out at the same pace as the rect grows — early in the
+    // Launcher content fades out at the same pace as the rect grows. Early in the
     // transition the cards are still partly visible *under* the growing rect, then
-    // they're gone by the time the rect reaches fullscreen. Going faster (e.g. 1.6×)
-    // makes the cards pop out before the rect is large enough to hide them, which
-    // reads as a snap.
+    // they're gone by the time the rect reaches fullscreen. Fading faster (e.g. 1.6x)
+    // makes the cards vanish before the rect is large enough to hide them, which
+    // reads as an ugly snap. Don't.
     const float transitionAlpha = ImClamp(1.0f - loadingScreenT * 1.1f, 0.0f, 1.0f);
     const float menuBuildT = launcherIntroFinished ? 1.0f : EaseOutCubic(introState.contentRevealT);
     const float introMenuScale = launcherIntroFinished ? 1.0f : ImLerp(1.04f, 1.0f, menuBuildT);
     const float uiScale = (1.0f + 0.04f * transitionEase) * introMenuScale;
     const float contentAlpha = launcherIntroFinished ? 1.0f : ImClamp(0.10f + introState.contentRevealT * 0.90f, 0.0f, 1.0f);
-    // Static header logo+text only become visible at the end of the drift — avoids any
-    // double-rendering with the intro overlay that lands at the same position.
+    // Static header logo+text only become visible at the end of the drift, which avoids
+    // double-rendering with the intro overlay that lands at the same spot.
     const float headerStaticAlpha = launcherIntroFinished ? 1.0f : ImClamp((introState.driftT - 0.88f) / 0.12f, 0.0f, 1.0f);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -1414,8 +1414,8 @@ void Engine::renderLauncher() {
                           ImGui::GetColorU32(ImVec4(0.18f, 0.21f, 0.27f, 1.0f)),
                           1.0f);
 
-        // ---- Static header brand (logo + "Modularity") — fades in at end of intro to
-        // avoid colliding with the intro overlay text that lands on this exact spot. ----
+        // ---- Static header brand (logo + "Modularity"). Fades in at end of intro so it
+        // doesn't collide with the intro overlay text that lands on this exact spot. ----
         if (headerStaticAlpha > 0.001f) {
             if (logoTexId != static_cast<ImTextureID>(0)) {
                 drawList->AddImage(logoTexId,
@@ -1505,7 +1505,7 @@ void Engine::renderLauncher() {
                                         ImGui::GetColorU32(ImVec4(0.13f, 0.16f, 0.22f, 0.65f)),
                                         7.0f * uiScale);
             }
-            // Soft glow behind the selected tab — gently breathes in and out.
+            // Soft glow behind the selected tab. Gently breathes in and out.
             if (selected) {
                 const float pulse = 0.5f + 0.5f * std::sin((float)ImGui::GetTime() * 2.0f);
                 const float glowAlpha = ImLerp(0.10f, 0.22f, pulse);
@@ -1641,7 +1641,7 @@ void Engine::renderLauncher() {
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * sectionAnimEase);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sectionInnerPadding);
         // Force transparent ChildBg for the section AND its subpanels so the rounded
-        // inner shell does not render — the cards float directly on the lighter gradient.
+        // inner shell does not render, so the cards float directly on the lighter gradient.
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::BeginChild("LauncherActiveSection",
                           ImVec2(contentW, contentH),
@@ -2674,7 +2674,7 @@ void Engine::renderLauncher() {
 
         // ---------------------------------------------------------------------
         // Intro overlay: logo + letter pop-in at center, drift to top-left header.
-        // The static header brand fades in only after this drift completes — so
+        // The static header brand fades in only after this drift completes, so
         // there is never a duplicate "Modularity" on screen.
         // ---------------------------------------------------------------------
         if (!launcherIntroFinished && introState.textAlpha > 0.001f) {
@@ -4030,7 +4030,7 @@ void Engine::renderProjectBrowserPanel() {
             }
         };
 
-        // Top toolbar — save + auto-save indicator
+        // Top toolbar: save + auto-save indicator
         if (ImGui::Button("Save Asset")) {
             writeActionsFile();
             addConsoleMessage("Saved input_actions.modu", ConsoleMessageType::Info);

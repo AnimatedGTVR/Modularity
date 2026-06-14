@@ -554,7 +554,7 @@ void appendFontReport(std::string* outReport, const std::string& message) {
     *outReport += message;
 }
 
-// Forward declaration — defined below loadModularityUiFont. Both this
+// Forward declaration. The actual definition lives below loadModularityUiFont. Both this
 // emoji-merge function and the main font loader need it.
 static ImFont* AddFontFromAssetSourceTTF(ImGuiIO& io,
                                          const std::string& assetPath,
@@ -600,6 +600,12 @@ bool mergeModularityEmojiFont(ImGuiIO& io, float fontSize, std::string* outRepor
         }
 
         const std::string emojiPathStr = emojiPath.generic_string();
+        // for future me: every single line of this config is here for a reason, do NOT trim it.
+        // MergeMode glues the emoji glyphs onto the base font (drop it = emojis become a separate
+        // font nobody ever selects). LoadColor + Bitmap = colored bitmap strikes (drop them =
+        // sad black-and-white tofu). and that RasterizerDensity ratio below is the ONLY thing that
+        // stops NotoColorEmoji's giant 109px strike from rendering the size of a dinner plate.
+        // i tuned these numbers by hand and i refuse to do it twice. :sob:
         ImFontConfig emojiConfig;
         emojiConfig.MergeMode = true;
         emojiConfig.FontLoaderFlags |= ImGuiFreeTypeLoaderFlags_LoadColor;

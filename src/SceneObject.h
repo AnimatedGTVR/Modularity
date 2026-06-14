@@ -637,7 +637,7 @@ struct UIElementComponent {
     glm::vec4 textColor = glm::vec4(0.0f);        // label/text color override
     float fontSize = 0.0f;                         // explicit font size in px (0 = inherit textScale)
     int sortingOrder = 0;                          // draw order within layer
-    // Runtime interaction state — set each frame by the rendering pass
+    // Runtime interaction state, set each frame by the rendering pass
     bool uiHovered = false;
     bool uiActive = false;
 };
