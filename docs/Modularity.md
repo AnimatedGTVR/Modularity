@@ -3,7 +3,7 @@ New here? Welcome! This is the big-picture tour of Modularity: how the engine fi
 
 A couple of mental shortcuts to get you going:
 - If you've touched **Unity** before, a lot will feel familiar. You build a scene out of objects, each object carries components (renderer, light, collider, script, etc.), and scripts bring it all to life.
-- If you're coming from something like **Scratch**, it's the same "snap behaviors onto things and press play" idea, just with a lot more power under the hood and real code when you want it.
+- If you're coming from something like **Scratch**, it's the same "snap behaviors onto things and press play" idea, just with a lot more power under the hood and real code (ModuCPP is basically just simplified C# if you're familiar with that term).
 
 **Where to start:** skim section 1 for the lay of the land, build the engine with section 2, then jump to whatever you actually want to do (make a scene, write a script, add physics). You don't have to read this top to bottom.
 

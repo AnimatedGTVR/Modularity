@@ -198,8 +198,8 @@ elseif(MODULARITY_CPU_TARGET_NORMALIZED STREQUAL "x86-64-v4")
 elseif(MODULARITY_CPU_TARGET_NORMALIZED STREQUAL "native")
     # Developer-only: tune for the building machine. NEVER ship this default.
     set(MODULARITY_ARCH_FLAGS -march=native -mtune=native)
-    # Let Jolt enable up to AVX2 to match a typical modern dev CPU; AVX-512
-    # stays opt-in via MODULARITY_JOLT_AVX512.
+    # Enable Jolt's explicit SIMD paths through AVX2. The compiler may still
+    # emit AVX-512 from -march=native when the build host supports it.
     set(MODULARITY_JOLT_USE_SSE4_1 ON)
     set(MODULARITY_JOLT_USE_SSE4_2 ON)
     set(MODULARITY_JOLT_USE_AVX ON)
@@ -1043,14 +1043,18 @@ if(MODULARITY_ENABLE_JOLT)
         set(USE_F16C   ${MODULARITY_JOLT_USE_F16C}   CACHE BOOL "" FORCE)
         set(USE_FMADD  ${MODULARITY_JOLT_USE_FMADD}  CACHE BOOL "" FORCE)
 
-        # AVX-512 follows the CPU target, but can additionally be forced on for
-        # a dev box known to run only locally-built binaries (e.g. Zen 4).
-        option(MODULARITY_JOLT_AVX512 "Force-build Jolt with AVX-512 instructions (dev-only, not for releases)" OFF)
-        if(MODULARITY_JOLT_AVX512 OR MODULARITY_JOLT_USE_AVX512)
-            set(USE_AVX512 ON CACHE BOOL "" FORCE)
-        else()
-            set(USE_AVX512 OFF CACHE BOOL "" FORCE)
+        # Keep the selected CPU target authoritative. Older builds exposed a
+        # separate MODULARITY_JOLT_AVX512 cache option, which could silently turn
+        # a later baseline rebuild back into an AVX-512 binary.
+        if(DEFINED MODULARITY_JOLT_AVX512)
+            if(MODULARITY_JOLT_AVX512)
+                message(WARNING
+                    "MODULARITY_JOLT_AVX512 is obsolete and has been ignored. "
+                    "Use MODULARITY_CPU_TARGET=x86-64-v4 for an AVX-512 build.")
+            endif()
+            unset(MODULARITY_JOLT_AVX512 CACHE)
         endif()
+        set(USE_AVX512 ${MODULARITY_JOLT_USE_AVX512} CACHE BOOL "" FORCE)
     endif()
 
     # On Android (aarch64) the x86 SIMD options must be off, otherwise Jolt
