@@ -376,6 +376,69 @@ namespace {
         };
     }
 
+    static bool isModuMakoSource(const std::string& text) {
+        return text.find("using ModuMAKO;") != std::string::npos ||
+               (text.find("script \"") != std::string::npos && text.find(": ModuNode;") != std::string::npos);
+    }
+
+    static std::vector<std::string> moduMakoBuiltins() {
+        return {
+            "ModuMAKO", "ModuEngine", "ModuInput", "ModuNode", "SceneObj",
+            "Vector2", "Vector3", "Vector4", "Color", "List", "Array",
+            "MovementSettings", "MovementState", "MovementDebug",
+            "StandaloneMovementSettings", "StandaloneMovementState", "StandaloneMovementDebug",
+            "Begin", "TickUpdate", "Update", "Spec", "TestEditor",
+            "OnCollideEnter", "OnCollideHold", "OnCollideExit",
+            "EnsureRigidbody", "EnsureCapsuleCollider", "TickStandaloneMovement",
+            "AddRigidbodyImpulse", "SetPosition", "AddLog", "Type", "obj",
+            "Input.WASDMovement", "Input.ButtonHeld", "Input.ButtonDown", "Input.IsKeyDown",
+            "push", "pop", "first", "last", "has", "len", "range", "assert"
+        };
+    }
+
+    static std::unordered_map<std::string, std::string> moduMakoBuiltinSignatures() {
+        return {
+            {"Begin", "Begin()"},
+            {"TickUpdate", "TickUpdate(dt)"},
+            {"Update", "Update(dt)"},
+            {"EnsureRigidbody", "EnsureRigidbody(dynamic, useGravity)"},
+            {"EnsureCapsuleCollider", "EnsureCapsuleCollider(height, radius)"},
+            {"TickStandaloneMovement", "TickStandaloneMovement(state, settings, dt, debug)"},
+            {"AddRigidbodyImpulse", "AddRigidbodyImpulse(impulse)"},
+            {"SetPosition", "SetPosition(position)"},
+            {"AddLog", "AddLog(message, type)"},
+            {"WASDMovement", "Input.WASDMovement()"},
+            {"ButtonHeld", "Input.ButtonHeld(action)"},
+            {"ButtonDown", "Input.ButtonDown(action)"},
+            {"IsKeyDown", "Input.IsKeyDown(key)"},
+            {"push", "push(collection, value)"},
+            {"pop", "pop(collection)"},
+            {"first", "first(collection)"},
+            {"last", "last(collection)"},
+            {"has", "has(collection, value)"},
+            {"len", "len(collection)"},
+            {"range", "range(stop) or range(start, stop, step)"},
+            {"assert", "assert(condition, message)"}
+        };
+    }
+
+    static std::vector<std::string> extractMakoVariables(const std::string& text) {
+        std::unordered_set<std::string> unique;
+        static const std::regex assignment(R"(^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=)");
+        static const std::regex loop(R"(^\s*for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b)");
+        std::istringstream input(text);
+        std::string line;
+        std::smatch match;
+        while (std::getline(input, line)) {
+            if (std::regex_search(line, match, assignment) || std::regex_search(line, match, loop)) {
+                if (match.size() > 1 && match[1].str().size() >= 2) unique.insert(match[1].str());
+            }
+        }
+        std::vector<std::string> out(unique.begin(), unique.end());
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
     static std::vector<std::string> extractFunctionIdentifiers(const std::string& text,
                                                                const std::unordered_set<std::string>& keywords) {
         static const std::unordered_set<std::string> kSkip = {
@@ -651,8 +714,15 @@ const std::unordered_set<std::string>& ScriptLanguageService::keywordsForLanguag
         "this", "throw", "to", "true", "try", "typedef", "typeid", "typename", "union", "unsigned",
         "using", "virtual", "void", "volatile", "while", "xor", "xor_eq"
     };
+    static const std::unordered_set<std::string> kMakoKeywords = {
+        "and", "as", "break", "continue", "else", "false", "for", "if", "in", "none",
+        "not", "or", "return", "script", "true", "using", "while"
+    };
+    static const std::unordered_set<std::string> kPlainTextKeywords;
 
     switch (language) {
+        case ScriptLanguageServiceLanguage::PlainText:
+            return kPlainTextKeywords;
         case ScriptLanguageServiceLanguage::C:
             return kCKeywords;
         case ScriptLanguageServiceLanguage::GLSL:
@@ -662,6 +732,8 @@ const std::unordered_set<std::string>& ScriptLanguageService::keywordsForLanguag
             return kLuaKeywords;
         case ScriptLanguageServiceLanguage::ModuCPP:
             return kModuCppKeywords;
+        case ScriptLanguageServiceLanguage::Mako:
+            return kMakoKeywords;
         case ScriptLanguageServiceLanguage::Cpp:
         default:
             return kCppKeywords;
@@ -675,13 +747,19 @@ ScriptLanguageServiceLanguage ScriptLanguageService::detectLanguage(const fs::pa
     if (ext == ".hlsl" || ext == ".shader") return ScriptLanguageServiceLanguage::HLSL;
     if (ext == ".lua") return ScriptLanguageServiceLanguage::Lua;
     if (ext == ".moducpp") return ScriptLanguageServiceLanguage::ModuCPP;
-    return ScriptLanguageServiceLanguage::Cpp;
+    if (ext == ".mko" || ext == ".modumako") return ScriptLanguageServiceLanguage::Mako;
+    if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c++" ||
+        ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".cs") {
+        return ScriptLanguageServiceLanguage::Cpp;
+    }
+    return ScriptLanguageServiceLanguage::PlainText;
 }
 
 bool ScriptLanguageService::isCompilableScriptPath(const fs::path& path) {
     const std::string ext = extensionLower(path);
     return ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" ||
-           ext == ".moducpp" || ext == ".cs" || ext == ".csproj";
+           ext == ".moducpp" || ext == ".mko" || ext == ".modumako" ||
+           ext == ".cs" || ext == ".csproj";
 }
 
 static std::vector<std::string> extractQualifiedCallIdentifiers(const std::string& text) {
@@ -740,7 +818,7 @@ ScriptLanguageServiceProjectData ScriptLanguageService::scanProjectFiles(const f
     ScriptLanguageServiceProjectData result;
 
     static const std::unordered_set<std::string> kValidExt = {
-        ".cpp", ".cc", ".cxx", ".c", ".moducpp", ".hpp", ".h", ".inl",
+        ".cpp", ".cc", ".cxx", ".c", ".moducpp", ".mko", ".modumako", ".hpp", ".h", ".inl",
         ".glsl", ".vert", ".frag", ".hlsl", ".shader", ".lua"
     };
     static const std::unordered_set<std::string> kContextExt = {
@@ -952,12 +1030,17 @@ ScriptLanguageServiceDocumentData ScriptLanguageService::analyzeDocument(const f
                                                                         const std::string& text) {
     ScriptLanguageServiceDocumentData result;
     result.language = detectLanguage(path);
+    if (result.language == ScriptLanguageServiceLanguage::PlainText) {
+        return result;
+    }
     const auto& keywords = keywordsForLanguage(result.language);
+    result.isModuMako = result.language == ScriptLanguageServiceLanguage::Mako && isModuMakoSource(text);
     result.identifiers = extractIdentifiers(text, keywords);
     result.functions = extractFunctionIdentifiers(text, keywords);
     result.defines = extractDefineIdentifiers(text);
     result.symbols = buildSymbolList(text);
     result.variables = extractVariableIdentifiers(text, result.language, keywords);
+    if (result.isModuMako) result.variables = extractMakoVariables(text);
     result.moducppImports = result.language == ScriptLanguageServiceLanguage::ModuCPP
         ? extractModuCppImports(text)
         : std::vector<std::string>{};
@@ -972,10 +1055,21 @@ ScriptLanguageServiceDocumentData ScriptLanguageService::analyzeDocument(const f
         result.moducppCompletions.assign(completions.begin(), completions.end());
         std::sort(result.moducppCompletions.begin(), result.moducppCompletions.end());
     }
+    if (result.isModuMako) {
+        std::unordered_set<std::string> completions(result.moducppCompletions.begin(), result.moducppCompletions.end());
+        for (const auto& entry : moduMakoBuiltins()) completions.insert(entry);
+        result.moducppCompletions.assign(completions.begin(), completions.end());
+        std::sort(result.moducppCompletions.begin(), result.moducppCompletions.end());
+    }
     result.functionSignatures = extractFunctionSignatures(text, keywords);
     if (result.language == ScriptLanguageServiceLanguage::ModuCPP) {
         for (const auto& [name, signature] : moduCppBuiltinSignatures()) {
             result.functionSignatures.emplace(name, signature);
+        }
+    }
+    if (result.isModuMako) {
+        for (const auto& [name, signature] : moduMakoBuiltinSignatures()) {
+            result.functionSignatures.insert_or_assign(name, signature);
         }
     }
     return result;

@@ -69,8 +69,10 @@ namespace {
             ext == ".shader" || ext == ".modushader") {
             return FileCategory::Shader;
         }
-        if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".h" || ext == ".hpp" ||
-            ext == ".lua" || ext == ".py" || ext == ".cs") {
+        if (ext == ".cpp" || ext == ".c" || ext == ".moducpp" || ext == ".modumako" || ext == ".mko" || ext == ".h" || ext == ".hpp" ||
+            ext == ".lua" || ext == ".py" || ext == ".cs" || ext == ".js" || ext == ".ts" ||
+            ext == ".rb" || ext == ".rs" || ext == ".go" || ext == ".java" || ext == ".swift" ||
+            ext == ".kt" || ext == ".kts" || ext == ".sh") {
             return FileCategory::Script;
         }
         if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") {

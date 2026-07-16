@@ -26,6 +26,74 @@
 #endif
 
 namespace {
+    std::string quoteShellArgument(const fs::path& path) {
+#if defined(_WIN32)
+        std::string value = path.string();
+        std::string quoted = "\"";
+        for (char c : value) {
+            if (c == '"') quoted.push_back('\\');
+            quoted.push_back(c);
+        }
+        return quoted + "\"";
+#else
+        std::string quoted = "'";
+        for (char c : path.string()) {
+            if (c == '\'') quoted += "'\\''";
+            else quoted.push_back(c);
+        }
+        return quoted + "'";
+#endif
+    }
+
+    std::optional<fs::path> findMakoCompiler() {
+#if defined(_WIN32)
+        constexpr char pathSeparator = ';';
+        constexpr const char* executableName = "mko.exe";
+#else
+        constexpr char pathSeparator = ':';
+        constexpr const char* executableName = "mko";
+#endif
+        const char* configured = std::getenv("MODUMAKO_COMPILER");
+        if (configured && *configured) {
+            fs::path candidate(configured);
+            std::error_code ec;
+            if (fs::exists(candidate, ec) && !ec) return candidate;
+        }
+
+        std::vector<fs::path> candidates;
+        std::error_code ec;
+        const fs::path cwd = fs::current_path(ec);
+        if (!ec) {
+            candidates.push_back(cwd / "Tools" / executableName);
+            candidates.push_back(cwd / executableName);
+            fs::path current = cwd;
+            while (!current.empty()) {
+                candidates.push_back(current / "MAKO" / "bin" / executableName);
+                candidates.push_back(current.parent_path() / "MAKO" / "bin" / executableName);
+                const fs::path parent = current.parent_path();
+                if (parent == current) break;
+                current = parent;
+            }
+        }
+
+        const char* pathEnv = std::getenv("PATH");
+        if (pathEnv) {
+            std::stringstream paths(pathEnv);
+            std::string directory;
+            while (std::getline(paths, directory, pathSeparator)) {
+                if (!directory.empty()) candidates.emplace_back(fs::path(directory) / executableName);
+            }
+        }
+
+        for (const fs::path& candidate : candidates) {
+            ec.clear();
+            if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec) && !ec) {
+                return fs::absolute(candidate, ec);
+            }
+        }
+        return std::nullopt;
+    }
+
     fs::path makeAbsolute(const fs::path& base, const fs::path& value) {
         if (value.is_absolute()) return value;
         std::error_code ec;
@@ -936,6 +1004,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     outCommands.linkBinaryPath = config.outDir / ".staging" / relativeParent / (baseName + ".dll");
 #else
     binaryPath /= baseName + ".so";
+    outCommands.linkBinaryPath = config.outDir / ".staging" / relativeParent / (baseName + ".so");
     dependencyPath = config.outDir / relativeParent / (baseName + ".d");
 #endif
 
@@ -1124,20 +1193,48 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         return spec;
     };
 
+    fs::path authoringSourcePath = scriptAbs;
+    const bool isMakoSource = extLower == ".mko" || extLower == ".modumako";
+    if (isMakoSource) {
+        const std::optional<fs::path> makoCompiler = findMakoCompiler();
+        if (!makoCompiler) {
+            error = "ModuMAKO compiler not found. Install 'mko' on PATH or set MODUMAKO_COMPILER.";
+            return false;
+        }
+
+        authoringSourcePath = config.outDir / relativeParent / (baseName + ".modumako.gen.moducpp");
+        std::error_code makoDirError;
+        fs::create_directories(authoringSourcePath.parent_path(), makoDirError);
+        if (makoDirError) {
+            error = "Unable to create ModuMAKO output directory: " + makoDirError.message();
+            return false;
+        }
+
+        std::string makoLog;
+        const std::string makoCommand = quoteShellArgument(*makoCompiler) + " modumako " +
+                                        quoteShellArgument(scriptAbs) + " -o " +
+                                        quoteShellArgument(authoringSourcePath) + " 2>&1";
+        if (!runCommand(makoCommand, makoLog)) {
+            error = "ModuMAKO transpile failed" +
+                    (makoLog.empty() ? std::string(".") : std::string(":\n") + makoLog);
+            return false;
+        }
+    }
+
     std::string scriptSource;
-    if (!readFileToString(scriptAbs, scriptSource)) {
-        error = "Unable to read script file: " + scriptAbs.string();
+    if (!readFileToString(authoringSourcePath, scriptSource)) {
+        error = "Unable to read script file: " + authoringSourcePath.string();
         return false;
     }
 
     fs::path transpiledPath;
     fs::path compileSourcePath = scriptAbs;
-    if (ModuCPPTranspiler::shouldTranspile(scriptAbs, scriptSource)) {
+    if (ModuCPPTranspiler::shouldTranspile(authoringSourcePath, scriptSource)) {
         ModuCPPTranspileResult transpiled;
         ModuCPPTranspiler transpiler;
         bool transpileOk = false;
         try {
-            transpileOk = transpiler.transpile(scriptAbs, scriptSource, transpiled, error);
+            transpileOk = transpiler.transpile(authoringSourcePath, scriptSource, transpiled, error);
         } catch (const std::regex_error& e) {
             error = std::string("ModuCPP transpile failed in regex processing: ") + e.what();
             return false;
@@ -1774,8 +1871,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << secondaryDependencyPath.string() << "\"";
         compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
+        const fs::path producedBinaryPath = outCommands.linkBinaryPath.empty() ? binaryPath : outCommands.linkBinaryPath;
         linkCmd << posixScriptLinkDriver(config) << " -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
-                << "\" -o \"" << binaryPath.string() << "\"";
+                << "\" -o \"" << producedBinaryPath.string() << "\"";
         for (const auto& lib : config.linuxLinkLibs) {
             linkCmd << " " << formatLinkFlag(lib);
         }
@@ -1930,7 +2028,8 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
-        linkCmd << posixScriptLinkDriver(config) << " -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
+        const fs::path producedBinaryPath = outCommands.linkBinaryPath.empty() ? binaryPath : outCommands.linkBinaryPath;
+        linkCmd << posixScriptLinkDriver(config) << " -shared \"" << objectPath.string() << "\" -o \"" << producedBinaryPath.string() << "\"";
         for (const auto& lib : config.linuxLinkLibs) {
             linkCmd << " " << formatLinkFlag(lib);
         }

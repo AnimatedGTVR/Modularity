@@ -7,12 +7,14 @@
 #include <unordered_set>
 
 enum class ScriptLanguageServiceLanguage {
+    PlainText,
     Cpp,
     C,
     GLSL,
     HLSL,
     Lua,
-    ModuCPP
+    ModuCPP,
+    Mako
 };
 
 struct ScriptLanguageServiceProjectData {
@@ -26,7 +28,8 @@ struct ScriptLanguageServiceProjectData {
 };
 
 struct ScriptLanguageServiceDocumentData {
-    ScriptLanguageServiceLanguage language = ScriptLanguageServiceLanguage::Cpp;
+    ScriptLanguageServiceLanguage language = ScriptLanguageServiceLanguage::PlainText;
+    bool isModuMako = false;
     std::vector<std::string> identifiers;
     std::vector<std::string> functions;
     std::vector<std::string> defines;

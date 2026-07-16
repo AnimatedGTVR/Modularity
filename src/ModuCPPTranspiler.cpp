@@ -3721,6 +3721,7 @@ namespace {
         }
         emitInclude("#include <algorithm>");
         emitInclude("#include <array>");
+        emitInclude("#include <cassert>");
         emitInclude("#include <cctype>");
         emitInclude("#include <cstddef>");
         emitInclude("#include <cstdlib>");

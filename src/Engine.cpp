@@ -3521,7 +3521,8 @@ bool WriteBuildSizeReports(const fs::path& exportRoot,
             std::string ext = it->path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (ext == ".scene" || ext == ".moducpp" || ext == ".cpp" || ext == ".h") continue;
+            if (ext == ".scene" || ext == ".moducpp" || ext == ".mko" || ext == ".modumako" ||
+                ext == ".cpp" || ext == ".h") continue;
             if (stagedAssetNames.find(it->path().filename().string()) == stagedAssetNames.end()) {
                 unusedCandidates.push_back(it->path());
                 if (unusedCandidates.size() >= 40) break;
@@ -4154,6 +4155,20 @@ bool WriteTextFile(const fs::path& path, const std::string& contents, std::strin
 
 std::string BuildScriptTemplateContents(ScriptScaffoldKind kind, const std::string& className) {
     switch (kind) {
+        case ScriptScaffoldKind::ModuMako:
+            return
+                "using ModuMAKO;\n"
+                "using ModuEngine;\n"
+                "using ModuInput;\n"
+                "\n"
+                "script \"" + className + "\" : ModuNode;\n"
+                "\n"
+                "Begin() {\n"
+                "    Ensure.obj;\n"
+                "}\n"
+                "\n"
+                "TickUpdate() {\n"
+                "}\n";
         case ScriptScaffoldKind::ModuCpp:
             return
                 "#include \"ModuCPP\"\n"
@@ -7482,7 +7497,7 @@ void Engine::updateAutoCompileScripts() {
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c" ||
-                ext == ".moducpp") {
+                ext == ".moducpp" || ext == ".mko" || ext == ".modumako") {
                 addSourceTo(scriptAutoCompileDiscoveredSources, it->path());
             }
         }
@@ -11224,7 +11239,8 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                     std::transform(ext.begin(), ext.end(), ext.begin(),
                                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                     return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" ||
-                           ext == ".c++" || ext == ".moducpp";
+                           ext == ".c++" || ext == ".moducpp" || ext == ".mko" ||
+                           ext == ".modumako";
                 };
 
                 packageManager.applyToBuildConfig(scriptConfig);
@@ -13484,6 +13500,10 @@ bool Engine::createScriptAsset(ScriptScaffoldKind kind,
     fs::path targetDir;
     std::string extension;
     switch (kind) {
+        case ScriptScaffoldKind::ModuMako:
+            outLanguage = ScriptLanguage::Cpp;
+            extension = ".modumako";
+            break;
         case ScriptScaffoldKind::ModuCpp:
             outLanguage = ScriptLanguage::Cpp;
             extension = ".moducpp";

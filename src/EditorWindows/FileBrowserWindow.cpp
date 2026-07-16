@@ -994,6 +994,7 @@ namespace {
 
     enum class CreateKind {
         Folder,
+        ModuMakoScript,
         ModuCppScript,
         CppScript,
         CScript,
@@ -1464,9 +1465,11 @@ void Engine::renderFileBrowserPanel() {
         fs::path baseDir = dir.empty() ? fileBrowser.currentPath : dir;
         fs::path target = baseDir / name;
         const bool createScript =
-            kind == CreateKind::ModuCppScript || kind == CreateKind::CppScript || kind == CreateKind::CScript;
+            kind == CreateKind::ModuMakoScript || kind == CreateKind::ModuCppScript ||
+            kind == CreateKind::CppScript || kind == CreateKind::CScript;
         if (kind != CreateKind::Folder && target.extension().empty()) {
             switch (kind) {
+                case CreateKind::ModuMakoScript: target += ".modumako"; break;
                 case CreateKind::ModuCppScript: target += ".moducpp"; break;
                 case CreateKind::CppScript: target += ".cpp"; break;
                 case CreateKind::CScript: target += ".c"; break;
@@ -1499,6 +1502,7 @@ void Engine::renderFileBrowserPanel() {
             if (createScript) {
                 ScriptScaffoldKind scaffoldKind = ScriptScaffoldKind::ModuCpp;
                 switch (kind) {
+                    case CreateKind::ModuMakoScript: scaffoldKind = ScriptScaffoldKind::ModuMako; break;
                     case CreateKind::ModuCppScript: scaffoldKind = ScriptScaffoldKind::ModuCpp; break;
                     case CreateKind::CppScript: scaffoldKind = ScriptScaffoldKind::Cpp; break;
                     case CreateKind::CScript: scaffoldKind = ScriptScaffoldKind::C; break;
@@ -1605,6 +1609,9 @@ void Engine::renderFileBrowserPanel() {
         }
 
         if (ImGui::BeginMenu("Scripts")) {
+            if (ImGui::MenuItem("ModuMAKO Script")) {
+                createEntry(dir, CreateKind::ModuMakoScript, "NewScript.modumako");
+            }
             if (ImGui::MenuItem("ModuCPP Script")) {
                 createEntry(dir, CreateKind::ModuCppScript, "NewScript.moducpp");
             }

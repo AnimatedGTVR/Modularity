@@ -8,9 +8,11 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <stdexcept>
 #include <string>
 #include <typeinfo>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ModuCPP {
@@ -27,6 +29,31 @@ using String = std::string;
 template <typename T> using Array = std::vector<T>;
 template <typename T> using List = std::vector<T>;
 template <typename K, typename V> using Map = std::unordered_map<K, V>;
+
+template <typename T>
+inline T MakoPop(List<T>& values) {
+    if (values.empty()) throw std::runtime_error("pop() called on empty list");
+    T value = std::move(values.back());
+    values.pop_back();
+    return value;
+}
+
+template <typename T>
+inline const T& MakoFirst(const List<T>& values) {
+    if (values.empty()) throw std::runtime_error("first() called on empty list");
+    return values.front();
+}
+
+template <typename T>
+inline const T& MakoLast(const List<T>& values) {
+    if (values.empty()) throw std::runtime_error("last() called on empty list");
+    return values.back();
+}
+
+template <typename T, typename U>
+inline bool MakoHas(const List<T>& values, const U& value) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
 
 namespace Math {
 template <typename T>
@@ -180,6 +207,18 @@ inline std::string operator+(const char* lhs, const ScriptFloat& rhs) {
 inline std::string operator+(const ScriptFloat& lhs, const char* rhs) {
     return lhs.text + std::string(rhs ? rhs : "");
 }
+
+inline std::string TextR(const std::string& value) { return value; }
+inline std::string TextR(const char* value) { return value ? std::string(value) : std::string(); }
+inline std::string TextR(bool value) { return value ? "true" : "false"; }
+inline std::string TextR(int value) { return std::to_string(value); }
+inline std::string TextR(unsigned int value) { return std::to_string(value); }
+inline std::string TextR(long value) { return std::to_string(value); }
+inline std::string TextR(unsigned long value) { return std::to_string(value); }
+inline std::string TextR(long long value) { return std::to_string(value); }
+inline std::string TextR(unsigned long long value) { return std::to_string(value); }
+inline std::string TextR(float value) { return FloatR(value).text; }
+inline std::string TextR(double value) { return FloatR(static_cast<float>(value)).text; }
 
 namespace detail {
 #if __cplusplus >= 201703L

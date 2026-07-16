@@ -1323,6 +1323,37 @@ if(WIN32)
 endif()
 
 include(GNUInstallDirs)
+
+set(MODULARITY_MODUMAKO_COMPILER "" CACHE FILEPATH
+    "Path to the mko executable bundled with the Modularity editor")
+if(NOT MODULARITY_MODUMAKO_COMPILER)
+    if(WIN32)
+        set(_modumako_name "mko.exe")
+    else()
+        set(_modumako_name "mko")
+    endif()
+    set(_modumako_sibling "${CMAKE_SOURCE_DIR}/../MAKO/bin/${_modumako_name}")
+    if(EXISTS "${_modumako_sibling}")
+        set(MODULARITY_MODUMAKO_COMPILER "${_modumako_sibling}" CACHE FILEPATH
+            "Path to the mko executable bundled with the Modularity editor" FORCE)
+    endif()
+endif()
+
+if(MODULARITY_BUILD_EDITOR AND EXISTS "${MODULARITY_MODUMAKO_COMPILER}")
+    add_custom_command(TARGET Modularity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Modularity>/Tools"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MODULARITY_MODUMAKO_COMPILER}"
+            "$<TARGET_FILE_DIR:Modularity>/Tools/"
+        COMMENT "Staging bundled ModuMAKO compiler"
+    )
+    install(PROGRAMS "${MODULARITY_MODUMAKO_COMPILER}"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}/Tools"
+    )
+elseif(MODULARITY_BUILD_EDITOR)
+    message(STATUS "ModuMAKO compiler not bundled; set MODULARITY_MODUMAKO_COMPILER to package .mko support")
+endif()
+
 set(MODULARITY_SCRIPT_SDK_INSTALL_SCRIPT ${CMAKE_BINARY_DIR}/InstallScriptSDK.cmake)
 configure_file(
     ${CMAKE_SOURCE_DIR}/cmake/InstallScriptSDK.cmake.in
