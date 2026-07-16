@@ -29,7 +29,7 @@
 </p>
 
 <div align="center">
-  <br><strong><h2>What can you build with it?<h2></strong>
+  <br><strong><h1>What can you build with it?<h1></strong>
 </div>
 <table>
   <tr>
