@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://www.moduengine.xyz/">
-    <img src="https://www.moduengine.xyz/logo.png" alt="Modularity Engine logo" width="120">
+    <img src="https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/media/branch/main/Resources/Modularity%20is%20a%20modular%20game%20engine%20with%20a%20package-based%20system%2C%20giving%20developers%20full%20control%20over%20features%2C%20tools%2C%20and%20workflows.%20Engine-Root/Modularity%20Full%20Logo.png" alt="Modularity Engine logo" width="250">
   </a>
 
   <h1>Modularity Engine</h1>
@@ -21,7 +21,9 @@
 
 Modularity (also known as **ModuEngine**) is a custom game engine built around a simple idea: your tools should adapt to your project, not the other way around. It combines a native C++ runtime, a built-in editor, a package-based workflow, and the friendly ModuCPP scripting layer so you can move from an idea to a playable build without stitching together a dozen separate tools.
 
-The project is under active development. There are polished, useful systems here today, but there are also experimental areas and a few rough edges. We would rather be clear about those than pretend otherwise—feedback, bug reports, documentation fixes, and focused code contributions are all genuinely welcome.
+The project is under active development. There are polished, useful systems here today, but there are also experimental areas and a few rough edges. We would rather be clear about those than pretend otherwise
+
+feedback, bug reports, documentation fixes, and focused code contributions are all genuinely welcome.
 
 ## What can you build with it?
 
@@ -64,16 +66,14 @@ Modularity includes:
 </table>
 
 ## How a typical project comes together
-
 1. **Create or open a project** from the launcher. Project content lives mostly under `Assets/`, while generated data stays under `Library/`.
 2. **Build a scene** by adding objects in the Hierarchy and editing components in the Inspector. Scenes are stored as readable `.scene` files, which makes them friendlier to version control.
-3. **Import your assets**—models, textures, audio, shaders, sprites, and scripts—through the asset browser.
+3. **Import your assets**: models, textures, audio, shaders, sprites, and scripts through the asset browser.
 4. **Add behavior** with ModuCPP or one of the lower-level scripting surfaces. Scripts can be compiled from the file browser or a script component in the Inspector.
 5. **Press Play, Spec, or Test** to run scripts and simulation without mixing runtime changes into normal edit mode.
 6. **Build a standalone player or APK** through the editor's build settings or the command-line build workflow.
 
 Here is a small ModuCPP script that updates a UI text object every frame:
-
 ```cpp
 add ModuCPP;
 add ModuEngine;
@@ -94,11 +94,9 @@ Save scripts under your project's `Assets/Scripts/` directory, attach them to a 
 For a deeper tour, visit the [Engine Handbook](https://www.moduengine.xyz/docs), read the repository's [engine overview](docs/Modularity.md), or jump into the [ModuCPP manual](docs/moducpp/manual/README.md).
 
 ## Build and run
-
 ### Linux
 
 The build script checks system dependencies, syncs submodules and Git LFS content, configures CMake, builds the editor and standalone player, and creates a package:
-
 ```bash
 git clone --recurse-submodules https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity.git
 cd Modularity
@@ -109,13 +107,11 @@ git lfs pull
 ```
 
 To open an existing project directly:
-
 ```bash
 ./build/Modularity --project /path/to/project.modu
 ```
 
 Useful development builds include:
-
 ```bash
 ./build.sh --clean
 ./build.sh --build-type=Debug
@@ -125,9 +121,7 @@ Useful development builds include:
 ```
 
 ### Windows
-
 From a developer command prompt with Git, Git LFS, CMake, and the Visual Studio C++ toolchain available:
-
 ```bat
 git submodule update --init --recursive
 git lfs install
@@ -136,13 +130,10 @@ build.bat
 ```
 
 The usual Release outputs are `build\Release\Modularity.exe` for the editor and `build\Release\ModularityPlayer.exe` for the standalone runtime.
-
 See [docs/Build.md](docs/Build.md) for build flags, Android requirements, packaging, CPU compatibility, and release verification details.
 
 ## Project status and known limitations
-
 Modularity is usable, but it is still growing quickly. These are the important expectations to set before you dive in:
-
 | Area | Current status |
 | --- | --- |
 | Automated tests | There is not an automated test suite yet. Changes are currently verified by building and running both the editor and standalone player. |
@@ -156,11 +147,9 @@ Modularity is usable, but it is still growing quickly. These are the important e
 If you run into something not listed here, please [open an issue](https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues). A small reproducible project, crash report, screenshot, or log excerpt can save a lot of guesswork.
 
 ## Contributing
-
 You do not need to arrive with a huge engine feature. Fixing a typo, improving a confusing error message, testing a different machine, documenting an edge case, or reducing a reliable crash is valuable work.
 
 ### A friendly contribution workflow
-
 1. Check the [open issues](https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues), or open a discussion issue before starting a large architectural change.
 2. Fork the repository and create a focused branch from `main`.
 3. Build once before changing anything so you know your local toolchain and dependencies are healthy.
@@ -169,8 +158,7 @@ You do not need to arrive with a huge engine feature. Fixing a typo, improving a
 6. Verify the editor and player. For risky native-code changes, a Debug build with `--fsanitize` is strongly encouraged on supported platforms.
 7. Open a [pull request](https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/pulls) explaining what changed, why it changed, how you tested it, and any known tradeoffs or follow-up work.
 
-### Before opening a pull request
-
+### Before opening a pull request. Please ensure that:
 - [ ] The change is focused and does not include unrelated formatting or generated build output.
 - [ ] The editor builds and launches.
 - [ ] The standalone `ModularityPlayer` still builds, loads scenes, and runs scripts where relevant.
@@ -179,9 +167,7 @@ You do not need to arrive with a huge engine feature. Fixing a typo, improving a
 - [ ] Engine modifications comply with [the project license](LICENSE.md).
 
 ### Reporting a bug
-
 Please include as much of the following as you can:
-
 - Your operating system, compiler/toolchain, GPU, and the commit or build you used.
 - Clear reproduction steps and what you expected to happen.
 - What actually happened, including the full error message.
@@ -192,7 +178,6 @@ Please include as much of the following as you can:
 No report has to be perfect. If you can reproduce the problem but are unsure where it lives, open the issue anyway and say what you already tried.
 
 ## Repository guide
-
 | Path | What lives there |
 | --- | --- |
 | `src/` and `include/` | Engine runtime, renderer, editor, platform, scene, physics, audio, and scripting code |
@@ -204,7 +189,6 @@ No report has to be perfect. If you can reproduce the problem but are unsure whe
 | `redist/` | Redistributable runtime files used by packaged builds |
 
 ## License
-
 Modularity is distributed under the [Tareno-Labs Community Use License 1.2](LICENSE.md). In short, you may build commercial or closed-source games and applications with the engine, create marketplace content, and modify the engine. If you distribute a modified version of the engine itself, its corresponding source must remain available under the same license and your modifications must be identified.
 
 The summary above is not legal advice; the full license text is authoritative.
