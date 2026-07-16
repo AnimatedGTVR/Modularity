@@ -11,16 +11,23 @@
   </p>
 </div>
 
+<table>
+  <tr>
+    <td width="44%" valign="middle">
+      <img src="https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/media/branch/main/Resources/Engine-Root/Modularity%20Logo%20Front%20with%20BG.png" alt="Modularity Engine logo over an editor background" width="100%">
+    </td>
+    <td width="56%" valign="middle">
+      <h2>Welcome!</h2>
+      <p>Modularity (also known as <strong>ModuEngine</strong>) is a custom game engine built around a simple idea: your tools should adapt to your project, not the other way around. It combines a native C++ runtime, a built-in editor, a package-based workflow, and the friendly ModuCPP scripting layer so you can move from an idea to a playable build without stitching together a dozen separate tools.</p>
+      <p>The project is under active development. There are polished, useful systems here today, but there are also experimental areas and a few rough edges. We would rather be clear about those than pretend otherwise.</p>
+      <p>Feedback, bug reports, documentation fixes, and any focused code contributions are all genuinely welcome.</p>
+    </td>
+  </tr>
+</table>
+
 <p align="center">
   <img src="https://www.moduengine.xyz/hero-editor.png" alt="Modularity Engine editor showing project settings, the scene hierarchy, inspector, and asset browser" width="100%">
 </p>
-
-## Welcome!
-Modularity (also known as **ModuEngine**) is a custom game engine built around a simple idea: your tools should adapt to your project, not the other way around. It combines a native C++ runtime, a built-in editor, a package-based workflow, and the friendly ModuCPP scripting layer so you can move from an idea to a playable build without stitching together a dozen separate tools.
-
-The project is under active development. There are polished, useful systems here today, but there are also experimental areas and a few rough edges. We would rather be clear about those than pretend otherwise
-
-Feedback, bug reports, documentation fixes, and any focused code contributions are all genuinely welcome.
 
 ## What can you build with it?
 <table>
