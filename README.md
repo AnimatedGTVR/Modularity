@@ -16,15 +16,13 @@
 </p>
 
 ## Welcome!
-
 Modularity (also known as **ModuEngine**) is a custom game engine built around a simple idea: your tools should adapt to your project, not the other way around. It combines a native C++ runtime, a built-in editor, a package-based workflow, and the friendly ModuCPP scripting layer so you can move from an idea to a playable build without stitching together a dozen separate tools.
 
 The project is under active development. There are polished, useful systems here today, but there are also experimental areas and a few rough edges. We would rather be clear about those than pretend otherwise
 
-feedback, bug reports, documentation fixes, and focused code contributions are all genuinely welcome.
+Feedback, bug reports, documentation fixes, and any focused code contributions are all genuinely welcome.
 
 ## What can you build with it?
-
 <table>
   <tr>
     <td width="50%">
@@ -68,20 +66,16 @@ Modularity includes:
 2. **Build a scene** by adding objects in the Hierarchy and editing components in the Inspector. Scenes are stored as readable `.scene` files, which makes them friendlier to version control.
 3. **Import your assets**: models, textures, audio, shaders, sprites, and scripts through the asset browser.
 4. **Add behavior** with ModuCPP or one of the lower-level scripting surfaces. Scripts can be compiled from the file browser or a script component in the Inspector.
-5. **Press Play, Spec, or Test** to run scripts and simulation without mixing runtime changes into normal edit mode.
+5. **Press Play, Spec, or Test** to run scripts and simulations without mixing runtime changes into normal edit mode.
 6. **Build a standalone player or APK** through the editor's build settings or the command-line build workflow.
 
 Here is a small ModuCPP script that updates a UI text object every frame:
 ```cpp
 add ModuCPP;
 add ModuEngine;
-
-public class FPSDisplay : ModuNode
-{
+public class FPSDisplay : ModuNode {
     public string prefix = "FPS: ";
-
-    void TickUpdate()
-    {
+    void TickUpdate() {
         obj.UILabel = prefix + IntR(ModuEngine.FPS);
     }
 }
@@ -93,7 +87,6 @@ For a deeper tour, visit the [Engine Handbook](https://www.moduengine.xyz/docs),
 
 ## Build and run
 ### Linux
-
 The build script checks system dependencies, syncs submodules and Git LFS content, configures CMake, builds the editor and standalone player, and creates a package:
 ```bash
 git clone --recurse-submodules https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity.git
@@ -134,7 +127,7 @@ See [docs/Build.md](docs/Build.md) for build flags, Android requirements, packag
 Modularity is usable, but it is still growing quickly. These are the important expectations to set before you dive in:
 | Area | Current status |
 | --- | --- |
-| Automated tests | There is not an automated test suite yet. Changes are currently verified by building and running both the editor and standalone player. |
+| Automated tests | There is no automated test suite yet. Changes are currently verified by building and running both the editor and the standalone player. |
 | Vulkan | The Vulkan renderer is experimental. OpenGL is the established rendering path. |
 | Managed C# | Mono-backed C# scripting is experimental and may be unavailable when Mono is not installed or on builds that disable it. ModuCPP is the recommended scripting surface. |
 | Android | Player APK builds are supported, while the editor APK and on-device script compilation remain experimental. `arm64-v8a` is the routinely used ABI, and whole-folder import is not currently available in the Android editor. |
@@ -148,7 +141,7 @@ If you run into something not listed here, please [open an issue](https://pak.mo
 You do not need to arrive with a huge engine feature. Fixing a typo, improving a confusing error message, testing a different machine, documenting an edge case, or reducing a reliable crash is valuable work.
 
 ### A friendly contribution workflow
-1. Check the [open issues](https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues), or open a discussion issue before starting a large architectural change.
+1. Check the [open issues](https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues) or open a discussion issue before starting a large architectural change.
 2. Fork the repository and create a focused branch from `main`.
 3. Build once before changing anything so you know your local toolchain and dependencies are healthy.
 4. Make the smallest coherent change that solves the problem. Follow nearby naming and code style, and reuse the existing renderer, editor, scene, scripting, serialization, asset, and audio systems.
@@ -172,8 +165,7 @@ Please include as much of the following as you can:
 - Relevant console output or files from `CrashReports/`.
 - A minimal project or scene when the issue depends on project content.
 - Screenshots or a short recording for editor and rendering issues.
-
-No report has to be perfect. If you can reproduce the problem but are unsure where it lives, open the issue anyway and say what you already tried.
+One reminder: No report has to be perfect. If you can reproduce the problem but are unsure where it lives, no worries! You can open an issue anyway and say what you already tried.
 
 ## Repository guide
 | Path | What lives there |
@@ -187,13 +179,12 @@ No report has to be perfect. If you can reproduce the problem but are unsure whe
 | `redist/` | Redistributable runtime files used by packaged builds |
 
 ## License
-Modularity is distributed under the [Tareno-Labs Community Use License 1.2](LICENSE.md). In short, you may build commercial or closed-source games and applications with the engine, create marketplace content, and modify the engine. If you distribute a modified version of the engine itself, its corresponding source must remain available under the same license and your modifications must be identified.
-
+Modularity is distributed under the [Tareno-Labs Community Use License 1.2](LICENSE.md). In short, you may build commercial or closed-source games and applications with the engine, create marketplace content, and modify the engine. If you distribute a modified version of the engine itself, its corresponding source must remain available under the same license, and your modifications must be identified.
 The summary above is not legal advice; the full license text is authoritative.
 
 ---
 
 <div align="center">
-  Built with care by Tareno Labs and the Modularity community.<br>
+  ❤️ Built with care by Tareno Labs™ and the Modularity community. ❤️<br>
   Questions, experiments, bug reports, and first-time contributions are welcome here.
 </div>
