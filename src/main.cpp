@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "CrashReporter.h"
 #include "ModularityLspServer.h"
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -18,8 +19,26 @@ extern int __argc;
 extern char** __argv;
 #endif
 #else
+#include <sys/prctl.h>
 #include <unistd.h>
 #endif
+
+static void setProcessDisplayName(int argc, char** argv) {
+#if defined(__linux__)
+  prctl(PR_SET_NAME, "Modularity", 0, 0, 0);
+  if (argc > 0 && argv && argv[0]) {
+    constexpr char processName[] = "Modularity";
+    const size_t capacity = std::strlen(argv[0]);
+    if (capacity >= sizeof(processName) - 1) {
+      std::memcpy(argv[0], processName, sizeof(processName));
+    }
+  }
+#else
+  (void)argc;
+  (void)argv;
+#endif
+}
+
 static std::filesystem::path getExecutableDir() {
   #if defined(_WIN32)
     char pathBuf[MAX_PATH] = {};
@@ -90,6 +109,7 @@ static std::string startupProjectPathFromArgs(int argc, char** argv) {
   return "";
 }
 static int ModularityMain(int argc, char** argv) {
+  setProcessDisplayName(argc, argv);
   if (isLspMode(argc, argv)) {
     if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
       std::error_code ec;

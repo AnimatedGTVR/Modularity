@@ -221,6 +221,42 @@ std::string readSourceLine(const fs::path& path, int lineNumber) {
     return {};
 }
 
+int readModuMakoSourceLine(const fs::path& generatedPath, int generatedLine) {
+    if (generatedPath.empty() || generatedLine <= 0) return 0;
+    std::ifstream input(generatedPath);
+    if (!input.is_open()) return 0;
+
+    static const std::regex markerPattern(R"(^\s*//\s*@modumako-source-line\s+(\d+)\s*$)");
+    std::string line;
+    int mappedLine = 0;
+    for (int currentLine = 1; currentLine <= generatedLine && std::getline(input, line); ++currentLine) {
+        std::smatch match;
+        if (std::regex_match(line, match, markerPattern)) {
+            mappedLine = std::max(0, std::atoi(match[1].str().c_str()));
+        }
+    }
+    return mappedLine;
+}
+
+void remapModuMakoDiagnostics(const fs::path& sourcePath, std::vector<ScriptDiagnostic>& diagnostics) {
+    const std::string ext = toLowerCopy(sourcePath.extension().string());
+    if (ext != ".mko" && ext != ".modumako") return;
+
+    static const std::regex locationPattern(R"(^(.+?):(\d+)(?::\d+)?:)");
+    for (ScriptDiagnostic& diagnostic : diagnostics) {
+        std::smatch match;
+        if (!std::regex_search(diagnostic.rawDetails, match, locationPattern)) continue;
+        const fs::path generatedPath = trimCopy(match[1].str());
+        if (generatedPath.filename().string().find(".modumako.gen.moducpp") == std::string::npos) continue;
+        const int generatedLine = std::max(0, std::atoi(match[2].str().c_str()));
+        const int mappedLine = readModuMakoSourceLine(generatedPath, generatedLine);
+        if (mappedLine <= 0) continue;
+        diagnostic.source = sourcePath.filename().string();
+        diagnostic.line = mappedLine;
+        diagnostic.sourceLine = readSourceLine(sourcePath, mappedLine);
+    }
+}
+
 int endOfLineColumn(const std::string& sourceLine) {
     if (sourceLine.empty()) {
         return 0;
@@ -771,6 +807,7 @@ std::vector<ScriptDiagnostic> collectScriptDiagnostics(const fs::path& sourcePat
             std::vector<ScriptDiagnostic>{ parseStageError(sourcePath, stageError, managedBuild) });
     }
 
+    remapModuMakoDiagnostics(sourcePath, diagnostics);
     return diagnostics;
 }
 

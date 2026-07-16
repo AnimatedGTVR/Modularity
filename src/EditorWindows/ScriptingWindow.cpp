@@ -50,6 +50,12 @@ namespace {
 
     static TextEditor::LanguageDefinition baseLanguageDefinition(ScriptEditorLanguage language) {
         switch (language) {
+            case ScriptEditorLanguage::PlainText: {
+                TextEditor::LanguageDefinition plainText;
+                plainText.mName = "Plain Text";
+                plainText.mAutoIndentation = false;
+                return plainText;
+            }
             case ScriptEditorLanguage::C:
                 return TextEditor::LanguageDefinition::C();
             case ScriptEditorLanguage::GLSL:
@@ -58,6 +64,14 @@ namespace {
                 return TextEditor::LanguageDefinition::HLSL();
             case ScriptEditorLanguage::Lua:
                 return TextEditor::LanguageDefinition::Lua();
+            case ScriptEditorLanguage::Mako: {
+                TextEditor::LanguageDefinition mako = TextEditor::LanguageDefinition::CPlusPlus();
+                mako.mName = "MAKO";
+                mako.mKeywords = ScriptLanguageService::keywordsForLanguage(ScriptEditorLanguage::Mako);
+                mako.mPreprocChar = '\0';
+                mako.mSingleLineComment = "#";
+                return mako;
+            }
             case ScriptEditorLanguage::Cpp:
             default:
                 return TextEditor::LanguageDefinition::CPlusPlus();
@@ -169,7 +183,8 @@ namespace {
             lang.mIdentifiers.insert({name, id});
         };
 
-        if (language == ScriptEditorLanguage::Cpp || language == ScriptEditorLanguage::C) {
+        if (language == ScriptEditorLanguage::Cpp || language == ScriptEditorLanguage::C ||
+            language == ScriptEditorLanguage::Mako) {
             addIdentifier("Begin", "Script callback");
             addIdentifier("TickUpdate", "Script callback");
             addIdentifier("Spec", "Script callback");
@@ -180,6 +195,7 @@ namespace {
             addIdentifier("ModuCPP", "Core ModuCPP script API");
             addIdentifier("ModuEngine", "ModuCPP engine facade");
             addIdentifier("ModuInput", "ModuCPP input helpers");
+            addIdentifier("ModuMAKO", "MAKO language integration for Modularity");
             addIdentifier("RMeshBuilder", "ModuCPP mesh-builder helpers");
             addIdentifier("ModuCPP.Experimental", "Advanced ModuCPP script helpers");
             addIdentifier("FPS", "Current frame FPS");

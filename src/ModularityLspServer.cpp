@@ -871,8 +871,9 @@ void ModularityLspServer::handleCompletion(const JsonDocument& request) {
         
         if (isContextSymbol) {
             addJsonMember(item, "detail", projectSymbolDetails[entry], alloc);
-        } else if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP) {
-            addJsonMember(item, "detail", "ModuCPP", alloc);
+        } else if (it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP ||
+                   it->second.analysis.isModuMako) {
+            addJsonMember(item, "detail", it->second.analysis.isModuMako ? "ModuMAKO" : "ModuCPP", alloc);
         }
         result.PushBack(item, alloc);
     }
@@ -934,6 +935,7 @@ void ModularityLspServer::handleSignatureHelp(const JsonDocument& request) {
     if (signatureLabel.empty() &&
         (it->second.analysis.language == ScriptLanguageServiceLanguage::Cpp ||
          it->second.analysis.language == ScriptLanguageServiceLanguage::ModuCPP ||
+         it->second.analysis.isModuMako ||
          it->second.analysis.language == ScriptLanguageServiceLanguage::C)) {
         if (callCtx.functionName == "Begin") signatureLabel = "void Begin()";
         else if (callCtx.functionName == "TickUpdate") signatureLabel = "void TickUpdate(float deltaTime)";

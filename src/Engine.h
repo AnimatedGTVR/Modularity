@@ -71,7 +71,8 @@ enum class ScriptScaffoldKind {
     ModuCpp = 0,
     Cpp = 1,
     C = 2,
-    CSharp = 3
+    CSharp = 3,
+    ModuMako = 4
 };
 
 class Engine {
