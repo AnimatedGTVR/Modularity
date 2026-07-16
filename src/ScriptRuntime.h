@@ -22,7 +22,11 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
+<<<<<<< HEAD
 #define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 35
+=======
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 32
+>>>>>>> 77e7e85 (Anix PLAN)
 
 // layout drift guard. scripts dereference SceneObject/ScriptContext directly, so ANY size
 // change silently breaks every compiled script (wrong offsets = heap corruption hours later).
