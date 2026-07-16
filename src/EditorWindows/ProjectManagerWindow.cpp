@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <source_location>
 #include <unordered_set>
 #include <optional>
 #include <future>
@@ -19,6 +20,10 @@
 
 #ifdef _WIN32
 #include <shlobj.h>
+#endif
+
+#ifdef __ANDROID__
+#include "AndroidRuntime/AndroidRuntime.h"
 #endif
 
 #pragma region ImGui Helpers
@@ -456,10 +461,108 @@ static void DrawHelpTooltip(const char* text) {
     }
 }
 
+// Two-column flow for the Project Settings body. Between Begin/End the section
+// headers drawn by DrawSettingSection are distributed across two table columns
+// when the panel is wide enough, keeping whole sections together per column.
+// Section heights measured on the previous frame pick the most balanced split;
+// until a tab has been measured once it renders as a single column.
+struct ProjectSettingsColumnFlowState {
+    bool tableOpen = false;
+    bool twoColumns = false;
+    bool inSecondColumn = false;
+    int sectionIndex = 0;
+    int splitIndex = 0;
+    float sectionStartY = 0.0f;
+    std::vector<float> frameHeights;
+    std::vector<float>* storedHeights = nullptr;
+};
+static ProjectSettingsColumnFlowState g_projectSettingsColumnFlow;
+
+static constexpr float kProjectSettingsTwoColumnMinWidth = 900.0f;
+
+static int PickBalancedColumnSplit(const std::vector<float>& heights) {
+    const int count = static_cast<int>(heights.size());
+    float total = 0.0f;
+    for (float h : heights) total += h;
+    int bestSplit = (count + 1) / 2;
+    float bestTallest = FLT_MAX;
+    float leftSum = 0.0f;
+    for (int split = 1; split < count; ++split) {
+        leftSum += heights[split - 1];
+        const float tallest = std::max(leftSum, total - leftSum);
+        if (tallest < bestTallest) {
+            bestTallest = tallest;
+            bestSplit = split;
+        }
+    }
+    return bestSplit;
+}
+
+static void BeginProjectSettingsColumns(std::vector<float>& sectionHeights) {
+    ProjectSettingsColumnFlowState& flow = g_projectSettingsColumnFlow;
+    flow = ProjectSettingsColumnFlowState{};
+    flow.twoColumns = sectionHeights.size() >= 2 &&
+                      ImGui::GetContentRegionAvail().x >= kProjectSettingsTwoColumnMinWidth;
+    if (flow.twoColumns) {
+        flow.splitIndex = PickBalancedColumnSplit(sectionHeights);
+    }
+    // Same table id for 1 and 2 columns so section open/collapse state survives
+    // resizing across the two-column threshold.
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 2.0f));
+    flow.tableOpen = ImGui::BeginTable("##ProjectSettingsColumns", flow.twoColumns ? 2 : 1,
+                                       ImGuiTableFlags_SizingStretchSame |
+                                       ImGuiTableFlags_NoPadOuterX |
+                                       ImGuiTableFlags_NoSavedSettings);
+    ImGui::PopStyleVar();
+    if (!flow.tableOpen) {
+        flow = ProjectSettingsColumnFlowState{};
+        return;
+    }
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    flow.storedHeights = &sectionHeights;
+    flow.frameHeights.swap(sectionHeights);
+    flow.frameHeights.clear();
+}
+
+// Called by DrawSettingSection just before a header is drawn: closes out the
+// previous section's height measurement and jumps to the second column at the
+// balanced split point. Inert outside Begin/EndProjectSettingsColumns.
+static void ProjectSettingsColumnsOnSectionHeader() {
+    ProjectSettingsColumnFlowState& flow = g_projectSettingsColumnFlow;
+    if (!flow.storedHeights) {
+        return;
+    }
+    if (flow.sectionIndex > 0) {
+        flow.frameHeights.push_back(std::max(0.0f, ImGui::GetCursorPosY() - flow.sectionStartY));
+    }
+    if (flow.twoColumns && !flow.inSecondColumn && flow.sectionIndex >= flow.splitIndex) {
+        ImGui::TableNextColumn();
+        flow.inSecondColumn = true;
+    }
+    flow.sectionStartY = ImGui::GetCursorPosY();
+    ++flow.sectionIndex;
+}
+
+static void EndProjectSettingsColumns() {
+    ProjectSettingsColumnFlowState& flow = g_projectSettingsColumnFlow;
+    if (!flow.storedHeights) {
+        flow = ProjectSettingsColumnFlowState{};
+        return;
+    }
+    if (flow.sectionIndex > 0) {
+        flow.frameHeights.push_back(std::max(0.0f, ImGui::GetCursorPosY() - flow.sectionStartY));
+    }
+    ImGui::EndTable();
+    *flow.storedHeights = std::move(flow.frameHeights);
+    flow = ProjectSettingsColumnFlowState{};
+}
+
 static bool DrawSettingSection(const char* icon,
                                const char* title,
                                const char* helper,
                                bool defaultOpen = true) {
+    ProjectSettingsColumnsOnSectionHeader();
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.13f, 0.17f, 0.24f, 0.98f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f, 0.23f, 0.32f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.20f, 0.28f, 0.40f, 1.0f));
@@ -489,11 +592,75 @@ static bool DrawSettingSection(const char* icon,
     return open;
 }
 
+// image-icon header variant: texture in front of the title, bracket-letter fallback while
+// the texture isn't loadable. the "###" suffix keeps the ID (and open state) stable either way.
+static bool DrawSettingSection(ImTextureID iconTexture, bool iconFlipY,
+                               const char* fallbackIcon,
+                               const char* title,
+                               const char* helper,
+                               bool defaultOpen = true) {
+    ProjectSettingsColumnsOnSectionHeader();
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.13f, 0.17f, 0.24f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f, 0.23f, 0.32f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.20f, 0.28f, 0.40f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 3.0f));
+
+    const bool hasImage = iconTexture != static_cast<ImTextureID>(0);
+    const float iconSize = ImGui::GetFontSize() + 2.0f;
+    std::string label;
+    if (hasImage) {
+        // Reserve blank space in the label; the image is drawn over it after
+        // the header exists so it tracks style/scale automatically.
+        const float spaceWidth = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+        label.assign(static_cast<size_t>(std::ceil((iconSize + 6.0f) / spaceWidth)), ' ');
+    } else if (fallbackIcon && *fallbackIcon) {
+        label += fallbackIcon;
+        label += "  ";
+    }
+    label += title ? title : "";
+    label += "###";
+    label += title ? title : "";
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (defaultOpen) {
+        flags |= ImGuiTreeNodeFlags_DefaultOpen;
+    }
+    const bool open = ImGui::CollapsingHeader(label.c_str(), flags);
+    if (hasImage) {
+        const ImVec2 rectMin = ImGui::GetItemRectMin();
+        const ImVec2 rectMax = ImGui::GetItemRectMax();
+        // Framed tree nodes place their text at fontSize + framePadding.x * 3
+        // (see ImGui::TreeNodeBehavior); we pushed FramePadding.x = 6.
+        const float textStartX = rectMin.x + ImGui::GetFontSize() + 6.0f * 3.0f;
+        const float iconY = rectMin.y + ((rectMax.y - rectMin.y) - iconSize) * 0.5f;
+        const ImVec2 uvMin = iconFlipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+        const ImVec2 uvMax = iconFlipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+        ImGui::GetWindowDrawList()->AddImage(iconTexture,
+                                             ImVec2(textStartX, iconY),
+                                             ImVec2(textStartX + iconSize, iconY + iconSize),
+                                             uvMin, uvMax);
+    }
+    if (helper && *helper && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(helper);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(3);
+    return open;
+}
+
 static bool DrawSettingRow(const char* label,
                            const char* helper,
-                           const std::function<bool()>& drawControl) {
+                           const std::function<bool()>& drawControl,
+                           std::source_location idLocation = std::source_location::current()) {
     bool changed = false;
-    ImGui::PushID(label);
+    ImGui::PushID(idLocation.file_name());
+    ImGui::PushID(static_cast<int>(idLocation.line()));
+    ImGui::PushID(static_cast<int>(idLocation.column()));
+    ImGui::PushID(label ? label : "");
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0.0f, 1.0f));
     if (ImGui::BeginTable("##SettingRow", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoSavedSettings)) {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, 0.34f);
@@ -508,6 +675,9 @@ static bool DrawSettingRow(const char* label,
         ImGui::EndTable();
     }
     ImGui::PopStyleVar();
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::PopID();
     ImGui::PopID();
     return changed;
 }
@@ -745,9 +915,12 @@ static std::string BuildLauncherRecentProjectsFingerprint(const ProjectManager& 
     for (const auto& rp : manager.recentProjects) {
         const fs::path projectFile = ResolveRecentProjectRoot(rp.path) / "project.modu";
         std::error_code ec;
-        const auto writeTime = fs::exists(projectFile, ec) && !ec
-            ? fs::last_write_time(projectFile, ec).time_since_epoch().count()
-            : 0;
+        // cast to int64: NDK/arm64 file_time_type is __int128 which can't operator<<.
+        // it's just a cache-key timestamp anyway.
+        const long long writeTime = static_cast<long long>(
+            fs::exists(projectFile, ec) && !ec
+                ? fs::last_write_time(projectFile, ec).time_since_epoch().count()
+                : 0);
         oss << rp.name << "|" << rp.path << "|" << rp.lastOpened << "|" << writeTime << ";";
     }
     return oss.str();
@@ -1158,6 +1331,112 @@ void Engine::renderWindowsDisclaimerPopup() {
 #endif
 }
 
+void Engine::renderAndroidStorageAccessPopup() {
+#if defined(__ANDROID__) && !defined(MODULARITY_PLAYER)
+    const bool hasAccess = Modularity::AndroidRuntime::HasAllFilesAccess();
+
+    // once access lands, move the *default location pref* to public Documents so new projects
+    // match desktop. only touches prefs still pointing at private storage (custom paths stay),
+    // and never moves existing project files.
+    if (hasAccess) {
+        const std::string docs = Modularity::AndroidRuntime::GetExternalDocumentsPath();
+        const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath();
+        const bool defaultIsPrivate = dataPath && dataPath[0] != '\0' &&
+            std::strncmp(projectManager.defaultProjectLocation, dataPath, std::strlen(dataPath)) == 0;
+        if (!docs.empty() && defaultIsPrivate) {
+            const std::string docsProjects = (fs::path(docs) / "ModularityProjects").string();
+            std::error_code ec;
+            fs::create_directories(docsProjects, ec);
+            if (!ec) {
+                std::snprintf(projectManager.defaultProjectLocation,
+                              sizeof(projectManager.defaultProjectLocation),
+                              "%s", docsProjects.c_str());
+                std::snprintf(projectManager.newProjectLocation,
+                              sizeof(projectManager.newProjectLocation),
+                              "%s", projectManager.defaultProjectLocation);
+                projectManager.saveLauncherSettings();
+            }
+        }
+    }
+
+    // Don't nag once it's granted or the user has waved it off, and stay out of
+    // the way of the terms screen / launcher intro just like the other popups.
+    if (hasAccess || projectManager.androidStoragePromptDismissedV1) {
+        androidStorageAccessPopupOpened = false;
+        return;
+    }
+    if (requiresTermsOfServiceAcceptance()) {
+        return;
+    }
+    if (showLauncher && !launcherIntroFinished) {
+        return;
+    }
+
+    constexpr const char* popupTitle = "Allow File Access";
+    if (!androidStorageAccessPopupOpened) {
+        ImGui::OpenPopup(popupTitle);
+        androidStorageAccessPopupOpened = true;
+    }
+
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const float popupWidth = ImClamp(displaySize.x * 0.46f, 440.0f, 620.0f);
+    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f),
+                            ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(popupWidth, 0.0f), ImGuiCond_Appearing);
+
+    const ImGuiWindowFlags popupFlags =
+        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    if (ImGui::BeginPopupModal(popupTitle, nullptr, popupFlags)) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + popupWidth - ImGui::GetStyle().WindowPadding.x * 2.0f);
+        ImGui::TextWrapped("Hey!");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Modularity would like access to your device storage so it "
+                           "can keep your projects in Documents/ModularityProjects, just "
+                           "like on desktop.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Without it, projects are stored in private app storage that "
+                           "other apps and your file manager can't reach, and they're "
+                           "wiped if you uninstall Modularity.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("You can change this anytime under Settings -> File Access.");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const float buttonWidth = 150.0f * uiDpiScale;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float groupWidth = buttonWidth * 2.0f + spacing;
+        const float available = ImGui::GetContentRegionAvail().x;
+        if (available > groupWidth) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (available - groupWidth) * 0.5f);
+        }
+        if (ImGui::Button("Grant Access", ImVec2(buttonWidth, 0.0f))) {
+            std::string reqErr;
+            Modularity::AndroidRuntime::RequestAllFilesAccess(reqErr);
+            // leave the dismiss flag unset so backing out = gentle reminder next launch.
+            // granting flips hasAccess and the popup won't reopen.
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Not Now", ImVec2(buttonWidth, 0.0f))) {
+            projectManager.androidStoragePromptDismissedV1 = true;
+            projectManager.saveLauncherSettings();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+#else
+    androidStorageAccessPopupOpened = false;
+#endif
+}
+
 #pragma region Launcher
 void Engine::renderLauncher() {
     ImGuiIO& io = ImGui::GetIO();
@@ -1191,23 +1470,22 @@ void Engine::renderLauncher() {
     // Smooth S-curve ease so the zoom feels like it accelerates and decelerates.
     const float transitionEase = EaseInOutCubic(transitionT);
 
-    // "Loading screen" expansion. We hold it fully-expanded for the entire duration of
-    // the project/scene load, not just the 0.42s zoom. Otherwise the cards pop back
-    // into view the instant the zoom timer elapses while assets are still loading. Ugly.
+    // hold the loading-screen expansion for the whole project/scene load, not just the 0.42s
+    // zoom, or the cards pop back in while assets are still loading. Ugly.
     const bool isLoadingActive = projectLoadInProgress || sceneLoadInProgress;
     float loadingScreenT = launcherTransitionActive ? transitionEase : 0.0f;
     if (!launcherTransitionActive && isLoadingActive && launcherTransitionStartTime > 0.0) {
         loadingScreenT = 1.0f;
     }
-    // Launcher content fades out at the same pace as the rect grows. Early in the
-    // transition the cards are still partly visible *under* the growing rect, then
-    // they're gone by the time the rect reaches fullscreen. Fading faster (e.g. 1.6x)
-    // makes the cards vanish before the rect is large enough to hide them, which
-    // reads as an ugly snap. Don't.
+    // launcher content fades at the same pace the rect grows: cards stay visible under it early,
+    // gone by the time it's fullscreen. fading faster makes them vanish before the rect can
+    // hide them, which reads as an ugly snap. Don't.
     const float transitionAlpha = ImClamp(1.0f - loadingScreenT * 1.1f, 0.0f, 1.0f);
     const float menuBuildT = launcherIntroFinished ? 1.0f : EaseOutCubic(introState.contentRevealT);
     const float introMenuScale = launcherIntroFinished ? 1.0f : ImLerp(1.04f, 1.0f, menuBuildT);
-    const float uiScale = (1.0f + 0.04f * transitionEase) * introMenuScale;
+    // fold in the global DPI scale so the launcher's hand-sized chrome scales on
+    // high-DPI / Android like the rest of the editor.
+    const float uiScale = (1.0f + 0.04f * transitionEase) * introMenuScale * uiDpiScale;
     const float contentAlpha = launcherIntroFinished ? 1.0f : ImClamp(0.10f + introState.contentRevealT * 0.90f, 0.0f, 1.0f);
     // Static header logo+text only become visible at the end of the drift, which avoids
     // double-rendering with the intro overlay that lands at the same spot.
@@ -1297,10 +1575,8 @@ void Engine::renderLauncher() {
             // One-shot so the click sits on top of the intro/wind sounds instead of
             // stopping them via the single preview slot.
             playEditorFeedbackOneShot("Resources/Sounds/Selection.mp3", 0.95f, EditorFeedbackSoundCategory::Click);
-            // Capture the timer FIRST and resolve the preview path BEFORE calling
-            // OpenProjectPath. Any work done after setting startTime eats into the
-            // visible transition window, so we want as little as possible between
-            // this assignment and the next render frame.
+            // capture the timer FIRST and resolve the preview path BEFORE OpenProjectPath;
+            // anything after startTime eats into the visible transition window.
             launcherTransitionActive = true;
             launcherTransitionPendingHide = false;
             launcherTransitionFocus = focus;
@@ -1317,7 +1593,7 @@ void Engine::renderLauncher() {
         ImVec2 windowPos = ImGui::GetWindowPos();
         ImVec2 windowSize = ImGui::GetWindowSize();
 
-        // ---- Backdrop: optional blurred preview + gradient ----
+        // Backdrop: optional blurred preview + gradient
         ImTextureID previewImageId = static_cast<ImTextureID>(0);
         int previewImageWidth = 0;
         int previewImageHeight = 0;
@@ -1366,7 +1642,7 @@ void Engine::renderLauncher() {
         // (The transition zoom rect is drawn at the end of this Begin block so it sits
         //  ON TOP of the launcher content rather than being painted over by the cards.)
 
-        // ---- Header geometry ----
+        // Header geometry
         const float headerHeight   = 62.0f * uiScale;
         const float headerPadX     = 30.0f * uiScale;
         const float headerLogoSize = 28.0f * uiScale;
@@ -1383,7 +1659,7 @@ void Engine::renderLauncher() {
             windowPos.x + headerPadX + headerLogoSize + headerLogoGap,
             windowPos.y + (headerHeight - titleFontSize) * 0.5f);
 
-        // ---- Resolve logo texture ----
+        // Resolve logo texture
         ImTextureID logoTexId = static_cast<ImTextureID>(0);
         int logoTexWidth = 0;
         int logoTexHeight = 0;
@@ -1404,7 +1680,7 @@ void Engine::renderLauncher() {
         const ImVec2 logoUvMin = usingVulkan() ? ImVec2(0.0f, 0.0f) : ImVec2(0.0f, 1.0f);
         const ImVec2 logoUvMax = usingVulkan() ? ImVec2(1.0f, 1.0f) : ImVec2(1.0f, 0.0f);
 
-        // ---- Header background + bottom rule ----
+        // Header background + bottom rule
         const ImVec2 headerMin(windowPos.x, windowPos.y);
         const ImVec2 headerMax(windowPos.x + windowSize.x, windowPos.y + headerHeight);
         drawList->AddRectFilled(headerMin, headerMax,
@@ -1414,8 +1690,8 @@ void Engine::renderLauncher() {
                           ImGui::GetColorU32(ImVec4(0.18f, 0.21f, 0.27f, 1.0f)),
                           1.0f);
 
-        // ---- Static header brand (logo + "Modularity"). Fades in at end of intro so it
-        // doesn't collide with the intro overlay text that lands on this exact spot. ----
+        // Static header brand (logo + "Modularity"). Fades in at end of intro so it
+        // doesn't collide with the intro overlay text that lands on this exact spot.
         if (headerStaticAlpha > 0.001f) {
             if (logoTexId != static_cast<ImTextureID>(0)) {
                 drawList->AddImage(logoTexId,
@@ -1428,7 +1704,7 @@ void Engine::renderLauncher() {
             drawList->AddText(ImGui::GetFont(), titleFontSize, headerTextPos, titleCol, "Modularity");
         }
 
-        // ---- Top tabs ----
+        // Top tabs
         struct TabDef { const char* label; int index; };
         const TabDef tabs[] = {
             {"Projects", 0},
@@ -1474,7 +1750,7 @@ void Engine::renderLauncher() {
 
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, contentAlpha * transitionAlpha);
 
-        // --- Render tabs ---
+        // Render tabs
         for (int i = 0; i < tabCount; ++i) {
             const float tx = tabXs[i];
             const float tw = tabWidths[i];
@@ -1566,7 +1842,7 @@ void Engine::renderLauncher() {
                 cCenter, cEdge, cEdge, cCenter);
         }
 
-        // --- Right side link buttons (Website / Docs / Exit) ---
+        // Right side link buttons (Website / Docs / Exit)
         auto drawLinkButton = [&](float x, float w, const char* label) -> bool {
             const float bh = 32.0f * uiScale;
             const ImVec2 bMin(x, windowPos.y + (headerHeight - bh) * 0.5f);
@@ -1616,7 +1892,7 @@ void Engine::renderLauncher() {
 
         ImGui::PopStyleVar(); // header alpha
 
-        // ---- Content area (below header) ----
+        // Content area (below header)
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, contentAlpha * transitionAlpha);
         ImGui::SetWindowFontScale(uiScale);
         if (!launcherIntroFinished) {
@@ -1655,7 +1931,7 @@ void Engine::renderLauncher() {
             return value;
         };
 
-        // ---------- Projects view (hybrid card list) ----------
+        // Projects view (hybrid card list)
         auto renderProjectsView = [&]() {
             const auto& recentEntries = GetLauncherRecentProjectDisplayEntries(projectManager);
             const std::string filter = toLower(TrimCopy(launcherSearch));
@@ -1721,7 +1997,7 @@ void Engine::renderLauncher() {
             const float afterToolbarY = ImGui::GetCursorPosY();
             ImGui::SetCursorPosY(std::max(afterToolbarY, titleRowEndY) + 14.0f * uiScale);
 
-            // ---- Card list ----
+            // Card list
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::BeginChild("ProjectsCardList", ImVec2(0.0f, 0.0f), false);
@@ -1972,7 +2248,7 @@ void Engine::renderLauncher() {
             ImGui::EndChild();
         };
 
-        // ---------- New Project view (template chooser, inline) ----------
+        // New Project view (template chooser, inline)
         auto renderNewProjectView = [&]() {
             static char templateSearch[128] = "";
             static int templateCategory = 0; // 0 = Blank Project, 1 = Template Projects
@@ -2152,9 +2428,8 @@ void Engine::renderLauncher() {
                                   placeholder);
                 }
 
-                // Draw labels via the draw list so they do not submit ImGui items.
-                // The InvisibleButton above is the only real layout item for this row,
-                // so rows advance cleanly by the row height instead of by a displaced text item.
+                // labels go through the draw list so they don't submit ImGui items; the InvisibleButton
+                // is the row's only real layout item so rows advance by row height.
                 list->AddText(ImVec2(thumbMax.x + 12.0f * uiScale, rowPos.y + 10.0f * uiScale),
                               ImGui::GetColorU32(ImVec4(0.93f, 0.96f, 1.0f, 1.0f)),
                               entry.displayName.c_str());
@@ -2236,9 +2511,8 @@ void Engine::renderLauncher() {
                                   placeholder);
                 }
 
-                // Draw labels via the draw list so they do not submit ImGui items.
-                // The InvisibleButton above is the only real layout item for this tile,
-                // which keeps SameLine()/row-wrapping anchored to the tile bounds.
+                // same draw-list trick as the rows: the InvisibleButton is the tile's only layout item
+                // so SameLine()/wrapping stays anchored to the tile bounds.
                 const float titleWrapWidth = std::max(1.0f, tileSize.x - 16.0f * uiScale);
                 list->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                               ImVec2(tilePos.x + 8.0f * uiScale, thumbMax.y + 8.0f * uiScale),
@@ -2473,7 +2747,7 @@ void Engine::renderLauncher() {
             ImGui::EndChild();
         };
 
-        // ---------- Packages view ----------
+        // Packages view
         auto renderPackagesView = [&]() {
             ImGui::TextColored(ImVec4(0.95f, 0.97f, 1.0f, 1.0f), "Installed ModuPAKs");
             ImGui::TextColored(ImVec4(0.59f, 0.66f, 0.75f, 1.0f),
@@ -2539,7 +2813,7 @@ void Engine::renderLauncher() {
             }
         };
 
-        // ---------- Settings view ----------
+        // Settings view
         auto renderSettingsView = [&]() {
             static std::string settingsStatus;
             static bool settingsStatusError = false;
@@ -2592,7 +2866,19 @@ void Engine::renderLauncher() {
             }
             ImGui::SameLine();
             if (ImGui::Button("Use Home Default", ImVec2(160.0f * uiScale, 34.0f * uiScale))) {
-#ifdef _WIN32
+#if defined(__ANDROID__)
+                // No HOME on Android: use Documents when access is granted, else
+                // the app-private data dir (current_path is the read-only "/").
+                std::string fallback;
+                const std::string docs = Modularity::AndroidRuntime::GetExternalDocumentsPath();
+                if (!docs.empty() && Modularity::AndroidRuntime::HasAllFilesAccess()) {
+                    fallback = (fs::path(docs) / "ModularityProjects").string();
+                } else if (const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath()) {
+                    fallback = (fs::path(dataPath) / "ModularityProjects").string();
+                } else {
+                    fallback = "/data/local/tmp/ModularityProjects";
+                }
+#elif defined(_WIN32)
                 const char* userProfile = std::getenv("USERPROFILE");
                 const std::string fallback = userProfile && *userProfile
                     ? (fs::path(userProfile) / "Documents" / "ModularityProjects").string()
@@ -2616,6 +2902,67 @@ void Engine::renderLauncher() {
                 settingsStatusError = false;
             }
 
+#ifdef __ANDROID__
+            // Android can't write public Documents until storage access is granted; surface that here
+            // so projects can live in Documents/ModularityProjects like desktop.
+            {
+                ImGui::Dummy(ImVec2(0.0f, 14.0f * uiScale));
+                ImGui::Separator();
+                ImGui::Dummy(ImVec2(0.0f, 10.0f * uiScale));
+                ImGui::TextUnformatted("File Access");
+
+                const bool hasAccess = Modularity::AndroidRuntime::HasAllFilesAccess();
+                const std::string docsRoot = Modularity::AndroidRuntime::GetExternalDocumentsPath();
+                const std::string docsProjects = docsRoot.empty()
+                    ? std::string()
+                    : (fs::path(docsRoot) / "ModularityProjects").string();
+
+                if (hasAccess) {
+                    ImGui::TextColored(ImVec4(0.61f, 0.86f, 0.70f, 1.0f),
+                                       "Granted - projects can live in shared storage.");
+                    if (!docsProjects.empty()) {
+                        ImGui::Dummy(ImVec2(0.0f, 6.0f * uiScale));
+                        if (ImGui::Button("Use Documents Folder",
+                                          ImVec2(220.0f * uiScale, 34.0f * uiScale))) {
+                            std::error_code ec;
+                            fs::create_directories(docsProjects, ec);
+                            if (ec) {
+                                settingsStatus = "Failed to create folder: " + ec.message();
+                                settingsStatusError = true;
+                            } else {
+                                std::snprintf(projectManager.defaultProjectLocation,
+                                              sizeof(projectManager.defaultProjectLocation),
+                                              "%s", docsProjects.c_str());
+                                std::snprintf(projectManager.newProjectLocation,
+                                              sizeof(projectManager.newProjectLocation),
+                                              "%s", projectManager.defaultProjectLocation);
+                                projectManager.saveLauncherSettings();
+                                settingsStatus = "Projects will be stored in Documents/ModularityProjects.";
+                                settingsStatusError = false;
+                            }
+                        }
+                    }
+                } else {
+                    ImGui::TextDisabled("Not granted. Projects are kept in private app storage,");
+                    ImGui::TextDisabled("which other apps and your file manager can't see.");
+                    ImGui::Dummy(ImVec2(0.0f, 6.0f * uiScale));
+                    if (ImGui::Button("Grant File Access",
+                                      ImVec2(220.0f * uiScale, 34.0f * uiScale))) {
+                        std::string reqErr;
+                        if (Modularity::AndroidRuntime::RequestAllFilesAccess(reqErr)) {
+                            settingsStatus = "Grant access in the settings screen, then return here.";
+                            settingsStatusError = false;
+                        } else {
+                            settingsStatus = reqErr.empty()
+                                ? std::string("Could not open the storage permission screen.")
+                                : reqErr;
+                            settingsStatusError = true;
+                        }
+                    }
+                }
+            }
+#endif
+
             if (!settingsStatus.empty()) {
                 ImGui::Dummy(ImVec2(0.0f, 8.0f * uiScale));
                 ImGui::TextColored(settingsStatusError
@@ -2629,7 +2976,7 @@ void Engine::renderLauncher() {
             ImGui::PopStyleColor();
         };
 
-        // ---- Section dispatch (with cross-fade between Projects list and New Project) ----
+        // Section dispatch (with cross-fade between Projects list and New Project)
         if (launcherSection == 0) {
             const ImVec2 projectsRoot = ImGui::GetCursorPos();
             const ImVec2 projectsAvail = ImGui::GetContentRegionAvail();
@@ -2672,11 +3019,8 @@ void Engine::renderLauncher() {
         }
         ImGui::SetWindowFontScale(1.0f);
 
-        // ---------------------------------------------------------------------
-        // Intro overlay: logo + letter pop-in at center, drift to top-left header.
-        // The static header brand fades in only after this drift completes, so
-        // there is never a duplicate "Modularity" on screen.
-        // ---------------------------------------------------------------------
+        // intro overlay: logo pops in at center then drifts to the header. the static header brand
+        // only fades in after the drift so there's never two "Modularity"s on screen.
         if (!launcherIntroFinished && introState.textAlpha > 0.001f) {
             ImDrawList* overlay = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
             const char* title = "Modularity";
@@ -2768,13 +3112,9 @@ void Engine::renderLauncher() {
             }
         }
 
-        // -------- Project-open zoom overlay --------
-        // Drawn LAST inside the launcher window so it sits on top of every card and
-        // the header. The clicked card's preview image expands from its position to
-        // fill the screen, fading in as it grows; once the zoom timer elapses but the
-        // load is still going, the rect stays HELD at fullscreen so the cards stay
-        // hidden. This is what makes it actually feel like a transition rather than
-        // a snap-back to the project list.
+        // project-open zoom overlay, drawn LAST so it sits on top of everything. the clicked card's
+        // preview expands to fill the screen, then HOLDS at fullscreen while the load finishes.
+        // that hold is what makes it feel like a transition instead of a snap-back.
         if (loadingScreenT > 0.0001f) {
             ImVec2 focus = launcherTransitionFocus;
             if (focus.x <= 0.0f && focus.y <= 0.0f) {
@@ -2800,9 +3140,8 @@ void Engine::renderLauncher() {
                 }
             }
 
-            // Start at roughly the clicked card's footprint. Target size is measured
-            // from the focus point to the furthest screen edge so the rect *always*
-            // ends up covering the entire window, no matter where the card was.
+            // start at the clicked card's footprint; target size is measured to the furthest screen
+            // edge so the rect always covers the whole window.
             const float cardW0 = 1100.0f * uiScale;
             const float cardH0 = 92.0f   * uiScale;
             const float distLeft   = focus.x - windowPos.x;
@@ -2871,10 +3210,8 @@ void Engine::renderLauncher() {
         const float introT  = ImClamp((elapsed - 0.32f) / 0.32f, 0.0f, 1.0f);
         const float introEase = EaseOutCubic(introT);
 
-        // One-shot wind ambience that fires once if the load is taking long enough
-        // to need it. Layered through the one-shot slot so it doesn't clobber the
-        // intro/click sounds, and the flag prevents it from re-triggering every
-        // frame while the load continues.
+        // one-shot wind ambience if the load takes long enough. layered through the one-shot slot
+        // so it doesn't clobber the intro/click sounds, and the flag stops per-frame re-triggers.
         if (!launcherWindSoundActive && elapsed > 1.4f) {
             if (playEditorFeedbackOneShot("Resources/Sounds/Wind Sound Load Project.mp3",
                                           0.55f, EditorFeedbackSoundCategory::Boot)) {
@@ -3575,6 +3912,15 @@ void Engine::renderProjectBrowserPanel() {
         return {};
     };
 
+    // Section headers with a real icon from Resources/.../Dropdowns/<tab>/,
+    // keeping the bracket-letter tag as the fallback while icons are WIP.
+    auto drawSettingSectionIcon = [&](const char* iconPath, const char* fallbackIcon,
+                                      const char* title, const char* helper,
+                                      bool defaultOpen = true) {
+        const ProjectSettingsUiIcon icon = resolveProjectSettingsIcon(iconPath);
+        return DrawSettingSection(icon.id, icon.flipY, fallbackIcon, title, helper, defaultOpen);
+    };
+
     struct ProjectSettingsTabInfo {
         const char* label;
         const char* iconPath;
@@ -3587,6 +3933,7 @@ void Engine::renderProjectBrowserPanel() {
         { "Input Manager", "Resources/Engine-Root/Project Settings/Tabs/Input Manager.png", "I" },
         { "Physics Manager", "Resources/Engine-Root/Project Settings/Tabs/Physics Manager.png", "P" },
         { "Graphics Manager", "Resources/Engine-Root/Project Settings/Tabs/Graphics.png", "G" },
+        { "Lighting Manager", "Resources/Engine-Root/Project Settings/Tabs/Lighting Manager.png", "L" },
         { "Tags & Layers", "Resources/Engine-Root/Project Settings/Tabs/Tags And Layers.png", "T" },
         { "Console Config", "Resources/Engine-Root/Project Settings/Tabs/Console Config.png", "C" },
         { "Audio Config", "Resources/Engine-Root/Project Settings/Tabs/Audio.png", "A" },
@@ -3600,14 +3947,15 @@ void Engine::renderProjectBrowserPanel() {
     static constexpr int kInputManagerTab = 2;
     static constexpr int kPhysicsManagerTab = 3;
     static constexpr int kGraphicsManagerTab = 4;
-    static constexpr int kTagsLayersTab = 5;
-    static constexpr int kConsoleConfigTab = 6;
-    static constexpr int kAudioConfigTab = 7;
-    static constexpr int kPlayerConfigTab = 8;
-    static constexpr int kEditorTab = 9;
-    static constexpr int kBuildTab = 10;
-    static constexpr int kCompilationTab = 11;
-    static constexpr int kOpenXRTab = 12;
+    static constexpr int kLightingManagerTab = 5;
+    static constexpr int kTagsLayersTab = 6;
+    static constexpr int kConsoleConfigTab = 7;
+    static constexpr int kAudioConfigTab = 8;
+    static constexpr int kPlayerConfigTab = 9;
+    static constexpr int kEditorTab = 10;
+    static constexpr int kBuildTab = 11;
+    static constexpr int kCompilationTab = 12;
+    static constexpr int kOpenXRTab = 13;
 
     static int selectedTab = 0;
     constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
@@ -3842,6 +4190,11 @@ void Engine::renderProjectBrowserPanel() {
         ImGui::EndTooltip();
     }
     ImGui::Separator();
+
+    // When the panel is wide enough, the sections below flow into two balanced
+    // columns; tabs without measured sections keep a single full-width column.
+    static std::array<std::vector<float>, tabCount> settingsSectionHeights;
+    BeginProjectSettingsColumns(settingsSectionHeights[selectedTab]);
 
     if (selectedTab == 0) {
         if (ImGui::Button("+ New Scene")) {
@@ -4435,10 +4788,34 @@ void Engine::renderProjectBrowserPanel() {
                     return ImGui::Combo("##ShadowQuality", &graphics.shadowQuality, quality, IM_ARRAYSIZE(quality));
                 });
             }
-            if (visible(ProjectSettingsVisibilityMode::Advanced, "Quality", "Render Resolution Scale", "resolution scale")) {
-                changed |= DrawSettingRow("Render Resolution Scale", "Scales internal render resolution for performance or supersampling.", [&]() {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "Render Scale", "resolution scale global render scale")) {
+                changed |= DrawSettingRow("Render Scale", "Scales the runtime render resolution globally. Below 1 renders fewer pixels and stretches up; above 1 supersamples.", [&]() {
                     return ImGui::SliderFloat("##RenderResolutionScale", &graphics.renderResolutionScale, 0.25f, 2.0f, "%.2fx");
                 });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "HDR", "high dynamic range bloom")) {
+                changed |= DrawSettingRow("HDR", "Renders to float color buffers so bright values survive for bloom and tone mapping. Turning it off forces 8-bit color.", [&]() {
+                    if (ImGui::Checkbox("##GraphicsHdr", &graphics.hdr)) {
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Quality", "Color Resolution", "color precision 8-bit 16-bit float buffer format")) {
+                changed |= DrawSettingRow("Color Resolution", "Storage precision of the offscreen color buffers. Auto keeps 16-bit float; 8-bit halves bandwidth for strictly LDR projects.", [&]() {
+                    int colorRes = static_cast<int>(graphics.colorResolution);
+                    const char* colorResOptions[] = { "Auto", "8-bit", "16-bit Float" };
+                    if (ImGui::Combo("##GraphicsColorResolution", &colorRes, colorResOptions, IM_ARRAYSIZE(colorResOptions))) {
+                        graphics.colorResolution = static_cast<ProjectColorResolution>(std::clamp(colorRes, 0, 2));
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+                if (!graphics.hdr) {
+                    DrawHelpText("HDR is off, so color buffers stay 8-bit regardless of this pick.");
+                }
             }
             if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "Texture Filtering", "point bilinear trilinear")) {
                 changed |= DrawSettingRow("Texture Filtering", "Default sampling mode for newly authored materials.", [&]() {
@@ -4446,6 +4823,30 @@ void Engine::renderProjectBrowserPanel() {
                     const char* filters[] = { "Bilinear", "Point", "Trilinear" };
                     if (ImGui::Combo("##TextureFiltering", &filter, filters, IM_ARRAYSIZE(filters))) {
                         graphics.textureFiltering = static_cast<ProjectTextureFiltering>(std::clamp(filter, 0, 2));
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Quality", "Global Texture Format", "texture format auto compression vram 16bpp")) {
+                changed |= DrawSettingRow("Global Texture Format", "GPU storage format every texture defaults to. Auto adapts per texture; per-texture overrides in the File Browser still win.", [&]() {
+                    const TextureFormatPolicy formatOptions[] = {
+                        TextureFormatPolicy::Auto, TextureFormatPolicy::Full,
+                        TextureFormatPolicy::RGB565, TextureFormatPolicy::RGB5_A1,
+                        TextureFormatPolicy::RGBA4
+                    };
+                    const char* formatLabels[] = {
+                        "Auto (adaptive)", "Full (RGBA8)", "RGB565 (16bpp opaque)",
+                        "RGB5_A1 (16bpp cutout)", "RGBA4 (16bpp blended)"
+                    };
+                    const TextureFormatPolicy current = TextureFormatPolicyFromString(graphics.defaultTextureFormat);
+                    int formatIdx = 0;
+                    for (int i = 0; i < (int)(sizeof(formatOptions) / sizeof(formatOptions[0])); ++i) {
+                        if (formatOptions[i] == current) { formatIdx = i; break; }
+                    }
+                    if (ImGui::Combo("##GlobalTextureFormat", &formatIdx, formatLabels, IM_ARRAYSIZE(formatLabels))) {
+                        graphics.defaultTextureFormat = ToString(formatOptions[std::clamp(formatIdx, 0, 4)]);
+                        applyProjectGraphicsToRenderer();
                         return true;
                     }
                     return false;
@@ -4482,6 +4883,160 @@ void Engine::renderProjectBrowserPanel() {
             graphics.shadowQuality = std::clamp(graphics.shadowQuality, 0, 3);
             graphics.renderResolutionScale = std::clamp(graphics.renderResolutionScale, 0.25f, 2.0f);
             projectManager.currentProject.saveProjectFile();
+        }
+        if (buildSettingsChanged) {
+            saveBuildSettings();
+        }
+    } else if (selectedTab == kLightingManagerTab) {
+        ProjectGraphicsSettings& graphics = projectManager.currentProject.graphicsSettings;
+        bool changed = false;
+        bool buildSettingsChanged = false;
+
+        // Live light usage against the rendering path's budget.
+        int activeDirectional = 0;
+        int activeOther = 0;
+        for (const SceneObject& lightObj : sceneObjects) {
+            if (!IsObjectEnabledInHierarchy(lightObj) || !lightObj.hasLight || !lightObj.light.enabled) continue;
+            if (lightObj.light.type == LightType::Directional) ++activeDirectional;
+            else ++activeOther;
+        }
+        int pathLightBudget = 20;
+        int pathDirectionalAllowance = 1;
+        ProjectRenderingPathCaps(graphics.renderingPath, pathLightBudget, pathDirectionalAllowance);
+
+        if (DrawSettingSection("[P]", "Rendering Path", "Light budget mode, Modularity's take on Forward/Deferred.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Rendering Path", "Rendering Path", "normal deferred forward light limit budget")) {
+                changed |= DrawSettingRow("Rendering Path", "How many realtime lights a scene may use. Directional lights keep guaranteed slots on top of the budget.", [&]() {
+                    const ProjectRenderingPath pathOptions[] = {
+                        ProjectRenderingPath::Normal, ProjectRenderingPath::NormalPlus,
+                        ProjectRenderingPath::Deferred, ProjectRenderingPath::HeavyDeferred
+                    };
+                    bool rowChanged = false;
+                    if (ImGui::BeginCombo("##RenderingPath", ProjectRenderingPathLabel(graphics.renderingPath))) {
+                        for (ProjectRenderingPath option : pathOptions) {
+                            const bool selected = (option == graphics.renderingPath);
+                            if (ImGui::Selectable(ProjectRenderingPathLabel(option), selected)) {
+                                if (option != graphics.renderingPath) {
+                                    graphics.renderingPath = option;
+                                    applyProjectGraphicsToRenderer();
+                                    rowChanged = true;
+                                }
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("%s", ProjectRenderingPathNote(option));
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    return rowChanged;
+                });
+                DrawHelpText(ProjectRenderingPathNote(graphics.renderingPath));
+                const bool overBudget = activeOther > pathLightBudget ||
+                                        activeDirectional > pathDirectionalAllowance;
+                ImGui::TextColored(overBudget ? ImVec4(1.0f, 0.55f, 0.35f, 1.0f)
+                                              : ImVec4(0.55f, 0.75f, 0.55f, 1.0f),
+                                   "Scene: %d light%s + %d directional (budget %d + %d directional)",
+                                   activeOther, activeOther == 1 ? "" : "s", activeDirectional,
+                                   pathLightBudget, pathDirectionalAllowance);
+                if (overBudget) {
+                    DrawHelpText("Over budget: the renderer keeps the nearest lights and drops the rest each frame.");
+                }
+            }
+        }
+
+        const bool lightingEditable = rendererInitialized && !usingVulkan();
+        if (!lightingEditable) {
+            DrawHelpText("Lighting settings apply to the OpenGL renderer and are editable only in OpenGL sessions.");
+        }
+        ImGui::BeginDisabled(!lightingEditable);
+
+        if (DrawSettingSection("[M]", "Main Light", "The directional light(s) with guaranteed slots.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Main Light", "Main Light", "directional sun per pixel off")) {
+                changed |= DrawSettingRow("Main Light", "Per Pixel keeps directional lighting on; Off removes directional lights from shading.", [&]() {
+                    int mode = graphics.mainLightEnabled ? 0 : 1;
+                    const char* modes[] = { "Per Pixel", "Off" };
+                    if (ImGui::Combo("##MainLightMode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                        graphics.mainLightEnabled = (mode == 0);
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Main Light", "Cast Shadows", "directional shadows")) {
+                changed |= DrawSettingRow("Cast Shadows", "Whether directional lights may render shadow maps.", [&]() {
+                    if (ImGui::Checkbox("##MainLightCastShadows", &graphics.mainLightCastShadows)) {
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[A]", "Additional Lights", "Point, spot, and area lights competing for the budget.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Additional Lights", "Additional Lights", "point spot area per pixel off")) {
+                changed |= DrawSettingRow("Additional Lights", "Per Pixel keeps point/spot/area lights on; Off drops them from shading.", [&]() {
+                    int mode = graphics.additionalLightsEnabled ? 0 : 1;
+                    const char* modes[] = { "Per Pixel", "Off" };
+                    if (ImGui::Combo("##AdditionalLightsMode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                        graphics.additionalLightsEnabled = (mode == 0);
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "Additional Lights", "Per Frame Limit", "max realtime lights per frame")) {
+                changed |= DrawSettingRow("Per Frame Limit", "Hard cap on lights uploaded to the shader each frame (nearest lights win). The rendering path budget still applies on top.", [&]() {
+                    int maxLights = renderer.getMaxRealtimeLights();
+                    if (ImGui::SliderInt("##LightingMaxRealtimeLights", &maxLights, 1, kRendererMaxRealtimeLights)) {
+                        renderer.setMaxRealtimeLights(maxLights);
+                        saveEditorUserSettings();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Additional Lights", "Cast Shadows", "point spot shadows")) {
+                changed |= DrawSettingRow("Cast Shadows", "Whether point/spot/area lights may render shadow maps.", [&]() {
+                    if (ImGui::Checkbox("##AdditionalLightsCastShadows", &graphics.additionalLightsCastShadows)) {
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        if (DrawSettingSection("[S]", "Shadows", "Project-wide shadow behavior.")) {
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Shadows", "Max Distance", "shadow distance far")) {
+                changed |= DrawSettingRow("Max Distance", "Directional shadows only cover this far from the camera. 0 follows the camera far plane; smaller values sharpen shadows.", [&]() {
+                    if (ImGui::DragFloat("##ShadowMaxDistance", &graphics.shadowMaxDistance, 1.0f, 0.0f, 100000.0f, graphics.shadowMaxDistance <= 0.0f ? "Unlimited" : "%.0f")) {
+                        graphics.shadowMaxDistance = std::max(0.0f, graphics.shadowMaxDistance);
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Shadows", "Soft Shadows", "pcf soft hard")) {
+                changed |= DrawSettingRow("Soft Shadows", "Allows the softened shadow mode. Off forces hard shadows even on lights configured as soft.", [&]() {
+                    if (ImGui::Checkbox("##LightingSoftShadows", &graphics.softShadows)) {
+                        applyProjectGraphicsToRenderer();
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+
+        ImGui::EndDisabled();
+
+        if (changed) {
+            projectManager.currentProject.saveProjectFile();
+            projectManager.currentProject.hasUnsavedChanges = true;
         }
         if (buildSettingsChanged) {
             saveBuildSettings();
@@ -4663,7 +5218,8 @@ void Engine::renderProjectBrowserPanel() {
             });
             changed |= drawStringSetting("Application Icon", "Path to the icon asset used by supported build targets.", player.applicationIconPath, 512);
         }
-        if (DrawSettingSection("[W]", "Window and Cursor", "Startup resolution, fullscreen mode, and cursor defaults.")) {
+        if (drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Player Config/Window and cursor.png",
+                                   "[W]", "Window and Cursor", "Startup resolution, fullscreen mode, and cursor defaults.")) {
             changed |= DrawSettingRow("Startup Resolution", "Default player window size.", [&]() {
                 bool rowChanged = ImGui::DragInt("Width##PlayerStartupWidth", &player.startupWidth, 1.0f, 64, 8192);
                 rowChanged |= ImGui::DragInt("Height##PlayerStartupHeight", &player.startupHeight, 1.0f, 64, 8192);
@@ -4705,7 +5261,8 @@ void Engine::renderProjectBrowserPanel() {
         bool buildSettingsChanged = false;
 
         if (sectionVisible("Project", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[P]", "Project", "Project identity and the broad mode this project uses.")) {
+            drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Editor/Project.png",
+                                   "[P]", "Project", "Project identity and the broad mode this project uses.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Project", "Project Mode", "pipeline 2d 3d 2.5d")) {
                 editorSettingsChanged |= DrawSettingRow("Project Mode", "Choose the default editing pipeline for this project.", [&]() {
                     int pipelineIndex = ProjectPipelineToUiIndex(projectManager.currentProject.pipeline);
@@ -4741,7 +5298,8 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (sectionVisible("Player / Viewport", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[V]", "Player / Viewport", "Preview and viewport behavior.")) {
+            drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Editor/Player and viewport.png",
+                                   "[V]", "Player / Viewport", "Preview and viewport behavior.")) {
             const char* resolutionOptions[] = { "Default (1280x720)", "1080p", "720p", "1440p", "Custom" };
             if (gameViewportResolutionIndex < 0 || gameViewportResolutionIndex >= static_cast<int>(IM_ARRAYSIZE(resolutionOptions))) {
                 gameViewportResolutionIndex = 0;
@@ -4794,6 +5352,11 @@ void Engine::renderProjectBrowserPanel() {
                     return ImGui::Checkbox("##CanvasGuides", &showCanvasOverlay);
                 });
             }
+            if (visible(ProjectSettingsVisibilityMode::Simple, "Player / Viewport", "UI Canvas Preview", "ui canvas preview selection overlay")) {
+                editorSettingsChanged |= DrawSettingRow("UI Canvas Preview", "Shows UI canvas previews in editor viewports while not playing.", [&]() {
+                    return ImGui::Checkbox("##UICanvasPreview", &uiCanvasPreviewEnabled);
+                });
+            }
             if (visible(ProjectSettingsVisibilityMode::Advanced, "Player / Viewport", "UI World Grid", "world ui grid overlay")) {
                 editorSettingsChanged |= DrawSettingRow("UI World Grid", "Shows the grid while editing world-space UI.", [&]() {
                     return ImGui::Checkbox("##UIWorldGrid", &showUIWorldGrid);
@@ -4824,7 +5387,8 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (sectionVisible("Build", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[B]", "Build", "Build profile shortcuts. Full controls remain in the Build tab.")) {
+            drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Editor/ModuCPP Logo.png",
+                                   "[B]", "Build", "Build profile shortcuts. Full controls remain in the Build tab.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Build", "Platform", "target windows linux android")) {
                 buildSettingsChanged |= DrawSettingRow("Platform", "Target platform used by the build profile.", [&]() {
                     int targetIndex = buildPlatformIndex(buildSettings.platform);
@@ -4874,7 +5438,8 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (sectionVisible("Editor", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[E]", "Editor", "Camera movement and editor-only viewport aids.")) {
+            drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Editor/Editor.png",
+                                   "[E]", "Editor", "Camera movement and editor-only viewport aids.")) {
             if (visible(ProjectSettingsVisibilityMode::Simple, "Editor", "Move Speed", "camera navigation")) {
                 editorSettingsChanged |= DrawSettingRow("Move Speed", "Base speed for editor camera movement.", [&]() {
                     if (ImGui::DragFloat("##CameraMoveSpeed", &camera.moveSpeed, 0.1f, 0.01f, 100.0f, "%.2f")) {
@@ -4941,6 +5506,27 @@ void Engine::renderProjectBrowserPanel() {
             sectionVisible("2.5D Presentation", ProjectSettingsVisibilityMode::Advanced) &&
             DrawSettingSection("[2.5D]", "2.5D Presentation", "Technical presentation controls for TM/vexel projects.", false)) {
             auto& tmPresentation = tmOpenGLRenderer.getPresentationSettings();
+            if (visible(ProjectSettingsVisibilityMode::Advanced, "2.5D Presentation", "Fake 3D", "glue mode7 lowres tile retro fake")) {
+                editorSettingsChanged |= DrawSettingRow("Fake 3D", "Glue3D-style low-res mode7 presentation (tile+seg+m7,tsm).", [&]() {
+                    bool changed = ImGui::Checkbox("##TMFake3D", &tmPresentation.fake3DEnabled);
+                    ImGui::BeginDisabled(!tmPresentation.fake3DEnabled);
+                    changed |= ImGui::DragInt("Lines##TMFake3DHeight", &tmPresentation.fake3DInternalHeight, 1.0f, 64, 2160);
+                    changed |= ImGui::Checkbox("Point Sampling##TMFake3DPoint", &tmPresentation.fake3DPointSampling);
+                    changed |= ImGui::Checkbox("Flat Shading##TMFake3DFlat", &tmPresentation.fake3DFlatShading);
+                    changed |= ImGui::DragInt("Shade Levels##TMFake3DShadeLevels", &tmPresentation.fake3DShadeLevels, 0.1f, 0, 16);
+                    changed |= ImGui::Checkbox("Affine Textures##TMFake3DAffine", &tmPresentation.fake3DAffineTextures);
+                    ImGui::BeginDisabled(!tmPresentation.fake3DAffineTextures);
+                    changed |= ImGui::SliderFloat("Warp##TMFake3DAffineStrength", &tmPresentation.fake3DAffineStrength, 0.0f, 1.0f, "%.2f");
+                    ImGui::EndDisabled();
+                    ImGui::EndDisabled();
+                    if (changed) {
+                        tmPresentation.fake3DInternalHeight = std::clamp(tmPresentation.fake3DInternalHeight, 64, 2160);
+                        tmPresentation.fake3DShadeLevels = std::clamp(tmPresentation.fake3DShadeLevels, 0, 16);
+                        tmPresentation.fake3DAffineStrength = std::clamp(tmPresentation.fake3DAffineStrength, 0.0f, 1.0f);
+                    }
+                    return changed;
+                });
+            }
             if (visible(ProjectSettingsVisibilityMode::Advanced, "2.5D Presentation", "Pitch Stretch", "tm vexel look pitch")) {
                 editorSettingsChanged |= DrawSettingRow("Pitch Stretch", "Adjusts how 2.5D art responds to camera pitch.", [&]() {
                     return ImGui::Checkbox("##TMPitchStretch", &tmPresentation.lookPitchStretchEnabled);
@@ -4953,11 +5539,22 @@ void Engine::renderProjectBrowserPanel() {
                     changed |= ImGui::DragFloat("Stretch##TMPitchStretchStrength", &tmPresentation.lookPitchStretchStrength, 0.01f, 0.0f, 1.5f, "%.2f");
                     changed |= ImGui::DragFloat("Compress##TMPitchCompressStrength", &tmPresentation.lookPitchCompressStrength, 0.01f, 0.0f, 1.5f, "%.2f");
                     changed |= ImGui::DragFloat("Shear##TMPitchShearStrength", &tmPresentation.lookPitchShearStrength, 0.01f, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Curve##TMPitchCurve", &tmPresentation.lookPitchCurve, 0.01f, 0.1f, 4.0f, "%.2f");
+                    changed |= ImGui::DragFloat("Depth Range##TMPitchDepthRange", &tmPresentation.lookPitchDepthRange, 0.25f, 1.0f, 256.0f, "%.1f");
+                    changed |= ImGui::DragFloatRange2("Pitch Range##TMPitchRange",
+                                                      &tmPresentation.presentationPitchMinDegrees,
+                                                      &tmPresentation.presentationPitchMaxDegrees,
+                                                      0.5f, -89.0f, 89.0f, "%.0f deg");
                     ImGui::EndDisabled();
                     if (changed) {
                         tmPresentation.lookPitchStretchStrength = std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f);
                         tmPresentation.lookPitchCompressStrength = std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f);
                         tmPresentation.lookPitchShearStrength = std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f);
+                        tmPresentation.lookPitchCurve = std::clamp(tmPresentation.lookPitchCurve, 0.1f, 4.0f);
+                        tmPresentation.lookPitchDepthRange = std::clamp(tmPresentation.lookPitchDepthRange, 1.0f, 256.0f);
+                        tmPresentation.presentationPitchMinDegrees = std::clamp(tmPresentation.presentationPitchMinDegrees, -89.0f, 89.0f);
+                        tmPresentation.presentationPitchMaxDegrees = std::clamp(tmPresentation.presentationPitchMaxDegrees,
+                                                                                tmPresentation.presentationPitchMinDegrees, 89.0f);
                     }
                     return changed;
                 });
@@ -5296,7 +5893,8 @@ void Engine::renderProjectBrowserPanel() {
         }
 
         if (sectionVisible("scripts.modu", ProjectSettingsVisibilityMode::Simple) &&
-            DrawSettingSection("[S]", "scripts.modu", "Project script compiler configuration and compatibility settings.")) {
+            drawSettingSectionIcon("Resources/Engine-Root/Project Settings/Dropdowns/Editor/ModuCPP Logo.png",
+                                   "[S]", "scripts.modu", "Project script compiler configuration and compatibility settings.")) {
             auto editString = [&](const char* label, std::string& value, size_t capacity = 1024) {
                 std::vector<char> buf(capacity, '\0');
                 std::snprintf(buf.data(), buf.size(), "%s", value.c_str());
@@ -5523,6 +6121,8 @@ void Engine::renderProjectBrowserPanel() {
             ImGui::EndGroup();
         }
     }
+
+    EndProjectSettingsColumns();
 
     ImGui::PopStyleVar(2);
     ImGui::EndChild();

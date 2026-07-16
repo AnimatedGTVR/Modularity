@@ -3,10 +3,6 @@
 #include "ProjectManager.h"
 #include "SceneObject.h"
 #include <vector>
-
-// Interface for swappable physics backends (PhysX, Jolt). Picked per-project
-// via ProjectPhysicsSettings; Jolt is the default where PhysX is unsupported.
-// Keep signatures glm/STL-only.
 class IPhysicsBackend {
 public:
     virtual ~IPhysicsBackend() = default;
@@ -24,11 +20,7 @@ public:
     virtual bool addImpulse(int id, const glm::vec3& impulse) = 0;
     virtual bool addTorque(int id, const glm::vec3& torque) = 0;
     virtual bool addAngularImpulse(int id, const glm::vec3& impulse) = 0;
-    virtual bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance,
-                                int ignoreId, glm::vec3* hitPos = nullptr,glm::vec3* hitNormal = nullptr,
-                                float* hitDistance = nullptr, int* hitActorId = nullptr,
-                                glm::vec3* hitActorVelocity = nullptr, float* hitStaticFriction = nullptr,
-                                float* hitDynamicFriction = nullptr) const = 0;
+    virtual bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance, int ignoreId, glm::vec3* hitPos = nullptr,glm::vec3* hitNormal = nullptr, float* hitDistance = nullptr, int* hitActorId = nullptr, glm::vec3* hitActorVelocity = nullptr, float* hitStaticFriction = nullptr, float* hitDynamicFriction = nullptr) const = 0;
     virtual void onPlayStart(const std::vector<SceneObject>& objects) = 0;
     virtual void onPlayStop() = 0;
     virtual void simulate(float deltaTime, std::vector<SceneObject>& objects) = 0;

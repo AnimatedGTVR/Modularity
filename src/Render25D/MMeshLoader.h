@@ -15,6 +15,8 @@ public:
 class MMeshCache {
 public:
     const MMeshRenderData* getOrLoad(const std::string& path, std::string& error);
+    const MMeshRenderData* store(const std::string& path, const MMeshAsset& asset, std::string& error);
+    void invalidate(const std::string& path);
     void clear();
 
 private:

@@ -1,7 +1,7 @@
 #pragma once
 
 // ModuUIScriptApi.h
-// obj.UI scripting API for ModuCPP — provides safe, LSP-friendly access to UI components.
+// obj.UI scripting API for ModuCPP - provides safe, LSP-friendly access to UI components.
 // Included automatically via ModuCPPScriptApi.h when "add ModuCPP;" is used.
 
 #include "ScriptRuntime.h"
@@ -12,9 +12,7 @@
 
 namespace ModuCPP {
 
-// ────────────────────────────────────────────────────────────────────────────
 // Color helper
-// ────────────────────────────────────────────────────────────────────────────
 
 inline glm::vec4 Color(float r, float g, float b, float a = 1.0f) {
     return glm::vec4(r, g, b, a);
@@ -24,9 +22,7 @@ inline glm::vec4 Color(float rgb, float a = 1.0f) {
     return glm::vec4(rgb, rgb, rgb, a);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
 // Internal storage for UI events and state
-// ────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
 
@@ -83,15 +79,11 @@ inline void uiWarnOnce(ScriptContext* ctx, const char* feature) {
 
 } // namespace detail
 
-// ────────────────────────────────────────────────────────────────────────────
 // Forward declarations
-// ────────────────────────────────────────────────────────────────────────────
 
 struct UIProxy;
 
-// ────────────────────────────────────────────────────────────────────────────
-// UIButtonProxy  —  obj.UI.Button.*
-// ────────────────────────────────────────────────────────────────────────────
+// UIButtonProxy  -  obj.UI.Button.*
 
 struct UIButtonProxy {
     ScriptContext* ctx_;
@@ -147,9 +139,7 @@ struct UIButtonProxy {
     InteractableProp Interactable{ this };
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// UISliderProxy  —  obj.UI.Slider.*
-// ────────────────────────────────────────────────────────────────────────────
+// UISliderProxy  -  obj.UI.Slider.*
 
 struct UISliderProxy {
     ScriptContext* ctx_;
@@ -279,9 +269,7 @@ struct UISliderProxy {
     }
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// UIImageProxy  —  obj.UI.Image.*
-// ────────────────────────────────────────────────────────────────────────────
+// UIImageProxy  -  obj.UI.Image.*
 
 struct UIImageProxy {
     ScriptContext* ctx_;
@@ -322,9 +310,7 @@ struct UIImageProxy {
     TintProp Tint{ this };
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// UIToggleProxy  —  obj.UI.Toggle.* (stubbed — no engine type yet)
-// ────────────────────────────────────────────────────────────────────────────
+// UIToggleProxy  -  obj.UI.Toggle.* (stubbed - no engine type yet)
 
 struct UIToggleProxy {
     ScriptContext* ctx_;
@@ -349,9 +335,7 @@ struct UIToggleProxy {
     }
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// UIInputProxy  —  obj.UI.Input.* (stubbed — no engine type yet)
-// ────────────────────────────────────────────────────────────────────────────
+// UIInputProxy  -  obj.UI.Input.* (stubbed - no engine type yet)
 
 struct UIInputProxy {
     ScriptContext* ctx_;
@@ -388,9 +372,7 @@ struct UIInputProxy {
     }
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// UIProxy  —  obj.UI
-// ────────────────────────────────────────────────────────────────────────────
+// UIProxy  -  obj.UI
 
 struct UIProxy {
     ScriptContext* ctx_   = nullptr;
@@ -417,7 +399,7 @@ struct UIProxy {
         _pollEvents();
     }
 
-    // ── Helper checks ─────────────────────────────────────────────────────
+    // Helper checks
 
     bool Exists() const {
         return ctx_ && ctx_->object && ctx_->object->hasUI &&
@@ -434,7 +416,7 @@ struct UIProxy {
     bool IsToggle() const { return false; }  // not yet in engine
     bool IsInput()  const { return false; }  // not yet in engine
 
-    // ── Direct property proxies ───────────────────────────────────────────
+    // Direct property proxies
 
     // Text / Label
     struct TextProp {
@@ -714,7 +696,7 @@ struct UIProxy {
         else detail::uiWarnOnce(ctx_, "SetBack");
     }
 
-    // Pivot (maps to pseudo3D pivot or a general concept — for now we use pseudo3DPivot)
+    // Pivot (maps to pseudo3D pivot or a general concept - for now we use pseudo3DPivot)
     struct PivotProp {
         UIProxy* p;
         PivotProp& operator=(const glm::vec2& v) {
@@ -728,7 +710,7 @@ struct UIProxy {
     };
     PivotProp Pivot{ this };
 
-    // ── Event registration ────────────────────────────────────────────────
+    // Event registration
 
     void OnClick(std::function<void()> fn) {
         detail::uiCallbackStore()[instanceKey_].onClick = std::move(fn);
@@ -768,12 +750,12 @@ private:
 
         detail::UIEventState& state = detail::uiEventStateStore()[instanceKey_];
 
-        // ── Click ──────────────────────────────────────────────────────────
+        // Click
         if (cbs.onClick && ctx_ && ctx_->IsUIButtonPressed()) {
             cbs.onClick();
         }
 
-        // ── Hover / Unhover ────────────────────────────────────────────────
+        // Hover / Unhover
         const bool nowHovered = ctx_ ? ctx_->IsUIHovered() : false;
         if (cbs.onHover && nowHovered && !state.wasHovered) {
             cbs.onHover();
@@ -783,7 +765,7 @@ private:
         }
         state.wasHovered = nowHovered;
 
-        // ── Press / Release ────────────────────────────────────────────────
+        // Press / Release
         const bool nowActive = ctx_ ? ctx_->IsUIActive() : false;
         if (cbs.onPress && nowActive && !state.wasActive) {
             cbs.onPress();
@@ -793,7 +775,7 @@ private:
         }
         state.wasActive = nowActive;
 
-        // ── Slider value changed ───────────────────────────────────────────
+        // Slider value changed
         if (cbs.onValueChanged && ctx_ && ctx_->object &&
             ctx_->object->hasUI && ctx_->object->ui.type == UIElementType::Slider) {
             const float nowVal = ctx_->object->ui.sliderValue;
@@ -806,9 +788,7 @@ private:
     }
 };
 
-// ────────────────────────────────────────────────────────────────────────────
 // Make UIProxy for a given ScriptContext
-// ────────────────────────────────────────────────────────────────────────────
 
 inline UIProxy MakeUIProxy(ScriptContext& ctx, const std::string& instanceKey) {
     return UIProxy(&ctx, instanceKey);

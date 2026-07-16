@@ -1,14 +1,8 @@
 #ifdef __ANDROID__
 
-// Modularity's native Android runtime: the body that drives the engine
-// when it's loaded as a NativeActivity .so. Sets up EGL against the
-// ANativeWindow handed in by android_native_app_glue, pumps the Android
-// event loop (lifecycle + touch input), and renders frames.
-//
-// Stage 2 of the Android bring-up (docs/AndroidRuntime.md): the runtime
-// scaffolding is in place but the engine's main loop is not yet hooked in.
-// Frames currently clear to a solid color (proof-of-life). Stage 2.5 will
-// adapt Engine::run() so this loop can hand off to it.
+// Modularity's native Android runtime: sets up EGL against the ANativeWindow from
+// android_native_app_glue, pumps the Android event loop (lifecycle + touch), and
+// hands frames to the engine. ( see docs/AndroidRuntime.md for the bring-up story. )
 
 #include "AndroidRuntime.h"
 #include "../Engine.h"
@@ -17,20 +11,26 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <android/asset_manager.h>
+#include <android/configuration.h>
 #include <android/input.h>
 #include <android/log.h>
 #include <android/looper.h>
+#include <android/keycodes.h>
 #include <android/native_activity.h>
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
+#include <jni.h>
 
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdio>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <vector>
 
-// AssetSourceAndroid.cpp owns the AndroidAssetSource type; expose its
-// factory through the namespace so AndroidRuntime can install it without
-// dragging the impl into a header.
+// AssetSourceAndroid.cpp owns AndroidAssetSource; grab its factory through the
+// namespace so the impl doesn't get dragged into a header.
 namespace Modularity::Platform {
     std::unique_ptr<AssetSource> MakeAndroidAssetSource(AAssetManager* mgr);
 }
@@ -47,11 +47,8 @@ namespace Modularity::AndroidRuntime {
 
 namespace {
 
-// === stdout/stderr → logcat redirect ====================================
-// std::cerr / std::cout / fprintf(stderr,...) go to a null sink on Android
-// by default. Pipe both into __android_log_print so cerr lines that the
-// engine code emits (window init, AssetSource misses, etc.) show up under
-// the Modularity.stderr / Modularity.stdout logcat tags.
+// stdout/stderr -> logcat redirect. Android sends both to a null sink by default,
+// so pipe them into __android_log_print under the Modularity.stderr/.stdout tags.
 
 int   g_stdoutPipe[2] = {-1, -1};
 int   g_stderrPipe[2] = {-1, -1};
@@ -97,9 +94,8 @@ void RedirectStdioToLogcat() {
 struct RuntimeContext {
     android_app* app = nullptr;
 
-    // EGL state. Display + context live for the lifetime of the process;
-    // surface is torn down on APP_CMD_TERM_WINDOW and rebuilt on
-    // APP_CMD_INIT_WINDOW so the runtime survives a backgrounded app.
+    // EGL state. display + context live for the whole process; the surface dies on
+    // TERM_WINDOW and comes back on INIT_WINDOW so backgrounding doesn't kill us.
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLConfig  config  = nullptr;
     EGLContext context = EGL_NO_CONTEXT;
@@ -109,14 +105,40 @@ struct RuntimeContext {
     int surfaceHeight = 0;
     bool paused = false;
 
-    // Single-pointer touch state (primary cursor analog). Stage 2 keeps
-    // multi-touch out of scope.
-    bool touchActive = false;
-    float touchX = 0.0f;
-    float touchY = 0.0f;
+    // multi-touch state. Android packs all fingers into each motion event, we mirror
+    // the live set here so the engine can grab a full snapshot per frame.
+    static constexpr int kMaxTouchPointers = 10;
+    struct TouchPointer {
+        int32_t id = -1;     // Android pointer id; stable for a finger's lifetime.
+        float x = 0.0f;
+        float y = 0.0f;
+        bool active = false;
+    };
+    TouchPointer touches[kMaxTouchPointers];
+    int touchCount = 0;      // number of leading entries in `touches` that are live.
+
+    // last primary-pointer position, kept after the finger lifts so the mouse analog
+    // has somewhere sane to point ( desktop cursors stay put on button-up too ).
+    float primaryX = 0.0f;
+    float primaryY = 0.0f;
+
+    // keyboard: typed chars + raw key events, filled in HandleInputEvent and drained by
+    // the engine each frame for ImGui. same thread as the engine loop so no locking.
+    // softKeyboardVisible = only JNI-toggle the IME when the state actually changes.
+    struct PendingKey { int keyCode = 0; bool down = false; };
+    std::deque<unsigned int> inputChars;
+    std::deque<PendingKey> keyEvents;
+    bool softKeyboardVisible = false;
 };
 
 RuntimeContext g_ctx;
+
+std::mutex g_filePickerMutex;
+std::vector<std::string> g_filePickerPaths;
+std::string g_filePickerError;
+bool g_filePickerPending = false;
+bool g_filePickerResultReady = false;
+bool g_filePickerCanceled = false;
 
 const char* EglErrorString(EGLint err) {
     switch (err) {
@@ -155,9 +177,7 @@ bool InitEGLDisplay() {
     }
     MODU_LOGI("EGL %d.%d initialized", major, minor);
 
-    // Ask for an ES3-capable, 8-bit RGB(A), 24-bit depth, 8-bit stencil
-    // window-renderable config. Stage 2 keeps it simple; depth/stencil
-    // sizes will likely need tweaking once the real renderer is wired in.
+    // ask for an ES3-capable 8-bit RGB(A), 24-bit depth, 8-bit stencil window config.
     const EGLint configAttribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
@@ -197,9 +217,7 @@ bool CreateEGLSurface(ANativeWindow* window) {
         return false;
     }
 
-    // Match the native window's buffer format to the EGL config so the
-    // BufferQueue producer/consumer agree on layout (otherwise SurfaceFlinger
-    // composites the wrong thing, or refuses outright on some devices).
+    // match the native window's buffer format to the EGL config or the BufferQueue sides disagree.
     // future me: do NOT delete this setBuffersGeometry call. some phones just hand you a
     // pure black screen with zero errors in logcat if the formats disagree. lost a whole
     // night to a "blank" runtime that was rendering perfectly the entire time. never again.
@@ -304,49 +322,208 @@ void HandleAppCmd(android_app* app, int32_t cmd) {
     }
 }
 
+// best-effort AKEYCODE -> ASCII (letters, digits, shift punctuation). NOT a full IME:
+// soft keyboards that commit through InputConnection never reach here ( NativeActivity
+// limitation ), hardware keyboards are fine.
+char AndroidKeycodeToChar(int32_t keyCode, bool shift) {
+    if (keyCode >= AKEYCODE_A && keyCode <= AKEYCODE_Z) {
+        const char base = static_cast<char>('a' + (keyCode - AKEYCODE_A));
+        return shift ? static_cast<char>(base - 32) : base;
+    }
+    if (keyCode >= AKEYCODE_0 && keyCode <= AKEYCODE_9) {
+        static const char shifted[] = ")!@#$%^&*(";
+        return shift ? shifted[keyCode - AKEYCODE_0]
+                     : static_cast<char>('0' + (keyCode - AKEYCODE_0));
+    }
+    switch (keyCode) {
+        case AKEYCODE_SPACE:         return ' ';
+        case AKEYCODE_COMMA:         return shift ? '<' : ',';
+        case AKEYCODE_PERIOD:        return shift ? '>' : '.';
+        case AKEYCODE_MINUS:         return shift ? '_' : '-';
+        case AKEYCODE_EQUALS:        return shift ? '+' : '=';
+        case AKEYCODE_SLASH:         return shift ? '?' : '/';
+        case AKEYCODE_BACKSLASH:     return shift ? '|' : '\\';
+        case AKEYCODE_SEMICOLON:     return shift ? ':' : ';';
+        case AKEYCODE_APOSTROPHE:    return shift ? '"' : '\'';
+        case AKEYCODE_LEFT_BRACKET:  return shift ? '{' : '[';
+        case AKEYCODE_RIGHT_BRACKET: return shift ? '}' : ']';
+        case AKEYCODE_GRAVE:         return shift ? '~' : '`';
+        default:                     return 0;
+    }
+}
+
+// show/hide the soft keyboard via JNI (InputMethodManager). glue thread is fine for
+// this, and exceptions get cleared so a JNI hiccup can't take the app down.
+void ApplySoftKeyboard(android_app* app, bool show) {
+    if (!app || !app->activity || !app->activity->vm || !app->activity->clazz) return;
+    JavaVM* vm = app->activity->vm;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+
+    jobject activity = app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    jclass contextClass = env->FindClass("android/content/Context");
+    jfieldID imsField = env->GetStaticFieldID(contextClass, "INPUT_METHOD_SERVICE", "Ljava/lang/String;");
+    jobject imsName = env->GetStaticObjectField(contextClass, imsField);
+    jmethodID getSystemService = env->GetMethodID(activityClass, "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;");
+    jobject imm = env->CallObjectMethod(activity, getSystemService, imsName);
+    if (imm) {
+        jclass immClass = env->GetObjectClass(imm);
+        jmethodID getWindow = env->GetMethodID(activityClass, "getWindow", "()Landroid/view/Window;");
+        jobject window = env->CallObjectMethod(activity, getWindow);
+        jclass windowClass = env->GetObjectClass(window);
+        jmethodID getDecorView = env->GetMethodID(windowClass, "getDecorView", "()Landroid/view/View;");
+        jobject decorView = env->CallObjectMethod(window, getDecorView);
+        if (show) {
+            jmethodID showSoftInput = env->GetMethodID(immClass, "showSoftInput",
+                "(Landroid/view/View;I)Z");
+            env->CallBooleanMethod(imm, showSoftInput, decorView, 0);
+        } else {
+            jclass viewClass = env->GetObjectClass(decorView);
+            jmethodID getWindowToken = env->GetMethodID(viewClass, "getWindowToken",
+                "()Landroid/os/IBinder;");
+            jobject token = env->CallObjectMethod(decorView, getWindowToken);
+            jmethodID hideSoftInput = env->GetMethodID(immClass, "hideSoftInputFromWindow",
+                "(Landroid/os/IBinder;I)Z");
+            env->CallBooleanMethod(imm, hideSoftInput, token, 0);
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (attached) vm->DetachCurrentThread();
+}
+
+bool AttachJniForActivity(JNIEnv*& env, bool& attached) {
+    env = nullptr;
+    attached = false;
+    if (!g_ctx.app || !g_ctx.app->activity || !g_ctx.app->activity->vm ||
+        !g_ctx.app->activity->clazz) {
+        return false;
+    }
+    JavaVM* vm = g_ctx.app->activity->vm;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) {
+        return true;
+    }
+    if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+        env = nullptr;
+        return false;
+    }
+    attached = true;
+    return true;
+}
+
+void DetachJniForActivity(bool attached) {
+    if (attached && g_ctx.app && g_ctx.app->activity && g_ctx.app->activity->vm) {
+        g_ctx.app->activity->vm->DetachCurrentThread();
+    }
+}
+
+jmethodID FindFilePickerMethod(JNIEnv* env, jclass activityClass) {
+    if (!env || !activityClass) return nullptr;
+    jmethodID method = env->GetMethodID(activityClass, "launchModularityFilePicker", "(Z)V");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        method = nullptr;
+    }
+    return method;
+}
+
+std::string JStringToString(JNIEnv* env, jstring value) {
+    if (!env || !value) return {};
+    const char* raw = env->GetStringUTFChars(value, nullptr);
+    if (!raw) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return {};
+    }
+    std::string out(raw);
+    env->ReleaseStringUTFChars(value, raw);
+    return out;
+}
+
 int32_t HandleInputEvent(android_app* /*app*/, AInputEvent* event) {
     const int32_t type = AInputEvent_getType(event);
+
+    if (type == AINPUT_EVENT_TYPE_KEY) {
+        const int32_t keyCode = AKeyEvent_getKeyCode(event);
+        // Leave system keys to the OS so the app stays well-behaved.
+        if (keyCode == AKEYCODE_BACK || keyCode == AKEYCODE_HOME ||
+            keyCode == AKEYCODE_VOLUME_UP || keyCode == AKEYCODE_VOLUME_DOWN ||
+            keyCode == AKEYCODE_APP_SWITCH) {
+            return 0;
+        }
+        const int32_t action = AKeyEvent_getAction(event);
+        const bool down = (action == AKEY_EVENT_ACTION_DOWN);
+        const bool up   = (action == AKEY_EVENT_ACTION_UP);
+        if (!down && !up) return 0;
+        g_ctx.keyEvents.push_back({static_cast<int>(keyCode), down});
+        if (down) {
+            const bool shift = (AKeyEvent_getMetaState(event) & AMETA_SHIFT_ON) != 0;
+            if (const char c = AndroidKeycodeToChar(keyCode, shift)) {
+                g_ctx.inputChars.push_back(static_cast<unsigned int>(c));
+            }
+        }
+        return 1; // consumed
+    }
+
     if (type != AINPUT_EVENT_TYPE_MOTION) return 0;
 
     const int32_t source = AInputEvent_getSource(event);
     if ((source & AINPUT_SOURCE_TOUCHSCREEN) == 0) return 0;
 
-    const int32_t action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
-    // Primary pointer only. Multi-touch is intentionally out of scope (for now).
-    const size_t pointerIndex = 0;
-    const float x = AMotionEvent_getX(event, pointerIndex);
-    const float y = AMotionEvent_getY(event, pointerIndex);
+    // rebuild the whole pointer set from each packed motion event instead of tracking
+    // deltas, so a stuck/orphaned finger simply can't happen.
+    const int32_t rawAction = AMotionEvent_getAction(event);
+    const int32_t action    = rawAction & AMOTION_EVENT_ACTION_MASK;
+    const size_t  count     = AMotionEvent_getPointerCount(event);
 
-    switch (action) {
-        case AMOTION_EVENT_ACTION_DOWN:
-            g_ctx.touchActive = true;
-            g_ctx.touchX = x;
-            g_ctx.touchY = y;
-            // Stage 2.5 will translate this into the engine's pointer
-            // event queue (analogous to GLFW's mouse-button callbacks).
-            break;
-        case AMOTION_EVENT_ACTION_MOVE:
-            g_ctx.touchX = x;
-            g_ctx.touchY = y;
-            break;
-        case AMOTION_EVENT_ACTION_UP:
-        case AMOTION_EVENT_ACTION_CANCEL:
-            g_ctx.touchActive = false;
-            break;
-        default: break;
+    // For POINTER_UP / POINTER_DOWN, this is the index of the finger the event
+    // is actually about (the others are just along for the ride).
+    const size_t actionIndex =
+        static_cast<size_t>((rawAction & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>
+                            AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+
+    const bool cancel = (action == AMOTION_EVENT_ACTION_CANCEL);
+
+    int live = 0;
+    if (!cancel) {
+        for (size_t p = 0; p < count && live < RuntimeContext::kMaxTouchPointers; ++p) {
+            // On UP the lone finger is lifting; on POINTER_UP only actionIndex
+            // is. Either way, leave the lifting finger out of the live set.
+            const bool lifting =
+                (action == AMOTION_EVENT_ACTION_UP) ||
+                (action == AMOTION_EVENT_ACTION_POINTER_UP && p == actionIndex);
+            if (lifting) continue;
+
+            RuntimeContext::TouchPointer& slot = g_ctx.touches[live];
+            slot.id     = AMotionEvent_getPointerId(event, p);
+            slot.x      = AMotionEvent_getX(event, p);
+            slot.y      = AMotionEvent_getY(event, p);
+            slot.active = true;
+            ++live;
+        }
+    }
+    g_ctx.touchCount = live;
+
+    // Primary pointer = first finger in the live set (mouse analog). Hold its
+    // last position after everything lifts so the cursor doesn't snap to 0,0.
+    if (live > 0) {
+        g_ctx.primaryX = g_ctx.touches[0].x;
+        g_ctx.primaryY = g_ctx.touches[0].y;
     }
     return 1; // consumed
 }
 
 } // namespace
 
-// === Public hooks for Engine.cpp ========================================
+// Public hooks for Engine.cpp
 
 bool PollEvents() {
     if (!g_ctx.app || g_ctx.app->destroyRequested) return false;
-    // Non-blocking drain. Engine.cpp calls this every frame, so any
-    // pending lifecycle / input events get delivered, then the engine
-    // immediately falls through to its own tick + render.
+    // non-blocking drain, called every frame by Engine.cpp before its own tick + render.
     return DrainEvents(0);
 }
 
@@ -383,10 +560,266 @@ const char* GetInternalDataPath() {
     return nullptr;
 }
 
+int GetPointerCount() {
+    return g_ctx.touchCount;
+}
+
+bool GetPointer(int i, int* outId, float* outX, float* outY) {
+    if (i < 0 || i >= g_ctx.touchCount) return false;
+    const RuntimeContext::TouchPointer& slot = g_ctx.touches[i];
+    if (outId) *outId = static_cast<int>(slot.id);
+    if (outX)  *outX  = slot.x;
+    if (outY)  *outY  = slot.y;
+    return true;
+}
+
+bool GetPrimaryPointer(float* outX, float* outY, bool* outActive) {
+    if (outX)      *outX      = g_ctx.primaryX;
+    if (outY)      *outY      = g_ctx.primaryY;
+    if (outActive) *outActive = g_ctx.touchCount > 0;
+    return true;
+}
+
+float GetDisplayDensityScale() {
+    if (g_ctx.app && g_ctx.app->config) {
+        const int32_t density = AConfiguration_getDensity(g_ctx.app->config);
+        if (density > 0 && density != ACONFIGURATION_DENSITY_ANY &&
+            density != ACONFIGURATION_DENSITY_NONE) {
+            // 160 dpi == scale 1.0 (Android's mdpi baseline). Clamp so a bogus
+            // density can't make the whole UI absurdly large or unusably small.
+            float scale = static_cast<float>(density) / 160.0f;
+            if (scale < 1.0f) scale = 1.0f;
+            if (scale > 4.0f) scale = 4.0f;
+            return scale;
+        }
+    }
+    return 2.0f; // sane default for a modern phone/tablet if density is unknown
+}
+
+void SetSoftKeyboardVisible(bool visible) {
+    if (visible == g_ctx.softKeyboardVisible) return; // only toggle on a change
+    g_ctx.softKeyboardVisible = visible;
+    ApplySoftKeyboard(g_ctx.app, visible);
+}
+
+bool PollInputChar(unsigned int* outChar) {
+    if (g_ctx.inputChars.empty()) return false;
+    if (outChar) *outChar = g_ctx.inputChars.front();
+    g_ctx.inputChars.pop_front();
+    return true;
+}
+
+bool PollKeyEvent(int* outKeyCode, bool* outDown) {
+    if (g_ctx.keyEvents.empty()) return false;
+    const RuntimeContext::PendingKey k = g_ctx.keyEvents.front();
+    g_ctx.keyEvents.pop_front();
+    if (outKeyCode) *outKeyCode = k.keyCode;
+    if (outDown)    *outDown    = k.down;
+    return true;
+}
+
+bool SupportsFilePicker() {
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!AttachJniForActivity(env, attached)) {
+        return false;
+    }
+
+    jobject activity = g_ctx.app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    const bool supported = FindFilePickerMethod(env, activityClass) != nullptr;
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    DetachJniForActivity(attached);
+    return supported;
+}
+
+bool RequestFilePicker(bool allowMultiple, std::string& error) {
+    error.clear();
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!AttachJniForActivity(env, attached)) {
+        error = "Android activity is not available.";
+        return false;
+    }
+
+    jobject activity = g_ctx.app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    jmethodID launchPicker = FindFilePickerMethod(env, activityClass);
+    if (!launchPicker) {
+        if (activityClass) env->DeleteLocalRef(activityClass);
+        DetachJniForActivity(attached);
+        error = "Android file picker bridge is not packaged in this APK.";
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_filePickerMutex);
+        if (g_filePickerPending) {
+            if (activityClass) env->DeleteLocalRef(activityClass);
+            DetachJniForActivity(attached);
+            error = "Android file picker is already open.";
+            return false;
+        }
+        g_filePickerPaths.clear();
+        g_filePickerError.clear();
+        g_filePickerCanceled = false;
+        g_filePickerResultReady = false;
+        g_filePickerPending = true;
+    }
+
+    env->CallVoidMethod(activity, launchPicker, allowMultiple ? JNI_TRUE : JNI_FALSE);
+    const bool failed = env->ExceptionCheck();
+    if (failed) {
+        env->ExceptionClear();
+        std::lock_guard<std::mutex> lock(g_filePickerMutex);
+        g_filePickerPending = false;
+        g_filePickerResultReady = false;
+        error = "Failed to open Android file picker.";
+    }
+
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    DetachJniForActivity(attached);
+    return !failed;
+}
+
+bool PollFilePickerResult(FilePickerResult& result) {
+    std::lock_guard<std::mutex> lock(g_filePickerMutex);
+    if (!g_filePickerResultReady) {
+        return false;
+    }
+    result.paths = g_filePickerPaths;
+    result.error = g_filePickerError;
+    result.canceled = g_filePickerCanceled;
+    g_filePickerPaths.clear();
+    g_filePickerError.clear();
+    g_filePickerCanceled = false;
+    g_filePickerResultReady = false;
+    return true;
+}
+
+std::string GetExternalDocumentsPath() {
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!AttachJniForActivity(env, attached)) return {};
+
+    std::string result;
+    jobject activity = g_ctx.app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    jmethodID method = activityClass
+        ? env->GetMethodID(activityClass, "modularityExternalDocumentsPath", "()Ljava/lang/String;")
+        : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();  // method absent (player APK)
+    if (method) {
+        jstring js = static_cast<jstring>(env->CallObjectMethod(activity, method));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        } else if (js) {
+            result = JStringToString(env, js);
+            env->DeleteLocalRef(js);
+        }
+    }
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    DetachJniForActivity(attached);
+    return result;
+}
+
+bool HasAllFilesAccess() {
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!AttachJniForActivity(env, attached)) return false;
+
+    bool granted = false;
+    jobject activity = g_ctx.app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    jmethodID method = activityClass
+        ? env->GetMethodID(activityClass, "modularityHasStorageAccess", "()Z")
+        : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (method) {
+        granted = env->CallBooleanMethod(activity, method) == JNI_TRUE;
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            granted = false;
+        }
+    }
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    DetachJniForActivity(attached);
+    return granted;
+}
+
+bool RequestAllFilesAccess(std::string& error) {
+    error.clear();
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (!AttachJniForActivity(env, attached)) {
+        error = "Android activity is not available.";
+        return false;
+    }
+
+    jobject activity = g_ctx.app->activity->clazz;
+    jclass activityClass = env->GetObjectClass(activity);
+    jmethodID method = activityClass
+        ? env->GetMethodID(activityClass, "modularityRequestStorageAccess", "()V")
+        : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    bool ok = false;
+    if (!method) {
+        error = "Storage access bridge is not packaged in this APK.";
+    } else {
+        env->CallVoidMethod(activity, method);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            error = "Failed to request storage access.";
+        } else {
+            ok = true;
+        }
+    }
+    if (activityClass) env->DeleteLocalRef(activityClass);
+    DetachJniForActivity(attached);
+    return ok;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_modularity_android_ModularityNativeActivity_nativeOnFilePickerResult(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jobjectArray paths,
+    jstring error,
+    jboolean canceled) {
+    std::vector<std::string> copiedPaths;
+    if (env && paths) {
+        const jsize count = env->GetArrayLength(paths);
+        copiedPaths.reserve(static_cast<size_t>(count));
+        for (jsize i = 0; i < count; ++i) {
+            jstring item = static_cast<jstring>(env->GetObjectArrayElement(paths, i));
+            if (!item) continue;
+            copiedPaths.push_back(JStringToString(env, item));
+            env->DeleteLocalRef(item);
+        }
+    }
+
+    std::string errorText = JStringToString(env, error);
+    if (env && env->ExceptionCheck()) {
+        env->ExceptionClear();
+        if (errorText.empty()) {
+            errorText = "Android file picker callback failed while reading selected paths.";
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(g_filePickerMutex);
+    g_filePickerPaths = std::move(copiedPaths);
+    g_filePickerError = std::move(errorText);
+    g_filePickerCanceled = canceled == JNI_TRUE;
+    g_filePickerPending = false;
+    g_filePickerResultReady = true;
+}
+
 void Run(android_app* app) {
-    // Install the stdout/stderr → logcat redirect before any engine code
-    // runs, so cerr lines from Engine::init() and friends actually appear
-    // in `adb logcat -s Modularity.stderr:V Modularity.stdout:V`.
+    // install the logcat redirect before any engine code runs so Engine::init()'s cerr
+    // lines actually show up in adb logcat.
     RedirectStdioToLogcat();
 
     g_ctx = RuntimeContext{};
@@ -395,12 +828,18 @@ void Run(android_app* app) {
     app->onAppCmd = HandleAppCmd;
     app->onInputEvent = HandleInputEvent;
 
+    // hide the status bar so the whole surface is ours (it swallows touches at the top
+    // otherwise). 0x400 = WindowManager FLAG_FULLSCREEN; this NDK doesn't export
+    // AWINDOW_FLAG_FULLSCREEN but the constant is stable.
+    if (app->activity) {
+        constexpr uint32_t kWindowFlagFullscreen = 0x00000400u;
+        ANativeActivity_setWindowFlags(app->activity, kWindowFlagFullscreen, 0);
+    }
+
     MODU_LOGI("Modularity Android runtime starting");
 
-    // Block until we have a render surface (the NativeActivity sends
-    // APP_CMD_INIT_WINDOW once the activity is on screen). Constructing
-    // the engine before EGL is up means GL resources would fail to
-    // allocate on init.
+    // block until APP_CMD_INIT_WINDOW gives us a surface; constructing the engine
+    // before EGL is up = GL allocations fail on init.
     while (!app->destroyRequested && g_ctx.surface == EGL_NO_SURFACE) {
         if (!DrainEvents(-1)) break;
     }
@@ -420,10 +859,8 @@ void Run(android_app* app) {
         MODU_LOGW("No AAssetManager available; engine will fall back to filesystem reads");
     }
 
-    // Hand off to the existing Engine bootstrap. The engine's own main
-    // loop now polls AndroidRuntime::PollEvents() each iteration and
-    // presents via AndroidRuntime::PresentFrame() (see Engine::run(),
-    // where the Android paths are gated with #ifdef __ANDROID__).
+    // hand off to the normal Engine bootstrap. its main loop polls PollEvents() and presents
+    // via PresentFrame() ( the Android paths in Engine::run are #ifdef __ANDROID__ gated ).
     {
         Engine engine;
         if (!engine.init()) {

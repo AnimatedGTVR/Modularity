@@ -18,6 +18,10 @@ constexpr int kRendererMaxRealtimeLights = 32;
 
 enum class SceneRenderMode { Normal = 0, ShadedWireframe = 1, Wireframe = 2 };
 
+// storage precision for offscreen color targets. Auto = the classic float pipeline
+// (HDR/bloom needs it), SDR8 halves bandwidth for LDR-only projects.
+enum class RendererColorPrecision { Auto = 0, SDR8 = 1, HDR16F = 2 };
+
 // Primitive generation functions
 std::vector<float> generateSphere(int segments = 32, int rings = 16);
 std::vector<float> generateCapsule(int segments = 16, int rings = 8);
@@ -92,6 +96,11 @@ public:
 
 class Camera;
 
+// Builds the camera's projection matrix (perspective, 3D ortho via orthoSize,
+// or legacy 2D ortho via pixelsPerUnit). Defined in Rendering.cpp.
+glm::mat4 BuildCameraProjection(const Camera& camera, int width, int height,
+                                float fovDeg, float nearPlane, float farPlane);
+
 class Renderer {
 public:
     struct RenderStats {
@@ -145,6 +154,25 @@ public:
         std::string skipReason;
     };
 
+    struct UiTargetInfo {
+        unsigned int fbo = 0;
+        unsigned int texture = 0;
+        int width = 0;
+        int height = 0;
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+        int x = 0;
+        int y = 0;
+        int clearX = 0;
+        int clearY = 0;
+        int clearWidth = 0;
+        int clearHeight = 0;
+        glm::vec4 uvTransform = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+        bool usesAtlas = false;
+        bool invalidated = false;
+        uint64_t atlasKey = 0;
+    };
+
 private:
     unsigned int framebuffer = 0, viewportTexture = 0, rbo = 0;
     int currentWidth = 800, currentHeight = 600;
@@ -156,6 +184,8 @@ private:
         int height = 0;
         bool hasAlpha = false;
         bool hdr = false;
+        bool hasDepth = true;
+        MaterialProperties::TextureFilter textureFilter = MaterialProperties::TextureFilter::Bilinear;
     };
     struct ResolvedPostFX {
         PostFXSettings settings;
@@ -214,6 +244,24 @@ private:
         bool wantsGpuSkinning = false;
         bool doubleSided = false;
     };
+    struct UiAtlasSlot {
+        int contentWidth = 0;
+        int contentHeight = 0;
+        int x = 0;
+        int y = 0;
+        int clearX = 0;
+        int clearY = 0;
+        int clearWidth = 0;
+        int clearHeight = 0;
+    };
+    struct UiAtlasTarget {
+        RenderTarget target;
+        int size = 0;
+        int cursorX = 0;
+        int cursorY = 0;
+        int rowHeight = 0;
+        std::unordered_map<int, UiAtlasSlot> slots;
+    };
     Shader* shader = nullptr;
     Shader* defaultShader = nullptr;
     Shader* postShader = nullptr;
@@ -263,6 +311,19 @@ private:
     int maxRealtimeLights = 10;
     int shadowMapResolution = 512;
     glm::vec3 ambientColor = glm::vec3(0.2f, 0.2f, 0.2f);
+    // Rendering Path light policy (Lighting Manager tab). the budget caps how many lights
+    // compete for shader slots; the directional allowance is guaranteed on top so suns never
+    // get squeezed out by point/spot spam.
+    int sceneLightBudget = 20;
+    int directionalLightAllowance = 1;
+    bool mainLightEnabled = true;         // directional lights contribute
+    bool mainLightShadows = true;         // directional lights may cast shadows
+    bool additionalLightsEnabled = true;  // point/spot/area lights contribute
+    bool additionalLightsShadows = true;  // point/spot/area lights may cast shadows
+    bool softShadowsAllowed = true;       // global gate for PCF-soft shadow mode
+    float shadowMaxDistance = 0.0f;       // directional shadow range cap, 0 = camera far plane
+    RendererColorPrecision colorPrecision = RendererColorPrecision::Auto;
+    TextureFormatPolicy defaultTextureFormatPolicy = TextureFormatPolicy::Auto;
     Mesh* cubeMesh = nullptr;
     Mesh* sphereMesh = nullptr;
     Mesh* capsuleMesh = nullptr;
@@ -286,6 +347,14 @@ private:
     std::unordered_map<int, ReflectionCastTarget> reflectionCastTargets;
     SkyboxReflectionTarget skyboxReflectionTarget;
     std::unordered_map<int, RenderTarget> uiTargets;
+    std::unordered_map<int, UiTargetInfo> uiTargetViews;
+    std::unordered_map<uint64_t, UiAtlasTarget> uiTargetAtlases;
+    int uiAtlasMaxSize = 4096;
+    // View frustums (6 normalized planes each) of every scene render this frame:
+    // editor viewport, previews, mirror and reflection captures. Cleared on
+    // setFrameSerial; lets offscreen-surface passes skip work for objects no
+    // active view can sample.
+    std::vector<std::array<glm::vec4, 6>> capturedSceneFrustums;
     std::vector<StaticMergeBatch> staticMergeBatches;
     std::unordered_set<int> staticMergeSourceIds;
     RenderStats viewportStats;
@@ -309,6 +378,7 @@ private:
     void ensureRenderTarget(RenderTarget& target, int w, int h);
     void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha);
     void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr);
+    void ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr, bool depth);
     void releaseRenderTarget(RenderTarget& target);
     void releaseReflectionCastTarget(ReflectionCastTarget& target);
     void releaseSkyboxReflectionTarget(SkyboxReflectionTarget& target);
@@ -345,18 +415,15 @@ public:
     unsigned int getDebugWhiteTextureId() const { return debugWhiteTexture; }
     void invalidateTexture(const std::string& path);
 
-    // Per-texture GPU storage-format overrides. getTexture consults these when it
-    // first loads a path; Auto (the absence of an override) means adaptive 16bpp.
-    // Setting an override invalidates the cached texture so the next request
-    // reloads it at the new format. The project layer owns persistence; this map
-    // is just the live runtime view, repopulated on project load.
+    // per-texture GPU format overrides, consulted on first load (Auto = adaptive 16bpp).
+    // setting one evicts the cached texture so the next request reloads. the project layer
+    // owns persistence, this map is just the live view.
     void setTextureFormatOverride(const std::string& path, TextureFormatPolicy policy);
     TextureFormatPolicy getTextureFormatOverride(const std::string& path) const;
     const std::unordered_map<std::string, TextureFormatPolicy>& getTextureFormatOverrides() const { return textureFormatOverrides; }
     void clearTextureFormatOverrides() { textureFormatOverrides.clear(); }
-    // Root that relative texture paths are resolved against when forming override
-    // keys, so the editor's absolute paths and runtime-resolved paths collapse to
-    // the same key. Set on project load.
+    // root that relative texture paths resolve against for override keys, so editor absolute
+    // paths and runtime paths collapse to the same key. set on project load.
     void setTextureKeyRoot(const std::string& root) { textureKeyRoot = root; }
     std::string normalizeTextureKey(const std::string& path) const;
     Shader* getShader(const std::string& vert, const std::string& frag);
@@ -367,12 +434,41 @@ public:
     int getShadowMapResolution() const { return shadowMapResolution; }
     void setMaxRealtimeLights(int count) { maxRealtimeLights = std::clamp(count, 1, kRendererMaxRealtimeLights); }
     int getMaxRealtimeLights() const { return maxRealtimeLights; }
+    // Rendering Path policy (see field comments above). budgets past the shader's slot count
+    // still matter: they bound how many lights can exist before the editor warns.
+    void setSceneLightBudget(int budget, int directionalAllowance) {
+        sceneLightBudget = std::max(1, budget);
+        directionalLightAllowance = std::clamp(directionalAllowance, 1, 4);
+    }
+    int getSceneLightBudget() const { return sceneLightBudget; }
+    int getDirectionalLightAllowance() const { return directionalLightAllowance; }
+    void setMainLightEnabled(bool enabled) { mainLightEnabled = enabled; }
+    bool isMainLightEnabled() const { return mainLightEnabled; }
+    void setMainLightShadows(bool enabled) { mainLightShadows = enabled; }
+    bool areMainLightShadowsEnabled() const { return mainLightShadows; }
+    void setAdditionalLightsEnabled(bool enabled) { additionalLightsEnabled = enabled; }
+    bool areAdditionalLightsEnabled() const { return additionalLightsEnabled; }
+    void setAdditionalLightsShadows(bool enabled) { additionalLightsShadows = enabled; }
+    bool areAdditionalLightShadowsEnabled() const { return additionalLightsShadows; }
+    void setSoftShadowsAllowed(bool allowed) { softShadowsAllowed = allowed; }
+    bool areSoftShadowsAllowed() const { return softShadowsAllowed; }
+    void setShadowMaxDistance(float distance) { shadowMaxDistance = std::max(0.0f, distance); }
+    float getShadowMaxDistance() const { return shadowMaxDistance; }
+    void setColorPrecision(RendererColorPrecision precision);
+    RendererColorPrecision getColorPrecision() const { return colorPrecision; }
+    void setDefaultTextureFormatPolicy(TextureFormatPolicy policy);
+    TextureFormatPolicy getDefaultTextureFormatPolicy() const { return defaultTextureFormatPolicy; }
     void setShaderAutoReload(bool enabled) { autoReloadShaders = enabled; }
     bool isShaderAutoReloadEnabled() const { return autoReloadShaders; }
     void resize(int w, int h);
     int getWidth() const { return currentWidth; }
     int getHeight() const { return currentHeight; }
-    void setFrameSerial(uint64_t serial) { frameSerial = serial; }
+    void setFrameSerial(uint64_t serial) { frameSerial = serial; capturedSceneFrustums.clear(); }
+    bool hasCapturedSceneFrustums() const { return !capturedSceneFrustums.empty(); }
+    // True when the object's bounding sphere (inflated by radiusMargin) is inside
+    // any frustum captured this frame. Conservative: returns true when no frustums
+    // were captured or the object has no computable bounds.
+    bool isObjectVisibleInCapturedFrustums(const SceneObject& obj, float radiusMargin = 1.0f) const;
 
     void beginRender(const glm::mat4& view, const glm::mat4& proj, const glm::vec3& cameraPos);
     void renderSkybox(const glm::mat4& view, const glm::mat4& proj);
@@ -398,12 +494,13 @@ public:
     size_t getExtraPreviewTargetCount() const { return extraPreviewTargets.size(); }
     size_t getReflectionCastTargetCount() const { return reflectionCastTargets.size(); }
 
-    struct UiTargetInfo {
-        unsigned int fbo = 0;
-        unsigned int texture = 0;
-        int width = 0;
-        int height = 0;
-    };
-    UiTargetInfo ensureUiTarget(int id, int width, int height);
+    UiTargetInfo ensureUiTarget(int id,
+                                int width,
+                                int height,
+                                int layer,
+                                MaterialProperties::TextureFilter filter,
+                                bool allowAtlas);
+    UiTargetInfo getUiTargetInfo(int id) const;
+    void markUiTargetRendered(int id);
     void cleanupUiTargets(const std::unordered_set<int>& active);
 };

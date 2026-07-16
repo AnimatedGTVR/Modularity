@@ -17,8 +17,6 @@
 extern int __argc;
 extern char** __argv;
 #endif
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #else
 #include <unistd.h>
 #endif
@@ -28,12 +26,6 @@ static std::filesystem::path getExecutableDir() {
     DWORD len = GetModuleFileNameA(nullptr, pathBuf, MAX_PATH);
     if (len == 0 || len == MAX_PATH) return {};
     return std::filesystem::path(pathBuf).parent_path();
-  #elif defined(__APPLE__)
-    uint32_t size = 0;
-    if (_NSGetExecutablePath(nullptr, &size) != -1 || size == 0) return {};
-    std::string buf(size, '\0');
-    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
-    return std::filesystem::path(buf).lexically_normal().parent_path();
   #else
     std::vector<char> buf(4096, '\0');
     ssize_t len = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
@@ -55,6 +47,34 @@ static bool isLspMode(int argc, char** argv) {
     if (arg == "--lsp") return true;
   }
   return false;
+}
+static bool isAndroidBuildMode(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = (argv && argv[i]) ? argv[i] : "";
+    if (arg == "--build-android") return true;
+  }
+  return false;
+}
+// Parses `--build-android [project.modu] [--abi=<abi>] [-o <apk>] [--out-dir=<dir>] [--debug]`.
+// The project may also come from --project/--open or a positional .modu path; an
+// empty projectPath means "build a bare player APK".
+static Engine::AndroidBuildRequest androidBuildRequestFromArgs(int argc, char** argv) {
+  Engine::AndroidBuildRequest req;
+  auto valueAfter = [&](int i) -> std::string {
+    return (i + 1 < argc && argv && argv[i + 1]) ? std::string(argv[i + 1]) : std::string();
+  };
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = (argv && argv[i]) ? argv[i] : "";
+    if (arg.rfind("--abi=", 0) == 0)            req.abi = arg.substr(6);
+    else if (arg == "--abi")                    req.abi = valueAfter(i);
+    else if (arg.rfind("--out-dir=", 0) == 0)   req.outputDir = arg.substr(10);
+    else if (arg.rfind("--output=", 0) == 0)    req.outputApk = arg.substr(9);
+    else if (arg.rfind("-o=", 0) == 0)          req.outputApk = arg.substr(3);
+    else if (arg == "-o" || arg == "--output")  req.outputApk = valueAfter(i);
+    else if (arg == "--debug")                  req.debug = true;
+    else if (arg == "--editor")                 req.editor = true;
+  }
+  return req;
 }
 static std::string startupProjectPathFromArgs(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
@@ -79,6 +99,20 @@ static int ModularityMain(int argc, char** argv) {
     return lspServer.run(argc, argv);
   }
   if (Modularity::CrashReporter::HandleCrashReporterMode(argc, argv)) return 0;
+  // Headless Android APK build for `./build.sh --Android`. Runs with no window
+  // or GL context and exits with the build status. Keep the caller's cwd so
+  // relative --project / -o paths resolve against where build.sh was invoked.
+  if (isAndroidBuildMode(argc, argv)) {
+    Engine::AndroidBuildRequest req = androidBuildRequestFromArgs(argc, argv);
+    req.projectPath = startupProjectPathFromArgs(argc, argv);
+    Engine engine;
+    std::string error;
+    int rc = engine.buildAndroidApkHeadless(req, error);
+    if (rc != 0 && !error.empty()) {
+      std::cerr << "[Android] Build failed: " << error << std::endl;
+    }
+    return rc;
+  }
   if (auto exeDir = getExecutableDir(); !exeDir.empty()) {
     std::error_code ec;
     std::filesystem::current_path(exeDir, ec);
@@ -90,6 +124,13 @@ static int ModularityMain(int argc, char** argv) {
     logStartupDebug("[DEBUG] Starting engine initialization...");
     Engine engine;
     engine.setStartupProjectPath(startupProjectPathFromArgs(argc, argv));
+    // --play: boot straight into the running game (with dev tools) once the
+    // startup project loads, instead of sitting in the editor. Handy for testing
+    // the runtime dev overlay on desktop without packaging a player build.
+    for (int i = 1; i < argc; ++i) {
+      const std::string a = (argv && argv[i]) ? argv[i] : "";
+      if (a == "--play") { engine.setAutoPlayDevMode(true); break; }
+    }
     logStartupDebug("[DEBUG] Calling engine.init()...");
     if (!engine.init()) {
       logStartupDebug("[DEBUG] Engine init failed!"); return -1;

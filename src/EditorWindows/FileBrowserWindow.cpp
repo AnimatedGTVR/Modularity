@@ -2,6 +2,9 @@
 #include "ModelLoader.h"
 #include "../DragPreviewOverlay.h"
 #include "../Modu2DStats.h"
+#ifdef __ANDROID__
+#include "../AndroidRuntime/AndroidRuntime.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -90,65 +93,10 @@ namespace FileIcons {
             return IM_COL32(r, g, bch, aout);
         }
 
-        void DrawPaperSpeckles(ImDrawList* drawList, ImVec2 min, ImVec2 max, ImU32 color) {
-            const ImVec2 points[] = {
-                ImVec2(0.18f, 0.22f), ImVec2(0.42f, 0.36f), ImVec2(0.66f, 0.28f),
-                ImVec2(0.28f, 0.62f), ImVec2(0.52f, 0.68f), ImVec2(0.74f, 0.58f),
-                ImVec2(0.36f, 0.82f), ImVec2(0.82f, 0.78f)
-            };
-            float w = max.x - min.x;
-            float h = max.y - min.y;
-            float r = std::min(w, h) * 0.015f;
-            for (const auto& p : points) {
-                ImVec2 dot(min.x + w * p.x, min.y + h * p.y);
-                drawList->AddCircleFilled(dot, r, color);
-            }
-        }
-
         struct PaperFrame {
             ImVec2 min;
             ImVec2 max;
         };
-
-        PaperFrame DrawPaperFileBase(ImDrawList* drawList, ImVec2 pos, float size, ImU32 accentColor) {
-            const ImU32 kPaperBase = IM_COL32(205, 185, 128, 255);
-            const ImU32 kPaperEdge = IM_COL32(122, 106, 72, 200);
-            const ImU32 kPaperFold = IM_COL32(223, 206, 150, 230);
-            const ImU32 kPaperShadow = IM_COL32(110, 95, 60, 80);
-            const ImU32 kPaperSpeck = IM_COL32(120, 110, 80, 55);
-
-            float w = size * 0.78f;
-            float h = size * 0.95f;
-            float offsetX = (size - w) * 0.5f;
-            float offsetY = (size - h) * 0.5f;
-            float cornerSize = w * 0.22f;
-            float rounding = size * 0.08f;
-            float shadowOffset = size * 0.04f;
-
-            ImVec2 min = ImVec2(pos.x + offsetX, pos.y + offsetY);
-            ImVec2 max = ImVec2(pos.x + offsetX + w, pos.y + offsetY + h);
-
-            drawList->AddRectFilled(ImVec2(min.x + shadowOffset, min.y + shadowOffset),
-                                    ImVec2(max.x + shadowOffset, max.y + shadowOffset),
-                                    kPaperShadow, rounding);
-
-            drawList->AddRectFilled(min, max, kPaperBase, rounding);
-            drawList->AddRect(min, max, kPaperEdge, rounding, 0, 0.4f);
-
-            ImVec2 foldA(max.x - cornerSize, min.y);
-            ImVec2 foldB(max.x, min.y + cornerSize);
-            drawList->AddTriangleFilled(foldA, foldB, ImVec2(max.x - cornerSize, min.y + cornerSize), kPaperFold);
-
-            ImU32 band = BlendColor(accentColor, kPaperBase, 0.65f);
-            float bandH = h * 0.14f;
-            drawList->AddRectFilled(ImVec2(min.x, max.y - bandH), max, band, rounding);
-
-            DrawPaperSpeckles(drawList, min, ImVec2(max.x, max.y - bandH), kPaperSpeck);
-
-            ImVec2 contentMin(min.x + w * 0.12f, min.y + h * 0.16f);
-            ImVec2 contentMax(max.x - w * 0.12f, max.y - h * 0.22f);
-            return {contentMin, contentMax};
-        }
 
         PaperFrame DrawSheetFileBase(ImDrawList* drawList, ImVec2 pos, float size, ImU32 accentColor) {
             const ImU32 kSheetBase = IM_COL32(248, 248, 248, 255);
@@ -204,9 +152,6 @@ namespace FileIcons {
             return {contentMin, contentMax};
         }
 
-        ImU32 InkColor() {
-            return IM_COL32(92, 78, 52, 220);
-        }
     }
 
     // Draw a folder icon
@@ -217,7 +162,6 @@ namespace FileIcons {
         const ImU32 kFolderShadow = IM_COL32(110, 95, 60, 60);
 
         float w = size;
-        float totalH = size * 0.82f;
         float bodyY = size * 0.273f;
         float bodyH = size * 0.547f;
         float tabY = size * 0.125f;
@@ -530,9 +474,8 @@ namespace {
         int remainingBuilds = kMaxPreviewBuildsPerFrame;
     };
 
-    // Bumped when something invalidates loaded textures without changing the file
-    // on disk (e.g. a GPU-format override), so thumbnails re-fetch instead of
-    // drawing a freed texture id.
+    // bumped when something invalidates loaded textures without touching the file (like a
+    // GPU-format override), so thumbnails re-fetch instead of drawing a freed texture id.
     int g_texturePreviewGeneration = 0;
 
     struct CachedTexturePreview {
@@ -588,12 +531,10 @@ namespace {
         std::unordered_map<FileBrowserTextLayoutKey, std::string, FileBrowserTextLayoutKeyHash> labels;
     };
 
-    // Caches the sorted child-directory listing for each expanded folder-tree node so
-    // the Project sidebar does not run fs::directory_iterator (+ string allocs + sort)
-    // every frame for every open node. That per-frame filesystem walk was the dominant
-    // idle cost when the sidebar is open (collapsing it restored FPS). Re-scanned on a
-    // short TTL so externally created/removed folders still appear; CountDirScan() fires
-    // only on an actual scan, so the profiler's "UI Dir Scans" sits near 0 once warm.
+    // cache the sorted child listing per expanded folder-tree node so the sidebar doesn't run
+    // fs::directory_iterator every frame for every open node ( that walk was THE idle cost,
+    // collapsing the sidebar restored FPS ). short TTL re-scan catches external changes;
+    // CountDirScan() only fires on real scans so "UI Dir Scans" sits near 0 once warm.
     struct FolderTreeChildCache {
         struct Node {
             std::vector<fs::path> childDirs;
@@ -1063,54 +1004,6 @@ namespace {
         CombinedShader
     };
 
-    bool FolderHasVisibleItems(const fs::path& path, bool showHiddenFiles) {
-        std::error_code ec;
-        for (fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, ec);
-             !ec && it != fs::directory_iterator();
-             ++it) {
-            const std::string name = it->path().filename().string();
-            if (!showHiddenFiles && !name.empty() && name[0] == '.') {
-                continue;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    std::string formatByteSize(uintmax_t bytes) {
-        static const char* kUnits[] = { "B", "KB", "MB", "GB", "TB" };
-        double size = static_cast<double>(bytes);
-        int unit = 0;
-        while (size >= 1024.0 && unit < 4) {
-            size /= 1024.0;
-            ++unit;
-        }
-
-        std::ostringstream ss;
-        if (unit == 0) {
-            ss << bytes << " " << kUnits[unit];
-        } else {
-            ss << std::fixed << std::setprecision(size >= 10.0 ? 1 : 2) << size << " " << kUnits[unit];
-        }
-        return ss.str();
-    }
-
-    const char* fileCategoryLabel(FileCategory cat) {
-        switch (cat) {
-            case FileCategory::Folder: return "Folder";
-            case FileCategory::Scene: return "Scene";
-            case FileCategory::Model: return "Model";
-            case FileCategory::Material: return "Material";
-            case FileCategory::Texture: return "Texture";
-            case FileCategory::Video: return "Video";
-            case FileCategory::Shader: return "Shader";
-            case FileCategory::Script: return "Script";
-            case FileCategory::Audio: return "Audio";
-            case FileCategory::Text: return "Text";
-            default: return "File";
-        }
-    }
-
     std::string fileSelectionKey(const fs::path& path) {
         std::error_code ec;
         fs::path canonical = fs::weakly_canonical(path, ec);
@@ -1276,6 +1169,9 @@ namespace {
         std::wstring widePath = path.wstring();
         HINSTANCE result = ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return reinterpret_cast<INT_PTR>(result) > 32;
+        #elif defined(__ANDROID__)
+        (void)path;
+        return false;
         #elif __linux__
         std::string cmd = "xdg-open \"" + path.string() + "\"";
         return std::system(cmd.c_str()) == 0;
@@ -1293,6 +1189,8 @@ namespace {
             std::wstring args = L"/select,\"" + widePath + L"\"";
             ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
         }
+        #elif defined(__ANDROID__)
+        (void)path;
         #elif __linux__
         fs::path folder = fs::is_directory(path) ? path : path.parent_path();
         std::string cmd = "xdg-open \"" + folder.string() + "\"";
@@ -1300,17 +1198,15 @@ namespace {
         #endif
     }
 
+#ifdef _WIN32
     void openPathWithDialog(const fs::path& path) {
-        #ifdef _WIN32
         std::wstring widePath = path.wstring();
         std::wstring args = L"shell32.dll,OpenAs_RunDLL \"" + widePath + L"\"";
         ShellExecuteW(nullptr, nullptr, L"rundll32.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
-        #else
-        openPathInShell(path);
-        #endif
     }
+#endif
 
-    std::string trimWhitespace(std::string value) {
+    [[maybe_unused]] std::string trimWhitespace(std::string value) {
         auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
         while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
             value.erase(value.begin());
@@ -1321,7 +1217,7 @@ namespace {
         return value;
     }
 
-    #if defined(__linux__)
+    #if defined(__linux__) && !defined(__ANDROID__)
     std::string shellQuote(const std::string& value) {
         std::string out;
         out.reserve(value.size() + 2);
@@ -1366,7 +1262,7 @@ namespace {
     }
     #endif
 
-    std::optional<fs::path> chooseImportFilePath(const fs::path& initialDir) {
+    [[maybe_unused]] std::optional<fs::path> chooseImportFilePath(const fs::path& initialDir) {
         #ifdef _WIN32
         std::wstring initialDirWide = initialDir.wstring();
         std::array<wchar_t, MAX_PATH> fileBuffer{};
@@ -1381,6 +1277,9 @@ namespace {
         if (GetOpenFileNameW(&ofn) == TRUE) {
             return fs::path(fileBuffer.data());
         }
+        return std::nullopt;
+        #elif defined(__ANDROID__)
+        (void)initialDir;
         return std::nullopt;
         #elif __linux__
         const fs::path initial = initialDir.empty() ? fs::current_path() : initialDir;
@@ -1407,7 +1306,7 @@ namespace {
         #endif
     }
 
-    std::optional<fs::path> chooseImportFolderPath(const fs::path& initialDir) {
+    [[maybe_unused]] std::optional<fs::path> chooseImportFolderPath(const fs::path& initialDir) {
         #ifdef _WIN32
         BROWSEINFOW info{};
         info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
@@ -1423,6 +1322,9 @@ namespace {
         }
         CoTaskMemFree(selected);
         return result;
+        #elif defined(__ANDROID__)
+        (void)initialDir;
+        return std::nullopt;
         #elif __linux__
         const fs::path initial = initialDir.empty() ? fs::current_path() : initialDir;
         const std::string initialString = initial.string();
@@ -1451,6 +1353,8 @@ namespace {
     bool supportsNativeImportPathPicker() {
         #ifdef _WIN32
         return true;
+        #elif defined(__ANDROID__)
+        return Modularity::AndroidRuntime::SupportsFilePicker();
         #elif __linux__
         return commandExists("zenity") || commandExists("kdialog");
         #else
@@ -1488,6 +1392,10 @@ void Engine::renderFileBrowserPanel() {
     static bool triggerImportAssetsPopup = false;
     static fs::path pendingImportTargetPath;
     static char importAssetPaths[4096] = "";
+#ifdef __ANDROID__
+    static bool androidImportPickerPending = false;
+    static fs::path androidImportPickerTargetPath;
+#endif
     bool settingsDirty = false;
 
     auto openEntry = [&](const fs::directory_entry& entry) {
@@ -1934,6 +1842,7 @@ void Engine::renderFileBrowserPanel() {
         return true;
     };
 
+#ifndef __ANDROID__
     auto importDirectoryContentsIntoDirectory = [&](const fs::path& sourceDir, const fs::path& destinationDir) {
         std::error_code ec;
         if (sourceDir.empty() || destinationDir.empty()) {
@@ -1984,6 +1893,7 @@ void Engine::renderFileBrowserPanel() {
         }
         return importedCount > 0;
     };
+#endif
 
     auto movePathIntoDirectory = [&](const fs::path& sourcePath, const fs::path& destinationDir) {
         std::error_code ec;
@@ -2076,6 +1986,56 @@ void Engine::renderFileBrowserPanel() {
         showImportAssetsPopup = true;
         triggerImportAssetsPopup = true;
     };
+
+#ifdef __ANDROID__
+    auto pollAndroidImportPickerResult = [&]() {
+        Modularity::AndroidRuntime::FilePickerResult result;
+        if (!Modularity::AndroidRuntime::PollFilePickerResult(result)) {
+            return;
+        }
+
+        androidImportPickerPending = false;
+        fs::path targetDir = androidImportPickerTargetPath.empty()
+            ? fileBrowser.currentPath
+            : androidImportPickerTargetPath;
+        androidImportPickerTargetPath.clear();
+
+        if (result.canceled && result.paths.empty()) {
+            addConsoleMessage("Import cancelled.", ConsoleMessageType::Info);
+            return;
+        }
+        if (!result.error.empty()) {
+            addConsoleMessage("Android file picker: " + result.error,
+                              result.paths.empty() ? ConsoleMessageType::Error : ConsoleMessageType::Warning);
+        }
+        if (result.paths.empty()) {
+            return;
+        }
+
+        int importedCount = 0;
+        int failedCount = 0;
+        for (const std::string& path : result.paths) {
+            if (path.empty()) {
+                continue;
+            }
+            if (importPathIntoDirectory(fs::path(path), targetDir)) {
+                ++importedCount;
+            } else {
+                ++failedCount;
+            }
+        }
+        if (importedCount > 0) {
+            addConsoleMessage("Imported " + std::to_string(importedCount) + " Android asset(s).",
+                              ConsoleMessageType::Success);
+            showImportAssetsPopup = false;
+        }
+        if (failedCount > 0) {
+            addConsoleMessage("Failed to import " + std::to_string(failedCount) + " Android asset(s).",
+                              ConsoleMessageType::Warning);
+        }
+    };
+    pollAndroidImportPickerResult();
+#endif
     
     // Get colors for categories
     auto getCategoryColor = [](FileCategory cat) -> ImU32 {
@@ -2245,9 +2205,8 @@ void Engine::renderFileBrowserPanel() {
             allCrumbs.push_back({name, pathParts[i]});
         }
 
-        // Use the whole row by default; only collapse the middle into "..." when
-        // the full path doesn't fit. Always keep Project + as many trailing
-        // crumbs as fit the available width.
+        // use the whole row; only collapse the middle into "..." when the path doesn't fit.
+        // always keep Project + as many trailing crumbs as fit.
         const ImGuiStyle& style = ImGui::GetStyle();
         const float avail = ImGui::GetContentRegionAvail().x;
         auto crumbWidth = [&](const std::string& s) {
@@ -2342,8 +2301,13 @@ void Engine::renderFileBrowserPanel() {
         fileBrowserSidebarWidth = std::clamp(fileBrowserSidebarWidth, minSidebarWidth, maxSidebarWidth);
 
         ImGui::BeginChild("FileSidebar", ImVec2(fileBrowserSidebarWidth, 0), false);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
+        // Taller favorites/folder rows on touch so they're easy to tap.
+        const bool sidebarTouch =
+            (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                            sidebarTouch ? ImVec2(6.0f, 7.0f) : ImVec2(4.0f, 2.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            sidebarTouch ? ImVec2(6.0f, 8.0f) : ImVec2(4.0f, 2.0f));
         ImGui::TextDisabled("Favorites");
         ImGui::SameLine();
         if (ImGui::SmallButton("+##AddFavorite")) {
@@ -2490,9 +2454,13 @@ void Engine::renderFileBrowserPanel() {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     static FileBrowserTextLayoutCache sFileBrowserTextLayoutCache;
 
+    const bool fileBrowserTouch =
+        (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
     if (fileBrowser.viewMode == FileBrowserViewMode::Grid) {
         MODU_PROFILE_SCOPE("Project Grid Render", ProfilerSampleCategory::UI);
-        float baseIconSize = 56.0f;
+        // Bigger base cell on touch so grid items are easy to hit even before the
+        // user's icon-scale multiplier is applied.
+        float baseIconSize = fileBrowserTouch ? 84.0f : 56.0f;
         float iconSize = baseIconSize * fileBrowserIconScale;
         float padding = 6.0f * fileBrowserIconScale;
         float textHeight = 17.0f;
@@ -2813,7 +2781,7 @@ void Engine::renderFileBrowserPanel() {
         // List View
         MODU_PROFILE_SCOPE("Project List Render", ProfilerSampleCategory::UI);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 1.0f));
-        const float listRowHeight = 34.0f;
+        const float listRowHeight = fileBrowserTouch ? 50.0f : 34.0f;
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(fileBrowser.cachedEntries.size()), listRowHeight);
         while (clipper.Step()) {
@@ -3145,16 +3113,37 @@ void Engine::renderFileBrowserPanel() {
         saveEditorUserSettings();
     }
 
+    auto resolveCardIcon = [&](const char* iconPath) -> CardModalIcon {
+        if (rendererInitialized) {
+            if (Texture* icon = renderer.getTexture(iconPath, MaterialProperties::TextureFilter::Point);
+                icon && icon->GetID()) {
+                return { static_cast<ImTextureID>(icon->GetID()), true };
+            }
+        }
+        if (usingVulkan() && vulkanRendererInitialized && vulkanRenderer) {
+            ImTextureID icon = vulkanRenderer->getOrCreateUIImage(iconPath);
+            if (icon != static_cast<ImTextureID>(0)) return { icon, false };
+        }
+        return {};
+    };
+
     if (triggerDeletePopup) {
         playEditorFeedbackPreview("Resources/Sounds/Info.mp3", 0.95f, false, EditorFeedbackSoundCategory::Other);
-        ImGui::OpenPopup("Confirm Delete");
+        ImGui::OpenPopup("Delete this item?");
         triggerDeletePopup = false;
     }
-    if (ImGui::BeginPopupModal("Confirm Delete", &showDeletePopup, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Delete %s?", pendingDeletePath.filename().string().c_str());
-        ImGui::TextDisabled("%s", pendingDeletePath.string().c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("Delete", ImVec2(120, 0))) {
+    if (beginCardModal("Delete this item?", 0.0f, &showDeletePopup,
+                       resolveCardIcon("Resources/Engine-Root/Pop-up Confirmation Icons/File Deletion.png"))) {
+        const std::string deleteMsg = "\"" + pendingDeletePath.filename().string() +
+                                      "\" will be deleted from your project.";
+        cardModalText(deleteMsg.c_str());
+        // keep the full path visible, it has saved me from wrong-folder deletes before
+        cardModalText(pendingDeletePath.string().c_str());
+        if (cardModalButton("Cancel", CardButtonKind::Neutral, 0, 2)) {
+            showDeletePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
+        if (cardModalButton("Delete", CardButtonKind::Danger, 1, 2)) {
             std::error_code ec;
             fs::remove_all(pendingDeletePath, ec);
             if (fileBrowser.selectedFile == pendingDeletePath) {
@@ -3174,12 +3163,7 @@ void Engine::renderFileBrowserPanel() {
             showDeletePopup = false;
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-            showDeletePopup = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+        endCardModal();
     }
 
     if (triggerRenamePopup) {
@@ -3187,13 +3171,24 @@ void Engine::renderFileBrowserPanel() {
         ImGui::OpenPopup("Rename Item");
         triggerRenamePopup = false;
     }
-    if (ImGui::BeginPopupModal("Rename Item", &showRenamePopup, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Rename %s", pendingRenamePath.filename().string().c_str());
-        ImGui::Spacing();
-        ImGui::InputText("New Name", renameName, sizeof(renameName));
+    if (beginCardModal("Rename Item", 0.0f, &showRenamePopup,
+                       resolveCardIcon("Resources/Engine-Root/Pop-up Confirmation Icons/File Renaming.png"))) {
+        const std::string renameMsg = "Choose a new name for \"" +
+                                      pendingRenamePath.filename().string() + "\".";
+        cardModalText(renameMsg.c_str());
+        if (ImGui::IsWindowAppearing()) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool renameSubmitted = ImGui::InputText("##NewName", renameName, sizeof(renameName),
+                                                      ImGuiInputTextFlags_EnterReturnsTrue);
         bool canRename = std::strlen(renameName) > 0;
+        if (cardModalButton("Cancel", CardButtonKind::Neutral, 0, 2)) {
+            showRenamePopup = false;
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::BeginDisabled(!canRename);
-        if (ImGui::Button("Rename", ImVec2(120, 0))) {
+        if (cardModalButton("Rename", CardButtonKind::Primary, 1, 2) || (renameSubmitted && canRename)) {
             fs::path newPath = pendingRenamePath.parent_path() / renameName;
             if (newPath == pendingRenamePath) {
                 addConsoleMessage("Rename skipped: name unchanged", ConsoleMessageType::Info);
@@ -3224,12 +3219,7 @@ void Engine::renderFileBrowserPanel() {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-            showRenamePopup = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+        endCardModal();
     }
 
     if (triggerImportAssetsPopup) {
@@ -3241,8 +3231,31 @@ void Engine::renderFileBrowserPanel() {
         ImGui::Text("Import assets into:");
         ImGui::TextDisabled("%s", targetDir.string().c_str());
         ImGui::Spacing();
+#ifdef __ANDROID__
+        ImGui::TextWrapped("Use the Android file explorer to import one or more files.");
+#else
         ImGui::TextWrapped("Use your file explorer to import a single file or an entire folder's contents.");
+#endif
         const bool nativePickerAvailable = supportsNativeImportPathPicker();
+#ifdef __ANDROID__
+        ImGui::BeginDisabled(!nativePickerAvailable || androidImportPickerPending);
+        if (ImGui::Button(androidImportPickerPending ? "Waiting for Android Picker..." : "Select Files...",
+                          ImVec2(220, 0))) {
+            std::string pickerError;
+            if (Modularity::AndroidRuntime::RequestFilePicker(true, pickerError)) {
+                androidImportPickerPending = true;
+                androidImportPickerTargetPath = targetDir;
+            } else {
+                addConsoleMessage("Android file picker failed: " + pickerError, ConsoleMessageType::Error);
+            }
+        }
+        ImGui::EndDisabled();
+        if (!nativePickerAvailable) {
+            ImGui::TextDisabled("Android file picker unavailable in this APK.");
+        } else if (androidImportPickerPending) {
+            ImGui::TextDisabled("Waiting for selected files...");
+        }
+#else
         ImGui::BeginDisabled(!nativePickerAvailable);
         if (ImGui::Button("Select File...", ImVec2(180, 0))) {
             if (auto selectedPath = chooseImportFilePath(targetDir)) {
@@ -3265,6 +3278,7 @@ void Engine::renderFileBrowserPanel() {
         if (!nativePickerAvailable) {
             ImGui::TextDisabled("Native picker unavailable. Install zenity/kdialog or paste paths below.");
         }
+#endif
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();

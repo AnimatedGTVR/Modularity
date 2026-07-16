@@ -7,18 +7,27 @@ layout (location = 2) in vec2 aTexCoord;
 out vec3 vWorldPos;
 out vec3 vNormal;
 smooth out vec2 vUv;
-noperspective out vec2 vAffineUv;
+// affine emulation: uv * wBlend and wBlend as perspective-correct varyings,
+// divided in the fragment shader. Survives near-plane clipping (noperspective
+// varyings get re-derived at the clip boundary and lose the warp up close).
+smooth out vec3 vAffineUvw;
 
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_projection;
 uniform float u_time;
+uniform vec2 u_uvTiling;
+uniform vec2 u_uvOffset;
 uniform bool u_wobbleEnabled;
 uniform float u_wobbleStrength;
 uniform float u_wobbleSpeed;
 uniform float u_wobbleSeed;
 uniform vec3 u_wobbleOffset;
+uniform float u_affineWarpStrength;
 uniform float u_presentationPitchDegrees;
+uniform float u_pitchNormalizeDegrees;
+uniform float u_pitchCurve;
+uniform float u_pitchDepthRange;
 uniform float u_pitchStretchStrength;
 uniform float u_pitchCompressStrength;
 uniform float u_pitchShearStrength;
@@ -71,10 +80,11 @@ void main() {
         viewPos.xyz = snapVec3(viewPos.xyz, u_cameraRelativeSnapStep);
     }
 
-    float pitchNormalized = clamp(u_presentationPitchDegrees / 65.0, -1.0, 1.0);
+    float pitchNormalized = clamp(u_presentationPitchDegrees / max(u_pitchNormalizeDegrees, 1.0), -1.0, 1.0);
+    pitchNormalized = sign(pitchNormalized) * pow(abs(pitchNormalized), max(u_pitchCurve, 0.01));
     float pitchUp = max(pitchNormalized, 0.0);
     float pitchDown = max(-pitchNormalized, 0.0);
-    float depthWeight = clamp((-viewPos.z) / 24.0, 0.0, 1.0);
+    float depthWeight = clamp((-viewPos.z) / max(u_pitchDepthRange, 0.001), 0.0, 1.0);
     float verticalScale = 1.0 + (pitchUp * max(u_pitchStretchStrength, 0.0)) -
                           (pitchDown * max(u_pitchCompressStrength, 0.0));
     float shearAmount = pitchNormalized * max(u_pitchShearStrength, 0.0) * (0.45 + depthWeight * 0.55);
@@ -84,8 +94,8 @@ void main() {
     vec4 presentedWorldPos = inverse(u_view) * viewPos;
     vWorldPos = presentedWorldPos.xyz;
     vNormal = mat3(transpose(inverse(u_model))) * aNormal;
-    vUv = aTexCoord;
-    vAffineUv = aTexCoord;
+    vec2 uv = (aTexCoord * u_uvTiling) + u_uvOffset;
+    vUv = uv;
 
     vec4 clipPos = u_projection * viewPos;
     if (u_screenSnapEnabled && u_screenSnapStep > 0.0) {
@@ -96,6 +106,9 @@ void main() {
         ndc = ((pixelPos / safeViewport) * 2.0) - 1.0;
         clipPos.xy = ndc * clipPos.w;
     }
+
+    float affineW = mix(1.0, max(clipPos.w, 0.0001), clamp(u_affineWarpStrength, 0.0, 1.0));
+    vAffineUvw = vec3(uv * affineW, affineW);
 
     gl_Position = clipPos;
 }

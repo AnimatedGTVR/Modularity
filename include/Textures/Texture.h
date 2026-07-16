@@ -11,9 +11,9 @@
 enum class TextureFormatPolicy {
     Auto,      // adaptive: pick the smallest format the texture's content allows
     Full,      // force RGBA8 / RGB8 (original behavior, highest quality)
-    RGB565,    // 16bpp, no alpha — opaque textures
-    RGB5_A1,   // 16bpp, 1-bit alpha — binary/cutout transparency
-    RGBA4      // 16bpp, 4-bit alpha — smooth/blended transparency (may band)
+    RGB565,    // 16bpp, no alpha - opaque textures
+    RGB5_A1,   // 16bpp, 1-bit alpha - binary/cutout transparency
+    RGBA4      // 16bpp, 4-bit alpha - smooth/blended transparency (may band)
 };
 
 // Stable string names used for persistence (project file) and UI. Keep these in

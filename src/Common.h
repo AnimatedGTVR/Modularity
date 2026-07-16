@@ -1,5 +1,4 @@
 #pragma once
-
 #include <iostream>
 #include <algorithm>
 #include <stdexcept>
@@ -15,11 +14,7 @@
 #include <vector>
 #include <memory>
 #include <type_traits>
-
 #ifdef _WIN32
-// Keep Win32 macros from leaking into public script-facing headers and helper code.
-// Windows headers must come before GLFW's APIENTRY definitions, otherwise MSVC
-// can report duplicate-scope errors from minwindef.h.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -32,25 +27,13 @@
 #undef APIENTRY
 #endif
 #endif
-
 #include "../include/Graphics/OpenGL.h"
 #include "ThirdParty/ModuGUI/imgui.h"
 #include "ThirdParty/ModuGUI/imgui_internal.h"
-// GLFW (and therefore imgui's GLFW backend) doesn't ship on Android. The
-// Android runtime drives ImGui through its own NativeActivity-backed
-// platform layer instead. On desktop we keep both GLFW and the ImGui GLFW
-// backend in the umbrella include so engine code can call glfwGetTime() etc.
-// without remembering to include the header themselves.
-// Pull in Vulkan declarations before glfw3.h so glfwCreateWindowSurface
-// and friends are exposed. Without this the engine would have to rely on
-// header-include order luck.
 #if MODULARITY_HAS_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #endif
 #include "ThirdParty/glfw/include/GLFW/glfw3.h"
-// On Android GLFW builds with its null backend and the imgui GLFW backend
-// is link-stubbed (see src/Platform/ImGuiGlfwStubs.cpp). The headers and
-// call sites stay identical to desktop.
 #ifndef __ANDROID__
 #include "ThirdParty/ModuGUI/backends/imgui_impl_glfw.h"
 #else
@@ -66,30 +49,19 @@
 #include "ThirdParty/glm/gtc/type_ptr.hpp"
 #include "ThirdParty/glm/gtc/quaternion.hpp"
 #include "../include/Graphics/GraphicsBackend.h"
-
 namespace fs = std::filesystem;
-
 #ifndef MODULARITY_COMMON_SHARED_DECLS
 #define MODULARITY_COMMON_SHARED_DECLS
-
-// Constants
 constexpr float SENSITIVITY = 0.1f;
 constexpr float CAMERA_SPEED = 2.5f;
 constexpr float FOV = 45.0f;
 constexpr float NEAR_PLANE = 0.1f;
 constexpr float FAR_PLANE = 100.0f;
 constexpr float PI = 3.14159265359f;
-
 inline glm::vec3 NormalizeEulerDegrees(const glm::vec3& deg) {
-    auto wrap = [](float a) {
-        float r = std::fmod(a, 360.0f);
-        if (r < 0.0f) r += 360.0f;
-        return r;
-    };
+    auto wrap = [](float a) {float r = std::fmod(a, 360.0f); if (r < 0.0f) r += 360.0f; return r;};
     return glm::vec3(wrap(deg.x), wrap(deg.y), wrap(deg.z));
 }
-
-// Forward declarations
 class Mesh;
 class OBJLoader;
 class Renderer;
@@ -99,27 +71,17 @@ class SceneObject;
 class Project;
 class ProjectManager;
 class Engine;
-
-// Global OBJ loader instance (extern declaration)
 extern OBJLoader g_objLoader;
-
-// Sheet-relative sprite reference (kept byte-identical to the copy in
-// ScriptSdkCommon.h, and both live under MODULARITY_COMMON_SHARED_DECLS, so only
-// one is ever active per TU). int<->Sprite stays back-compatible with the
-// former clip-index Sprite.
 struct Sprite {
     std::string sheetAssetPath;
     std::string clipName;
     mutable int clipIndex = -1;
-
     Sprite() = default;
     Sprite(int clip) : clipIndex(clip) {}
     Sprite& operator=(int clip) { sheetAssetPath.clear(); clipName.clear(); clipIndex = clip; return *this; }
     operator int() const { return clipIndex; }
-
     bool IsValid() const { return !clipName.empty() || clipIndex >= 0; }
     bool IsAssigned() const { return IsValid(); }
     explicit operator bool() const { return IsValid(); }
 };
-
 #endif // MODULARITY_COMMON_SHARED_DECLS

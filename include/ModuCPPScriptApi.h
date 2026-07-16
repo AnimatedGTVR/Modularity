@@ -157,7 +157,7 @@ inline ScriptInt IntRU(float value) {
     return ScriptInt{ static_cast<int>(std::ceil(value)) };
 }
 
-// FloatR(value, decimals) — returns a string-convertible wrapper formatted to
+// FloatR(value, decimals) - returns a string-convertible wrapper formatted to
 // the requested number of decimals. Used like: "x: " + FloatR(x, 2).
 struct ScriptFloat {
     std::string text;
@@ -296,11 +296,9 @@ inline ScriptContext& ctx() {
     return *detail::gCtx;
 }
 
-// Resolve an object ref string the same way the transpiler-emitted helper does:
-// 1. ScriptContext::ResolveObjectRef (handles "Object.ID-N" style refs)
-// 2. fall back to FindObjectByName (handles bare scene-object names)
-// Required because [ObjectList] entries can be stored as either form depending
-// on how the inspector serialized them.
+// resolve an object ref string the same way the transpiler helper does: ResolveObjectRef
+// for "Object.ID-N" refs, then FindObjectByName for bare names ( [ObjectList] entries
+// can be stored as either form ).
 inline SceneObject* SmartResolveRef(const std::string& ref) {
     ScriptContext* c = ctxPtr();
     if (!c || ref.empty()) return nullptr;
@@ -308,15 +306,11 @@ inline SceneObject* SmartResolveRef(const std::string& ref) {
     return c->FindObjectByName(ref);
 }
 
-// UI accessors for [ObjectRef] string fields. The transpiler rewrites
-//   field.UI.Exists  -> UIExists(field)
-//   field.UI.Position           -> UIPosition(field)
-//   field.UI.Position = value   -> SetUIPosition(field, value)
-//   field.UI.Size               -> UISize(field)
-//   field.UI.Size = value       -> SetUISize(field, value)
-// when 'field' is a known [ObjectRef] field on the surrounding script class.
-// Each call resolves the ref through ctxPtr(); reads return a zero default
-// when the ref is empty/unresolvable, writes are no-ops in that case.
+// UI accessors for [ObjectRef] string fields. the transpiler rewrites
+//   field.UI.Exists            -> UIExists(field)
+//   field.UI.Position          -> UIPosition(field)  ( = value -> SetUIPosition )
+//   field.UI.Size              -> UISize(field)      ( = value -> SetUISize )
+// for known [ObjectRef] fields. empty/unresolvable refs: reads return zero, writes no-op.
 inline bool UIExists(const std::string& ref) {
     if (SceneObject* o = SmartResolveRef(ref)) return ::HasUIComponent(*o);
     return false;
@@ -350,10 +344,8 @@ inline void SetUISize(const std::string& ref, const glm::vec2& value) {
     }
 }
 
-// Audio.PlayOneShot(refOrPath, vol=1.0f)
-// Smart-resolves the argument: if it matches a scene object with an audio source,
-// plays that source's clip. Otherwise treats the argument as a literal clip path.
-// Mirrors the original ctx.PlayAudioOneShot semantics; safe with empty input.
+// Audio.PlayOneShot(refOrPath, vol=1.0f): a scene object with an audio source plays that
+// source's clip, anything else is treated as a literal clip path. safe with empty input.
 namespace Audio {
 inline bool PlayOneShot(const std::string& refOrPath, float volumeScale = 1.0f) {
     ScriptContext* c = ctxPtr();
@@ -473,9 +465,8 @@ inline Sprite DeserializeSprite(const std::string& encoded) {
     return sprite;
 }
 
-// Sprite isn't an AutoSetting primitive, so this loads from the string setting
-// (Field::SetSprite / the inspector write it back on edit). Declared before
-// BindArray so BindArray<Sprite,N> resolves it via unqualified lookup.
+// Sprite isn't an AutoSetting primitive so this loads from the string setting. declared
+// before BindArray so BindArray<Sprite,N> finds it via unqualified lookup.
 inline void BindSetting(ScriptContext& ctx, const std::string& key, Sprite& value) {
     value = DeserializeSprite(ctx.GetSetting(key, SerializeSprite(value)));
 }
@@ -546,13 +537,9 @@ inline bool DrawObjectRefInput(ScriptContext& ctx, const char* label, std::strin
     }
 
     if (ModuGUI::BeginPopup(popupId)) {
-        // Single shared filter — only one ObjectRef popup is open at a time.
-        // Keep this helper pointer-free so stale inspector rows cannot leave
-        // dangling keys behind after hierarchy/object mutations.
-        // The previous design keyed a static unordered_map by `&objectRef`,
-        // which dangled whenever the SceneObject owning the field was
-        // destroyed (e.g. inspector temporaries) and could SIGSEGV on the
-        // next inspector open.
+        // single shared filter, only one ObjectRef popup is open at a time. keep this pointer-free:
+        // the old version keyed a static map by &objectRef, which dangled when the owning
+        // SceneObject died and SIGSEGV'd on the next inspector open.
         static std::string filter;
         char searchBuf[128] = {};
         std::snprintf(searchBuf, sizeof(searchBuf), "%s", filter.c_str());
@@ -761,15 +748,10 @@ struct UILabelProxy {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Per-component access proxies used by SceneObj, ObjectFacade (the local
-// `obj` injected by MODU_SCRIPT) and any user SceneObj-typed value. Each
-// proxy resolves the underlying SceneObject* either from a stored
-// pointer-to-pointer (when bound to a SceneObj's `ptr` field) or, when the
-// pointer is nullptr, by reading the current thread-local ScriptContext's
-// active object. This gives `obj.Rigidbody3D.velocity` and
-// `someObj.Rigidbody3D.velocity` an identical surface.
-// ---------------------------------------------------------------------------
+// per-component proxies used by SceneObj, ObjectFacade (the `obj` MODU_SCRIPT injects) and
+// any user SceneObj value. each resolves its SceneObject* from a stored pointer-to-pointer
+// or, when that's null, the thread-local ScriptContext's active object, so `obj.Rigidbody3D`
+// and `someObj.Rigidbody3D` behave identically.
 
 namespace detail {
 inline SceneObject* resolveAccessTarget(SceneObject* const* pp) {
@@ -1008,7 +990,7 @@ struct SceneObj {
     friend bool operator!=(const SceneObj& a, std::nullptr_t) { return a.ptr != nullptr; }
 };
 
-// --- Access proxy implementations -----------------------------------------
+// Access proxy implementations
 
 inline Vector3 Rigidbody3DAccess::Velocity::get() const {
     ScriptContext* c = ctxPtr();
@@ -1137,6 +1119,12 @@ inline void TransformAccess::PositionProxy::set(const Vector3& v) const {
         c->SetPosition(v);
     } else {
         t->position = v;
+        // future me: writing the WORLD position alone isn't enough. the engine's
+        // hierarchy pass rebuilds obj.position from obj.localPosition (+ parent) every
+        // frame, so a raw world write gets reverted before it ever renders (the exact
+        // "referenced object won't move/rotate, but audio-by-id works" bug). back-sync
+        // local from the world we just set so the pass keeps it.
+        c->SyncObjectLocalTransform(t->id);
         c->TeleportObjectRigidbody(t->id, v, t->rotation);
     }
 }
@@ -1155,6 +1143,9 @@ inline void TransformAccess::RotationProxy::set(const Vector3& v) const {
         c->SetRotation(v);
     } else {
         t->rotation = v;
+        // see the note in PositionProxy::set - sync local from the world rotation we
+        // just wrote or the hierarchy pass reverts it next frame.
+        c->SyncObjectLocalTransform(t->id);
         c->TeleportObjectRigidbody(t->id, t->position, v);
     }
 }

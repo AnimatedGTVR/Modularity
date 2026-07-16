@@ -135,6 +135,22 @@ void Engine::renderGameViewportWindow() {
     ImGui::End();
     return;
   }
+  // Docked behind another tab (e.g. the Scene viewport it shares a dock node
+  // with by default): the body would still run a second full scene render for
+  // a panel nobody can see. One settle frame lets runtime-UI widget state
+  // (pressed/hover) reset, then skip like a collapsed window.
+  {
+    static bool dockTabWasHidden = false;
+    const bool dockTabHidden = ViewportRenderHelpers::IsCurrentDockTabHidden();
+    const bool skipHiddenTab = dockTabHidden && dockTabWasHidden;
+    dockTabWasHidden = dockTabHidden;
+    if (skipHiddenTab) {
+      Modu2DStats::CountWindowSkipped();
+      Modu2DStats::CountSkippedRedraw();
+      ImGui::End();
+      return;
+    }
+  }
   const bool showGameViewportToolbar = true;
   bool windowFocused =
       ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -151,10 +167,8 @@ void Engine::renderGameViewportWindow() {
        {"1280x720 (720p)", 1280, 720, false, false},
        {"2560x1440 (1440p)", 2560, 1440, false, false},
        {"Custom", 0, 0, false, true},
-       // "Native" pulls the display size at runtime. On Android that's
-       // the EGL surface size (AndroidRuntime::GetSurfaceSize), on desktop
-       // the GLFW framebuffer size. Picks the natively right aspect ratio
-       // so 16:9 content doesn't stretch into a 16:10 panel.
+       // "Native" pulls the display size at runtime (EGL surface on Android, GLFW framebuffer
+       // on desktop) so 16:9 content doesn't stretch into a 16:10 panel.
        {"Native (Display Size)", 0, 0, true, false}}};
   if (gameViewportResolutionIndex < 0 ||
       gameViewportResolutionIndex >= (int)kGameResolutions.size()) {
@@ -218,9 +232,8 @@ void Engine::renderGameViewportWindow() {
         bool selected = (i == gameViewportResolutionIndex);
         if (ImGui::Selectable(kGameResolutions[i].label, selected)) {
           gameViewportResolutionIndex = i;
-          // Persist immediately. Without this, the in-memory value can
-          // revert between picking it and clicking Bake, and then the bundle
-          // ships whatever build.modu still has on disk.
+          // persist immediately, or the in-memory value can revert between picking it and clicking
+          // Bake and the bundle ships whatever build.modu still has.
           saveBuildSettings();
         }
         if (selected)
@@ -278,6 +291,13 @@ void Engine::renderGameViewportWindow() {
     toolbarSeparator();
     if (ImGui::Checkbox("Profiler", &showGameProfiler)) {
       gameViewportToolbarChanged = true;
+    }
+    ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+    if (ImGui::Checkbox("UI Preview", &uiCanvasPreviewEnabled)) {
+      gameViewportToolbarChanged = true;
+    }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Show editor UI canvas previews while not playing");
     }
     ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
     if (ImGui::Checkbox("2D PostFX", &world2DPostFx.enabled)) {
@@ -465,16 +485,20 @@ void Engine::renderGameViewportWindow() {
       MODU_PROFILE_SCOPE("Render", ProfilerSampleCategory::Render);
       Profiler::instance().beginOpenGlGpuFrame();
       unsigned int tex = 0;
+      const float gameViewFov = ResolveCameraVerticalFovDeg(
+          playerCam->camera,
+          static_cast<float>(renderWidth) /
+              static_cast<float>(std::max(1, renderHeight)));
       if (project25DPipeline) {
         renderTMViewportPass(makeCameraFromObject(*playerCam), renderWidth,
-                             renderHeight, playerCam->camera.fov,
+                             renderHeight, gameViewFov,
                              playerCam->camera.nearClip,
                              playerCam->camera.farClip, &tex, &tmStats,
                              &tmError, kGameViewportPreviewSlot);
       } else {
         tex = renderer.renderScenePreview(
             makeCameraFromObject(*playerCam), sceneObjects, renderWidth,
-            renderHeight, playerCam->camera.fov, playerCam->camera.nearClip,
+            renderHeight, gameViewFov, playerCam->camera.nearClip,
             playerCam->camera.farClip,
             playerCam->camera.use2D || playerCam->camera.applyPostFX,
             kGameViewportPreviewSlot);
@@ -614,6 +638,8 @@ void Engine::renderGameViewportWindow() {
                                   lines[i]);
       }
     }
+    const bool drawUiCanvasPreview = isPlaying || uiCanvasPreviewEnabled;
+    if (drawUiCanvasPreview) {
     bool uiInteracting = false;
     UiSceneLookupCache uiSceneLookup(sceneObjects);
     auto find3DCanvasId = [&](const SceneObject &target) -> int {
@@ -622,7 +648,7 @@ void Engine::renderGameViewportWindow() {
     auto findPseudo3DCanvasId = [&](const SceneObject &target) -> int {
       return uiSceneLookup.findPseudo3DCanvasId(target);
     };
-    auto isUiOn3DCanvas = [&](const SceneObject &target) {
+    [[maybe_unused]] auto isUiOn3DCanvas = [&](const SceneObject &target) {
       return find3DCanvasId(target) >= 0;
     };
     int editCanvas3DId = -1;
@@ -758,10 +784,12 @@ void Engine::renderGameViewportWindow() {
     bool hasProjectedUiCamera = false;
     if (playerCam && !useWorldUi) {
       projectedUiView = projectedUiCamera.getViewMatrix();
-      projectedUiProj = glm::perspective(
-          glm::radians(playerCam->camera.fov),
-          static_cast<float>(renderWidth) /
-              std::max(1.0f, static_cast<float>(renderHeight)),
+      projectedUiProj = BuildCameraProjection(
+          projectedUiCamera, renderWidth, std::max(1, renderHeight),
+          ResolveCameraVerticalFovDeg(
+              playerCam->camera,
+              static_cast<float>(renderWidth) /
+                  std::max(1.0f, static_cast<float>(renderHeight))),
           playerCam->camera.nearClip, playerCam->camera.farClip);
       hasProjectedUiCamera = true;
     }
@@ -1890,40 +1918,44 @@ void Engine::renderGameViewportWindow() {
         const ImU32 sliderBorder = (obj.ui.borderColor.a > 0.0f)     ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a))     : ImGui::GetColorU32(brighten(tint, 0.85f));
         const ImU32 sliderText   = (obj.ui.textColor.a > 0.0f)       ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a))             : IM_COL32(240, 240, 245, 220);
         if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
+          // future me: this branch used to swap to a raw ImGui::SliderFloat the instant
+          // the slider became interactive (i.e. the moment you hit play). that widget
+          // draws the numeric value + a grab knob and looks nothing like the fill bar
+          // we render in the editor, so every health/TP bar "turned into" a default
+          // slider on play. keep the SAME fill-bar visual in both modes; just layer
+          // click-drag on top when it's actually interactive.
           float minValue = obj.ui.sliderMin;
           float maxValue = obj.ui.sliderMax;
           float range = (maxValue - minValue);
           if (range <= 1e-6f)
             range = 1.0f;
+          ImDrawList *dl = ImGui::GetWindowDrawList();
           if (uiWidgetInteractive) {
-            ImGui::PushItemWidth(drawSize.x);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg,      ImGui::ColorConvertU32ToFloat4(sliderBg));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, brighten(tint, 0.7f));
-            ImGui::PushStyleColor(ImGuiCol_SliderGrab,    brighten(tint, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-            if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue,
-                                   minValue, maxValue)) {
-              projectManager.currentProject.hasUnsavedChanges = true;
+            ImGui::InvisibleButton("##UISliderImGui", drawSize);
+            if (ImGui::IsItemActive() &&
+                ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+              float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+              mouseT = std::clamp(mouseT, 0.0f, 1.0f);
+              float newValue = minValue + mouseT * range;
+              if (newValue != obj.ui.sliderValue) {
+                obj.ui.sliderValue = newValue;
+                projectManager.currentProject.hasUnsavedChanges = true;
+              }
             }
-            ImGui::PopStyleColor(5);
-            ImGui::PopItemWidth();
-          } else {
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            float t = (obj.ui.sliderValue - minValue) / range;
-            t = std::clamp(t, 0.0f, 1.0f);
-            float rounding = 6.0f;
-            ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
-            dl->AddRectFilled(drawMin, drawMax, sliderBg, rounding);
-            if (fillMax.x > drawMin.x) {
-              dl->AddRectFilled(drawMin, fillMax, sliderFill, rounding);
-            }
-            dl->AddRect(drawMin, drawMax, sliderBorder, rounding);
-            ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-            ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
-                           drawMin.y + (drawSize.y - textSize.y) * 0.5f);
-            dl->AddText(textPos, sliderText, obj.ui.label.c_str());
           }
+          float t = (obj.ui.sliderValue - minValue) / range;
+          t = std::clamp(t, 0.0f, 1.0f);
+          float rounding = std::min(drawSize.x, drawSize.y) * 0.5f;
+          ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+          dl->AddRectFilled(drawMin, drawMax, sliderBg, rounding);
+          if (fillMax.x > drawMin.x) {
+            dl->AddRectFilled(drawMin, fillMax, sliderFill, rounding);
+          }
+          dl->AddRect(drawMin, drawMax, sliderBorder, rounding);
+          ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+          ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                         drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+          dl->AddText(textPos, sliderText, obj.ui.label.c_str());
         } else {
           ImDrawList *dl = ImGui::GetWindowDrawList();
           ImU32 bg     = sliderBg;
@@ -2112,6 +2144,7 @@ void Engine::renderGameViewportWindow() {
       ImVec2 layoutSize = ImVec2(1.0f, 1.0f);
       std::array<ImVec2, 4> corners;
       int depthSort = 0;
+      float distance = 0.0f;
       bool allowInteraction = false;
     };
     std::vector<PseudoPanelDrawEntry> pseudoPanels;
@@ -2221,8 +2254,10 @@ void Engine::renderGameViewportWindow() {
           (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y
                                              : static_cast<int>(layoutSizePx.y),
           16, 4096);
-      Renderer::UiTargetInfo target =
-          renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
+	      Renderer::UiTargetInfo target =
+	          renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight,
+	                                  canvas.layer,
+	                                  canvas.ui.renderTargetFilter, false);
       if (target.texture == 0) {
         continue;
       }
@@ -2243,10 +2278,8 @@ void Engine::renderGameViewportWindow() {
         }
       }
 
-      // Try transform-driven projection first (canvas.position/rotation/scale
-      // define a world-space quad). Falls back to anchored / stable-panel
-      // layout if the quad lies behind the camera or world UI is in 2D-only
-      // ortho mode where no perspective view exists.
+      // transform-driven projection first (canvas transform = a world quad); fall back to
+      // anchored/stable-panel layout if the quad is behind the camera or we're in 2D-only ortho.
       std::array<ImVec2, 4> projectedCorners{};
       bool projectedCornersValid = false;
       if (transformDriven && !useWorldUi && hasProjectedUiCamera) {
@@ -2254,9 +2287,8 @@ void Engine::renderGameViewportWindow() {
             canvas, projectedUiView, projectedUiProj, overlayPos, overlaySize,
             projectedCorners);
       } else if (transformDriven && useWorldUi) {
-        // Orthographic 2D world UI: project the quad with rotation.z only and
-        // canvas.scale.xy as world units. This stays consistent with how
-        // sprites are drawn in 2D world UI mode.
+        // ortho 2D world UI: project with rotation.z only and canvas.scale.xy as world units,
+        // consistent with how sprites draw in this mode.
         const float halfW = std::max(0.0001f, canvas.scale.x * 0.5f);
         const float halfH = std::max(0.0001f, canvas.scale.y * 0.5f);
         const float angle = glm::radians(canvas.rotation.z);
@@ -2313,14 +2345,19 @@ void Engine::renderGameViewportWindow() {
           rectMin, rectMax, canvas.ui, distanceScale, perspectiveFactor,
           projectedCornersValid ? &projectedCorners : nullptr);
       entry.depthSort = canvas.ui.pseudo3DDepthSort;
+      entry.distance = distance;
       entry.allowInteraction = allowInteraction;
       pseudoPanels.push_back(entry);
     }
 
     if (!pseudoPanels.empty()) {
+      // order by true 3D distance so nearer panels always draw over farther ones; Depth Sort
+      // only breaks ties at (near) equal distance instead of forcing 2D layering.
       std::stable_sort(
           pseudoPanels.begin(), pseudoPanels.end(),
           [](const PseudoPanelDrawEntry &a, const PseudoPanelDrawEntry &b) {
+            if (std::abs(a.distance - b.distance) > 0.001f)
+              return a.distance > b.distance; // farther first, nearer on top
             if (a.depthSort != b.depthSort)
               return a.depthSort < b.depthSort;
             return a.canvasId < b.canvasId;
@@ -2924,6 +2961,13 @@ void Engine::renderGameViewportWindow() {
     gameViewportFocused = windowFocused || gameViewCursorLocked;
     if (restoreUiWorldCamera) {
       uiWorldCamera = uiWorldCameraBackup;
+    }
+    } else {
+      gameUiGizmoHistoryCaptured = false;
+      gameUiRectGizmoSnapshots.clear();
+      gameUiRectGizmoModel = glm::mat4(1.0f);
+      gameUiRectGizmoStartMouse = ImVec2(0.0f, 0.0f);
+      gameViewportFocused = windowFocused;
     }
   } else {
     ImGui::TextDisabled("No player camera found (Camera Type: Player).");

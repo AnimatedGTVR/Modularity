@@ -3,6 +3,7 @@
 #include "Modu2DStats.h"
 #include "Camera.h"
 #include "ModelLoader.h"
+#include "../include/Platform/AssetSource.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -32,6 +33,38 @@ inline void Runtime2DCountTextureBind() {
 
 inline void Runtime2DCountStateBind() {
     ++gRuntime2DRenderCounters.stateBindCount;
+}
+
+constexpr int kUiAtlasPadding = 2;
+
+uint64_t BuildUiAtlasKey(int layer, MaterialProperties::TextureFilter filter) {
+    const uint64_t layerBits = static_cast<uint64_t>(static_cast<uint32_t>(layer));
+    const uint64_t filterBits = static_cast<uint64_t>(filter == MaterialProperties::TextureFilter::Point ? 1u : 0u);
+    return (layerBits << 32) | filterBits;
+}
+
+GLint ToGLTextureFilter(MaterialProperties::TextureFilter filter) {
+    return filter == MaterialProperties::TextureFilter::Point ? GL_NEAREST : GL_LINEAR;
+}
+
+int NextPowerOfTwoAtLeast(int value) {
+    int result = 1;
+    while (result < value && result < 16384) {
+        result <<= 1;
+    }
+    return result;
+}
+
+glm::vec4 BuildUiTargetUvTransform(int x, int y, int width, int height, int textureWidth, int textureHeight) {
+    const float invW = 1.0f / static_cast<float>(std::max(1, textureWidth));
+    const float invH = 1.0f / static_cast<float>(std::max(1, textureHeight));
+    const float safeW = static_cast<float>(std::max(1, width));
+    const float safeH = static_cast<float>(std::max(1, height));
+    const float uOffset = (static_cast<float>(x) + 0.5f) * invW;
+    const float vOffset = 1.0f - (static_cast<float>(y) + safeH - 0.5f) * invH;
+    const float uScale = std::max(1.0f, safeW - 1.0f) * invW;
+    const float vScale = std::max(1.0f, safeH - 1.0f) * invH;
+    return glm::vec4(uScale, vScale, uOffset, vOffset);
 }
 
 inline void SetDepthOnlyFramebufferDrawBuffer()
@@ -365,18 +398,16 @@ bool HasMeaningfulToneMapping(const PostFXSettings& settings) {
            std::fabs(settings.gamma - kGammaDefault) > 0.0001f;
 }
 
-glm::mat4 BuildCameraProjection(const Camera& camera, int width, int height,
-                                float fovDeg, float nearPlane, float farPlane) {
-    const float safeWidth = static_cast<float>(std::max(1, width));
-    const float safeHeight = static_cast<float>(std::max(1, height));
-    const float aspect = safeWidth / safeHeight;
-    if (camera.orthographic) {
-        const float pixelsPerUnit = std::max(1.0f, camera.pixelsPerUnit);
-        const float halfHeight = safeHeight / (2.0f * pixelsPerUnit);
-        const float halfWidth = halfHeight * aspect;
-        return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlane, farPlane);
-    }
-    return glm::perspective(glm::radians(fovDeg), aspect, nearPlane, farPlane);
+// true when a GL context is current. desktop asks GLFW; on Android the EGL context is
+// AndroidRuntime's and GLFW's null backend ALWAYS says nullptr, so render-loop paths must
+// treat it as live or render targets / previews silently never allocate. shutdown-only
+// paths keep the raw GLFW check.
+static inline bool moduRenderContextLive() {
+#ifdef __ANDROID__
+    return true;
+#else
+    return glfwGetCurrentContext() != nullptr;
+#endif
 }
 
 struct FrustumPlanes {
@@ -677,6 +708,25 @@ void AppendTransformedTriangleVertices(const std::vector<float>& src, const glm:
     }
 }
 } // namespace
+
+// Global (declared in Rendering.h) so viewport panels can build matching
+// projections; lives outside the anonymous namespace on purpose.
+glm::mat4 BuildCameraProjection(const Camera& camera, int width, int height,
+                                float fovDeg, float nearPlane, float farPlane) {
+    const float safeWidth = static_cast<float>(std::max(1, width));
+    const float safeHeight = static_cast<float>(std::max(1, height));
+    const float aspect = safeWidth / safeHeight;
+    if (camera.orthographic) {
+        // 3D ortho cameras carry a world-unit half-height (Unity's "Size"); legacy 2D leaves
+        // orthoSize at 0 and derives it from pixels-per-unit.
+        const float halfHeight = (camera.orthoSize > 0.0f)
+            ? camera.orthoSize
+            : safeHeight / (2.0f * std::max(1.0f, camera.pixelsPerUnit));
+        const float halfWidth = halfHeight * aspect;
+        return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, nearPlane, farPlane);
+    }
+    return glm::perspective(glm::radians(fovDeg), aspect, nearPlane, farPlane);
+}
 
 void ModuRuntime2DRenderCounters_Reset() {
     gRuntime2DRenderCounters = Runtime2DRenderCounters{};
@@ -1342,6 +1392,11 @@ Renderer::~Renderer() {
         releaseRenderTarget(entry.second);
     }
     uiTargets.clear();
+    uiTargetViews.clear();
+    for (auto& entry : uiTargetAtlases) {
+        releaseRenderTarget(entry.second.target);
+    }
+    uiTargetAtlases.clear();
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (viewportTexture) glDeleteTextures(1, &viewportTexture);
     if (rbo) glDeleteRenderbuffers(1, &rbo);
@@ -1353,7 +1408,7 @@ Renderer::~Renderer() {
 
 Texture* Renderer::getTexture(const std::string& path, MaterialProperties::TextureFilter filter) {
     if (path.empty()) return nullptr;
-    if (glfwGetCurrentContext() == nullptr) {
+    if (!moduRenderContextLive()) {
         static bool warnedNoContext = false;
         if (!warnedNoContext) {
             std::cerr << "[Renderer] Texture request without an OpenGL context. Returning null texture.\n";
@@ -1379,7 +1434,10 @@ Texture* Renderer::getTexture(const std::string& path, MaterialProperties::Textu
 
     GLenum minFilter = point ? GL_NEAREST_MIPMAP_NEAREST : GL_LINEAR_MIPMAP_LINEAR;
     GLenum magFilter = point ? GL_NEAREST : GL_LINEAR;
+    // Per-texture overrides win; otherwise the project-wide default from
+    // Graphics Manager applies (Auto keeps the adaptive behavior).
     TextureFormatPolicy policy = getTextureFormatOverride(path);
+    if (policy == TextureFormatPolicy::Auto) policy = defaultTextureFormatPolicy;
     auto tex = std::make_unique<Texture>(path, GL_REPEAT, GL_REPEAT, minFilter, magFilter, policy);
     if (!tex->GetID()) {
         missingTextureRetryAfter[path] = nowSec + 1.0;
@@ -1431,10 +1489,9 @@ void Renderer::setTextureFormatOverride(const std::string& path, TextureFormatPo
     } else {
         textureFormatOverrides[key] = policy;
     }
-    // Drop any cached copy so the next request reloads at the new format. Cache
-    // entries are keyed by the original (un-normalized) request string, which can
-    // differ from the caller's path here, so evict every entry whose normalized
-    // key matches rather than relying on an exact string hit.
+    // evict every cache entry whose normalized key matches (entries are keyed by the original
+    // request string, which can differ from the caller's path) so the next request reloads
+    // at the new format.
     auto evictMatching = [this, &key](auto& cache) {
         for (auto it = cache.begin(); it != cache.end();) {
             if (normalizeTextureKey(it->first) == key) {
@@ -1453,6 +1510,31 @@ void Renderer::setTextureFormatOverride(const std::string& path, TextureFormatPo
 TextureFormatPolicy Renderer::getTextureFormatOverride(const std::string& path) const {
     auto it = textureFormatOverrides.find(normalizeTextureKey(path));
     return it == textureFormatOverrides.end() ? TextureFormatPolicy::Auto : it->second;
+}
+
+void Renderer::setDefaultTextureFormatPolicy(TextureFormatPolicy policy) {
+    if (defaultTextureFormatPolicy == policy) return;
+    defaultTextureFormatPolicy = policy;
+    // everything loaded under the old default is the wrong format now. dropping the whole cache
+    // is heavy but this only happens when the user flips the setting; textures stream back lazily.
+    textureCacheBilinear.clear();
+    textureCachePoint.clear();
+    textureCacheUsageBytes = 0;
+    missingTextureRetryAfter.clear();
+}
+
+void Renderer::setColorPrecision(RendererColorPrecision precision) {
+    if (colorPrecision == precision) return;
+    colorPrecision = precision;
+    // re-allocate the main viewport color buffer at the new precision. offscreen RenderTargets
+    // rebuild lazily since ensureRenderTarget stores the effective hdr flag.
+    if (framebuffer != 0 && viewportTexture != 0 && moduRenderContextLive()) {
+        const bool sdr = (colorPrecision == RendererColorPrecision::SDR8);
+        glBindTexture(GL_TEXTURE_2D, viewportTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, sdr ? GL_RGBA8 : GL_RGBA16F, currentWidth, currentHeight,
+                     0, GL_RGBA, sdr ? GL_UNSIGNED_BYTE : GL_FLOAT, NULL);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 void Renderer::purgeTextureCacheIfNeeded() {
@@ -1612,6 +1694,9 @@ void Renderer::rebuildStaticMergeBatches(const std::vector<SceneObject>& sceneOb
         signature = HashCombine64(signature, HashFloat64(obj.material.shininess));
         signature = HashCombine64(signature, HashFloat64(obj.material.normalMapIntensity));
         signature = HashCombine64(signature, HashFloat64(obj.material.textureMix));
+        signature = HashCombine64(signature, HashFloat64(obj.material.scrollSpeed));
+        signature = HashCombine64(signature, HashFloat64(obj.material.scrollDirection.x));
+        signature = HashCombine64(signature, HashFloat64(obj.material.scrollDirection.y));
         signature = HashCombine64(signature, static_cast<uint64_t>(obj.material.textureFilter));
         signature = HashCombine64(signature, static_cast<uint64_t>(obj.useOverlay ? 1 : 0));
     }
@@ -1703,16 +1788,18 @@ void Renderer::initialize() {
     autoReloadShaders = false;
 #endif
     auto requireFile = [](const std::string& path, const char* label) {
-        std::error_code ec;
-        if (!fs::exists(path, ec) || ec) {
+        // check via AssetSource so shaders are found inside the APK on Android, not just the
+        // filesystem. desktop behaves like the old fs::exists.
+        if (!Modularity::Platform::GetAssetSource().Exists(path)) {
             throw std::runtime_error(std::string(label) + " not found: " + path);
-        }
-        if (!fs::is_regular_file(path, ec) || ec) {
-            throw std::runtime_error(std::string(label) + " is not a file: " + path);
         }
     };
     requireFile(defaultVertPath, "Default vertex shader");
     requireFile(defaultFragPath, "Default fragment shader");
+
+    GLint maxTextureSize = 4096;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+    uiAtlasMaxSize = std::clamp(static_cast<int>(maxTextureSize), 1024, 4096);
 
     shader = new Shader(defaultVertPath.c_str(), defaultFragPath.c_str());
     defaultShader = shader;
@@ -1937,7 +2024,11 @@ void Renderer::setupFBO() {
 
     glGenTextures(1, &viewportTexture);
     glBindTexture(GL_TEXTURE_2D, viewportTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, currentWidth, currentHeight, 0, GL_RGBA, GL_FLOAT, NULL);
+    {
+        const bool sdr = (colorPrecision == RendererColorPrecision::SDR8);
+        glTexImage2D(GL_TEXTURE_2D, 0, sdr ? GL_RGBA8 : GL_RGBA16F, currentWidth, currentHeight,
+                     0, GL_RGBA, sdr ? GL_UNSIGNED_BYTE : GL_FLOAT, NULL);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, viewportTexture, 0);
@@ -1963,20 +2054,32 @@ void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha
 }
 
 void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr) {
+    ensureRenderTarget(target, w, h, alpha, hdr, true);
+}
+
+void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha, bool hdr, bool depth) {
     if (w <= 0 || h <= 0) return;
+
+    // project color precision can demote HDR to 8-bit. storing the effective flag means a
+    // precision switch invalidates targets on their next ensure, no teardown pass needed.
+    if (colorPrecision == RendererColorPrecision::SDR8) hdr = false;
 
     if (target.fbo == 0) {
         glGenFramebuffers(1, &target.fbo);
         glGenTextures(1, &target.texture);
+    }
+    if (depth && target.rbo == 0) {
         glGenRenderbuffers(1, &target.rbo);
     }
 
-    if (target.width == w && target.height == h && target.hasAlpha == alpha && target.hdr == hdr) return;
+    if (target.width == w && target.height == h && target.hasAlpha == alpha && target.hdr == hdr &&
+        target.hasDepth == depth) return;
 
     target.width = w;
     target.height = h;
     target.hasAlpha = alpha;
     target.hdr = hdr;
+    target.hasDepth = depth;
 
     glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
 
@@ -1998,11 +2101,21 @@ void Renderer::ensureRenderTarget(RenderTarget& target, int w, int h, bool alpha
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, isSelectionMask ? GL_NEAREST : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    target.textureFilter = isSelectionMask ? MaterialProperties::TextureFilter::Point
+                                           : MaterialProperties::TextureFilter::Bilinear;
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.texture, 0);
 
-    glBindRenderbuffer(GL_RENDERBUFFER, target.rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, target.width, target.height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.rbo);
+    if (depth) {
+        glBindRenderbuffer(GL_RENDERBUFFER, target.rbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, target.width, target.height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.rbo);
+    } else {
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+        if (target.rbo != 0) {
+            glDeleteRenderbuffers(1, &target.rbo);
+            target.rbo = 0;
+        }
+    }
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         std::cerr << "Preview framebuffer setup failed!\n";
@@ -2406,28 +2519,330 @@ void Renderer::updateMirrorTargets(const Camera& camera, const std::vector<Scene
     }
 }
 
-Renderer::UiTargetInfo Renderer::ensureUiTarget(int id, int width, int height) {
-    if (glfwGetCurrentContext() == nullptr) {
+Renderer::UiTargetInfo Renderer::ensureUiTarget(int id,
+                                                int width,
+                                                int height,
+                                                int layer,
+                                                MaterialProperties::TextureFilter filter,
+                                                bool allowAtlas) {
+    if (!moduRenderContextLive()) {
         return {};
     }
-    RenderTarget& target = uiTargets[id];
-    ensureRenderTarget(target, width, height, true);
-    return { target.fbo, target.texture, target.width, target.height };
+
+    width = std::clamp(width, 16, 4096);
+    height = std::clamp(height, 16, 4096);
+    const GLint glFilter = ToGLTextureFilter(filter);
+
+    auto setTargetFilter = [&](RenderTarget& target, bool force = false) {
+        if (target.texture == 0) return;
+        if (!force && target.textureFilter == filter) return;
+        glBindTexture(GL_TEXTURE_2D, target.texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, glFilter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, glFilter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        target.textureFilter = filter;
+    };
+
+    auto makeView = [&](RenderTarget& target, bool invalidated) {
+        UiTargetInfo view;
+        view.fbo = target.fbo;
+        view.texture = target.texture;
+        view.width = width;
+        view.height = height;
+        view.framebufferWidth = target.width;
+        view.framebufferHeight = target.height;
+        view.clearWidth = width;
+        view.clearHeight = height;
+        view.uvTransform = glm::vec4(1.0f, 1.0f, 0.0f, 0.0f);
+        view.invalidated = invalidated;
+        return view;
+    };
+
+    auto ensureDedicated = [&](bool preserveInvalidated) {
+        RenderTarget& target = uiTargets[id];
+        const bool targetInvalidated =
+            target.fbo == 0 || target.texture == 0 || target.width != width ||
+            target.height != height || !target.hasAlpha || target.hasDepth || target.hdr;
+        // UI canvas surfaces are pure ImGui color composition; a depth/stencil
+        // renderbuffer would only be allocated and cleared, never sampled.
+        ensureRenderTarget(target, width, height, true, false, false);
+        setTargetFilter(target, targetInvalidated);
+
+        UiTargetInfo view = makeView(target, targetInvalidated);
+        view.framebufferWidth = width;
+        view.framebufferHeight = height;
+        view.clearX = 0;
+        view.clearY = 0;
+        view.usesAtlas = false;
+        auto prev = uiTargetViews.find(id);
+        if (prev != uiTargetViews.end()) {
+            view.invalidated = view.invalidated || preserveInvalidated ||
+                               prev->second.invalidated ||
+                               prev->second.texture != view.texture ||
+                               prev->second.usesAtlas;
+        } else {
+            view.invalidated = true;
+        }
+        uiTargetViews[id] = view;
+        return view;
+    };
+
+    const int clearWidth = width + kUiAtlasPadding * 2;
+    const int clearHeight = height + kUiAtlasPadding * 2;
+    if (!allowAtlas || clearWidth > uiAtlasMaxSize || clearHeight > uiAtlasMaxSize) {
+        return ensureDedicated(false);
+    }
+
+    const uint64_t atlasKey = BuildUiAtlasKey(layer, filter);
+    UiAtlasTarget& atlas = uiTargetAtlases[atlasKey];
+    bool atlasInvalidated = false;
+
+    auto allocateSlot = [&](UiAtlasSlot& slot) -> bool {
+        if (atlas.size <= 0) return false;
+        if (slot.clearWidth > atlas.size || slot.clearHeight > atlas.size) return false;
+        if (atlas.cursorX + slot.clearWidth > atlas.size) {
+            atlas.cursorX = 0;
+            atlas.cursorY += atlas.rowHeight;
+            atlas.rowHeight = 0;
+        }
+        if (atlas.cursorY + slot.clearHeight > atlas.size) return false;
+        slot.clearX = atlas.cursorX;
+        slot.clearY = atlas.cursorY;
+        slot.x = slot.clearX + kUiAtlasPadding;
+        slot.y = slot.clearY + kUiAtlasPadding;
+        atlas.cursorX += slot.clearWidth;
+        atlas.rowHeight = std::max(atlas.rowHeight, slot.clearHeight);
+        return true;
+    };
+
+    auto repackAtlas = [&](int requestedSize) -> bool {
+        std::vector<std::pair<int, UiAtlasSlot>> slots;
+        slots.reserve(atlas.slots.size());
+        for (const auto& entry : atlas.slots) {
+            slots.push_back(entry);
+        }
+        std::sort(slots.begin(), slots.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.second.clearHeight != b.second.clearHeight) {
+                          return a.second.clearHeight > b.second.clearHeight;
+                      }
+                      return a.first < b.first;
+                  });
+
+        int size = std::max(1024, NextPowerOfTwoAtLeast(requestedSize));
+        size = std::max(size, atlas.size);
+        while (size <= uiAtlasMaxSize) {
+            UiAtlasTarget packed;
+            packed.size = size;
+            bool fits = true;
+            for (auto& entry : slots) {
+                UiAtlasSlot slot = entry.second;
+                if (slot.clearWidth > packed.size || slot.clearHeight > packed.size) {
+                    fits = false;
+                    break;
+                }
+                if (packed.cursorX + slot.clearWidth > packed.size) {
+                    packed.cursorX = 0;
+                    packed.cursorY += packed.rowHeight;
+                    packed.rowHeight = 0;
+                }
+                if (packed.cursorY + slot.clearHeight > packed.size) {
+                    fits = false;
+                    break;
+                }
+                slot.clearX = packed.cursorX;
+                slot.clearY = packed.cursorY;
+                slot.x = slot.clearX + kUiAtlasPadding;
+                slot.y = slot.clearY + kUiAtlasPadding;
+                packed.cursorX += slot.clearWidth;
+                packed.rowHeight = std::max(packed.rowHeight, slot.clearHeight);
+                packed.slots[entry.first] = slot;
+            }
+            if (fits) {
+                atlas.size = packed.size;
+                atlas.cursorX = packed.cursorX;
+                atlas.cursorY = packed.cursorY;
+                atlas.rowHeight = packed.rowHeight;
+                atlas.slots = std::move(packed.slots);
+                atlasInvalidated = true;
+                return true;
+            }
+            if (size >= uiAtlasMaxSize) break;
+            size = std::min(uiAtlasMaxSize, size * 2);
+        }
+        return false;
+    };
+
+    bool slotInvalidated = false;
+    auto slotIt = atlas.slots.find(id);
+    if (slotIt == atlas.slots.end()) {
+        UiAtlasSlot slot;
+        slot.contentWidth = width;
+        slot.contentHeight = height;
+        slot.clearWidth = clearWidth;
+        slot.clearHeight = clearHeight;
+
+        if (atlas.size <= 0) {
+            atlas.size = std::min(uiAtlasMaxSize, std::max(1024, NextPowerOfTwoAtLeast(std::max(clearWidth, clearHeight))));
+        }
+        if (!allocateSlot(slot)) {
+            auto oldSlots = atlas.slots;
+            atlas.slots[id] = slot;
+            if (!repackAtlas(std::max(atlas.size * 2, std::max(clearWidth, clearHeight)))) {
+                atlas.slots = std::move(oldSlots);
+                return ensureDedicated(false);
+            }
+        } else {
+            atlas.slots[id] = slot;
+        }
+        slotInvalidated = true;
+    } else if (slotIt->second.contentWidth != width ||
+               slotIt->second.contentHeight != height) {
+        auto oldSlots = atlas.slots;
+        slotIt->second.contentWidth = width;
+        slotIt->second.contentHeight = height;
+        slotIt->second.clearWidth = clearWidth;
+        slotIt->second.clearHeight = clearHeight;
+        if (!repackAtlas(std::max(atlas.size, std::max(clearWidth, clearHeight)))) {
+            atlas.slots = std::move(oldSlots);
+            atlas.slots.erase(id);
+            repackAtlas(std::max(1024, atlas.size));
+            return ensureDedicated(false);
+        }
+        slotInvalidated = true;
+    }
+
+    const bool targetInvalidated =
+        atlas.target.fbo == 0 || atlas.target.texture == 0 ||
+        atlas.target.width != atlas.size || atlas.target.height != atlas.size ||
+        !atlas.target.hasAlpha || atlas.target.hasDepth || atlas.target.hdr;
+    ensureRenderTarget(atlas.target, atlas.size, atlas.size, true, false, false);
+    setTargetFilter(atlas.target, targetInvalidated);
+    atlasInvalidated = atlasInvalidated || targetInvalidated;
+
+    if (atlasInvalidated) {
+        for (const auto& entry : atlas.slots) {
+            auto viewIt = uiTargetViews.find(entry.first);
+            if (viewIt != uiTargetViews.end()) {
+                viewIt->second.invalidated = true;
+            }
+        }
+    }
+
+    const UiAtlasSlot& slot = atlas.slots[id];
+    UiTargetInfo view;
+    view.fbo = atlas.target.fbo;
+    view.texture = atlas.target.texture;
+    view.width = width;
+    view.height = height;
+    view.framebufferWidth = atlas.target.width;
+    view.framebufferHeight = atlas.target.height;
+    view.x = slot.x;
+    view.y = slot.y;
+    view.clearX = slot.clearX;
+    view.clearY = slot.clearY;
+    view.clearWidth = slot.clearWidth;
+    view.clearHeight = slot.clearHeight;
+    view.uvTransform = BuildUiTargetUvTransform(slot.x, slot.y, width, height,
+                                                atlas.target.width, atlas.target.height);
+    view.usesAtlas = true;
+    view.atlasKey = atlasKey;
+    auto prev = uiTargetViews.find(id);
+    view.invalidated = slotInvalidated || atlasInvalidated;
+    if (prev != uiTargetViews.end()) {
+        view.invalidated = view.invalidated || prev->second.invalidated ||
+                           prev->second.texture != view.texture ||
+                           !prev->second.usesAtlas ||
+                           prev->second.atlasKey != atlasKey ||
+                           prev->second.x != view.x ||
+                           prev->second.y != view.y;
+    } else {
+        view.invalidated = true;
+    }
+    uiTargetViews[id] = view;
+    return view;
+}
+
+Renderer::UiTargetInfo Renderer::getUiTargetInfo(int id) const {
+    auto it = uiTargetViews.find(id);
+    return (it != uiTargetViews.end()) ? it->second : UiTargetInfo{};
+}
+
+void Renderer::markUiTargetRendered(int id) {
+    auto it = uiTargetViews.find(id);
+    if (it != uiTargetViews.end()) {
+        it->second.invalidated = false;
+    }
 }
 
 void Renderer::cleanupUiTargets(const std::unordered_set<int>& active) {
-    if (glfwGetCurrentContext() == nullptr) {
+    if (!moduRenderContextLive()) {
         uiTargets.clear();
+        uiTargetViews.clear();
+        uiTargetAtlases.clear();
         return;
     }
-    for (auto it = uiTargets.begin(); it != uiTargets.end(); ) {
+
+    for (auto it = uiTargetViews.begin(); it != uiTargetViews.end();) {
         if (active.find(it->first) == active.end()) {
+            it = uiTargetViews.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (auto it = uiTargets.begin(); it != uiTargets.end();) {
+        auto viewIt = uiTargetViews.find(it->first);
+        if (active.find(it->first) == active.end() ||
+            viewIt == uiTargetViews.end() ||
+            viewIt->second.usesAtlas) {
             releaseRenderTarget(it->second);
             it = uiTargets.erase(it);
         } else {
             ++it;
         }
     }
+
+    for (auto atlasIt = uiTargetAtlases.begin(); atlasIt != uiTargetAtlases.end();) {
+        UiAtlasTarget& atlas = atlasIt->second;
+        for (auto slotIt = atlas.slots.begin(); slotIt != atlas.slots.end();) {
+            auto viewIt = uiTargetViews.find(slotIt->first);
+            if (active.find(slotIt->first) == active.end() ||
+                viewIt == uiTargetViews.end() ||
+                !viewIt->second.usesAtlas ||
+                viewIt->second.atlasKey != atlasIt->first) {
+                slotIt = atlas.slots.erase(slotIt);
+            } else {
+                ++slotIt;
+            }
+        }
+        if (atlas.slots.empty()) {
+            releaseRenderTarget(atlas.target);
+            atlasIt = uiTargetAtlases.erase(atlasIt);
+        } else {
+            ++atlasIt;
+        }
+    }
+}
+
+bool Renderer::isObjectVisibleInCapturedFrustums(const SceneObject& obj, float radiusMargin) const {
+    if (capturedSceneFrustums.empty()) {
+        return true;
+    }
+    glm::vec3 center(0.0f);
+    float radius = 0.0f;
+    if (!TryComputeObjectCullSphere(obj, BuildSceneObjectModelMatrix(obj), center, radius)) {
+        return true;
+    }
+    radius *= std::max(1.0f, radiusMargin);
+    for (const auto& planes : capturedSceneFrustums) {
+        FrustumPlanes frustum{planes};
+        if (SphereInsideFrustum(frustum, center, radius)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void Renderer::ensureQuad() {
@@ -2535,6 +2950,10 @@ unsigned int Renderer::findFramebufferForTexture(unsigned int texture) const {
         (void)id;
         if (unsigned int match = findTargetMatch(target)) return match;
     }
+    for (const auto& [key, atlas] : uiTargetAtlases) {
+        (void)key;
+        if (unsigned int match = findTargetMatch(atlas.target)) return match;
+    }
 
     return 0;
 }
@@ -2546,12 +2965,20 @@ void Renderer::logPostFxDebug(const PostProcessStats& stats, bool allowHistory) 
 
 void Renderer::resize(int w, int h) {
     if (w <= 0 || h <= 0 || (w == currentWidth && h == currentHeight)) return;
-    
-    currentWidth = w;
-    currentHeight = h;
+
+#ifndef __ANDROID__
+    // desktop: if GLFW's context isn't current yet (resize can fire before the window exists),
+    // bail WITHOUT touching currentWidth/Height so a later resize still reallocates.
+    // on Android GLFW's null backend ALWAYS says nullptr here, and running this guard there
+    // gave us the squashed black-barred viewport (resize updated sizes but never reallocated).
+    // EGL is current throughout the render loop, so skipping the check there is safe.
     if (glfwGetCurrentContext() == nullptr) {
         return;
     }
+#endif
+
+    currentWidth = w;
+    currentHeight = h;
 
     GLint previousFramebuffer = 0;
     GLint previousTexture = 0;
@@ -2561,9 +2988,13 @@ void Renderer::resize(int w, int h) {
     glGetIntegerv(GL_RENDERBUFFER_BINDING, &previousRenderbuffer);
 
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    
+
     glBindTexture(GL_TEXTURE_2D, viewportTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, currentWidth, currentHeight, 0, GL_RGBA, GL_FLOAT, NULL);
+    {
+        const bool sdr = (colorPrecision == RendererColorPrecision::SDR8);
+        glTexImage2D(GL_TEXTURE_2D, 0, sdr ? GL_RGBA8 : GL_RGBA16F, currentWidth, currentHeight,
+                     0, GL_RGBA, sdr ? GL_UNSIGNED_BYTE : GL_FLOAT, NULL);
+    }
     glBindRenderbuffer(GL_RENDERBUFFER, rbo);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, currentWidth, currentHeight);
 
@@ -2629,6 +3060,8 @@ void Renderer::renderObject(const SceneObject& obj) {
     shader->setFloat("shininess", obj.material.shininess);
     shader->setFloat("normalMapIntensity", obj.material.normalMapIntensity);
     shader->setFloat("mixAmount", obj.material.textureMix);
+    shader->setFloat("uScrollSpeed", obj.material.scrollSpeed);
+    shader->setVec2("uScrollDir", obj.material.scrollDirection);
     shader->setVec4("uvTransform", BuildSurfaceUvTransform(&obj, obj.material));
     shader->setVec4("uvRect", BuildSpriteUvRect(obj));
     shader->setBool("unlit", obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || missingMaterialAndShader);
@@ -2737,7 +3170,9 @@ void Renderer::renderObject(const SceneObject& obj) {
 
 void Renderer::renderSceneInternal(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, bool unbindFramebuffer, float fovDeg, float nearPlane, float farPlane, bool drawMirrorObjects, bool drawSkybox) {
     if (!defaultShader || width <= 0 || height <= 0) return;
-    if (camera.orthographic) {
+    // legacy 2D cameras (orthoSize == 0) go through the 2D pipeline, not here; true 3D ortho
+    // (orthoSize > 0) takes the full 3D path below.
+    if (camera.orthographic && camera.orthoSize <= 0.0f) {
         glViewport(0, 0, width, height);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2807,9 +3242,15 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     };
 
     constexpr size_t kMaxLights = static_cast<size_t>(kRendererMaxRealtimeLights);
-    const size_t activeLightLimit = static_cast<size_t>(std::clamp(maxRealtimeLights, 1, kRendererMaxRealtimeLights));
+    // the Rendering Path budget caps how many lights compete for shader slots; the directional
+    // allowance rides on top so the sun never loses its slot to point-light spam.
+    const size_t activeLightLimit = static_cast<size_t>(std::clamp(
+        std::min(maxRealtimeLights, sceneLightBudget + directionalLightAllowance),
+        1, kRendererMaxRealtimeLights));
+    const size_t guaranteedDirectionals = static_cast<size_t>(std::clamp(directionalLightAllowance, 1, 4));
     std::vector<LightUniform> lights;
     lights.reserve(activeLightLimit);
+    size_t directionalCount = 0;
 
     struct LightCandidate {
         LightUniform light;
@@ -2821,6 +3262,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
 
     for (const auto& obj : sceneObjects) {
         if (!IsObjectEnabledInHierarchy(obj) || !obj.hasLight || !obj.light.enabled) continue;
+        if (obj.light.type == LightType::Directional && !mainLightEnabled) continue;
+        if (obj.light.type != LightType::Directional && !additionalLightsEnabled) continue;
         if (obj.light.type == LightType::Directional) {
             LightUniform l;
             l.type = 0;
@@ -2837,8 +3280,20 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             l.shadowResolution = (obj.light.shadowResolution > 0)
                 ? std::clamp(obj.light.shadowResolution, 128, 8192)
                 : shadowMapResolution;
-            lights.push_back(l);
-            if (lights.size() >= activeLightLimit) break;
+            if (directionalCount < guaranteedDirectionals) {
+                lights.push_back(l);
+                ++directionalCount;
+                if (lights.size() >= activeLightLimit) break;
+            } else {
+                // Suns beyond the Rendering Path's allowance lose their
+                // guaranteed slot and compete with the other lights.
+                LightCandidate c;
+                c.light = l;
+                glm::vec3 delta = obj.position - camera.position;
+                c.distSq = glm::dot(delta, delta);
+                c.id = obj.id;
+                candidates.push_back(c);
+            }
         } else if (obj.light.type == LightType::Spot) {
             LightUniform l;
             l.type = 2;
@@ -2935,13 +3390,35 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
     }
 
+    // shadow policy gates: the camera can opt out entirely, the Lighting Manager can kill
+    // main/additional casting or force hard shadows. shadowMode 0 also skips the map pass.
+    for (auto& l : lights) {
+        const bool isDirectional = (l.type == 0);
+        bool allowShadows = camera.renderShadows &&
+                            (isDirectional ? mainLightShadows : additionalLightsShadows);
+        if (!allowShadows) {
+            l.castShadows = false;
+            l.shadowMode = 0;
+        } else if (!softShadowsAllowed && l.shadowMode == 2) {
+            l.shadowMode = 1;
+        }
+    }
+
     glm::mat4 view = camera.getViewMatrix();
     glm::mat4 proj = BuildCameraProjection(camera, width, height, fovDeg, nearPlane, farPlane);
     FrustumPlanes frustum = BuildFrustumPlanes(proj * view);
+    capturedSceneFrustums.push_back(frustum.planes);
     const float timeSeconds = static_cast<float>(glfwGetTime());
 
     auto buildDirectionalShadowMatrix = [&](const glm::vec3& lightDir) {
-        const glm::mat4 invViewProj = glm::inverse(proj * view);
+        // fit the map to a distance-capped frustum when a shadow max distance is set, otherwise a
+        // huge far plane smears the directional map across texels nobody samples.
+        glm::mat4 shadowFitProj = proj;
+        if (shadowMaxDistance > 0.0f && shadowMaxDistance < farPlane) {
+            const float shadowFar = std::max(nearPlane + 0.01f, shadowMaxDistance);
+            shadowFitProj = BuildCameraProjection(camera, width, height, fovDeg, nearPlane, shadowFar);
+        }
+        const glm::mat4 invViewProj = glm::inverse(shadowFitProj * view);
         std::array<glm::vec3, 8> corners;
         int cornerIndex = 0;
         for (int x = 0; x <= 1; ++x) {
@@ -3118,6 +3595,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 glReadBuffer(GL_NONE);
                 glClear(GL_DEPTH_BUFFER_BIT);
 
+                // The shadow matrix is the full light-space ortho view-projection,
+                // so its frustum is exactly the volume the GPU clips this pass to:
+                // culling against it drops draws without changing the map.
+                const FrustumPlanes shadowFrustum = BuildFrustumPlanes(light.shadowMatrix);
                 for (const auto& obj : sceneObjects) {
                     if (!IsObjectEnabledInHierarchy(obj) || !HasRendererComponent(obj)) continue;
                     if (obj.renderType == RenderType::Mirror) continue;
@@ -3130,6 +3611,12 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                     Mesh* shadowMesh = selectMeshForObject(obj);
                     if (!shadowMesh) continue;
                     glm::mat4 model = buildModelMatrix(obj);
+                    glm::vec3 boundsCenter(0.0f);
+                    float boundsRadius = 0.0f;
+                    if (TryComputeObjectCullSphere(obj, model, boundsCenter, boundsRadius) &&
+                        !SphereInsideFrustum(shadowFrustum, boundsCenter, boundsRadius)) {
+                        continue;
+                    }
                     directionalShadowDepthShader->setMat4("model", model);
                     shadowMesh->draw();
                 }
@@ -3284,8 +3771,23 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
     glActiveTexture(GL_TEXTURE0);
 
-    if (drawSkybox) {
-        renderSkybox(view, proj);
+    if (drawSkybox && camera.solidBackground) {
+        // Solid Color background: replace the skybox with the camera's clear
+        // color (the caller already cleared depth).
+        glClearColor(camera.backgroundColor.r, camera.backgroundColor.g,
+                     camera.backgroundColor.b, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    } else if (drawSkybox) {
+        // An orthographic projection has no vanishing point for the skybox to
+        // project through, so give it a perspective matrix like Unity does.
+        if (camera.orthographic) {
+            const float aspect = static_cast<float>(std::max(1, width)) /
+                                 static_cast<float>(std::max(1, height));
+            renderSkybox(view, glm::perspective(glm::radians(glm::clamp(fovDeg, 1.0f, 179.0f)),
+                                                aspect, nearPlane, farPlane));
+        } else {
+            renderSkybox(view, proj);
+        }
     }
     rebuildStaticMergeBatches(sceneObjects);
 
@@ -3330,6 +3832,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         int availableBones = 0;
         bool wantsGpuSkinning = false;
         bool isUiCanvas3D = false;
+        int uiSortingOrder = 0;
         bool requiresBlending = false;
         bool sortOpaque = false;
         bool unlit = false;
@@ -3342,6 +3845,10 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     std::vector<RenderItem> drawItems;
     drawItems.reserve(sceneObjects.size() + staticMergeBatches.size());
 
+    // static merge batches fold arbitrary layers into one mesh, so a camera with a filtered
+    // culling mask draws the sources individually instead ( correctness over the speedup ).
+    const bool cullingMaskAllowsAll = (camera.cullingMask == 0xFFFFFFFFu);
+
     auto gatherRenderItemsRange = [&](size_t beginIndex, size_t endIndex) {
         std::vector<RenderItem> localItems;
         localItems.reserve(endIndex > beginIndex ? (endIndex - beginIndex) : 0);
@@ -3349,9 +3856,12 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         for (size_t objIndex = beginIndex; objIndex < endIndex; ++objIndex) {
             const auto& obj = sceneObjects[objIndex];
             if (!IsObjectEnabledInHierarchy(obj)) continue;
+            if (!cullingMaskAllowsAll &&
+                (camera.cullingMask & (1u << (static_cast<uint32_t>(obj.layer) & 31u))) == 0u) continue;
             if (!drawMirrorObjects && obj.hasRenderer && obj.renderType == RenderType::Mirror) continue;
             if (!HasRendererComponent(obj)) continue;
-            if (staticMergeSourceIds.find(obj.id) != staticMergeSourceIds.end()) continue;
+            if (cullingMaskAllowsAll &&
+                staticMergeSourceIds.find(obj.id) != staticMergeSourceIds.end()) continue;
 
             glm::mat4 model = buildModelMatrix(obj);
             glm::vec3 boundsCenter(0.0f);
@@ -3388,6 +3898,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                 item.vertPath = &skinnedVertPath;
             }
             item.isUiCanvas3D = obj.hasUI && obj.ui.type == UIElementType::Canvas && obj.ui.renderIn3D;
+            item.uiSortingOrder = item.isUiCanvas3D ? obj.ui.sortingOrder : 0;
             item.requiresBlending = item.material.alpha < 0.999f || item.isUiCanvas3D;
             item.unlit = obj.renderType == RenderType::Mirror || obj.renderType == RenderType::Sprite || item.isUiCanvas3D;
             item.doubleSided =
@@ -3438,6 +3949,7 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
     }
 
     for (const auto& batch : staticMergeBatches) {
+        if (!cullingMaskAllowsAll) break; // masked cameras drew the sources individually
         if (!batch.mesh) continue;
         if (batch.boundsRadius > 0.0f &&
             !SphereInsideFrustum(frustum, batch.boundsCenter, batch.boundsRadius)) {
@@ -3502,6 +4014,18 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
                          [](const RenderItem& a, const RenderItem& b) {
                              if (a.sortOpaque != b.sortOpaque) return a.sortOpaque > b.sortOpaque;
                              if (!a.sortOpaque) {
+                                 // future me: Render-In-3D UI canvases are flat quads that
+                                 // overlap from the camera's view, so pure depth sorting
+                                 // ignores the Sort Order you set in the inspector (that's
+                                 // why a button on Sort Order 10 still drew under a circle on
+                                 // -5). when BOTH items are 3D canvases, let Sort Order win:
+                                 // higher value sorts later -> painted on top. anything else
+                                 // (regular transparent geometry, or canvases that share a
+                                 // Sort Order) keeps the old camera-depth ordering.
+                                 if (a.isUiCanvas3D && b.isUiCanvas3D &&
+                                     a.uiSortingOrder != b.uiSortingOrder) {
+                                     return a.uiSortingOrder < b.uiSortingOrder;
+                                 }
                                  if (a.cameraDepth != b.cameraDepth) {
                                      return a.cameraDepth > b.cameraDepth;
                                  }
@@ -3622,6 +4146,8 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         float shininess = 0.0f;
         float normalMapIntensity = 0.0f;
         float mixAmount = 0.0f;
+        float scrollSpeed = -1.0f;
+        glm::vec2 scrollDirection{0.0f};
         glm::vec4 uvTransform{0.0f};
         glm::vec4 uvRect{0.0f};
         bool useSkinning = false;
@@ -3757,6 +4283,13 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             objPtr != nullptr &&
             objPtr->runtimeHasAlbedoTextureOverride &&
             objPtr->runtimeAlbedoTextureOverrideId != 0;
+        const UiTargetInfo* uiTarget = nullptr;
+        if (item.isUiCanvas3D && objPtr != nullptr) {
+            auto uiIt = uiTargetViews.find(objPtr->id);
+            if (uiIt != uiTargetViews.end() && uiIt->second.texture != 0) {
+                uiTarget = &uiIt->second;
+            }
+        }
         bool hasMaterialAsset = !materialPath.empty();
         bool hasCustomShader = !vertPath.empty() || !fragPath.empty();
         bool hasAnySurfaceInput = hasRuntimeAlbedoOverride ||
@@ -3803,12 +4336,22 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
             shader->setFloat("mixAmount", item.material.textureMix);
             matCache.mixAmount = item.material.textureMix;
         }
-        glm::vec4 wantUvT = BuildSurfaceUvTransform(objPtr, item.material);
+        if (!matCache.valid || matCache.scrollSpeed != item.material.scrollSpeed) {
+            shader->setFloat("uScrollSpeed", item.material.scrollSpeed);
+            matCache.scrollSpeed = item.material.scrollSpeed;
+        }
+        if (!matCache.valid || matCache.scrollDirection != item.material.scrollDirection) {
+            shader->setVec2("uScrollDir", item.material.scrollDirection);
+            matCache.scrollDirection = item.material.scrollDirection;
+        }
+        glm::vec4 wantUvT = uiTarget ? uiTarget->uvTransform
+                                      : BuildSurfaceUvTransform(objPtr, item.material);
         if (!matCache.valid || matCache.uvTransform != wantUvT) {
             shader->setVec4("uvTransform", wantUvT);
             matCache.uvTransform = wantUvT;
         }
-        glm::vec4 wantUvR = objPtr ? BuildSpriteUvRect(*objPtr) : glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+        glm::vec4 wantUvR = uiTarget ? glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)
+                                     : (objPtr ? BuildSpriteUvRect(*objPtr) : glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
         if (!matCache.valid || matCache.uvRect != wantUvR) {
             shader->setVec4("uvRect", wantUvR);
             matCache.uvRect = wantUvR;
@@ -3832,12 +4375,9 @@ void Renderer::renderSceneInternal(const Camera& camera, const std::vector<Scene
         }
 
         bool usingUiTargetTex = false;
-        if (item.isUiCanvas3D) {
-            auto it = uiTargets.find(objPtr->id);
-            if (it != uiTargets.end() && it->second.texture != 0) {
-                bindTexture2D(GL_TEXTURE0, it->second.texture);
-                usingUiTargetTex = true;
-            }
+        if (item.isUiCanvas3D && uiTarget != nullptr) {
+            bindTexture2D(GL_TEXTURE0, uiTarget->texture);
+            usingUiTargetTex = true;
         }
         Texture* baseTex = texture1;
         if (!usingUiTargetTex) {
@@ -4888,7 +5428,7 @@ void Renderer::renderScene(const Camera &camera,
 }
 
 unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vector<SceneObject>& sceneObjects, int width, int height, float fovDeg, float nearPlane, float farPlane, bool applyPostFX, int previewSlot, bool transparentBackground) {
-    if (glfwGetCurrentContext() == nullptr) {
+    if (!moduRenderContextLive()) {
         return 0;
     }
     if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
@@ -4932,6 +5472,9 @@ unsigned int Renderer::renderScenePreview(const Camera& camera, const std::vecto
     glViewport(0, 0, width, height);
     if (transparentBackground) {
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    } else if (camera.solidBackground) {
+        glClearColor(camera.backgroundColor.r, camera.backgroundColor.g,
+                     camera.backgroundColor.b, 1.0f);
     } else {
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     }

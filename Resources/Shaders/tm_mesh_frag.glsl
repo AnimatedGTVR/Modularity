@@ -3,7 +3,7 @@
 in vec3 vWorldPos;
 in vec3 vNormal;
 smooth in vec2 vUv;
-noperspective in vec2 vAffineUv;
+smooth in vec3 vAffineUvw;
 
 out vec4 FragColor;
 
@@ -13,13 +13,13 @@ uniform vec3 u_lightDirection;
 uniform bool u_hasTexture;
 uniform vec4 u_colorTint;
 uniform bool u_affineWarpEnabled;
-uniform float u_affineWarpStrength;
+uniform bool u_flatShadingEnabled;
+uniform int u_shadeLevels;
 
 void main() {
-    vec2 sampleUv = vUv;
-    if (u_affineWarpEnabled) {
-        sampleUv = mix(vUv, vAffineUv, clamp(u_affineWarpStrength, 0.0, 1.0));
-    }
+    vec2 sampleUv = u_affineWarpEnabled
+        ? vAffineUvw.xy / max(vAffineUvw.z, 0.0001)
+        : vUv;
 
     vec4 texel = u_hasTexture ? texture(u_albedoTexture, sampleUv) : vec4(1.0);
     texel *= u_colorTint;
@@ -27,9 +27,14 @@ void main() {
         discard;
     }
 
-    vec3 normal = normalize(vNormal);
+    vec3 normal = u_flatShadingEnabled
+        ? normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)))
+        : normalize(vNormal);
     vec3 lightDir = normalize(-u_lightDirection);
     float diffuse = max(dot(normal, lightDir), 0.0);
+    if (u_shadeLevels > 0) {
+        diffuse = floor(diffuse * float(u_shadeLevels) + 0.5) / float(u_shadeLevels);
+    }
     float ambient = 0.38;
     float fog = smoothstep(36.0, 128.0, distance(vWorldPos, u_cameraPosition));
 

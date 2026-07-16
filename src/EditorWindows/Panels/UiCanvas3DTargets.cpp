@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -45,22 +46,6 @@ void Engine::renderUiCanvas3DTargets() {
     }
   }
 
-  auto findCanvasRoot = [&](const SceneObject &obj) -> const SceneObject * {
-    const SceneObject *current = &obj;
-    const SceneObject *found = nullptr;
-    while (current) {
-      if (current->hasUI && current->ui.type == UIElementType::Canvas) {
-        found = current;
-      }
-      if (current->parentId < 0)
-        break;
-      current = findSceneObject(current->parentId);
-      if (!current)
-        break;
-    }
-    return found;
-  };
-
   auto isOffscreenCanvas = [](const SceneObject &canvas) {
     return canvas.enabled && canvas.hasUI &&
            canvas.ui.type == UIElementType::Canvas &&
@@ -69,10 +54,247 @@ void Engine::renderUiCanvas3DTargets() {
   };
 
   std::unordered_set<int> activeCanvasIds;
-  for (auto &canvas : sceneObjects) {
-    if (!isOffscreenCanvas(canvas))
-      continue;
-    activeCanvasIds.insert(canvas.id);
+  for (const auto &canvas : sceneObjects) {
+    if (isOffscreenCanvas(canvas)) {
+      activeCanvasIds.insert(canvas.id);
+    }
+  }
+
+  // Elements grouped by their owning (outermost) canvas, resolved in one
+  // memoized pass instead of re-walking every object's parent chain once per
+  // canvas per frame.
+  std::unordered_map<int, std::vector<SceneObject *>> elementsByCanvas;
+	  if (!activeCanvasIds.empty()) {
+    // Outermost-canvas id per object index; -1 = none, -2 = not yet computed.
+    std::vector<int> canvasRootByIndex(sceneObjects.size(), -2);
+    std::vector<size_t> walkPath;
+    auto resolveCanvasRoot = [&](size_t startIndex) {
+      walkPath.clear();
+      size_t index = startIndex;
+      int rootId = -1;
+      for (;;) {
+        if (canvasRootByIndex[index] != -2) {
+          rootId = canvasRootByIndex[index];
+          break;
+        }
+        walkPath.push_back(index);
+        if (walkPath.size() > sceneObjects.size())
+          break; // parent cycle guard
+        const SceneObject &node = sceneObjects[index];
+        if (node.parentId < 0)
+          break;
+        auto it = sceneObjectIndexById.find(node.parentId);
+        if (it == sceneObjectIndexById.end() || it->second >= sceneObjects.size())
+          break;
+        index = it->second;
+      }
+      for (auto pathIt = walkPath.rbegin(); pathIt != walkPath.rend(); ++pathIt) {
+        const SceneObject &node = sceneObjects[*pathIt];
+        if (rootId < 0 && node.hasUI && node.ui.type == UIElementType::Canvas) {
+          rootId = node.id;
+        }
+        canvasRootByIndex[*pathIt] = rootId;
+      }
+      return canvasRootByIndex[startIndex];
+    };
+
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+      SceneObject &obj = sceneObjects[i];
+      if (!isUiType(obj) || obj.ui.type == UIElementType::Canvas)
+        continue;
+      const int rootId = resolveCanvasRoot(i);
+      if (rootId < 0 || activeCanvasIds.find(rootId) == activeCanvasIds.end())
+        continue;
+      if (!IsObjectEnabledInHierarchy(obj))
+        continue;
+      elementsByCanvas[rootId].push_back(&obj);
+	    }
+	  }
+
+  auto hashCombine64 = [](uint64_t seed, uint64_t value) {
+    return seed ^ (value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+  };
+  auto hashFloat64 = [](float value) -> uint64_t {
+    if (!std::isfinite(value))
+      return 0;
+    return static_cast<uint64_t>(
+        static_cast<int64_t>(std::llround(static_cast<double>(value) * 1024.0)));
+  };
+  auto hashString64 = [](const std::string &value) -> uint64_t {
+    return static_cast<uint64_t>(std::hash<std::string>{}(value));
+  };
+  auto addVec2 = [&](uint64_t seed, const glm::vec2 &value) {
+    seed = hashCombine64(seed, hashFloat64(value.x));
+    return hashCombine64(seed, hashFloat64(value.y));
+  };
+  auto addVec4 = [&](uint64_t seed, const glm::vec4 &value) {
+    seed = hashCombine64(seed, hashFloat64(value.x));
+    seed = hashCombine64(seed, hashFloat64(value.y));
+    seed = hashCombine64(seed, hashFloat64(value.z));
+    return hashCombine64(seed, hashFloat64(value.w));
+  };
+  auto addUIObjectSignature = [&](uint64_t seed, const SceneObject &obj) {
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.id));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.parentId));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.enabled ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.hasUI ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.type));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.anchor));
+    seed = addVec2(seed, obj.ui.position);
+    seed = addVec2(seed, obj.ui.size);
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.maskChildren ? 1 : 0));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.rotation));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.sliderValue));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.sliderMin));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.sliderMax));
+    seed = hashCombine64(seed, hashString64(obj.ui.label));
+    seed = addVec4(seed, obj.ui.color);
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.interactable ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.sliderStyle));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.buttonStyle));
+    seed = hashCombine64(seed, hashString64(obj.ui.stylePreset));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.textScale));
+    seed = hashCombine64(seed, hashString64(obj.ui.textFont));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textAutoWrap ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textHAlign));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textVAlign));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textEffectFlags));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.textEffectSpeed));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.textEffectIntensity));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteSheetEnabled ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteSheetColumns));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteSheetRows));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteSheetFrame));
+    seed = hashCombine64(seed, hashFloat64(obj.ui.spriteSheetFps));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteSheetLoop ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteCustomFramesEnabled ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.spriteCustomFrames.size()));
+    if (obj.ui.spriteCustomFramesEnabled && !obj.ui.spriteCustomFrames.empty()) {
+      const int frame = resolveSpriteSheetFrame(obj);
+      const glm::ivec4 &rect =
+          obj.ui.spriteCustomFrames[static_cast<size_t>(
+              std::clamp(frame, 0, static_cast<int>(obj.ui.spriteCustomFrames.size()) - 1))];
+      seed = hashCombine64(seed, static_cast<uint64_t>(rect.x));
+      seed = hashCombine64(seed, static_cast<uint64_t>(rect.y));
+      seed = hashCombine64(seed, static_cast<uint64_t>(rect.z));
+      seed = hashCombine64(seed, static_cast<uint64_t>(rect.w));
+      if (obj.ui.spriteCustomFrameScales.size() == obj.ui.spriteCustomFrames.size()) {
+        seed = addVec2(seed, obj.ui.spriteCustomFrameScales[static_cast<size_t>(
+                              std::clamp(frame, 0, static_cast<int>(obj.ui.spriteCustomFrameScales.size()) - 1))]);
+      }
+    }
+    seed = hashCombine64(seed, hashString64(obj.ui.spriteSheetAssetPath));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.nineSliceEnabled ? 1 : 0));
+    seed = addVec4(seed, obj.ui.nineSliceBorder);
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.nineSliceTileEdges ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.nineSliceTileCenter ? 1 : 0));
+    seed = addVec4(seed, obj.ui.fillColor);
+    seed = addVec4(seed, obj.ui.backgroundColor);
+    seed = addVec4(seed, obj.ui.borderColor);
+    seed = addVec4(seed, obj.ui.textColor);
+    seed = hashCombine64(seed, hashFloat64(obj.ui.fontSize));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.sortingOrder));
+    seed = hashCombine64(seed, hashString64(obj.albedoTexturePath));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.material.textureFilter));
+    auto animIt = uiAnimationStates.find(obj.id);
+    if (animIt != uiAnimationStates.end()) {
+      seed = hashCombine64(seed, hashFloat64(animIt->second.hover));
+      seed = hashCombine64(seed, hashFloat64(animIt->second.active));
+      seed = hashCombine64(seed, hashFloat64(animIt->second.sliderValue));
+      seed = hashCombine64(seed, static_cast<uint64_t>(animIt->second.initialized ? 1 : 0));
+    }
+    return seed;
+  };
+
+	  struct UiCanvas3DRenderPlan {
+	    float layoutWidth = 1.0f;
+	    float layoutHeight = 1.0f;
+	    int targetWidth = 16;
+	    int targetHeight = 16;
+	    bool pseudoCanvas = false;
+	    bool targetInvalidated = false;
+	    bool hasTimeAnimatedContent = false;
+	    uint64_t contentSignature = 0;
+	    Renderer::UiTargetInfo target;
+	  };
+
+	  std::unordered_map<int, UiCanvas3DRenderPlan> canvasRenderPlans;
+	  canvasRenderPlans.reserve(activeCanvasIds.size());
+	  for (auto &canvas : sceneObjects) {
+	    if (!isOffscreenCanvas(canvas))
+	      continue;
+
+	    UiCanvas3DRenderPlan plan;
+	    plan.pseudoCanvas = !canvas.ui.renderIn3D && canvas.ui.pseudo3DEnabled;
+	    const glm::vec2 pseudoLayout =
+	        plan.pseudoCanvas ? ResolvePseudo3DLayoutSize(canvas) : glm::vec2(0.0f);
+	    plan.layoutWidth =
+	        plan.pseudoCanvas ? pseudoLayout.x : std::max(1.0f, canvas.ui.size.x);
+	    plan.layoutHeight =
+	        plan.pseudoCanvas ? pseudoLayout.y : std::max(1.0f, canvas.ui.size.y);
+	    plan.targetWidth = (canvas.ui.renderTargetSize.x > 0)
+	                           ? canvas.ui.renderTargetSize.x
+	                           : static_cast<int>(plan.layoutWidth);
+	    plan.targetHeight = (canvas.ui.renderTargetSize.y > 0)
+	                            ? canvas.ui.renderTargetSize.y
+	                            : static_cast<int>(plan.layoutHeight);
+	    plan.targetWidth = std::clamp(plan.targetWidth, 16, 4096);
+	    plan.targetHeight = std::clamp(plan.targetHeight, 16, 4096);
+	    plan.target = renderer.ensureUiTarget(
+	        canvas.id, plan.targetWidth, plan.targetHeight, canvas.layer,
+	        canvas.ui.renderTargetFilter, canvas.ui.renderIn3D);
+	    plan.targetInvalidated = plan.target.invalidated;
+	    uint64_t signature = 0x84222325cbf29ce4ull;
+	    signature = hashCombine64(signature, static_cast<uint64_t>(uiAnimationMode));
+	    signature = hashCombine64(signature, hashString64(uiEditorFontAsset));
+	    signature = hashCombine64(signature, static_cast<uint64_t>(canvas.layer));
+	    signature = hashCombine64(signature, static_cast<uint64_t>(canvas.ui.renderTargetFilter));
+	    signature = hashCombine64(signature, static_cast<uint64_t>(plan.pseudoCanvas ? 1 : 0));
+	    signature = hashCombine64(signature, hashFloat64(plan.layoutWidth));
+	    signature = hashCombine64(signature, hashFloat64(plan.layoutHeight));
+	    signature = hashCombine64(signature, static_cast<uint64_t>(plan.targetWidth));
+	    signature = hashCombine64(signature, static_cast<uint64_t>(plan.targetHeight));
+	    signature = addUIObjectSignature(signature, canvas);
+	    auto drawListIt = elementsByCanvas.find(canvas.id);
+	    if (drawListIt != elementsByCanvas.end()) {
+	      signature =
+	          hashCombine64(signature, static_cast<uint64_t>(drawListIt->second.size()));
+	      for (const SceneObject *objPtr : drawListIt->second) {
+	        if (!objPtr)
+	          continue;
+	        if (objPtr->ui.type == UIElementType::Text &&
+	            objPtr->ui.textEffectFlags != 0) {
+	          plan.hasTimeAnimatedContent = true;
+	        }
+	        signature = addUIObjectSignature(signature, *objPtr);
+	      }
+	    }
+	    plan.contentSignature = signature;
+	    canvasRenderPlans[canvas.id] = plan;
+	  }
+
+	  bool renderStateCaptured = false;
+	  GLint savedFbo = 0;
+	  GLint savedViewport[4] = {};
+	  GLboolean savedScissorEnabled = GL_FALSE;
+	  GLint savedScissorBox[4] = {};
+	  auto captureRenderState = [&]() {
+	    if (renderStateCaptured)
+	      return;
+	    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &savedFbo);
+	    glGetIntegerv(GL_VIEWPORT, savedViewport);
+	    savedScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+	    glGetIntegerv(GL_SCISSOR_BOX, savedScissorBox);
+	    renderStateCaptured = true;
+	  };
+
+	  for (auto &canvas : sceneObjects) {
+	    if (!isOffscreenCanvas(canvas))
+	      continue;
+	    auto planIt = canvasRenderPlans.find(canvas.id);
+	    if (planIt == canvasRenderPlans.end())
+	      continue;
+	    const UiCanvas3DRenderPlan &plan = planIt->second;
 
     if (canvas.ui.renderIn3D) {
       canvas.hasRenderer = true;
@@ -86,26 +308,43 @@ void Engine::renderUiCanvas3DTargets() {
       canvas.faceCamera = false;
     }
 
-    const glm::vec2 pseudoLayout = ResolvePseudo3DLayoutSize(canvas);
-    const bool pseudoCanvas =
-        !canvas.ui.renderIn3D && canvas.ui.pseudo3DEnabled;
-    const float layoutWidth =
-        pseudoCanvas ? pseudoLayout.x : std::max(1.0f, canvas.ui.size.x);
-    const float layoutHeight =
-        pseudoCanvas ? pseudoLayout.y : std::max(1.0f, canvas.ui.size.y);
-    int targetWidth = (canvas.ui.renderTargetSize.x > 0)
-                          ? canvas.ui.renderTargetSize.x
-                          : static_cast<int>(layoutWidth);
-    int targetHeight = (canvas.ui.renderTargetSize.y > 0)
-                           ? canvas.ui.renderTargetSize.y
-                           : static_cast<int>(layoutHeight);
-    targetWidth = std::clamp(targetWidth, 16, 4096);
-    targetHeight = std::clamp(targetHeight, 16, 4096);
+	    const float layoutWidth = plan.layoutWidth;
+	    const float layoutHeight = plan.layoutHeight;
 
-    Renderer::UiTargetInfo target =
-        renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
-    if (target.fbo == 0 || target.texture == 0)
-      continue;
+	    const Renderer::UiTargetInfo &target = plan.target;
+	    if (target.fbo == 0 || target.texture == 0)
+	      continue;
+	    const bool targetInvalidated = plan.targetInvalidated;
+
+    // Redraw-skipping: a Render-In-3D canvas whose bounding sphere is outside
+    // every view rendered this frame can't be sampled on screen, so its last
+    // composited texture stays valid. Pseudo-3D offscreen surfaces composite
+    // in screen space and are never skipped. The first composite (no context
+    // yet) and frames near input always draw so interaction state settles.
+    {
+      auto ctxIt = uiCanvas3DContexts.find(canvas.id);
+      const bool everRendered =
+          ctxIt != uiCanvas3DContexts.end() && ctxIt->second.backendReady &&
+          ctxIt->second.hasRenderedTarget;
+      auto skipInputIt = uiCanvas3DInputs.find(canvas.id);
+      const bool inputNow = skipInputIt != uiCanvas3DInputs.end() &&
+                            skipInputIt->second.hasInput;
+      const bool contentChanged =
+          !everRendered || ctxIt->second.lastContentSignature != plan.contentSignature;
+	      if (!targetInvalidated && everRendered && !inputNow &&
+	          !ctxIt->second.hadInputLastFrame && !plan.hasTimeAnimatedContent &&
+	          !contentChanged) {
+	        Modu2DStats::CountSkippedRedraw();
+	        continue;
+	      }
+	      if (!targetInvalidated && everRendered && canvas.ui.renderIn3D && !inputNow &&
+	          !ctxIt->second.hadInputLastFrame &&
+	          renderer.hasCapturedSceneFrustums() &&
+	          !renderer.isObjectVisibleInCapturedFrustums(canvas, 1.25f)) {
+	        Modu2DStats::CountSkippedRedraw();
+	        continue;
+      }
+    }
 
     UiCanvas3DContext &ctxEntry = uiCanvas3DContexts[canvas.id];
     if (!ctxEntry.context) {
@@ -124,37 +363,47 @@ void Engine::renderUiCanvas3DTargets() {
       ctxEntry.backendReady = true;
     }
 
-    ImGui::SetCurrentContext(ctxEntry.context);
-    ImGuiIO &io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(layoutWidth, layoutHeight);
-    io.DisplayFramebufferScale = ImVec2(
-        (layoutWidth > 0.0f) ? (static_cast<float>(targetWidth) / layoutWidth)
-                             : 1.0f,
-        (layoutHeight > 0.0f)
-            ? (static_cast<float>(targetHeight) / layoutHeight)
-            : 1.0f);
+	    ImGui::SetCurrentContext(ctxEntry.context);
+	    ImGuiIO &io = ImGui::GetIO();
+	    const float framebufferScaleX =
+	        (layoutWidth > 0.0f) ? (static_cast<float>(target.width) / layoutWidth)
+	                             : 1.0f;
+	    const float framebufferScaleY =
+	        (layoutHeight > 0.0f) ? (static_cast<float>(target.height) / layoutHeight)
+	                              : 1.0f;
+	    const ImVec2 canvasWindowPos(
+	        target.usesAtlas ? (static_cast<float>(target.x) / framebufferScaleX) : 0.0f,
+	        target.usesAtlas ? (static_cast<float>(target.y) / framebufferScaleY) : 0.0f);
+	    io.DisplaySize = target.usesAtlas
+	                         ? ImVec2(static_cast<float>(target.framebufferWidth) / framebufferScaleX,
+	                                  static_cast<float>(target.framebufferHeight) / framebufferScaleY)
+	                         : ImVec2(layoutWidth, layoutHeight);
+	    io.DisplayFramebufferScale = ImVec2(framebufferScaleX, framebufferScaleY);
     io.DeltaTime =
         (mainIo.DeltaTime > 0.0f) ? mainIo.DeltaTime : (1.0f / 60.0f);
-    auto inputIt = uiCanvas3DInputs.find(canvas.id);
-    if (inputIt != uiCanvas3DInputs.end() && inputIt->second.hasInput) {
-      io.MousePos = inputIt->second.mousePos;
+	    auto inputIt = uiCanvas3DInputs.find(canvas.id);
+	    if (inputIt != uiCanvas3DInputs.end() && inputIt->second.hasInput) {
+	      io.MousePos = ImVec2(canvasWindowPos.x + inputIt->second.mousePos.x,
+	                           canvasWindowPos.y + inputIt->second.mousePos.y);
       io.MouseDown[0] = inputIt->second.mouseDown[0];
       io.MouseDown[1] = inputIt->second.mouseDown[1];
       io.MouseDown[2] = inputIt->second.mouseDown[2];
       io.MouseWheel = inputIt->second.mouseWheel;
+      ctxEntry.hadInputLastFrame = true;
     } else {
       io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
       io.MouseDown[0] = false;
       io.MouseDown[1] = false;
       io.MouseDown[2] = false;
       io.MouseWheel = 0.0f;
+      ctxEntry.hadInputLastFrame = false;
     }
 
     ImGui::GetStyle() = mainStyle;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+	    ImGui::SetNextWindowPos(canvasWindowPos);
     ImGui::SetNextWindowSize(ImVec2(layoutWidth, layoutHeight));
     ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
@@ -293,15 +542,18 @@ void Engine::renderUiCanvas3DTargets() {
       return (outMax.x > outMin.x) && (outMax.y > outMin.y);
     };
 
-    for (auto &obj : sceneObjects) {
-      if (!IsObjectEnabledInHierarchy(obj) || !isUiType(obj))
-        continue;
-      const SceneObject *root = findCanvasRoot(obj);
-      if (!root || root->id != canvas.id)
-        continue;
-      if (obj.ui.type == UIElementType::Canvas)
-        continue;
+    std::vector<SceneObject *> &canvasDrawList = elementsByCanvas[canvas.id];
+    // future me: this canvas used to just composite its children in raw
+    // hierarchy order, which quietly ignored every element's UI Sort Order.
+    // that's exactly why a button parked on Sort Order 10 still drew UNDER the
+    // lower-order circle panel. sort the same way the on-screen runtime UI does
+    // (layer, then sortingOrder) so Sort Order actually layers inside a
+    // Render-In-3D canvas too. stable_sort keeps hierarchy order for ties, so
+    // canvases where nobody touched Sort Order look identical to before.
+    StableSortRuntimeUiDrawList(canvasDrawList);
 
+    for (SceneObject *objPtr : canvasDrawList) {
+      SceneObject &obj = *objPtr;
       ImVec2 rectMin, rectMax;
       resolveUIRect(obj, rectMin, rectMax);
       ImVec2 rectSize(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
@@ -441,7 +693,6 @@ void Engine::renderUiCanvas3DTargets() {
         }
       } else if (obj.ui.type == UIElementType::Slider) {
         spriteBatch.flush();
-        ImGui::SetCursorPos(localMin);
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
         const ImU32 s3SliderBg     = (obj.ui.backgroundColor.a > 0.0f) ? ImGui::GetColorU32(ImVec4(obj.ui.backgroundColor.r, obj.ui.backgroundColor.g, obj.ui.backgroundColor.b, obj.ui.backgroundColor.a)) : ImGui::GetColorU32(ImVec4(tint.x * 0.2f, tint.y * 0.2f, tint.z * 0.2f, tint.w * 0.6f));
@@ -449,18 +700,38 @@ void Engine::renderUiCanvas3DTargets() {
         const ImU32 s3SliderBorder = (obj.ui.borderColor.a > 0.0f)     ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a))     : ImGui::GetColorU32(brighten(tint, 0.85f));
         const ImU32 s3SliderText   = (obj.ui.textColor.a > 0.0f)       ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a))             : IM_COL32(240, 240, 245, 220);
         if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
-          ImGui::PushItemWidth(drawSize.x);
-          ImGui::BeginDisabled(!obj.ui.interactable);
-          ImGui::PushStyleColor(ImGuiCol_FrameBg,      ImGui::ColorConvertU32ToFloat4(s3SliderBg));
-          ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-          ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  brighten(tint, 0.7f));
-          ImGui::PushStyleColor(ImGuiCol_SliderGrab,     brighten(tint, 0.9f));
-          ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-          ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue,
-                             obj.ui.sliderMin, obj.ui.sliderMax);
-          ImGui::PopStyleColor(5);
-          ImGui::EndDisabled();
-          ImGui::PopItemWidth();
+          // future me: same fix as the other viewports; this one feeds 3D canvas
+          // targets. don't draw a raw numeric ImGui slider, draw the fill bar so an
+          // ImGui-style bar looks identical to the editor; drag when interactive.
+          float minValue = obj.ui.sliderMin;
+          float maxValue = obj.ui.sliderMax;
+          float range = (maxValue - minValue);
+          if (range <= 1e-6f)
+            range = 1.0f;
+          ImDrawList *dl = ImGui::GetWindowDrawList();
+          if (obj.ui.interactable) {
+            ImGui::SetCursorPos(localMin);
+            ImGui::InvisibleButton("##UISliderImGui", drawSize);
+            if (ImGui::IsItemActive() &&
+                ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+              float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+              mouseT = std::clamp(mouseT, 0.0f, 1.0f);
+              obj.ui.sliderValue = minValue + mouseT * range;
+            }
+          }
+          float t = (obj.ui.sliderValue - minValue) / range;
+          t = std::clamp(t, 0.0f, 1.0f);
+          float rounding = std::min(drawSize.x, drawSize.y) * 0.5f;
+          ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+          dl->AddRectFilled(drawMin, drawMax, s3SliderBg, rounding);
+          if (fillMax.x > drawMin.x) {
+            dl->AddRectFilled(drawMin, fillMax, s3SliderFill, rounding);
+          }
+          dl->AddRect(drawMin, drawMax, s3SliderBorder, rounding);
+          ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+          ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                         drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+          dl->AddText(textPos, s3SliderText, obj.ui.label.c_str());
         } else {
           ImDrawList *dl = ImGui::GetWindowDrawList();
           ImU32 bg     = s3SliderBg;
@@ -471,6 +742,7 @@ void Engine::renderUiCanvas3DTargets() {
           float range = (maxValue - minValue);
           if (range <= 1e-6f)
             range = 1.0f;
+          ImGui::SetCursorPos(localMin);
           ImGui::BeginDisabled(!obj.ui.interactable);
           ImGui::InvisibleButton("##UISlider", drawSize);
           bool held = obj.ui.interactable && ImGui::IsItemActive();
@@ -497,7 +769,6 @@ void Engine::renderUiCanvas3DTargets() {
         }
       } else if (obj.ui.type == UIElementType::Button) {
         spriteBatch.flush();
-        ImGui::SetCursorPos(localMin);
         ImVec4 tint(obj.ui.color.r, obj.ui.color.g, obj.ui.color.b,
                     obj.ui.color.a);
         obj.ui.buttonPressed = false;
@@ -505,6 +776,7 @@ void Engine::renderUiCanvas3DTargets() {
         obj.ui.uiActive = false;
         const ImU32 s3BtnText = (obj.ui.textColor.a > 0.0f) ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a)) : IM_COL32(240, 240, 245, 220);
         if (obj.ui.buttonStyle == UIButtonStyle::ImGui) {
+          ImGui::SetCursorPos(localMin);
           ImGui::PushStyleColor(ImGuiCol_Button, tint);
           ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighten(tint, 1.1f));
           ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighten(tint, 1.2f));
@@ -515,6 +787,7 @@ void Engine::renderUiCanvas3DTargets() {
           ImGui::EndDisabled();
           ImGui::PopStyleColor(3);
         } else if (obj.ui.buttonStyle == UIButtonStyle::Outline) {
+          ImGui::SetCursorPos(localMin);
           ImDrawList *dl = ImGui::GetWindowDrawList();
           ImU32 border = (obj.ui.borderColor.a > 0.0f) ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a)) : ImGui::GetColorU32(tint);
           ImGui::BeginDisabled(!obj.ui.interactable);
@@ -588,20 +861,38 @@ void Engine::renderUiCanvas3DTargets() {
     ImGui::PopStyleColor();
     ImGui::Render();
 
-    GLint prevFbo = 0;
-    GLint prevViewport[4] = {};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_VIEWPORT, prevViewport);
+	    captureRenderState();
+	    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+	    glViewport(0, 0, target.framebufferWidth, target.framebufferHeight);
+	    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	    // UI targets are created without a depth/stencil attachment.
+	    if (target.usesAtlas) {
+	      glEnable(GL_SCISSOR_TEST);
+	      glScissor(target.clearX,
+	                target.framebufferHeight - (target.clearY + target.clearHeight),
+	                target.clearWidth, target.clearHeight);
+	    } else {
+	      glDisable(GL_SCISSOR_TEST);
+	    }
+	    glClear(GL_COLOR_BUFFER_BIT);
+	    glDisable(GL_SCISSOR_TEST);
+	    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+	    ctxEntry.lastContentSignature = plan.contentSignature;
+	    ctxEntry.hasRenderedTarget = true;
+	    renderer.markUiTargetRendered(canvas.id);
+	  }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
-    glViewport(0, 0, target.width, target.height);
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
-    glViewport(prevViewport[0], prevViewport[1], prevViewport[2],
-               prevViewport[3]);
+  if (renderStateCaptured) {
+    glBindFramebuffer(GL_FRAMEBUFFER, savedFbo);
+    glViewport(savedViewport[0], savedViewport[1], savedViewport[2],
+               savedViewport[3]);
+    if (savedScissorEnabled) {
+      glEnable(GL_SCISSOR_TEST);
+    } else {
+      glDisable(GL_SCISSOR_TEST);
+    }
+    glScissor(savedScissorBox[0], savedScissorBox[1], savedScissorBox[2],
+              savedScissorBox[3]);
   }
 
   for (auto it = uiCanvas3DContexts.begin(); it != uiCanvas3DContexts.end();) {
@@ -611,6 +902,11 @@ void Engine::renderUiCanvas3DTargets() {
         if (it->second.backendReady) {
           ImGui_ImplOpenGL3_Shutdown();
         }
+        // drop the per-context font cache BEFORE the context (and its atlas) is
+        // freed. otherwise the dangling ImFont* values survive in uiFontContexts,
+        // and when CreateContext() later reuses this freed address the stale entry
+        // gets handed back as live fonts -> use-after-free in the font baker.
+        uiFontContexts.erase(it->second.context);
         ImGui::DestroyContext(it->second.context);
       }
       it = uiCanvas3DContexts.erase(it);

@@ -10,7 +10,7 @@
 
 namespace ViewportRenderHelpers {
 
-// ---------- Particle helpers ----------
+// Particle helpers
 
 uint32_t ParticleHash(uint32_t x) {
   x ^= x >> 16;
@@ -141,7 +141,7 @@ void SimulateParticleSystem2D(SceneObject &obj, double now) {
   }
 }
 
-// ---------- Viewport layout ----------
+// Viewport layout
 
 ImVec2 ComputeAspectFitSize(const ImVec2 &available, float aspect) {
   const float safeWidth = std::max(1.0f, available.x);
@@ -267,7 +267,7 @@ bool TryMapScreenPointToRenderPixel(const EmbeddedViewportLayout &layout,
   return true;
 }
 
-// ---------- Profiler stats ----------
+// Profiler stats
 
 void SubmitRuntime2DWorldProfilerStats(const Runtime2DWorldProfilerStats &stats) {
   if (!stats.useWorldUi) {
@@ -307,7 +307,7 @@ void SubmitRuntime2DWorldProfilerStats(const Runtime2DWorldProfilerStats &stats)
   }
 }
 
-// ---------- Texture / sorting ----------
+// Texture / sorting
 
 void ApplyNearestTextureSampling(GLuint textureId) {
   if (textureId == 0 || glfwGetCurrentContext() == nullptr)
@@ -354,7 +354,7 @@ void StableSortRuntimeUiDrawList(std::vector<SceneObject *> &drawList) {
   std::stable_sort(drawList.begin(), drawList.end(), RuntimeUiDrawOrderLess);
 }
 
-// ---------- Projection ----------
+// Projection
 
 bool ProjectWorldToOverlayPoint(const glm::vec3 &worldPos,
                                 const glm::mat4 &view, const glm::mat4 &proj,
@@ -449,7 +449,7 @@ bool ResolveProjectedSprite25DRect(const SceneObject &obj,
   return true;
 }
 
-// ---------- UI text rendering ----------
+// UI text rendering
 
 void ApplyUIFontFilterCallback(const ImDrawList *, const ImDrawCmd *cmd) {
   if (!cmd)
@@ -689,7 +689,9 @@ void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
   const float clampedT = std::clamp(t, 0.0f, 1.0f);
 
   if (style == UISliderStyle::Fill) {
-    const float rounding = 6.0f;
+    // full capsule ends. the fill inherits the rounding and ImGui clamps it to half
+    // the fill width, so low values shrink into a neat little pill on their own.
+    const float rounding = std::min(drawSize.x, drawSize.y) * 0.5f;
     ImVec2 fillMax(drawMin.x + drawSize.x * clampedT, drawMax.y);
     dl->AddRectFilled(drawMin, drawMax, bg, rounding);
     if (fillMax.x > drawMin.x) {
@@ -704,7 +706,7 @@ void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
   }
 
   if (style == UISliderStyle::Vertical) {
-    const float rounding = 6.0f;
+    const float rounding = std::min(drawSize.x, drawSize.y) * 0.5f;
     ImVec2 fillMin(drawMin.x, drawMax.y - drawSize.y * clampedT);
     dl->AddRectFilled(drawMin, drawMax, bg, rounding);
     if (fillMin.y < drawMax.y) {
@@ -880,7 +882,7 @@ void ApplyUITextScaleFromRectResize(SceneObject &obj, float startTextScale,
   }
 }
 
-// ---------- Sprite frame / nine-slice ----------
+// Sprite frame / nine-slice
 
 ImVec2 ResolveUiSourceFrameSizePx(const SceneObject &obj, int frame,
                                   const Texture *texture) {
@@ -1114,7 +1116,7 @@ bool DrawNineSliceSprite(BatchedSpriteEmitter &spriteBatch,
   return true;
 }
 
-// ---------- Pseudo-3D canvas helpers ----------
+// Pseudo-3D canvas helpers
 
 glm::vec2 ResolvePseudo3DLayoutSize(const SceneObject &canvas) {
   const glm::vec2 fallback(std::max(1.0f, canvas.ui.size.x),

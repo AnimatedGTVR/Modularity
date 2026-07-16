@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -232,8 +233,12 @@ namespace {
     }
 
     std::optional<fs::path> findHostImportLibrary() {
+        // Compiles now run concurrently across a worker pool, so this lazy
+        // first-call cache needs its own lock to avoid a data race.
+        static std::mutex resolveMutex;
         static bool resolved = false;
         static std::optional<fs::path> cachedPath;
+        std::lock_guard<std::mutex> lock(resolveMutex);
         if (resolved) {
             return cachedPath;
         }
@@ -405,7 +410,11 @@ namespace {
 
 #if !defined(_WIN32)
     std::string posixCompileDriver(bool cxx) {
+        // Compiles now run concurrently across a worker pool, so the lazy
+        // first-call detection here needs its own lock to avoid a data race.
+        static std::mutex ccacheMutex;
         static int ccacheAvailable = -1;
+        std::lock_guard<std::mutex> lock(ccacheMutex);
         if (ccacheAvailable < 0) {
             ccacheAvailable = (std::system("command -v ccache >/dev/null 2>&1") == 0) ? 1 : 0;
         }
@@ -413,6 +422,30 @@ namespace {
             return cxx ? "ccache g++" : "ccache gcc";
         }
         return cxx ? "g++" : "gcc";
+    }
+
+    // Driver for a script's compile/link step. For a normal host build this is
+    // the usual (ccache) g++; for an NDK cross-compile it's the configured
+    // clang++ wrapper, quoted because it's an absolute path that may contain
+    // spaces. ccache is intentionally skipped for cross builds - its cache key
+    // wouldn't distinguish target triples cleanly.
+    std::string posixScriptCompileDriver(const ScriptBuildConfig& config) {
+        if (!config.crossCompilerDriver.empty()) {
+            return "\"" + config.crossCompilerDriver + "\"";
+        }
+        return posixCompileDriver(true);
+    }
+    std::string posixScriptLinkDriver(const ScriptBuildConfig& config) {
+        if (!config.crossCompilerDriver.empty()) {
+            return "\"" + config.crossCompilerDriver + "\"";
+        }
+        return "g++";
+    }
+    void appendExtraCompileFlags(std::ostringstream& cmd, const ScriptBuildConfig& config) {
+        for (const std::string& flag : config.extraCompileFlags) cmd << " " << flag;
+    }
+    void appendExtraLinkFlags(std::ostringstream& cmd, const ScriptBuildConfig& config) {
+        for (const std::string& flag : config.extraLinkFlags) cmd << " " << flag;
     }
 #endif
     // why does windows need all of this :sob:
@@ -546,8 +579,12 @@ namespace {
     }
 
     std::string findVsDevCmd() {
+        // Compiles now run concurrently across a worker pool, so this lazy
+        // first-call cache needs its own lock to avoid a data race.
+        static std::mutex resolveMutex;
         static bool resolved = false;
         static std::string cachedPath;
+        std::lock_guard<std::mutex> lock(resolveMutex);
         if (resolved) return cachedPath;
         resolved = true;
 
@@ -602,8 +639,12 @@ namespace {
 
     // well, that's one way to make VS Harder to implement, For God's Sake, MICROSOFT!!!!
     std::string findVsTool(const char* toolName) {
+        // Compiles now run concurrently across a worker pool, so this cache
+        // needs its own lock: concurrent unordered_map access is a data race.
+        static std::mutex cacheMutex;
         static std::unordered_map<std::string, std::string> cache;
         const std::string cacheKey = toolName ? std::string(toolName) : std::string();
+        std::lock_guard<std::mutex> lock(cacheMutex);
         if (auto it = cache.find(cacheKey); it != cache.end()) {
             return it->second;
         }
@@ -901,7 +942,9 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
     std::string extLower = scriptAbs.extension().string();
     std::transform(extLower.begin(), extLower.end(), extLower.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    const bool isCSource = extLower == ".c";
+    // not const: the ModuCPP transpiler may hand back C (the fast backend),
+    // which flips this after the transpile step below.
+    bool isCSource = extLower == ".c";
 
     // Build a lightweight wrapper that exposes expected entry points with C linkage and optional deltaTime.
     auto readFileToString = [](const fs::path& path, std::string& contents) -> bool {
@@ -1104,15 +1147,27 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             return false;
         }
 
-        transpiledPath = config.outDir / relativeParent / (baseName + ".moducpp.gen.cpp");
+        const char* genExt = transpiled.generatedC ? ".moducpp.gen.c" : ".moducpp.gen.cpp";
+        const char* staleExt = transpiled.generatedC ? ".moducpp.gen.cpp" : ".moducpp.gen.c";
+        transpiledPath = config.outDir / relativeParent / (baseName + genExt);
         if (!writeTextFileIfChanged(transpiledPath, transpiled.generatedSource, error)) {
             return false;
+        }
+        // a script can hop between backends across edits; drop the other
+        // flavor so the out dir never shows two conflicting gen files.
+        {
+            std::error_code staleEc;
+            fs::remove(config.outDir / relativeParent / (baseName + staleExt), staleEc);
+        }
+        if (transpiled.generatedC) {
+            isCSource = true;
         }
 
         scriptSource = std::move(transpiled.generatedSource);
         compileSourcePath = transpiledPath;
     }
 
+#ifdef _WIN32
         auto appendWindowsIncludesAndDefines = [&](std::ostringstream& cmd) {
             for (const auto& inc : config.includeDirs) {
                 cmd << " /I\"" << inc.string() << "\"";
@@ -1122,6 +1177,7 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
             cmd << " /D\"" << escapeDefine(def) << "\"";
         }
     };
+#endif
 
     auto appendPosixIncludesAndDefines = [&](std::ostringstream& cmd) {
         for (const auto& inc : config.includeDirs) {
@@ -1707,20 +1763,23 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         linkCmd << "link @\"" << linkRspPath.string() << "\"";
         buildSignaturePayload = scriptRsp.str() + "\n---rsp---\n" + wrapperRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
-        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        compileCmd << posixScriptCompileDriver(config) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        appendExtraCompileFlags(compileCmd, config);
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << compileSourcePath.string() << "\" -o \"" << objectPath.string() << "\"";
         compileCmd << " && ";
-        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        compileCmd << posixScriptCompileDriver(config) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        appendExtraCompileFlags(compileCmd, config);
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << secondaryDependencyPath.string() << "\"";
         compileCmd << " -c \"" << wrapperPath.string() << "\" -o \"" << secondaryObjectPath.string() << "\"";
-        linkCmd << "g++ -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
+        linkCmd << posixScriptLinkDriver(config) << " -shared \"" << objectPath.string() << "\" \"" << secondaryObjectPath.string()
                 << "\" -o \"" << binaryPath.string() << "\"";
         for (const auto& lib : config.linuxLinkLibs) {
             linkCmd << " " << formatLinkFlag(lib);
         }
+        appendExtraLinkFlags(linkCmd, config);
 #endif
     } else {
         const std::string cppContextPattern = "ScriptContext\\s*[&*]";
@@ -1866,14 +1925,16 @@ bool ScriptCompiler::makeCommands(const ScriptBuildConfig& config, const fs::pat
         linkCmd << "link @\"" << linkRspPath.string() << "\"";
         buildSignaturePayload = compileRsp.str() + "\n---rsp---\n" + linkRsp.str();
 #else
-        compileCmd << posixCompileDriver(true) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        compileCmd << posixScriptCompileDriver(config) << " -std=" << cppStandardFlag << " -fPIC -O0 -g";
+        appendExtraCompileFlags(compileCmd, config);
         appendPosixIncludesAndDefines(compileCmd);
         compileCmd << " -MMD -MF \"" << dependencyPath.string() << "\"";
         compileCmd << " -c \"" << sourceToCompile.string() << "\" -o \"" << objectPath.string() << "\"";
-        linkCmd << "g++ -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
+        linkCmd << posixScriptLinkDriver(config) << " -shared \"" << objectPath.string() << "\" -o \"" << binaryPath.string() << "\"";
         for (const auto& lib : config.linuxLinkLibs) {
             linkCmd << " " << formatLinkFlag(lib);
         }
+        appendExtraLinkFlags(linkCmd, config);
 #endif
     }
 

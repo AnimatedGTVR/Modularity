@@ -105,6 +105,13 @@ public:
 
     // Load a model scene with node hierarchy and per-mesh materials
     bool loadModelScene(const std::string& filepath, ModelSceneData& out, std::string& errorMsg);
+
+    // No-copy view of a (cached) model scene, for per-frame readers that only
+    // sample the data (e.g. skeletal animation). Returns nullptr on failure.
+    // The pointer stays valid until this model's cache entry is invalidated
+    // (.rmesh re-export/update, clearCaches) or the next call for an uncached
+    // .rmesh path — do not hold it across loads or frames.
+    const ModelSceneData* loadModelSceneCached(const std::string& filepath, std::string& errorMsg);
     
     // Get mesh by index
     Mesh* getMesh(int index);
@@ -172,6 +179,9 @@ private:
     // Storage for loaded meshes (reusing OBJLoader::LoadedMesh structure)
     std::vector<OBJLoader::LoadedMesh> loadedMeshes;
     std::unordered_map<std::string, ModelSceneData> cachedScenes;
+    // Backing storage for loadModelSceneCached when the scene is deliberately
+    // uncached (.rmesh); valid until the next such call.
+    ModelSceneData sceneRefScratch;
 };
 
 // Global accessor

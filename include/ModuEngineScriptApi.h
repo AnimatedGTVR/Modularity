@@ -48,9 +48,8 @@ inline void SetClip(const std::string& keyPrefix, int direction, int frame, int 
     SetInt(keyPrefix + std::to_string(direction) + "_" + std::to_string(frame), value);
 }
 
-// Sheet-relative Sprite handles, keyed exactly like Clip (so Sprite[N] / Sprite[N][M]
-// settings line up with BindArray/BindArray2D). Return type is qualified ::Sprite
-// because this function shares the type's name.
+// sheet-relative Sprite handles, keyed like Clip so Sprite[N]/[N][M] line up with BindArray.
+// return type is qualified ::Sprite since this function shares the type's name.
 inline ::Sprite Sprite(const std::string& key) {
     return DeserializeSprite(Text(key));
 }
@@ -522,9 +521,8 @@ struct SpriteFacade {
 
 inline const SpriteFacade sprite{};
 
-// The sheet-relative Sprite (ScriptSdkCommon.h) is the one Sprite type. It keeps
-// int<->Sprite conversion + IsAssigned() so the clip-index containers below and
-// existing self-sheet call sites are unchanged.
+// the sheet-relative Sprite (ScriptSdkCommon.h) is THE Sprite type. keeps int<->Sprite
+// conversion + IsAssigned() so clip-index containers and old call sites don't change.
 using Sprite = ::Sprite;
 
 struct Sprite8WaySet {
@@ -710,13 +708,8 @@ inline bool EditSoundSet(const char* heading, std::array<std::string, N>& sounds
     return changed;
 }
 
-// ---------------------------------------------------------------------------
-// Beginner-friendly Scene / Movement / Ensure helpers.
-//
-// The `obj` symbol scripts use inside Begin / Update / TickUpdate methods is
-// the local `ObjectFacade` injected by MODU_SCRIPT (see ModuCPPScriptApi.h);
-// its Rigidbody3D / Transform / Physics members read through ctxPtr().
-// ---------------------------------------------------------------------------
+// beginner-friendly Scene / Movement / Ensure helpers. the `obj` inside Begin/Update/
+// TickUpdate is the ObjectFacade injected by MODU_SCRIPT (see ModuCPPScriptApi.h).
 
 namespace Scene {
 inline SceneObj Find(const std::string& name) {
@@ -814,9 +807,8 @@ inline bool applyRigidbodyEnsure(SceneObject* target, bool isCurrentCtx,
 }
 } // namespace detail
 
-// Visual sentinel — `Ensure::obj;` is a no-op marker that documents intent.
-// The real "is there a current object?" check happens implicitly inside any
-// ScriptContext call that needs one.
+// visual sentinel: `Ensure::obj;` is a no-op marker that documents intent. the real check
+// happens inside any ScriptContext call that needs an object.
 inline constexpr int obj = 0;
 
 inline bool Rigidbody3D(const SceneObj& target, bool freezeRotation = false, bool useGravity = true) {

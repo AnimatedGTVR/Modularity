@@ -2,20 +2,25 @@
 #include "Modu2DStats.h"
 #ifdef __ANDROID__
 #include "AndroidRuntime/AndroidRuntime.h"
+#include <android/keycodes.h>
 #endif
 #include "SceneSerializationInternal.h"
 #include "AnimationBindingHelpers.h"
 #include "CrashReporter.h"
 #include "DragPreviewOverlay.h"
+#include "UiGlassBlur.h"
 #include "MaterialAssetUtils.h"
+#include "EngineMaterialIO.h"
 #include "ModelLoader.h"
 #include "../include/Platform/AssetSource.h"
+#include "Render25D/MMeshConvert.h"
 #include "Render25D/MMeshLoader.h"
 #include "RuntimeContent.h"
 #include <iostream>
 #include <fstream>
 #include <functional>
 #include <chrono>
+#include <thread>
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -74,17 +79,6 @@ ConsoleMessageType DiagnosticConsoleType(Modularity::ScriptDiagnosticSeverity se
             return ConsoleMessageType::Info;
     }
 }
-
-struct MaterialFileData {
-    MaterialProperties props;
-    std::string albedo;
-    std::string overlay;
-    std::string normal;
-    bool useOverlay = false;
-    std::string shaderPack;
-    std::string vertexShader;
-    std::string fragmentShader;
-};
 
 std::string RenameTrim(const std::string& value) {
     size_t start = 0;
@@ -469,100 +463,6 @@ bool hasUnsupportedVulkanPreviewFeature(const SceneObject& obj) {
     return false;
 }
 
-bool readMaterialFile(const std::string& path, MaterialFileData& outData) {
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        return false;
-    }
-
-    std::string line;
-    while (std::getline(f, line)) {
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        if (line.empty() || line[0] == '#') continue;
-        auto pos = line.find('=');
-        if (pos == std::string::npos) continue;
-        std::string key = line.substr(0, pos);
-        std::string val = line.substr(pos + 1);
-        if (key == "color") {
-            sscanf(val.c_str(), "%f,%f,%f", &outData.props.color.r, &outData.props.color.g, &outData.props.color.b);
-        } else if (key == "opacity" || key == "alpha") {
-            outData.props.alpha = std::clamp(std::stof(val), 0.0f, 1.0f);
-        } else if (key == "ambient") {
-            outData.props.ambientStrength = std::stof(val);
-        } else if (key == "specular") {
-            outData.props.specularStrength = std::stof(val);
-        } else if (key == "shininess") {
-            outData.props.shininess = std::stof(val);
-        } else if (key == "normalIntensity" || key == "normalMapIntensity") {
-            outData.props.normalMapIntensity = std::clamp(std::stof(val), 0.0f, 2.0f);
-        } else if (key == "textureMix") {
-            outData.props.textureMix = std::stof(val);
-        } else if (key == "uvTiling") {
-            sscanf(val.c_str(), "%f,%f", &outData.props.uvTiling.x, &outData.props.uvTiling.y);
-        } else if (key == "uvOffset") {
-            sscanf(val.c_str(), "%f,%f", &outData.props.uvOffset.x, &outData.props.uvOffset.y);
-        } else if (key == "textureFilter") {
-            std::string lower = val;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (lower == "1" || lower == "point" || lower == "nearest") {
-                outData.props.textureFilter = MaterialProperties::TextureFilter::Point;
-            } else {
-                outData.props.textureFilter = MaterialProperties::TextureFilter::Bilinear;
-            }
-        } else if (key == "albedo") {
-            outData.albedo = val;
-        } else if (key == "overlay") {
-            outData.overlay = val;
-        } else if (key == "normal") {
-            outData.normal = val;
-        } else if (key == "useOverlay") {
-            outData.useOverlay = std::stoi(val) != 0;
-        } else if (key == "shaderPack") {
-            outData.shaderPack = ResolveShaderPackReferencedPath(fs::path(path), val).string();
-        } else if (key == "vertexShader") {
-            outData.vertexShader = val;
-        } else if (key == "fragmentShader") {
-            outData.fragmentShader = val;
-        }
-    }
-
-    if (!outData.shaderPack.empty()) {
-        ShaderPackAssetData shaderPackData;
-        if (ReadShaderPackFile(outData.shaderPack, shaderPackData)) {
-            outData.vertexShader = shaderPackData.vertexShaderPath;
-            outData.fragmentShader = shaderPackData.fragmentShaderPath;
-        }
-    }
-
-    return true;
-}
-
-bool writeMaterialFile(const MaterialFileData& data, const std::string& path) {
-    std::ofstream f(path);
-    if (!f.is_open()) {
-        return false;
-    }
-    f << "# Material\n";
-    f << "color=" << data.props.color.r << "," << data.props.color.g << "," << data.props.color.b << "\n";
-    f << "opacity=" << data.props.alpha << "\n";
-    f << "ambient=" << data.props.ambientStrength << "\n";
-    f << "specular=" << data.props.specularStrength << "\n";
-    f << "shininess=" << data.props.shininess << "\n";
-    f << "normalMapIntensity=" << data.props.normalMapIntensity << "\n";
-    f << "textureMix=" << data.props.textureMix << "\n";
-    f << "uvTiling=" << data.props.uvTiling.x << "," << data.props.uvTiling.y << "\n";
-    f << "uvOffset=" << data.props.uvOffset.x << "," << data.props.uvOffset.y << "\n";
-    f << "textureFilter=" << static_cast<int>(data.props.textureFilter) << "\n";
-    f << "useOverlay=" << (data.useOverlay ? 1 : 0) << "\n";
-    f << "albedo=" << data.albedo << "\n";
-    f << "overlay=" << data.overlay << "\n";
-    f << "normal=" << data.normal << "\n";
-    f << "shaderPack=" << data.shaderPack << "\n";
-    f << "vertexShader=" << data.vertexShader << "\n";
-    f << "fragmentShader=" << data.fragmentShader << "\n";
-    return true;
-}
 
 void ApplyObjectPreset(SceneObject& obj, ObjectType preset) {
     obj.type = preset;
@@ -969,7 +869,7 @@ bool Engine::isProject25DPipeline() const {
 }
 
 bool Engine::is2DWorldEditingEnabled() const {
-    return isProject2DPipeline() || uiWorldMode;
+    return uiCanvasPreviewEnabled && (isProject2DPipeline() || uiWorldMode);
 }
 
 void Engine::applyProjectPipelineDefaults(bool force) {
@@ -1343,35 +1243,6 @@ RawMeshAsset buildSphereRMesh(int slices = 24, int stacks = 16) {
     return mesh;
 }
 
-Modularity::Render25D::MMeshAsset buildMMeshFromRawMesh(const RawMeshAsset& raw) {
-    using namespace Modularity::Render25D;
-
-    MMeshAsset asset;
-    asset.vertices = raw.positions;
-    asset.indices.reserve(raw.faces.size() * 3u);
-    for (const glm::u32vec3& face : raw.faces) {
-        asset.indices.push_back(face.x);
-        asset.indices.push_back(face.y);
-        asset.indices.push_back(face.z);
-    }
-    asset.uvs = raw.uvs;
-    asset.normals = raw.normals;
-    asset.hasUVs = !asset.uvs.empty() && asset.uvs.size() == asset.vertices.size();
-    asset.hasNormals = !asset.normals.empty() && asset.normals.size() == asset.vertices.size();
-    asset.boundsMin = raw.boundsMin;
-    asset.boundsMax = raw.boundsMax;
-
-    MMeshMaterialRef material;
-    material.name = "Default";
-    asset.materials.push_back(std::move(material));
-
-    MMeshSurface surface;
-    surface.indexOffset = 0;
-    surface.indexCount = static_cast<uint32_t>(asset.indices.size());
-    surface.materialIndex = 0;
-    asset.surfaces.push_back(surface);
-    return asset;
-}
 } // namespace
 #pragma endregion
 
@@ -2211,6 +2082,7 @@ struct AndroidBuildTools {
     fs::path aapt2;
     fs::path zipalign;
     fs::path apksigner;
+    fs::path d8;
 };
 
 AndroidBuildTools findLatestAndroidBuildTools(const fs::path& sdkRoot) {
@@ -2224,9 +2096,13 @@ AndroidBuildTools findLatestAndroidBuildTools(const fs::path& sdkRoot) {
         fs::path aapt2 = entry.path() / androidToolName("aapt2");
         fs::path zipalign = entry.path() / androidToolName("zipalign");
         fs::path apksigner = entry.path() / androidToolName("apksigner");
+        fs::path d8 = entry.path() / androidToolName("d8");
 #ifdef _WIN32
         if (!fs::exists(apksigner, ec)) {
             apksigner = entry.path() / "apksigner.bat";
+        }
+        if (!fs::exists(d8, ec)) {
+            d8 = entry.path() / "d8.bat";
         }
 #endif
         if (!fs::exists(aapt2, ec) || !fs::exists(zipalign, ec) || !fs::exists(apksigner, ec)) {
@@ -2235,7 +2111,7 @@ AndroidBuildTools findLatestAndroidBuildTools(const fs::path& sdkRoot) {
         const std::string version = entry.path().filename().string();
         if (version > bestVersion) {
             bestVersion = version;
-            best = {aapt2, zipalign, apksigner};
+            best = {aapt2, zipalign, apksigner, fs::exists(d8, ec) && !ec ? d8 : fs::path{}};
         }
     }
     return best;
@@ -2260,18 +2136,79 @@ fs::path findAndroidLlvmStrip(const fs::path& ndkRoot) {
     return findExecutableInPath("llvm-strip");
 }
 
-fs::path findAndroidSharedLibrary(const fs::path& buildRoot) {
+fs::path findAndroidSharedLibrary(const fs::path& buildRoot,
+                                  const std::string& soName = "libModularityPlayer.so") {
     std::error_code ec;
-    const fs::path direct = buildRoot / "libModularityPlayer.so";
+    const fs::path direct = buildRoot / soName;
     if (fs::exists(direct, ec) && !ec) return direct;
     for (auto it = fs::recursive_directory_iterator(buildRoot, ec);
          it != fs::recursive_directory_iterator(); ++it) {
         if (ec) break;
-        if (it->is_regular_file() && it->path().filename() == "libModularityPlayer.so") {
+        if (it->is_regular_file() && it->path().filename() == soName) {
             return it->path();
         }
     }
     return {};
+}
+
+// stage the host clang bundle into APK assets + a files.list manifest (AAssetManager
+// can't list nested asset dirs, and 'x' lines mark what needs chmod +x on extraction).
+// fails soft: no bundle = APK still builds, just no on-device compiler.
+static bool bundleAndroidToolchain(const fs::path& bundleSrc,
+                                   const fs::path& assetsRoot,
+                                   const std::string& abi,
+                                   const std::function<void(const std::string&)>& log,
+                                   std::string& error) {
+    std::error_code ec;
+    if (!fs::is_directory(bundleSrc, ec)) {
+        error = "Toolchain bundle directory not found: " + bundleSrc.string();
+        return false;
+    }
+    const fs::path dest = assetsRoot / "toolchain" / abi;
+    fs::remove_all(dest, ec);
+    fs::create_directories(dest, ec);
+    fs::copy(bundleSrc, dest,
+             fs::copy_options::recursive | fs::copy_options::overwrite_existing |
+             fs::copy_options::copy_symlinks, ec);
+    if (ec) {
+        error = "Failed to copy toolchain into APK assets: " + ec.message();
+        return false;
+    }
+
+    std::ostringstream list;
+    uintmax_t totalBytes = 0;
+    size_t count = 0;
+    std::error_code walkEc;
+    for (auto it = fs::recursive_directory_iterator(dest, walkEc);
+         it != fs::recursive_directory_iterator(); it.increment(walkEc)) {
+        if (walkEc) break;
+        if (!it->is_regular_file(walkEc)) continue;
+        const fs::path rel = fs::relative(it->path(), dest, walkEc);
+        if (walkEc || rel.empty()) continue;
+        const std::string relStr = rel.generic_string();
+        if (relStr == "files.list") continue;
+        const fs::perms perms = fs::status(it->path(), walkEc).permissions();
+        const bool exec = ((perms & fs::perms::owner_exec) != fs::perms::none) ||
+                          relStr.rfind("bin/", 0) == 0;
+        list << (exec ? 'x' : '-') << ' ' << relStr << "\n";
+        std::error_code sizeEc;
+        totalBytes += fs::file_size(it->path(), sizeEc);
+        ++count;
+    }
+
+    std::ofstream out(dest / "files.list", std::ios::trunc);
+    if (!out) {
+        error = "Failed to write toolchain files.list";
+        return false;
+    }
+    out << list.str();
+    out.close();
+
+    if (log) {
+        log("[Android] Bundled on-device clang toolchain: " + std::to_string(count) +
+            " files, " + std::to_string(totalBytes / (1024 * 1024)) + " MiB.\n");
+    }
+    return true;
 }
 
 bool writeAndroidManifest(const fs::path& manifestPath,
@@ -2280,32 +2217,44 @@ bool writeAndroidManifest(const fs::path& manifestPath,
                           const std::string& versionName,
                           bool debuggable,
                           const std::string& iconRef,
-                          std::string& error) {
+                          std::string& error,
+                          const std::string& libName = "ModularityPlayer",
+                          int targetSdkVersion = 34,
+                          const std::string& activityName = "android.app.NativeActivity",
+                          bool hasJavaCode = false) {
     std::ostringstream manifest;
     manifest << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
     manifest << "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n";
     manifest << "    package=\"" << xmlEscape(packageName) << "\"\n";
     manifest << "    android:versionCode=\"1\"\n";
     manifest << "    android:versionName=\"" << xmlEscape(versionName) << "\">\n";
-    // PackageManager rejects APKs with no <uses-sdk> declaration on Android
-    // 14+ (the read targetSdkVersion is 0 in that case). minSdk matches the
-    // ANDROID_PLATFORM=26 we configure with; targetSdk=34 is a recent
-    // compatible value that satisfies modern install gates without forcing
-    // an SDK-Manager dependency on a specific API platform.
-    manifest << "    <uses-sdk android:minSdkVersion=\"26\" android:targetSdkVersion=\"34\" />\n";
+    // Android 14+ refuses APKs with no <uses-sdk>. minSdk 26 matches ANDROID_PLATFORM,
+    // targetSdk 34 keeps modern install gates happy. the EDITOR apk passes 28 instead since
+    // that's the last version where exec()ing bundled clang + dlopen()ing our own .so is allowed.
+    manifest << "    <uses-sdk android:minSdkVersion=\"26\" android:targetSdkVersion=\""
+             << targetSdkVersion << "\" />\n";
     manifest << "    <uses-feature android:glEsVersion=\"0x00030000\" android:required=\"true\" />\n";
+    // storage permissions so projects/assets outside the sandbox are reachable. legacy read/write
+    // for old APIs, READ_MEDIA_* for 33+, MANAGE_EXTERNAL_STORAGE = the "All files access" toggle in Settings.
+    manifest << "    <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />\n";
+    manifest << "    <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" android:maxSdkVersion=\"28\" />\n";
+    manifest << "    <uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\" />\n";
+    manifest << "    <uses-permission android:name=\"android.permission.READ_MEDIA_VIDEO\" />\n";
+    manifest << "    <uses-permission android:name=\"android.permission.READ_MEDIA_AUDIO\" />\n";
+    manifest << "    <uses-permission android:name=\"android.permission.MANAGE_EXTERNAL_STORAGE\" />\n";
     manifest << "    <application\n";
     manifest << "        android:label=\"" << xmlEscape(appLabel) << "\"\n";
+    manifest << "        android:requestLegacyExternalStorage=\"true\"\n";
     manifest << "        android:debuggable=\"" << (debuggable ? "true" : "false") << "\"\n";
     manifest << "        android:extractNativeLibs=\"true\"\n";
-    manifest << "        android:hasCode=\"false\"\n";
+    manifest << "        android:hasCode=\"" << (hasJavaCode ? "true" : "false") << "\"\n";
     manifest << "        android:icon=\"" << iconRef << "\">\n";
     manifest << "        <activity\n";
-    manifest << "            android:name=\"android.app.NativeActivity\"\n";
+    manifest << "            android:name=\"" << xmlEscape(activityName) << "\"\n";
     manifest << "            android:configChanges=\"keyboard|keyboardHidden|orientation|screenSize|uiMode\"\n";
     manifest << "            android:exported=\"true\"\n";
     manifest << "            android:screenOrientation=\"landscape\">\n";
-    manifest << "            <meta-data android:name=\"android.app.lib_name\" android:value=\"ModularityPlayer\" />\n";
+    manifest << "            <meta-data android:name=\"android.app.lib_name\" android:value=\"" << xmlEscape(libName) << "\" />\n";
     manifest << "            <intent-filter>\n";
     manifest << "                <action android:name=\"android.intent.action.MAIN\" />\n";
     manifest << "                <category android:name=\"android.intent.category.LAUNCHER\" />\n";
@@ -2314,6 +2263,301 @@ bool writeAndroidManifest(const fs::path& manifestPath,
     manifest << "    </application>\n";
     manifest << "</manifest>\n";
     return writeTextFileForExport(manifestPath, manifest.str(), error);
+}
+
+constexpr const char* kAndroidBridgeActivityName = "com.modularity.android.ModularityNativeActivity";
+
+bool writeAndroidActivityBridge(const fs::path& javaRoot, std::string& error) {
+    static const char* source = R"JAVA(package com.modularity.android;
+
+import android.app.NativeActivity;
+import android.content.ClipData;
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.OpenableColumns;
+import android.provider.Settings;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.util.ArrayList;
+
+public class ModularityNativeActivity extends NativeActivity {
+    private static final int REQUEST_IMPORT_FILES = 6101;
+    private static final int REQUEST_STORAGE_PERMISSION = 6102;
+
+    private static native void nativeOnFilePickerResult(String[] paths, String error, boolean canceled);
+
+    // can we freely touch shared storage? API 30+ = the "All files access" grant; below that the
+    // legacy WRITE_EXTERNAL_STORAGE permission is enough (we ship requestLegacyExternalStorage + targetSdk 28).
+    public boolean modularityHasStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                return Environment.isExternalStorageManager();
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+        return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // Public Documents dir, e.g. /storage/emulated/0/Documents, so projects can
+    // live in Documents/ModularityProjects to mirror the desktop layout.
+    public String modularityExternalDocumentsPath() {
+        try {
+            File docs = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOCUMENTS);
+            return docs == null ? "" : docs.getAbsolutePath();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    // ask for storage access. API 30+ has no in-app dialog so off to system settings they go;
+    // older versions get the normal permission prompt. either way the grant lands async.
+    public void modularityRequestStorageAccess() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        Uri uri = Uri.parse("package:" + getPackageName());
+                        startActivity(new Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, uri));
+                    } catch (Throwable t) {
+                        // some OEMs reject the per-app page; fall back to the global list so the user can still find us.
+                        try {
+                            startActivity(new Intent(
+                                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                } else {
+                    try {
+                        requestPermissions(
+                                new String[] { android.Manifest.permission.WRITE_EXTERNAL_STORAGE },
+                                REQUEST_STORAGE_PERMISSION);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        });
+    }
+
+    public void launchModularityFilePicker(final boolean allowMultiple) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple);
+                try {
+                    startActivityForResult(intent, REQUEST_IMPORT_FILES);
+                } catch (Throwable t) {
+                    nativeOnFilePickerResult(new String[0], messageFor(t), false);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, final Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_IMPORT_FILES) {
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null) {
+            nativeOnFilePickerResult(new String[0], "", true);
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                copyPickerResult(data);
+            }
+        }, "ModularityFileImport").start();
+    }
+
+    private void copyPickerResult(Intent data) {
+        ArrayList<Uri> uris = collectUris(data);
+        if (uris.isEmpty()) {
+            nativeOnFilePickerResult(new String[0], "No files were selected.", false);
+            return;
+        }
+
+        File root = new File(getCacheDir(), "modularity-imports");
+        deleteRecursive(root);
+        File session = new File(root, Long.toString(System.currentTimeMillis()));
+        if (!session.mkdirs() && !session.isDirectory()) {
+            nativeOnFilePickerResult(new String[0], "Could not create import cache directory.", false);
+            return;
+        }
+
+        ArrayList<String> paths = new ArrayList<String>();
+        StringBuilder errors = new StringBuilder();
+        ContentResolver resolver = getContentResolver();
+        for (int i = 0; i < uris.size(); ++i) {
+            Uri uri = uris.get(i);
+            try {
+                File copied = copyUriToCache(resolver, uri, session, i);
+                paths.add(copied.getAbsolutePath());
+            } catch (Throwable t) {
+                if (errors.length() > 0) {
+                    errors.append('\n');
+                }
+                errors.append(messageFor(t));
+            }
+        }
+        nativeOnFilePickerResult(paths.toArray(new String[paths.size()]),
+                                 errors.toString(),
+                                 false);
+    }
+
+    private ArrayList<Uri> collectUris(Intent data) {
+        ArrayList<Uri> uris = new ArrayList<Uri>();
+        ClipData clipData = data.getClipData();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); ++i) {
+                Uri uri = clipData.getItemAt(i).getUri();
+                if (uri != null) {
+                    uris.add(uri);
+                }
+            }
+        } else if (data.getData() != null) {
+            uris.add(data.getData());
+        }
+        return uris;
+    }
+
+    private File copyUriToCache(ContentResolver resolver, Uri uri, File directory, int index) throws Exception {
+        String displayName = sanitizeFileName(queryDisplayName(resolver, uri));
+        if (displayName.length() == 0) {
+            displayName = "asset_" + index;
+        }
+        File target = makeUniqueFile(directory, displayName);
+        InputStream input = resolver.openInputStream(uri);
+        if (input == null) {
+            throw new IllegalStateException("Could not open selected file: " + uri);
+        }
+        try {
+            FileOutputStream output = new FileOutputStream(target);
+            try {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read > 0) {
+                        output.write(buffer, 0, read);
+                    }
+                }
+            } finally {
+                output.close();
+            }
+        } finally {
+            input.close();
+        }
+        return target;
+    }
+
+    private String queryDisplayName(ContentResolver resolver, Uri uri) {
+        Cursor cursor = null;
+        try {
+            cursor = resolver.query(uri, new String[] { OpenableColumns.DISPLAY_NAME },
+                                    null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (column >= 0) {
+                    String name = cursor.getString(column);
+                    if (name != null) {
+                        return name;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        String fallback = uri.getLastPathSegment();
+        return fallback == null ? "" : fallback;
+    }
+
+    private String sanitizeFileName(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); ++i) {
+            char c = raw.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' || c == ' ') {
+                out.append(c);
+            } else {
+                out.append('_');
+            }
+        }
+        String cleaned = out.toString().trim();
+        while (cleaned.startsWith(".")) {
+            cleaned = cleaned.substring(1);
+        }
+        return cleaned;
+    }
+
+    private File makeUniqueFile(File directory, String fileName) {
+        File candidate = new File(directory, fileName);
+        if (!candidate.exists()) {
+            return candidate;
+        }
+        int dot = fileName.lastIndexOf('.');
+        String stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+        String extension = dot > 0 ? fileName.substring(dot) : "";
+        for (int i = 1; i < 10000; ++i) {
+            candidate = new File(directory, stem + "_" + i + extension);
+            if (!candidate.exists()) {
+                return candidate;
+            }
+        }
+        return new File(directory, stem + "_" + System.nanoTime() + extension);
+    }
+
+    private void deleteRecursive(File file) {
+        if (file == null || !file.exists()) {
+            return;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        file.delete();
+    }
+
+    private static String messageFor(Throwable t) {
+        if (t == null) {
+            return "Unknown Android file picker error.";
+        }
+        String message = t.getMessage();
+        return message == null || message.length() == 0 ? t.getClass().getSimpleName() : message;
+    }
+}
+)JAVA";
+
+    return writeTextFileForExport(
+        javaRoot / "com" / "modularity" / "android" / "ModularityNativeActivity.java",
+        source,
+        error);
 }
 
 bool writeAndroidLauncherIcon(const fs::path& resRoot,
@@ -2413,6 +2657,25 @@ bool packageAndroidApk(const fs::path& apkStageRoot,
         return true;
     };
 
+    auto collectFilesWithExtension = [&](const fs::path& root, const std::string& extension) {
+        std::vector<fs::path> files;
+        std::error_code iterEc;
+        if (!fs::is_directory(root, iterEc)) {
+            return files;
+        }
+        for (auto it = fs::recursive_directory_iterator(root, iterEc);
+             !iterEc && it != fs::recursive_directory_iterator();
+             it.increment(iterEc)) {
+            if (iterEc || !it->is_regular_file()) {
+                continue;
+            }
+            if (it->path().extension() == extension) {
+                files.push_back(it->path());
+            }
+        }
+        return files;
+    };
+
     if (!runStep(quotePath(tools.aapt2) + " compile --dir " +
                  quotePath(apkStageRoot / "res") + " -o " + quotePath(compiledResources),
                  "aapt2 resource compile failed")) {
@@ -2429,13 +2692,87 @@ bool packageAndroidApk(const fs::path& apkStageRoot,
         return false;
     }
 
+    const fs::path javaSourceRoot = apkStageRoot / "java";
+    const std::vector<fs::path> javaFiles = collectFilesWithExtension(javaSourceRoot, ".java");
+    if (!javaFiles.empty()) {
+        fs::path javac = findExecutableInPath(androidToolName("javac"));
+        if (javac.empty()) {
+            error = "javac was not found in PATH; needed to compile the Android activity bridge.";
+            return false;
+        }
+        if (tools.d8.empty()) {
+            error = "Android SDK build-tools missing d8; needed to dex the Android activity bridge.";
+            return false;
+        }
+
+        const fs::path classesDir = apkStageRoot / "classes";
+        const fs::path dexDir = apkStageRoot / "dex";
+        fs::remove_all(classesDir, ec);
+        fs::remove_all(dexDir, ec);
+        fs::create_directories(classesDir, ec);
+        fs::create_directories(dexDir, ec);
+        if (ec) {
+            error = "Failed to create Android Java compile directories.";
+            return false;
+        }
+
+        std::string javacCmd =
+            quotePath(javac) +
+            " -encoding UTF-8 -source 8 -target 8 -Xlint:-options -bootclasspath " + quotePath(androidJar) +
+            " -d " + quotePath(classesDir);
+        for (const fs::path& javaFile : javaFiles) {
+            javacCmd += " " + quotePath(javaFile);
+        }
+        if (!runStep(javacCmd, "javac failed for Android activity bridge")) {
+            return false;
+        }
+
+        const std::vector<fs::path> classFiles = collectFilesWithExtension(classesDir, ".class");
+        if (classFiles.empty()) {
+            error = "Android activity bridge produced no .class files.";
+            return false;
+        }
+        fs::path jarTool = findExecutableInPath(androidToolName("jar"));
+        if (jarTool.empty()) {
+            error = "jar was not found in PATH; needed to package Android activity bridge classes for d8.";
+            return false;
+        }
+        const fs::path classesJar = apkStageRoot / "classes.jar";
+        fs::remove(classesJar, ec);
+        const std::string jarCmd =
+            quotePath(jarTool) + " cf " + quotePath(classesJar) +
+            " -C " + quotePath(classesDir) + " .";
+        if (!runStep(jarCmd, "jar failed for Android activity bridge")) {
+            return false;
+        }
+
+        std::string d8Cmd =
+            quotePath(tools.d8) +
+            " --min-api 26 --output " + quotePath(dexDir) +
+            " " + quotePath(classesJar);
+        if (!runStep(d8Cmd, "d8 failed for Android activity bridge")) {
+            return false;
+        }
+
+        fs::copy_file(dexDir / "classes.dex", apkStageRoot / "classes.dex",
+                      fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Failed to stage Android activity bridge dex.";
+            return false;
+        }
+    }
+
     fs::path zipTool = findExecutableInPath("zip");
     if (zipTool.empty()) {
         error = "zip was not found in PATH; needed to add native libraries to the APK.";
         return false;
     }
+    std::string zipEntries = "lib";
+    if (fs::exists(apkStageRoot / "classes.dex", ec) && !ec) {
+        zipEntries += " classes.dex";
+    }
     if (!runStep("cd " + quotePath(apkStageRoot) + " && " +
-                 quotePath(zipTool) + " -q -r " + quotePath(unsignedApk) + " lib",
+                 quotePath(zipTool) + " -q -r " + quotePath(unsignedApk) + " " + zipEntries,
                  "Failed to add native libraries to APK")) {
         return false;
     }
@@ -3526,6 +3863,16 @@ Camera Engine::makeCameraFromObject(const SceneObject& obj) const {
     cam.position = obj.position;
     cam.orthographic = isProject2DPipeline() || obj.camera.use2D;
     cam.pixelsPerUnit = std::max(1.0f, obj.camera.pixelsPerUnit);
+    // True 3D orthographic (Unity-style Size). Legacy 2D keeps orthoSize at 0
+    // so the renderer knows to route it through the 2D pipeline instead.
+    if (!cam.orthographic && obj.camera.projection == SceneCameraProjection::Orthographic) {
+        cam.orthographic = true;
+        cam.orthoSize = std::max(0.01f, obj.camera.orthoSize);
+    }
+    cam.renderShadows = obj.camera.renderShadows;
+    cam.cullingMask = obj.camera.cullingMask;
+    cam.solidBackground = (obj.camera.background == SceneCameraBackground::SolidColor);
+    cam.backgroundColor = obj.camera.backgroundColor;
     glm::quat q = glm::quat(glm::radians(obj.rotation));
     glm::mat3 rot = glm::mat3_cast(q);
     cam.front = glm::normalize(rot * glm::vec3(0.0f, 0.0f, -1.0f));
@@ -3955,11 +4302,11 @@ void Engine::restoreSceneSnapshot(SceneSnapshot snap) {
     }
     if (meshEditLoaded && !meshEditPath.empty()) {
         SceneObject* meshTarget = getSelectedObject();
-        if (!meshTarget || !IsRawMeshPath(meshTarget->meshPath) ||
+        if (!meshTarget || !IsMeshEditablePath(meshTarget->meshPath) ||
             meshTarget->meshPath != meshEditPath) {
             meshTarget = nullptr;
             for (SceneObject& obj : sceneObjects) {
-                if (IsRawMeshPath(obj.meshPath) && obj.meshPath == meshEditPath) {
+                if (IsMeshEditablePath(obj.meshPath) && obj.meshPath == meshEditPath) {
                     meshTarget = &obj;
                     break;
                 }
@@ -4242,19 +4589,20 @@ float Engine::getSceneViewportInternalAspect() const {
 }
 
 void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
-    // One-time diagnostic so logcat / stderr tells us exactly which preset
-    // the runtime resolved to at startup (helps catch "did the Native
-    // dropdown selection actually persist into the bake?" without
-    // squinting at screenshots).
-    // Log on change (not just first call), because the runtime resolution gets
-    // re-decided each frame and may genuinely shift across startup (e.g.
-    // index=0 on frame 1 before build.modu has loaded, then index=5 after
-    // finishProjectLoad runs ~180ms later). Tracking only the first value
-    // is misleading.
+    // log which preset the runtime resolved to, on change (it can genuinely shift during startup,
+    // like index 0 -> 5 once build.modu loads ~180ms in, so logging only the first value would lie).
     static int _lastIndex = -2;
     static int _lastNative = -1;
     static int _lastW = -1, _lastH = -1;
     auto _finish = [&]() {
+        // Global Render Scale scales the internal render res here (the one choke point everything
+        // flows through). the presented image stretches back up, so <1 = perf win, >1 = supersampling.
+        const float renderScale = std::clamp(
+            projectManager.currentProject.graphicsSettings.renderResolutionScale, 0.25f, 2.0f);
+        if (renderScale != 1.0f) {
+            outWidth = std::clamp(static_cast<int>(std::lround(outWidth * renderScale)), 64, 8192);
+            outHeight = std::clamp(static_cast<int>(std::lround(outHeight * renderScale)), 64, 8192);
+        }
         const int curNative = (int)projectManager.currentProject.playerSettings.nativeDisplayResolution;
         if (_lastIndex != gameViewportResolutionIndex ||
             _lastNative != curNative ||
@@ -4270,11 +4618,8 @@ void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
         }
     };
 
-    // Project-level override: when "Native Display Resolution" is on in
-    // Project Settings, ignore the dropdown and use the actual display
-    // surface size. This is the discoverable place users expect runtime
-    // resolution behaviour to live; the dropdown stays a per-editor
-    // preview hint.
+    // "Native Display Resolution" in Project Settings wins over the dropdown; the dropdown is
+    // just a per-editor preview hint.
     if (projectManager.currentProject.playerSettings.nativeDisplayResolution) {
         int w = 0, h = 0;
 #ifdef __ANDROID__
@@ -4306,9 +4651,8 @@ void Engine::getRuntimeInternalResolution(int& outWidth, int& outHeight) const {
             outHeight = std::clamp(gameViewportCustomHeight, 64, 8192);
             break;
         case 5: {
-            // Native: match the actual display surface. On Android the
-            // EGL surface size is the source of truth (GLFW's null backend
-            // returns 0). On desktop GLFW's framebuffer size is correct.
+            // Native: match the real display surface. Android trusts the EGL surface size (GLFW's
+            // null backend says 0), desktop trusts GLFW.
             int w = 0, h = 0;
 #ifdef __ANDROID__
             Modularity::AndroidRuntime::GetSurfaceSize(&w, &h);
@@ -4333,6 +4677,39 @@ float Engine::getRuntimeInternalAspect() const {
     int height = kRuntimeInternalHeight;
     getRuntimeInternalResolution(width, height);
     return static_cast<float>(width) / static_cast<float>(std::max(1, height));
+}
+
+void Engine::applyProjectGraphicsToRenderer() {
+    const ProjectGraphicsSettings& graphics = projectManager.currentProject.graphicsSettings;
+
+    int lightBudget = 20;
+    int directionalAllowance = 1;
+    ProjectRenderingPathCaps(graphics.renderingPath, lightBudget, directionalAllowance);
+    renderer.setSceneLightBudget(lightBudget, directionalAllowance);
+    // in the shipped player only the rendering path budget should cap lights; the per-frame
+    // slider is an editor knob and its default (10) would silently eat Normal's promised 20.
+    if (playerMode) {
+        renderer.setMaxRealtimeLights(kRendererMaxRealtimeLights);
+    }
+
+    renderer.setMainLightEnabled(graphics.mainLightEnabled);
+    renderer.setMainLightShadows(graphics.mainLightCastShadows);
+    renderer.setAdditionalLightsEnabled(graphics.additionalLightsEnabled);
+    renderer.setAdditionalLightsShadows(graphics.additionalLightsCastShadows);
+    renderer.setSoftShadowsAllowed(graphics.softShadows);
+    renderer.setShadowMaxDistance(graphics.shadowMaxDistance);
+
+    // HDR off wins over the color-resolution pick; both land on the same
+    // renderer knob so the FBOs only rebuild when the effective format flips.
+    RendererColorPrecision precision = RendererColorPrecision::Auto;
+    if (!graphics.hdr || graphics.colorResolution == ProjectColorResolution::Color8) {
+        precision = RendererColorPrecision::SDR8;
+    } else if (graphics.colorResolution == ProjectColorResolution::Color16F) {
+        precision = RendererColorPrecision::HDR16F;
+    }
+    renderer.setColorPrecision(precision);
+
+    renderer.setDefaultTextureFormatPolicy(TextureFormatPolicyFromString(graphics.defaultTextureFormat));
 }
 
 void Engine::onWindowResized(int width, int height) {
@@ -4412,7 +4789,11 @@ bool Engine::init() {
     playerMode = true;
     autoStartPlayerMode = true;
 #endif
-    Profiler::instance().setRecording(!playerMode);
+    // Profiling is opt-in: recording starts disabled so MODU_PROFILE_SCOPE
+    // bookkeeping costs nothing until the user hits "Start Recording" in the
+    // Game Profiler window. MODULARITY_PROFILE_DUMP needs the samples, so it
+    // keeps recording on for headless/terminal profiling runs.
+    Profiler::instance().setRecording(std::getenv("MODULARITY_PROFILE_DUMP") != nullptr);
     if (playerMode) {
         showGameProfiler = false;
     }
@@ -4584,7 +4965,10 @@ void Engine::run() {
         deltaTime = std::min(deltaTime, 1.0f / 30.0f);
 
         const auto __preStart = std::chrono::steady_clock::now();
-        glfwPollEvents();
+        {
+            MODU_PROFILE_SCOPE("Poll Events", ProfilerSampleCategory::Engine);
+            glfwPollEvents();
+        }
 #ifdef __ANDROID__
         // Drain Android lifecycle + input events alongside GLFW. If the
         // activity is being destroyed, exit the loop immediately.
@@ -4600,6 +4984,21 @@ void Engine::run() {
 #endif
         pollProjectLoad();
         pollSceneLoad();
+
+        // --play: once the startup project + its scene have finished loading,
+        // drop straight into the running game with the dev overlay. One-shot.
+        if (autoPlayOnLoad_ && !isPlaying && !showLauncher &&
+            projectManager.currentProject.isLoaded && !sceneLoadInProgress &&
+            !sceneObjects.empty()) {
+            autoPlayOnLoad_ = false;
+            applyAutoStartMode();
+            // Keep the cursor usable so the dev overlay can be clicked on desktop
+            // (applyAutoStartMode locks it for in-game mouselook).
+            gameViewCursorLocked = false;
+            if (editorWindow) {
+                glfwSetInputMode(editorWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
+        }
 
 #if MODULARITY_RUNTIME_ONLY
         const bool termsPending = false;
@@ -4809,10 +5208,15 @@ void Engine::run() {
                     const SceneObject* runtimeCam = runtimeCameraObject;
                     Camera gameCamera = makeCameraFromObject(*runtimeCam);
                     gameCamera.position = runtimeCam->position;
+                    int vkRenderWidth = kRuntimeInternalWidth;
+                    int vkRenderHeight = kRuntimeInternalHeight;
+                    getRuntimeInternalResolution(vkRenderWidth, vkRenderHeight);
                     vulkanRenderer->setGameSceneData(
                         sceneObjects,
                         &gameCamera,
-                        runtimeCam->camera.fov,
+                        ResolveCameraVerticalFovDeg(runtimeCam->camera,
+                                                    static_cast<float>(vkRenderWidth) /
+                                                        static_cast<float>(std::max(1, vkRenderHeight))),
                         runtimeCam->camera.nearClip,
                         runtimeCam->camera.farClip);
                 } else {
@@ -4895,7 +5299,10 @@ void Engine::run() {
                 if (runtimeCameraObject) {
                     const SceneObject* runtimeCam = runtimeCameraObject;
                     activeRenderCamera = makeCameraFromObject(*runtimeCam);
-                    renderFov = runtimeCam->camera.fov;
+                    renderFov = ResolveCameraVerticalFovDeg(
+                        runtimeCam->camera,
+                        static_cast<float>(runtimeRenderWidth) /
+                            static_cast<float>(std::max(1, runtimeRenderHeight)));
                     renderNear = std::max(0.01f, runtimeCam->camera.nearClip);
                     renderFar = std::max(renderNear + 0.01f, runtimeCam->camera.farClip);
                 }
@@ -4958,10 +5365,8 @@ void Engine::run() {
             }
             ImGui_ImplGlfw_NewFrame();
 #ifdef __ANDROID__
-            // ImGui_ImplGlfw_NewFrame is a no-op stub on Android, so
-            // io.DisplaySize would otherwise stay 0x0 and the entire ImGui
-            // surface (including PlayerViewport, GameViewport, etc.) would
-            // render nothing. Feed it the EGL surface size directly.
+            // ImGui_ImplGlfw_NewFrame is a no-op stub on Android, so feed DisplaySize the EGL surface
+            // size ourselves or ImGui renders literally nothing.
             {
                 int eglW = 0, eglH = 0;
                 Modularity::AndroidRuntime::GetSurfaceSize(&eglW, &eglH);
@@ -4973,12 +5378,61 @@ void Engine::run() {
                     __io.DeltaTime = std::max(0.0001f, deltaTime);
                 }
             }
+            // same Android stub problem for input: drive ImGui's mouse from the primary touch so
+            // every mouse-based UI path just works with taps, no per-script changes.
+            {
+                float px = 0.0f, py = 0.0f;
+                bool active = false;
+                Modularity::AndroidRuntime::GetPrimaryPointer(&px, &py, &active);
+                ImGuiIO& __io = ImGui::GetIO();
+                __io.AddMousePosEvent(px, py);
+                // finger drag-to-scroll: a scroll drag over a scrollable window scrolls it and tells us
+                // to release the mouse button so it doesn't also click.
+                const bool __feedBtn = updateAndroidTouchScroll(px, py, active)
+                                           ? active
+                                           : false;
+                __io.AddMouseButtonEvent(0, __feedBtn);
+
+                // feed queued keyboard input into ImGui + toggle the soft keyboard off WantTextInput.
+                // has to run before NewFrame() or ImGui never sees the events.
+                auto __akToImGui = [](int kc) -> ImGuiKey {
+                    switch (kc) {
+                        case AKEYCODE_DEL:           return ImGuiKey_Backspace;
+                        case AKEYCODE_FORWARD_DEL:   return ImGuiKey_Delete;
+                        case AKEYCODE_ENTER:
+                        case AKEYCODE_NUMPAD_ENTER:  return ImGuiKey_Enter;
+                        case AKEYCODE_TAB:           return ImGuiKey_Tab;
+                        case AKEYCODE_ESCAPE:        return ImGuiKey_Escape;
+                        case AKEYCODE_DPAD_LEFT:     return ImGuiKey_LeftArrow;
+                        case AKEYCODE_DPAD_RIGHT:    return ImGuiKey_RightArrow;
+                        case AKEYCODE_DPAD_UP:       return ImGuiKey_UpArrow;
+                        case AKEYCODE_DPAD_DOWN:     return ImGuiKey_DownArrow;
+                        case AKEYCODE_MOVE_HOME:     return ImGuiKey_Home;
+                        case AKEYCODE_MOVE_END:      return ImGuiKey_End;
+                        case AKEYCODE_SHIFT_LEFT:    return ImGuiKey_LeftShift;
+                        case AKEYCODE_SHIFT_RIGHT:   return ImGuiKey_RightShift;
+                        case AKEYCODE_SPACE:         return ImGuiKey_Space;
+                        default:                     return ImGuiKey_None;
+                    }
+                };
+                unsigned int __ch = 0;
+                while (Modularity::AndroidRuntime::PollInputChar(&__ch)) {
+                    __io.AddInputCharacter(__ch);
+                }
+                int __kc = 0;
+                bool __kdown = false;
+                while (Modularity::AndroidRuntime::PollKeyEvent(&__kc, &__kdown)) {
+                    const ImGuiKey __key = __akToImGui(__kc);
+                    if (__key != ImGuiKey_None) __io.AddKeyEvent(__key, __kdown);
+                }
+                Modularity::AndroidRuntime::SetSoftKeyboardVisible(__io.WantTextInput);
+            }
 #endif
             ImGui::NewFrame();
             const double __preMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - __preStart).count();
             if (__preMs > 100.0) std::fprintf(stderr, "[ModuTimer] preImGuiWork %.1f ms\n", __preMs);
-            const auto __dispatchStart = std::chrono::steady_clock::now();
+            [[maybe_unused]] const auto __dispatchStart = std::chrono::steady_clock::now();
             uiCanvas3DInputs.clear();
 
             if (showLauncher) {
@@ -5038,6 +5492,7 @@ void Engine::run() {
 #undef MODU_TIME_PANEL
                 renderLatestErrorBar();
                 renderEditorToast();
+                renderTouchEditToolbar();
                 updateDockDrawerInteractions();
                 {
                     const double __dispatchMs = std::chrono::duration<double, std::milli>(
@@ -5057,6 +5512,7 @@ void Engine::run() {
 #if !MODULARITY_RUNTIME_ONLY
                 renderTermsOfServiceModal();
                 renderWindowsDisclaimerPopup();
+                renderAndroidStorageAccessPopup();
                 renderModuCppNvimWarningPopup();
                 renderDialogs();
                 renderModuPakExportDialog();
@@ -5082,8 +5538,17 @@ void Engine::run() {
             DragPreview::UpdateAndRender();
         }
 #endif
+        // runtime dev tools overlay, drawn last so it sits on top of the game. shows whenever the
+        // game is actually running (player/Android or editor Play mode). dev builds only.
+        if ((playerMode || isPlaying) && !showLauncher) {
+            renderRuntimeDevOverlay();
+        }
+
         const auto __renderImGuiStart = std::chrono::steady_clock::now();
-        ImGui::Render();
+        {
+            MODU_PROFILE_SCOPE("ImGui Render", ProfilerSampleCategory::UI);
+            ImGui::Render();
+        }
         const auto __renderImGuiEnd = std::chrono::steady_clock::now();
         {
             const double __c3DMs = std::chrono::duration<double, std::milli>(__renderImGuiStart - __uiC3DStart).count();
@@ -5125,7 +5590,10 @@ void Engine::run() {
             glClear(GL_COLOR_BUFFER_BIT);
 
             const auto __glDrawStart = std::chrono::steady_clock::now();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            {
+                MODU_PROFILE_SCOPE("ImGui Draw Submit", ProfilerSampleCategory::Render);
+                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            }
             const double __glDrawMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - __glDrawStart).count();
             if (__glDrawMs > 50.0) std::fprintf(stderr, "[ModuTimer] OpenGL3_RenderDrawData %.1f ms\n", __glDrawMs);
@@ -5207,6 +5675,7 @@ void Engine::run() {
 
         if (!usingVulkan()) {
             auto presentBuffers = [&]() {
+                MODU_PROFILE_SCOPE("Swap Buffers", ProfilerSampleCategory::Render);
 #ifdef __ANDROID__
                 // GLFW's null backend doesn't actually present; route to EGL.
                 Modularity::AndroidRuntime::PresentFrame();
@@ -5319,9 +5788,10 @@ void Engine::shutdown() {
         saveCurrentScene(false);
     }
 
-    if (compileWorker.joinable()) {
-        compileWorker.join();
+    for (auto& worker : compileWorkers) {
+        if (worker.valid()) worker.wait();
     }
+    compileWorkers.clear();
 
     physics->onPlayStop();
     audio.onPlayStop();
@@ -5335,6 +5805,9 @@ void Engine::shutdown() {
             ImGui_ImplOpenGL3_Shutdown();
             entry.second.backendReady = false;
         }
+        // see UiCanvas3DTargets.cpp: the font cache is keyed by the raw context pointer, drop it in
+        // lockstep with DestroyContext or a reused address resurrects dangling ImFont*s.
+        uiFontContexts.erase(entry.second.context);
         ImGui::DestroyContext(entry.second.context);
     }
     uiCanvas3DContexts.clear();
@@ -5349,9 +5822,11 @@ void Engine::shutdown() {
         } else
 #endif
         {
+            Modularity::UiGlassBlur::Shutdown();
             ImGui_ImplOpenGL3_Shutdown();
         }
         ImGui_ImplGlfw_Shutdown();
+        uiFontContexts.erase(mainContext);
         ImGui::DestroyContext(mainContext);
     }
 
@@ -5985,7 +6460,7 @@ void Engine::createMMeshPrimitive(const std::string& primitiveName) {
         return;
     }
 
-    MMeshAsset asset = buildMMeshFromRawMesh(raw);
+    MMeshAsset asset = BuildMMeshFromRawMesh(raw);
     MMeshLoader loader;
 
     fs::path filePath = root / (primitiveName + ".mmesh");
@@ -6031,7 +6506,7 @@ void Engine::createPipelineDefaultSceneObjects() {
 #pragma region Mesh Editing
 bool Engine::ensureMeshEditTarget(SceneObject* obj) {
     if (!obj) return false;
-    if (!IsRawMeshPath(obj->meshPath)) return false;
+    if (!IsMeshEditablePath(obj->meshPath)) return false;
 
     if (meshEditLoaded && meshEditPath == obj->meshPath) {
         if (meshEditAsset.materialSlots.empty()) {
@@ -6084,6 +6559,31 @@ bool Engine::syncMeshEditToGPU(SceneObject* obj) {
         addConsoleMessage("Mesh GPU sync failed: " + err, ConsoleMessageType::Error);
         return false;
     }
+
+    // keep the TM renderer's cached copy live while editing .mmesh assets
+    if (IsMMeshPath(obj->meshPath)) {
+        using namespace Modularity::Render25D;
+        MMeshAsset live = BuildMMeshFromRawMesh(meshEditAsset);
+        std::string cacheError;
+        const MMeshRenderData* existing = tmRenderer.getMeshCache().getOrLoad(obj->meshPath, cacheError);
+        if (existing != nullptr) {
+            // raw meshes only carry slot names; pull textures/presentation from the cached submeshes
+            for (MMeshMaterialRef& material : live.materials) {
+                for (const MMeshRenderSubmesh& submesh : existing->submeshes) {
+                    if (submesh.materialName == material.name) {
+                        material.albedoTexturePath = submesh.albedoTexturePath;
+                        material.presentation = submesh.presentation;
+                        break;
+                    }
+                }
+            }
+        }
+        cacheError.clear();
+        if (tmRenderer.getMeshCache().store(obj->meshPath, live, cacheError) == nullptr) {
+            addConsoleMessage("MMesh cache refresh failed: " + cacheError, ConsoleMessageType::Error);
+        }
+    }
+
     projectManager.currentProject.hasUnsavedChanges = true;
     return true;
 }
@@ -6099,6 +6599,10 @@ bool Engine::saveMeshEditAsset(std::string& error) {
     }
     if (!getModelLoader().saveRawMesh(meshEditAsset, meshEditPath, error)) {
         return false;
+    }
+    if (IsMMeshPath(meshEditPath)) {
+        // saved file keeps material textures; reload the TM copy from disk
+        tmRenderer.getMeshCache().invalidate(meshEditPath);
     }
     meshEditDirty = false;
     fileBrowser.needsRefresh = true;
@@ -6725,15 +7229,21 @@ void Engine::queueScriptCompile(const fs::path& scriptPath) {
         return;
     }
 
-    if (compileRequestQueue.empty() && !compileInProgress && !compileResultReady) {
+    if (compileRequestQueue.empty() && !compileInProgress) {
         compileHistory.clear();
         compileBatchTotal = 0;
         compileBatchCompleted = 0;
         compileCompletionStart = 0.0;
+        compileUiToast = nextCompileFromAuto;
         showCompilePopup = true;
         compilePopupHideTime = 0.0;
         compilePopupOpened = false;
         playCompileStartSound();
+    } else if (!nextCompileFromAuto && compileUiToast) {
+        // a manual compile joined an in-flight auto batch; escalate to the modal.
+        compileUiToast = false;
+        compilePopupOpened = false;
+        showCompilePopup = true;
     }
 
     compileRequestQueue.push_back(std::move(item));
@@ -6745,26 +7255,61 @@ void Engine::queueScriptCompileBatch(const std::vector<fs::path>& scriptPaths) {
         queueScriptCompile(scriptPath);
     }
 
-    if (!compileInProgress && !compileResultReady) {
-        if (!compileRequestQueue.empty()) {
-            const ScriptCompileQueueItem next = compileRequestQueue.front();
-            compileRequestQueue.pop_front();
-            const std::string key = next.managed ? std::string("managed:") + next.scriptPath.string()
-                                                 : next.scriptPath.string();
-            compileRequestKeys.erase(key);
-            compileCurrentLabel = next.displayLabel;
-            compileCurrentPath = next.scriptPath;
-            compileCurrentManaged = next.managed;
-            compileBatchCompleted = std::min(compileBatchCompleted, std::max(0, compileBatchTotal - 1));
-            if (next.managed) {
-                compileManagedScripts();
-            } else {
-                compileScriptFile(next.scriptPath);
-            }
-        }
+    if (!compileInProgress) {
+        compileBatchCompleted = std::min(compileBatchCompleted, std::max(0, compileBatchTotal - 1));
+        startQueuedCompileJobs();
     } else {
         showCompilePopup = true;
         compilePopupOpened = false;
+        startQueuedCompileJobs();
+    }
+}
+
+namespace {
+    // Mirrors "ninja -jN": N == logical core count, so N independent .moducpp
+    // scripts can compile concurrently instead of one at a time.
+    int compileMaxParallelJobs() {
+        unsigned hw = std::thread::hardware_concurrency();
+        return static_cast<int>(hw == 0 ? 1u : hw);
+    }
+
+    // Script discovery walks the whole project tree so scripts placed anywhere
+    // (Assets subfolders, project root, ...) are found, not just Assets/Scripts.
+    // Dot-directories are never sources at any depth; the named set only applies
+    // to the project root's direct children (Library/Cache/Builds hold engine
+    // output and installed packages, which compile through their own pipelines).
+    bool isScriptScanExcludedDir(const std::string& name, bool atScanRoot) {
+        if (!name.empty() && name[0] == '.') return true;
+        if (!atScanRoot) return false;
+        return name == "Library" || name == "Cache" || name == "Builds" ||
+               name == "Build" || name == "Packages" || name == "ProjectSettings" ||
+               name == "ProjectUserSettings" || name == "BuildProfiles";
+    }
+}
+
+void Engine::startQueuedCompileJobs() {
+    while (static_cast<int>(compileWorkers.size()) < compileMaxParallelJobs() &&
+           !compileRequestQueue.empty()) {
+        // A managed (dotnet) build isn't per-script; only start one once the
+        // native pool has fully drained, and let it have the pool to itself.
+        if (compileRequestQueue.front().managed && !compileWorkers.empty()) {
+            break;
+        }
+
+        const ScriptCompileQueueItem next = compileRequestQueue.front();
+        compileRequestQueue.pop_front();
+        const std::string key = next.managed ? std::string("managed:") + next.scriptPath.string()
+                                             : next.scriptPath.string();
+        compileRequestKeys.erase(key);
+        compileCurrentLabel = next.displayLabel;
+        compileCurrentPath = next.scriptPath;
+        compileCurrentManaged = next.managed;
+
+        if (next.managed) {
+            compileManagedScripts();
+            break;
+        }
+        compileScriptFile(next.scriptPath);
     }
 }
 
@@ -6830,13 +7375,63 @@ void Engine::updateAutoCompileScripts() {
     }
     packageManager.applyToBuildConfig(config);
 
+    const fs::path projectRoot = projectManager.currentProject.projectPath;
+
+    // future me: the compiler writes the transpiled .cpp and wrapper .cpp into outDir.
+    // if outDir lives under a scanned script root (a totally normal project layout),
+    // the discovery pass below will see those generated files as fresh "sources" after
+    // every single compile and re-queue them forever. that's the infinite-recompile
+    // bug. so: never treat anything under outDir, or anything that looks generated, as
+    // an auto-compile source.
+    std::error_code outDirEc;
+    std::vector<std::string> outDirPrefixes;
+    if (!config.outDir.empty()) {
+        fs::path absOut = fs::absolute(config.outDir, outDirEc);
+        if (outDirEc) absOut = config.outDir;
+        outDirPrefixes.push_back(absOut.lexically_normal().string());
+        outDirEc.clear();
+        fs::path canonOut = fs::weakly_canonical(config.outDir, outDirEc);
+        if (!outDirEc) {
+            std::string canonKey = canonOut.lexically_normal().string();
+            if (std::find(outDirPrefixes.begin(), outDirPrefixes.end(), canonKey) == outDirPrefixes.end()) {
+                outDirPrefixes.push_back(std::move(canonKey));
+            }
+        }
+    }
+    auto isGeneratedArtifact = [](const fs::path& path) {
+        const std::string name = path.filename().string();
+        return name.find(".gen.cpp") != std::string::npos ||
+               name.find(".gen.c") != std::string::npos ||
+               name.find(".wrap.cpp") != std::string::npos;
+    };
+    auto isUnderOutDir = [&](const std::string& key) {
+        for (const std::string& prefix : outDirPrefixes) {
+            if (prefix.empty() || key.size() < prefix.size()) continue;
+            if (key.compare(0, prefix.size(), prefix) != 0) continue;
+            // require a path boundary so "outdir" doesn't swallow "outdir-extra".
+            if (key.size() == prefix.size()) return true;
+            const char next = key[prefix.size()];
+            if (next == '/' || next == '\\') return true;
+        }
+        return false;
+    };
+
     std::unordered_set<std::string> sources;
     auto addSourceTo = [&](std::unordered_set<std::string>& target, const fs::path& path) {
         if (path.empty()) return;
+        if (isGeneratedArtifact(path)) return;
+        fs::path candidate = path;
+        if (candidate.is_relative()) {
+            // resolve against the project, not whatever the process CWD happens to be,
+            // or the same script ends up with two different keys and dodges the dedupe.
+            candidate = projectRoot / candidate;
+        }
         std::error_code ec;
-        fs::path absPath = fs::absolute(path, ec);
-        if (ec) absPath = path;
-        target.insert(absPath.lexically_normal().string());
+        fs::path absPath = fs::absolute(candidate, ec);
+        if (ec) absPath = candidate;
+        std::string key = absPath.lexically_normal().string();
+        if (isUnderOutDir(key)) return;
+        target.insert(std::move(key));
     };
 
     bool hasManagedScripts = false;
@@ -6850,8 +7445,6 @@ void Engine::updateAutoCompileScripts() {
             addSourceTo(sources, sc.path);
         }
     }
-
-    const fs::path projectRoot = projectManager.currentProject.projectPath;
     std::unordered_set<std::string> scannedRoots;
     auto scanScriptRoot = [&](const fs::path& root) {
         if (root.empty()) return;
@@ -6879,7 +7472,12 @@ void Engine::updateAutoCompileScripts() {
 
         for (auto it = fs::recursive_directory_iterator(normalizedRoot, existsEc);
              it != fs::recursive_directory_iterator(); ++it) {
-            if (it->is_directory()) continue;
+            if (it->is_directory()) {
+                if (isScriptScanExcludedDir(it->path().filename().string(), it.depth() == 0)) {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
             std::string ext = it->path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -6893,9 +7491,10 @@ void Engine::updateAutoCompileScripts() {
     if (now - scriptAutoCompileLastDirectoryScan >= scriptAutoCompileDirectoryScanInterval) {
         scriptAutoCompileLastDirectoryScan = now;
         scriptAutoCompileDiscoveredSources.clear();
+        // Whole project tree (minus caches/build output via isScriptScanExcludedDir),
+        // plus scriptsDir in case it points outside the project.
+        scanScriptRoot(projectRoot);
         scanScriptRoot(config.scriptsDir);
-        scanScriptRoot(projectRoot / "Scripts");
-        scanScriptRoot(projectRoot / "Assets" / "Scripts");
     }
 
     sources.insert(scriptAutoCompileDiscoveredSources.begin(), scriptAutoCompileDiscoveredSources.end());
@@ -6925,11 +7524,8 @@ void Engine::updateAutoCompileScripts() {
         }
     }
 
-    // Cheap, deterministic derivation of the expected binary path. mirrors the
-    // path-building logic in ScriptCompiler::makeCommands but WITHOUT the regex scan
-    // of the source file. used for the up-to-date check below; only sources that
-    // actually need a rebuild go through the full makeCommands path via
-    // queueAutoCompile -> compileScriptFile.
+    // cheap derivation of the expected binary path (same logic as ScriptCompiler::makeCommands,
+    // minus the regex scan). used for the up-to-date check below.
     // future me: do NOT just call makeCommands here to grab the path. it's ~250ms per script
     // (it regex-scans the whole source), and calling it for every script on project load will
     // nuke open times. that's the entire reason this little lambda exists. leave it. please.
@@ -7041,12 +7637,23 @@ void Engine::updateAutoCompileScripts() {
                 }
             }
 
+            // don't re-kick a managed build we already attempted for this exact source state, or a
+            // stale/relocated output path means recompiling C# forever (and re-popping the toast each time).
+            if (needsManaged && managedAutoCompileHasCompiled &&
+                managedAutoCompileNewestSource <= managedAutoCompileCompiledSource) {
+                needsManaged = false;
+            }
+
             if (needsManaged) {
+                managedAutoCompileCompiledSource = managedAutoCompileNewestSource;
+                managedAutoCompileHasCompiled = true;
+                nextCompileFromAuto = true;
                 if (!compileInProgress) {
                     compileManagedScripts();
                 } else {
                     managedAutoCompileQueued = true;
                 }
+                nextCompileFromAuto = false;
             }
         }
     }
@@ -7073,7 +7680,11 @@ void Engine::processAutoCompileQueue() {
     }
 
     if (!batch.empty()) {
+        // mark the whole synchronous queue/compile chain as auto-originated so the
+        // compile UI shows as a corner toast instead of stealing focus with the modal.
+        nextCompileFromAuto = true;
         queueScriptCompileBatch(batch);
+        nextCompileFromAuto = false;
     }
 }
 
@@ -7860,10 +8471,24 @@ void Engine::syncVideoPlayers(float delta) {
             !HasRendererComponent(obj) ||
             obj.videoPlayer.videoPath.empty()) {
             videoPlayers.erase(obj.id);
+            videoLoadFailedPaths.erase(obj.id);
             continue;
         }
 
+        const fs::path resolvedVideoPath = resolveProjectAssetPath(obj.videoPlayer.videoPath);
         activeVideoIds.insert(obj.id);
+
+        // A load that already failed for this exact path stays failed; retrying it
+        // every frame re-opens/probes the file and spams the log. Retry only once
+        // the assigned path changes (or after clearVideoPlayers on mode restart).
+        auto failedIt = videoLoadFailedPaths.find(obj.id);
+        if (failedIt != videoLoadFailedPaths.end()) {
+            if (failedIt->second == resolvedVideoPath.string()) {
+                continue;
+            }
+            videoLoadFailedPaths.erase(failedIt);
+        }
+
         auto& entry = videoPlayers[obj.id];
         if (!entry) {
             entry = std::make_unique<VideoPlayer>();
@@ -7878,7 +8503,6 @@ void Engine::syncVideoPlayers(float delta) {
         player.SetAudioSyncTolerance(obj.videoPlayer.audioSyncTolerance);
         player.SetAudioSystem(&audio, obj.id);
 
-        const fs::path resolvedVideoPath = resolveProjectAssetPath(obj.videoPlayer.videoPath);
         const bool wasLoaded = player.IsLoaded() && player.GetLoadedPath() == resolvedVideoPath.string();
         if (!wasLoaded) {
             if (!player.LoadVideo(resolvedVideoPath.string())) {
@@ -7890,12 +8514,12 @@ void Engine::syncVideoPlayers(float delta) {
                     std::cerr << ": " << player.GetLastError();
                 }
                 std::cerr << std::endl;
+                videoLoadFailedPaths[obj.id] = resolvedVideoPath.string();
                 videoPlayers.erase(obj.id);
                 continue;
             }
-            // Re-apply audio system binding after LoadVideo (LoadVideo recreates the
-            // buffer source, RefreshAudioBinding inside LoadVideo runs before we know
-            // the audio system pointer for the freshly-loaded buffer).
+            // re-apply the audio binding after LoadVideo: it recreates the buffer source before we
+            // know the audio system pointer, so its own RefreshAudioBinding ran too early.
             player.SetAudioSystem(&audio, obj.id);
         }
 
@@ -7947,6 +8571,13 @@ void Engine::syncVideoPlayers(float delta) {
             ++it;
         }
     }
+    for (auto it = videoLoadFailedPaths.begin(); it != videoLoadFailedPaths.end();) {
+        if (activeVideoIds.find(it->first) == activeVideoIds.end()) {
+            it = videoLoadFailedPaths.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void Engine::clearVideoPlayers() {
@@ -7957,6 +8588,7 @@ void Engine::clearVideoPlayers() {
         obj.runtimeAlbedoTextureFlipY = false;
     }
     videoPlayers.clear();
+    videoLoadFailedPaths.clear();
 }
 #pragma endregion
 
@@ -8275,12 +8907,12 @@ void Engine::updateSkeletalAnimations(float delta) {
         if (!obj.skeletal.useAnimation) continue;
         if (obj.meshPath.empty()) continue;
 
-        ModelSceneData sceneData;
         std::string err;
-        if (!getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) continue;
-        if (obj.skeletal.clipIndex < 0 || obj.skeletal.clipIndex >= (int)sceneData.animations.size()) continue;
+        const ModelSceneData* sceneData = getModelLoader().loadModelSceneCached(obj.meshPath, err);
+        if (!sceneData) continue;
+        if (obj.skeletal.clipIndex < 0 || obj.skeletal.clipIndex >= (int)sceneData->animations.size()) continue;
 
-        const auto& clip = sceneData.animations[obj.skeletal.clipIndex];
+        const auto& clip = sceneData->animations[obj.skeletal.clipIndex];
         double tps = clip.ticksPerSecond != 0.0 ? clip.ticksPerSecond : 25.0;
         obj.skeletal.time += delta * obj.skeletal.playSpeed;
         double timeTicks = obj.skeletal.time * tps;
@@ -8530,6 +9162,13 @@ void Engine::refreshSceneObjectIndexCache() {
     if (sceneObjectIndexData == currentData &&
         sceneObjectIndexCount == sceneObjects.size() &&
         sceneObjectIndexById.size() == sceneObjects.size()) {
+        // Same buffer + size: the map can only be stale after an in-place
+        // reorder (which invalidates sceneObjectIndexData explicitly), so one
+        // verification per frame is enough; per-call scans made findObjectById
+        // O(scene) and it is hit per bone per skinned object per frame.
+        if (sceneObjectIndexVerifiedFrame == renderFrameSerial) {
+            return;
+        }
         bool cacheMatchesCurrentObjects = true;
         for (size_t i = 0; i < sceneObjects.size(); ++i) {
             auto it = sceneObjectIndexById.find(sceneObjects[i].id);
@@ -8539,20 +9178,7 @@ void Engine::refreshSceneObjectIndexCache() {
             }
         }
         if (cacheMatchesCurrentObjects) {
-            std::vector<int> validSelectedIds;
-            validSelectedIds.reserve(selectedObjectIds.size());
-            for (int id : selectedObjectIds) {
-                if (sceneObjectIndexById.find(id) == sceneObjectIndexById.end()) continue;
-                if (std::find(validSelectedIds.begin(), validSelectedIds.end(), id) != validSelectedIds.end()) continue;
-                validSelectedIds.push_back(id);
-            }
-            selectedObjectIds = std::move(validSelectedIds);
-            if (selectedObjectId >= 0 && sceneObjectIndexById.find(selectedObjectId) == sceneObjectIndexById.end()) {
-                selectedObjectId = selectedObjectIds.empty() ? -1 : selectedObjectIds.back();
-            }
-            if (hierarchyRangeAnchorId >= 0 && sceneObjectIndexById.find(hierarchyRangeAnchorId) == sceneObjectIndexById.end()) {
-                hierarchyRangeAnchorId = selectedObjectId;
-            }
+            sceneObjectIndexVerifiedFrame = renderFrameSerial;
             return;
         }
     }
@@ -8564,7 +9190,10 @@ void Engine::refreshSceneObjectIndexCache() {
     }
     sceneObjectIndexData = currentData;
     sceneObjectIndexCount = sceneObjects.size();
+    sceneObjectIndexVerifiedFrame = renderFrameSerial;
 
+    // Selection sanitization only needs to run when the object set actually
+    // changed (the rebuild path), not on every lookup.
     std::vector<int> validSelectedIds;
     validSelectedIds.reserve(selectedObjectIds.size());
     for (int id : selectedObjectIds) {
@@ -8996,15 +9625,14 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     projectManager.addToRecentProjects(projectManager.currentProject.name, result.path);
     vulkanMaterialFeatureWarningShown = false;
     packageManager.setProjectRoot(projectManager.currentProject.projectPath);
-    // Push the project's saved per-texture format overrides into the live
-    // renderer. Keys are stored project-relative, so anchor the renderer's key
-    // root at the project path to match. Reset first so a previous project's
-    // overrides don't leak into this one.
+    // push the project's per-texture format overrides into the renderer (keys are project-relative,
+    // so anchor at the project path). reset first so the previous project's don't leak in.
     renderer.clearTextureFormatOverrides();
     renderer.setTextureKeyRoot(projectManager.currentProject.projectPath.string());
     for (const auto& [texPath, format] : projectManager.currentProject.textureFormatOverrides) {
         renderer.setTextureFormatOverride(texPath, TextureFormatPolicyFromString(format));
     }
+    applyProjectGraphicsToRenderer();
     clampOptionalPackageState(true);
     fs::path contentRoot = projectManager.currentProject.usesNewLayout
         ? projectManager.currentProject.assetsPath
@@ -9015,11 +9643,8 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     }
 
 #ifndef __ANDROID__
-    // Android has no concept of "relaunch the editor with a different
-    // backend": the player is the only binary and it's already running
-    // GLES. Returning early here on backend mismatch would silently skip
-    // loadBuildSettings() below, leaving runtime values (resolution
-    // dropdown, scene list, etc.) at their compile-time defaults.
+    // Android can't "relaunch the editor with a different backend", it's one binary already on
+    // GLES. returning early on mismatch would skip loadBuildSettings() and leave runtime values at defaults.
     if (projectManager.currentProject.rendererBackend != graphicsBackend) {
         const Modularity::GraphicsBackend targetBackend = projectManager.currentProject.rendererBackend;
         std::string relaunchError;
@@ -9087,6 +9712,8 @@ void Engine::finishProjectLoad(ProjectLoadResult& result) {
     managedAutoCompileCachedProjectDir.clear();
     managedAutoCompileNewestSource = fs::file_time_type{};
     managedAutoCompileHasSource = false;
+    managedAutoCompileCompiledSource = fs::file_time_type{};
+    managedAutoCompileHasCompiled = false;
     if (!sceneLoadInProgress) {
         if (launcherTransitionActive) {
             launcherTransitionPendingHide = true;
@@ -9139,12 +9766,16 @@ void Engine::loadAutoStartConfig() {
         std::ostringstream ss;
         ss << file.rdbuf();
         configText = ss.str();
-    } else {
+    } else if (Modularity::Platform::GetAssetSource().Exists("autostart.modu")) {
+        // autostart.modu is player-only, so only ReadAll when it exists to dodge a spurious
+        // "ReadAll miss" warning in the editor.
         std::vector<uint8_t> bytes =
             Modularity::Platform::GetAssetSource().ReadAll("autostart.modu");
         if (bytes.empty()) return;
         configText.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         configFromAsset = true;
+    } else {
+        return;
     }
 
     auto trim = [](std::string& s) {
@@ -10228,13 +10859,15 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                 }
             }
 
+            ScriptBuildConfig androidScriptConfig;
+            bool haveAndroidScriptConfig = false;
             fs::path compiledScriptsSrc;
             fs::path compiledScriptsDstRelative;
             {
-                ScriptBuildConfig scriptConfig;
                 std::string configError;
-                if (scriptCompiler.loadConfig(scriptsConfigPath, scriptConfig, configError)) {
-                    compiledScriptsSrc = scriptConfig.outDir;
+                if (scriptCompiler.loadConfig(scriptsConfigPath, androidScriptConfig, configError)) {
+                    haveAndroidScriptConfig = true;
+                    compiledScriptsSrc = androidScriptConfig.outDir;
                     if (!compiledScriptsSrc.is_absolute()) {
                         compiledScriptsSrc = projectRoot / compiledScriptsSrc;
                     }
@@ -10257,17 +10890,23 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                     }
                 }
             }
-            if (compiledScriptsSrc.empty()) {
-                compiledScriptsSrc = projectRoot / "Library" / "CompiledScripts";
+            if (compiledScriptsDstRelative.empty()) {
                 compiledScriptsDstRelative = fs::path("Library") / "CompiledScripts";
             }
-            if (fs::exists(compiledScriptsSrc)) {
-                if (!CopyDirectoryIntoRuntimeRoot(compiledScriptsSrc, runtimeStageRoot,
-                                                  compiledScriptsDstRelative, copyError)) {
-                    result.message = copyError;
+            // cross-compile the project's scripts for the target ABI and stage them as sonames in
+            // apk/lib/<abi>/ (the only place Android lets us dlopen from). 0-byte placeholders at the
+            // bundle paths keep the runtime's binary-present gate happy.
+            setStatus(0.70f, "Cross-compiling scripts for Android...");
+            if (haveAndroidScriptConfig) {
+                std::string scriptError;
+                if (!crossCompileAndroidScripts(androidScriptConfig, projectRoot, ndkRoot, androidAbi,
+                                                libDir, runtimeStageRoot, compiledScriptsDstRelative,
+                                                appendLog, scriptError)) {
+                    result.message = scriptError;
                     return result;
                 }
-                appendLog("Warning: Android export copied existing compiled script binaries only; native script cross-compilation is not part of this packaging step yet.");
+            } else {
+                appendLog("No scripts.modu config found; skipping script cross-compilation.");
             }
             if (fs::exists(projectRoot / "Library" / "InstalledPackages")) {
                 if (!CopyDirectoryIntoRuntimeRoot(projectRoot / "Library" / "InstalledPackages",
@@ -10673,13 +11312,26 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                     }
                 }
 
+                // Same discovery rules as the auto-compile scan: the whole project
+                // tree (so scripts anywhere in Assets or at the project root export
+                // too), skipping caches/build output and generated sources.
                 std::vector<fs::path> scriptScanRoots;
+                scriptScanRoots.push_back(projectRoot);
                 scriptScanRoots.push_back(scriptConfig.scriptsDir);
-                scriptScanRoots.push_back(projectRoot / "Assets" / "Scripts");
-                scriptScanRoots.push_back(projectRoot / "Scripts");
                 if (!scriptsPath.empty()) {
                     scriptScanRoots.push_back(scriptsPath);
                 }
+
+                std::error_code outDirAbsEc;
+                fs::path absOutDir = fs::absolute(scriptConfig.outDir, outDirAbsEc);
+                if (outDirAbsEc) absOutDir = scriptConfig.outDir;
+                const std::string outDirKey = absOutDir.lexically_normal().string();
+                auto isGeneratedScriptSource = [](const fs::path& path) {
+                    const std::string name = path.filename().string();
+                    return name.find(".gen.cpp") != std::string::npos ||
+                           name.find(".gen.c") != std::string::npos ||
+                           name.find(".wrap.cpp") != std::string::npos;
+                };
 
                 std::unordered_set<std::string> seenScanRoots;
                 for (const auto& scanRoot : scriptScanRoots) {
@@ -10695,9 +11347,21 @@ void Engine::startExportBuild(const fs::path& outputDir, bool runAfter) {
                     for (auto it = fs::recursive_directory_iterator(absRoot, scriptsEc);
                          it != fs::recursive_directory_iterator(); ++it) {
                         if (scriptsEc) break;
+                        if (it->is_directory()) {
+                            const fs::path dirPath = it->path();
+                            std::error_code dirEc;
+                            fs::path absDir = fs::absolute(dirPath, dirEc);
+                            if (dirEc) absDir = dirPath;
+                            if (isScriptScanExcludedDir(dirPath.filename().string(), it.depth() == 0) ||
+                                absDir.lexically_normal().string() == outDirKey) {
+                                it.disable_recursion_pending();
+                            }
+                            continue;
+                        }
                         if (!it->is_regular_file()) continue;
                         const fs::path sourcePath = it->path();
                         if (!isNativeSourceFile(sourcePath)) continue;
+                        if (isGeneratedScriptSource(sourcePath)) continue;
                         addNativeSource(sourcePath);
                     }
                 }
@@ -11060,6 +11724,292 @@ void Engine::pollExportBuild() {
     }
 }
 
+int Engine::buildAndroidApkHeadless(const AndroidBuildRequest& request, std::string& error) {
+    // no project = bare engine APK (player's no-project state). the editor APK is also
+    // "bare", it boots to its own launcher.
+    if (request.projectPath.empty() || request.editor) {
+        return buildBareAndroidApk(request, error);
+    }
+
+    std::error_code ec;
+    fs::path projectFile = fs::absolute(request.projectPath, ec);
+    if (ec) projectFile = request.projectPath;
+    if (!fs::exists(projectFile, ec) || ec) {
+        error = "Project file not found: " + projectFile.string();
+        return 2;
+    }
+    if (!projectManager.loadProject(projectFile.string())) {
+        error = projectManager.errorMessage.empty()
+            ? ("Failed to load project: " + projectFile.string())
+            : projectManager.errorMessage;
+        return 2;
+    }
+    loadBuildSettings();
+    buildSettings.platform = BuildPlatform::Android;
+    if (!request.abi.empty()) buildSettings.architecture = request.abi;
+    // --debug only ever turns dev mode ON; otherwise respect build.modu so a CLI build
+    // never silently flips off a dev flag set in the editor.
+    if (request.debug) buildSettings.developmentBuild = true;
+
+    fs::path outputDir = request.outputDir.empty()
+        ? (projectManager.currentProject.projectPath / "Build" / "Android")
+        : fs::path(request.outputDir);
+    fs::create_directories(outputDir, ec);
+
+    std::fprintf(stderr, "[Android] Building APK for project '%s' (abi=%s)...\n",
+                 projectManager.currentProject.name.c_str(),
+                 buildSettings.architecture.c_str());
+
+    // startExportBuild kicks the async export; pump it to completion ourselves
+    // since there's no run loop calling pollExportBuild() for us.
+    startExportBuild(outputDir, false);
+    bool active = true;
+    while (active) {
+        pollExportBuild();
+        {
+            std::lock_guard<std::mutex> lock(exportMutex);
+            active = exportJob.active;
+        }
+        if (active) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    bool ok = false;
+    std::string status;
+    std::string log;
+    fs::path producedApk;
+    {
+        std::lock_guard<std::mutex> lock(exportMutex);
+        ok = exportJob.success;
+        status = exportJob.status;
+        log = exportJob.log;
+        producedApk = exportJob.archivePath;
+    }
+    if (!log.empty()) std::fprintf(stderr, "%s\n", log.c_str());
+    if (!ok) {
+        error = status.empty() ? "Android export failed." : status;
+        return 1;
+    }
+
+    if (!request.outputApk.empty() && !producedApk.empty()) {
+        fs::path dest = fs::absolute(request.outputApk, ec);
+        if (ec) dest = request.outputApk;
+        fs::create_directories(dest.parent_path(), ec);
+        fs::copy_file(producedApk, dest, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "Built APK but failed to copy to " + dest.string() + ": " + ec.message();
+            return 1;
+        }
+        std::fprintf(stdout, "Android APK: %s\n", dest.string().c_str());
+    } else {
+        std::fprintf(stdout, "Android APK: %s\n", producedApk.string().c_str());
+    }
+    return 0;
+}
+
+int Engine::buildBareAndroidApk(const AndroidBuildRequest& request, std::string& error) {
+    std::error_code ec;
+    const std::string abi = request.abi.empty() ? std::string("arm64-v8a") : request.abi;
+
+    const fs::path ndkRoot = resolveAndroidNdkPath();
+    if (ndkRoot.empty()) {
+        error = "Android NDK not found. Set ANDROID_NDK_ROOT, ANDROID_NDK_HOME, or ANDROID_NDK.";
+        return 2;
+    }
+    const fs::path toolchainFile = ndkRoot / "build" / "cmake" / "android.toolchain.cmake";
+    if (!fs::exists(toolchainFile, ec) || ec) {
+        error = "Android NDK missing android.toolchain.cmake: " + toolchainFile.string();
+        return 2;
+    }
+    const fs::path sdkRoot = findAndroidSdkRoot();
+    if (sdkRoot.empty()) {
+        error = "Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME.";
+        return 2;
+    }
+
+    fs::path sourceRoot;
+    {
+        std::vector<fs::path> candidates;
+#ifdef MODULARITY_SOURCE_DIR
+        candidates.emplace_back(MODULARITY_SOURCE_DIR);
+#endif
+        candidates.push_back(fs::current_path());
+        fs::path exe = resolveCurrentExecutablePath();
+        if (!exe.empty()) {
+            candidates.push_back(exe.parent_path());
+            candidates.push_back(exe.parent_path().parent_path());
+        }
+        for (const auto& c : candidates) {
+            sourceRoot = findCMakeSourceRoot(c);
+            if (!sourceRoot.empty()) break;
+        }
+    }
+    if (sourceRoot.empty()) {
+        error = "Could not locate the engine's CMakeLists.txt for the Android build.";
+        return 2;
+    }
+
+    // The system SDK is often read-only, so platforms get installed into a local
+    // writable SDK root. Search both, same as the GUI export pipeline does.
+    std::vector<fs::path> jarRoots = { sdkRoot };
+    for (const fs::path& localSdk : { sourceRoot / "build" / "android-sdk",
+                                      sourceRoot / "build" / "android-sdk-smoke" }) {
+        if (localSdk != sdkRoot) jarRoots.push_back(localSdk);
+    }
+    fs::path jarSdkRoot;
+    int targetApi = 0;
+    const fs::path androidJar = findLatestAndroidJarInRoots(jarRoots, jarSdkRoot, targetApi);
+    if (androidJar.empty()) {
+        error = "No Android platform android.jar under " + sdkRoot.string() +
+                " or " + (sourceRoot / "build" / "android-sdk").string() +
+                " (install one with: sdkmanager --sdk_root=" +
+                (sourceRoot / "build" / "android-sdk").string() + " \"platforms;android-34\").";
+        return 2;
+    }
+    AndroidBuildTools buildTools = findLatestAndroidBuildTools(sdkRoot);
+    if (buildTools.aapt2.empty() || buildTools.zipalign.empty() || buildTools.apksigner.empty()) {
+        error = "Android SDK build-tools missing aapt2, zipalign, or apksigner.";
+        return 2;
+    }
+
+    const fs::path outputDir = request.outputDir.empty()
+        ? (sourceRoot / "build" / "android")
+        : fs::path(request.outputDir);
+    fs::create_directories(outputDir, ec);
+    const fs::path buildRoot = outputDir / ("_android_build_" + abi);
+    const fs::path apkStageRoot = outputDir / "apk";
+    fs::remove_all(apkStageRoot, ec);
+    ec.clear();
+    const fs::path assetsRoot = apkStageRoot / "assets";
+    const fs::path libDir = apkStageRoot / "lib" / abi;
+    fs::create_directories(assetsRoot, ec);
+    fs::create_directories(libDir, ec);
+    fs::create_directories(buildRoot, ec);
+
+    auto logcb = [](const std::string& s) { std::fprintf(stderr, "%s", s.c_str()); std::fflush(stderr); };
+    const std::string config = request.debug ? "Debug" : "Release";
+
+    const std::string configureCmd =
+        "cmake -S " + quotePath(sourceRoot) + " -B " + quotePath(buildRoot) +
+        " -DCMAKE_BUILD_TYPE=" + config +
+        " -DMODULARITY_BUILD_EDITOR=OFF"
+        " -DCMAKE_TOOLCHAIN_FILE=" + quotePath(toolchainFile) +
+        " -DANDROID_ABI=" + abi +
+        " -DANDROID_PLATFORM=android-26"
+        " -DANDROID_STL=c++_static"
+        " -DMODULARITY_ENABLE_ASSIMP=OFF";
+    // Editor APK vs player APK differ only in which target/.so/lib_name we use.
+    const bool editor = request.editor;
+    const std::string cmakeTarget = editor ? "ModularityEditorAndroid" : "core_player";
+    const std::string soName      = editor ? "libModularity.so" : "libModularityPlayer.so";
+    const std::string libName     = editor ? "Modularity" : "ModularityPlayer";
+    const std::string appLabel    = editor ? "Modularity Editor" : "Modularity Player";
+    const std::string pkgSuffix   = editor ? "Editor" : "Player";
+    const std::string apkStem     = editor ? "Modularity" : "ModularityPlayer";
+
+    int rc = 0;
+    std::fprintf(stderr, "[Android] Configuring %s build (abi=%s)...\n",
+                 editor ? "editor" : "bare player", abi.c_str());
+    if (!runCommandStreaming(configureCmd + " 2>&1", logcb, &rc)) {
+        error = "Android CMake configure failed (exit code " + std::to_string(rc) + ").";
+        return 1;
+    }
+    const std::string buildCmd =
+        "cmake --build " + quotePath(buildRoot) + " --config " + config + " --target " + cmakeTarget;
+    std::fprintf(stderr, "[Android] Building %s...\n", soName.c_str());
+    if (!runCommandStreaming(buildCmd + " 2>&1", logcb, &rc)) {
+        error = "Android " + std::string(editor ? "editor" : "player") +
+                " build failed (exit code " + std::to_string(rc) + ").";
+        return 1;
+    }
+
+    const fs::path builtSo = findAndroidSharedLibrary(buildRoot, soName);
+    if (builtSo.empty()) {
+        error = "Built Android library not found: " + soName;
+        return 1;
+    }
+    const fs::path stagedSo = libDir / soName;
+    fs::copy_file(builtSo, stagedSo, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        error = "Failed to stage Android library: " + ec.message();
+        return 1;
+    }
+    const fs::path stripTool = findAndroidLlvmStrip(ndkRoot);
+    if (!stripTool.empty()) {
+        int stripRc = 0;
+        runCommandStreaming(quotePath(stripTool) + " --strip-unneeded " + quotePath(stagedSo) + " 2>&1",
+                            logcb, &stripRc);
+    }
+
+    // the editor needs loose Resources (fonts, shaders, sounds) inside the APK for
+    // AAssetManager; the player gets them via content.modbundle instead.
+    if (editor) {
+        const fs::path resSrc = sourceRoot / "Resources";
+        if (fs::is_directory(resSrc, ec)) {
+            std::error_code copyEc;
+            fs::copy(resSrc, assetsRoot / "Resources",
+                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, copyEc);
+            if (copyEc) {
+                std::fprintf(stderr, "[Android] Warning: failed to bundle Resources: %s\n",
+                             copyEc.message().c_str());
+            } else {
+                std::fprintf(stderr, "[Android] Bundled engine Resources into APK assets.\n");
+            }
+        }
+
+        // bundle the on-device clang (staged by build.sh via MODULARITY_ANDROID_CLANG_DIR) so the
+        // editor can compile scripts on the phone. without it the editor runs, it just can't compile.
+        if (const char* clangDirEnv = std::getenv("MODULARITY_ANDROID_CLANG_DIR");
+            clangDirEnv && *clangDirEnv) {
+            std::string bundleErr;
+            if (!bundleAndroidToolchain(fs::path(clangDirEnv), assetsRoot, abi, logcb, bundleErr)) {
+                std::fprintf(stderr, "[Android] Warning: on-device compiler not bundled: %s\n",
+                             bundleErr.c_str());
+            }
+        } else {
+            std::fprintf(stderr, "[Android] Note: MODULARITY_ANDROID_CLANG_DIR not set; the "
+                                 "editor APK will ship without an on-device compiler.\n");
+        }
+
+        std::string bridgeErr;
+        if (!writeAndroidActivityBridge(apkStageRoot / "java", bridgeErr)) {
+            error = bridgeErr;
+            return 1;
+        }
+    }
+
+    std::string iconRef;
+    std::string perr;
+    if (!writeAndroidLauncherIcon(apkStageRoot / "res", sourceRoot, iconRef, perr)) {
+        error = perr;
+        return 1;
+    }
+    const std::string packageName = makeAndroidPackageName("Modularity", pkgSuffix);
+    // Editor APK targets SDK 28 so it can exec the bundled clang and dlopen the
+    // scripts it compiles on-device; the player stays on 34.
+    if (!writeAndroidManifest(apkStageRoot / "AndroidManifest.xml", packageName,
+                              appLabel, "0.1.0", request.debug, iconRef, perr, libName,
+                              editor ? 28 : 34,
+                              editor ? kAndroidBridgeActivityName : "android.app.NativeActivity",
+                              editor)) {
+        error = perr;
+        return 1;
+    }
+
+    fs::path apkPath = request.outputApk.empty()
+        ? (outputDir / (apkStem + ".apk"))
+        : fs::absolute(request.outputApk, ec);
+    if (ec) apkPath = request.outputApk;
+    fs::create_directories(apkPath.parent_path(), ec);
+    const fs::path keystorePath = outputDir / "signing" / "debug.keystore";
+    if (!packageAndroidApk(apkStageRoot, apkPath, androidJar, buildTools, keystorePath, logcb, perr)) {
+        error = perr;
+        return 1;
+    }
+
+    std::fprintf(stdout, "Android APK: %s\n", apkPath.string().c_str());
+    return 0;
+}
+
 void Engine::createNewProject(const char* name, const char* location) try {
     fs::path basePath(location);
     std::error_code baseDirEc;
@@ -11233,6 +12183,8 @@ void Engine::createNewProject(const char* name, const char* location) try {
         managedAutoCompileCachedProjectDir.clear();
         managedAutoCompileNewestSource = fs::file_time_type{};
         managedAutoCompileHasSource = false;
+        managedAutoCompileCompiledSource = fs::file_time_type{};
+        managedAutoCompileHasCompiled = false;
 
         showLauncher = false;
         firstFrame = true;
@@ -11320,8 +12272,53 @@ void Engine::saveProjectPreview() {
     fs::create_directories(previewPath.parent_path());
 
 #if MODULARITY_OPENGL_ES
-    std::cerr << "Project preview texture readback is not supported on OpenGL ES yet.\n";
-    return;
+    // GLES has no glGetTexImage and won't glReadPixels a float buffer, so blit the HDR scene
+    // into a temp RGBA8 FBO first and read that back. slow-ish but previews only save on close/save.
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+
+    GLuint srcFbo = 0, dstFbo = 0, dstTex = 0;
+    glGenFramebuffers(1, &srcFbo);
+    glGenFramebuffers(1, &dstFbo);
+    glGenTextures(1, &dstTex);
+
+    glBindTexture(GL_TEXTURE_2D, dstTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texId, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dstFbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dstTex, 0);
+
+    const bool readbackOk =
+        glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
+        glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+
+    std::vector<unsigned char> pixels;
+    if (readbackOk) {
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+        pixels.resize(static_cast<size_t>(width) * height * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glDeleteFramebuffers(1, &srcFbo);
+    glDeleteFramebuffers(1, &dstFbo);
+    glDeleteTextures(1, &dstTex);
+
+    if (!readbackOk) {
+        std::cerr << "Project preview readback FBO incomplete; skipping.\n";
+        return;
+    }
+    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    stbi_write_png(previewPath.string().c_str(), width, height, 4, pixels.data(),
+                   static_cast<int>(rowBytes));
 #else
     std::vector<unsigned char> pixels(static_cast<size_t>(width) * height * 4);
     glBindTexture(GL_TEXTURE_2D, texId);
@@ -12069,6 +13066,9 @@ void Engine::setParent(int childId, int parentId, int beforeSiblingId) {
             }
             if (insertIndex > sceneObjects.size()) insertIndex = sceneObjects.size();
             sceneObjects.insert(sceneObjects.begin() + static_cast<std::ptrdiff_t>(insertIndex), std::move(moved));
+            // In-place reorder keeps the buffer pointer and size, which the
+            // id->index cache's cheap checks can't see — invalidate explicitly.
+            sceneObjectIndexData = nullptr;
         }
     }
     {
@@ -12252,6 +13252,12 @@ fs::path Engine::resolveScriptBinary(const fs::path& sourcePath) {
     const fs::file_time_type configWriteTime = fs::exists(cfg, cfgEc) ? fs::last_write_time(cfg, cfgEc)
                                                                      : fs::file_time_type{};
     bool haveConfig = scriptCompiler.loadConfig(cfg, config, error);
+#ifdef __ANDROID__
+    // anchor the runtime loader's soname derivation to the packager's output root. no-op off Android.
+    if (haveConfig && !config.outDir.empty()) {
+        scriptRuntime.setCompiledScriptsRoot(config.outDir);
+    }
+#endif
     if (haveConfig) {
         auto resolveSource = [&](const fs::path& input) -> fs::path {
             if (input.empty()) return {};
@@ -13154,6 +14160,386 @@ std::string Engine::getSelectedObjectInfoFromScript() const {
     return out.str();
 }
 
+std::string Engine::getSceneHierarchyFromScript(int maxObjects) const {
+    auto typeName = [](ObjectType t) -> const char* {
+        switch (t) {
+            case ObjectType::Cube: return "Cube";
+            case ObjectType::Sphere: return "Sphere";
+            case ObjectType::Capsule: return "Capsule";
+            case ObjectType::OBJMesh: return "OBJMesh";
+            case ObjectType::Model: return "Model";
+            case ObjectType::DirectionalLight: return "DirectionalLight";
+            case ObjectType::PointLight: return "PointLight";
+            case ObjectType::SpotLight: return "SpotLight";
+            case ObjectType::AreaLight: return "AreaLight";
+            case ObjectType::Camera: return "Camera";
+            case ObjectType::PostFXNode: return "PostFXNode";
+            case ObjectType::Mirror: return "Mirror";
+            case ObjectType::Plane: return "Plane";
+            case ObjectType::Torus: return "Torus";
+            case ObjectType::Sprite: return "Sprite";
+            case ObjectType::Sprite2D: return "Sprite2D";
+            case ObjectType::Canvas: return "Canvas";
+            case ObjectType::UIImage: return "UIImage";
+            case ObjectType::UISlider: return "UISlider";
+            case ObjectType::UIButton: return "UIButton";
+            case ObjectType::UIText: return "UIText";
+            case ObjectType::Empty: return "Empty";
+            case ObjectType::Sprite25D: return "Sprite25D";
+            case ObjectType::Light2D: return "Light2D";
+            case ObjectType::ShadowCaster2D: return "ShadowCaster2D";
+            case ObjectType::ParticleSystem2D: return "ParticleSystem2D";
+            case ObjectType::ReflectionCast: return "ReflectionCast";
+        }
+        return "Object";
+    };
+
+    auto componentSummary = [](const SceneObject& o) -> std::string {
+        std::vector<std::string> comps;
+        if (o.hasRigidbody) comps.push_back("Rigidbody");
+        if (o.hasRigidbody2D) comps.push_back("Rigidbody2D");
+        if (o.hasCollider) comps.push_back("Collider");
+        if (o.hasCollider2D) comps.push_back("Collider2D");
+        if (o.hasLight) comps.push_back("Light");
+        if (o.hasLight2D) comps.push_back("Light2D");
+        if (o.hasCamera) comps.push_back("Camera");
+        if (o.hasAudioSource) comps.push_back("Audio");
+        if (o.hasShadowCaster2D) comps.push_back("ShadowCaster2D");
+        if (o.hasParallaxLayer2D) comps.push_back("Parallax2D");
+        if (o.hasCameraFollow2D) comps.push_back("CamFollow2D");
+        if (o.hasPlayerController) comps.push_back("PlayerController");
+        if (o.hasUI) comps.push_back("UI");
+        std::string s;
+        for (size_t i = 0; i < comps.size(); ++i) { if (i) s += ", "; s += comps[i]; }
+        return s;
+    };
+
+    std::ostringstream out;
+    const std::string sceneName = getCurrentSceneNameFromScript();
+    out << "Scene";
+    if (!sceneName.empty()) out << " \"" << sceneName << "\"";
+    out << " (" << sceneObjects.size() << " objects)";
+    if (sceneObjects.empty()) {
+        out << "\n(scene is empty)\n";
+        return out.str();
+    }
+    out << "\n";
+
+    std::unordered_map<int, size_t> indexById;
+    indexById.reserve(sceneObjects.size());
+    for (size_t i = 0; i < sceneObjects.size(); ++i) {
+        indexById[sceneObjects[i].id] = i;
+    }
+
+    int emitted = 0;
+    bool truncated = false;
+    std::unordered_set<int> visited;
+
+    std::function<void(int, int)> emit = [&](int id, int depth) {
+        if (truncated) return;
+        const auto it = indexById.find(id);
+        if (it == indexById.end()) return;
+        if (!visited.insert(id).second) return; // guard against malformed cycles
+        if (maxObjects > 0 && emitted >= maxObjects) { truncated = true; return; }
+        const SceneObject& o = sceneObjects[it->second];
+        ++emitted;
+        out << std::string(static_cast<size_t>(depth) * 2, ' ')
+            << "- " << o.name << " (id " << o.id << ") [" << typeName(o.type) << "]";
+        if (!o.enabled) out << " (disabled)";
+        if (o.id == selectedObjectId) out << " *selected*";
+        const std::string comps = componentSummary(o);
+        if (!comps.empty()) out << " {" << comps << "}";
+        if (!o.meshPath.empty()) out << " mesh=" << fs::path(o.meshPath).filename().generic_string();
+        if (!o.scripts.empty()) {
+            out << " scripts=";
+            for (size_t i = 0; i < o.scripts.size(); ++i) {
+                if (i) out << ",";
+                const ScriptComponent& sc = o.scripts[i];
+                out << (sc.path.empty() ? sc.managedType
+                                        : fs::path(sc.path).filename().generic_string());
+            }
+        }
+        out << "\n";
+        for (int childId : o.childIds) emit(childId, depth + 1);
+    };
+
+    // Roots first (no parent, or a parent that no longer exists), then recurse.
+    for (const SceneObject& o : sceneObjects) {
+        const bool isRoot = (o.parentId < 0) || (indexById.find(o.parentId) == indexById.end());
+        if (isRoot) emit(o.id, 0);
+    }
+    // Anything still unvisited (e.g. a cycle) is emitted flat so nothing vanishes.
+    for (const SceneObject& o : sceneObjects) {
+        if (truncated) break;
+        if (visited.find(o.id) == visited.end()) emit(o.id, 0);
+    }
+
+    if (truncated) out << "...(truncated at " << maxObjects << " objects)\n";
+    return out.str();
+}
+
+namespace {
+    // Normalize a user/agent-supplied token: lowercase and strip spaces/underscores/dashes
+    // so "Point Light", "point_light" and "pointlight" all collapse to the same key.
+    std::string normalizeTypeToken(const std::string& raw) {
+        std::string out;
+        out.reserve(raw.size());
+        for (char c : raw) {
+            if (c == ' ' || c == '_' || c == '-' || c == '.') continue;
+            out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return out;
+    }
+
+    bool parseObjectTypeName(const std::string& raw, ObjectType& out) {
+        const std::string k = normalizeTypeToken(raw);
+        if (k == "empty") { out = ObjectType::Empty; return true; }
+        if (k == "cube" || k == "box") { out = ObjectType::Cube; return true; }
+        if (k == "sphere" || k == "ball") { out = ObjectType::Sphere; return true; }
+        if (k == "capsule") { out = ObjectType::Capsule; return true; }
+        if (k == "plane") { out = ObjectType::Plane; return true; }
+        if (k == "torus" || k == "donut") { out = ObjectType::Torus; return true; }
+        if (k == "mirror") { out = ObjectType::Mirror; return true; }
+        if (k == "objmesh") { out = ObjectType::OBJMesh; return true; }
+        if (k == "model") { out = ObjectType::Model; return true; }
+        if (k == "sprite") { out = ObjectType::Sprite; return true; }
+        if (k == "sprite2d") { out = ObjectType::Sprite2D; return true; }
+        if (k == "sprite25d") { out = ObjectType::Sprite25D; return true; }
+        if (k == "camera") { out = ObjectType::Camera; return true; }
+        if (k == "pointlight" || k == "point") { out = ObjectType::PointLight; return true; }
+        if (k == "spotlight" || k == "spot") { out = ObjectType::SpotLight; return true; }
+        if (k == "directionallight" || k == "directional" || k == "sun") { out = ObjectType::DirectionalLight; return true; }
+        if (k == "arealight" || k == "area") { out = ObjectType::AreaLight; return true; }
+        if (k == "light2d" || k == "2dlight") { out = ObjectType::Light2D; return true; }
+        if (k == "shadowcaster2d") { out = ObjectType::ShadowCaster2D; return true; }
+        if (k == "particlesystem2d" || k == "particles" || k == "particlesystem") { out = ObjectType::ParticleSystem2D; return true; }
+        if (k == "canvas") { out = ObjectType::Canvas; return true; }
+        if (k == "uiimage" || k == "image") { out = ObjectType::UIImage; return true; }
+        if (k == "uitext" || k == "text" || k == "label") { out = ObjectType::UIText; return true; }
+        if (k == "uibutton" || k == "button") { out = ObjectType::UIButton; return true; }
+        if (k == "uislider" || k == "slider") { out = ObjectType::UISlider; return true; }
+        return false;
+    }
+} // namespace
+
+int Engine::createSceneObjectFromScript(const std::string& type, const std::string& name, int parentId) {
+    ObjectType objType = ObjectType::Empty;
+    if (!parseObjectTypeName(type, objType)) {
+        return -1;
+    }
+    recordState("ai-create-object");
+    const int id = nextObjectId++;
+    std::string objName = name;
+    // Strip leading/trailing whitespace from the requested name.
+    while (!objName.empty() && (objName.front() == ' ' || objName.front() == '\t')) objName.erase(objName.begin());
+    while (!objName.empty() && (objName.back() == ' ' || objName.back() == '\t')) objName.pop_back();
+    if (objName.empty()) {
+        objName = type + " " + std::to_string(id);
+    }
+    SceneObject obj(objName, ObjectType::Empty, id);
+    ApplyObjectPreset(obj, objType);
+    obj.localPosition = obj.position;
+    obj.localRotation = NormalizeEulerDegrees(obj.rotation);
+    obj.localScale = obj.scale;
+    obj.localInitialized = true;
+    sceneObjects.push_back(obj);
+    markRuntimeScriptBindingsDirty();
+
+    // A brand-new leaf can't form a cycle, so link the parent directly (avoids a
+    // second undo snapshot from setParent).
+    if (parentId >= 0) {
+        SceneObject* parent = findObjectById(parentId);
+        SceneObject* child = findObjectById(id);
+        if (parent && child) {
+            child->parentId = parentId;
+            parent->childIds.push_back(id);
+        }
+    }
+    updateHierarchyWorldTransforms();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    logToConsole("AI created: " + objName);
+    return id;
+}
+
+bool Engine::deleteSceneObjectFromScript(int objectId) {
+    if (!findObjectById(objectId)) {
+        return false;
+    }
+    recordState("ai-delete-object");
+
+    std::unordered_map<int, SceneObject*> idLookup;
+    idLookup.reserve(sceneObjects.size());
+    for (auto& obj : sceneObjects) idLookup.emplace(obj.id, &obj);
+
+    std::unordered_set<int> toDelete;
+    std::vector<int> stack;
+    toDelete.insert(objectId);
+    stack.push_back(objectId);
+    while (!stack.empty()) {
+        const int currentId = stack.back();
+        stack.pop_back();
+        auto it = idLookup.find(currentId);
+        if (it == idLookup.end() || !it->second) continue;
+        for (int childId : it->second->childIds) {
+            if (childId >= 0 && toDelete.insert(childId).second) stack.push_back(childId);
+        }
+        for (const auto& obj : sceneObjects) {
+            if (obj.parentId == currentId && toDelete.insert(obj.id).second) stack.push_back(obj.id);
+        }
+    }
+
+    auto removeIt = std::remove_if(sceneObjects.begin(), sceneObjects.end(),
+        [&toDelete](const SceneObject& obj) { return toDelete.count(obj.id) > 0; });
+    if (removeIt == sceneObjects.end()) {
+        return false;
+    }
+    sceneObjects.erase(removeIt, sceneObjects.end());
+    markRuntimeScriptBindingsDirty();
+    for (auto& obj : sceneObjects) {
+        if (toDelete.count(obj.parentId) > 0) obj.parentId = -1;
+        obj.childIds.erase(std::remove_if(obj.childIds.begin(), obj.childIds.end(),
+            [&toDelete](int id) { return toDelete.count(id) > 0; }), obj.childIds.end());
+    }
+    if (toDelete.count(selectedObjectId) > 0) {
+        clearSelection();
+    }
+    updateHierarchyWorldTransforms();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    logToConsole("AI deleted " + std::to_string(toDelete.size()) + " object(s)");
+    return true;
+}
+
+bool Engine::renameSceneObjectFromScript(int objectId, const std::string& name) {
+    SceneObject* obj = findObjectById(objectId);
+    if (!obj || name.empty()) {
+        return false;
+    }
+    recordState("ai-rename-object");
+    obj->name = name;
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
+}
+
+bool Engine::setSceneObjectParentFromScript(int objectId, int parentId) {
+    if (!findObjectById(objectId)) {
+        return false;
+    }
+    if (parentId >= 0 && !findObjectById(parentId)) {
+        return false;
+    }
+    // setParent records its own undo state, prevents cycles, and relinks both ends.
+    setParent(objectId, parentId, -1);
+    updateHierarchyWorldTransforms();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
+}
+
+bool Engine::setSceneObjectTransformFromScript(int objectId, const glm::vec3& position,
+                                               const glm::vec3& rotationDeg, const glm::vec3& scale) {
+    SceneObject* obj = findObjectById(objectId);
+    if (!obj) {
+        return false;
+    }
+    recordState("ai-set-transform");
+    obj->position = position;
+    obj->rotation = NormalizeEulerDegrees(rotationDeg);
+    obj->scale = scale;
+    syncLocalTransform(*obj);
+    if (obj->hasRigidbody) {
+        teleportPhysicsActorFromScript(obj->id, obj->position, obj->rotation);
+    }
+    updateHierarchyWorldTransforms();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
+}
+
+bool Engine::setSceneObjectEnabledFromScript(int objectId, bool enabled) {
+    SceneObject* obj = findObjectById(objectId);
+    if (!obj) {
+        return false;
+    }
+    if (obj->enabled != enabled) {
+        recordState("ai-set-enabled");
+        obj->enabled = enabled;
+        markRuntimeScriptBindingsDirty();
+        if (projectManager.currentProject.isLoaded) {
+            projectManager.currentProject.hasUnsavedChanges = true;
+        }
+    }
+    return true;
+}
+
+bool Engine::addObjectComponentFromScript(int objectId, const std::string& component) {
+    SceneObject* obj = findObjectById(objectId);
+    if (!obj) {
+        return false;
+    }
+    const std::string k = normalizeTypeToken(component);
+    bool handled = true;
+    if (k == "rigidbody" || k == "rigidbody3d") obj->hasRigidbody = true;
+    else if (k == "rigidbody2d") obj->hasRigidbody2D = true;
+    else if (k == "collider" || k == "collider3d" || k == "boxcollider") obj->hasCollider = true;
+    else if (k == "collider2d") obj->hasCollider2D = true;
+    else if (k == "light") obj->hasLight = true;
+    else if (k == "light2d") obj->hasLight2D = true;
+    else if (k == "camera") obj->hasCamera = true;
+    else if (k == "audio" || k == "audiosource") obj->hasAudioSource = true;
+    else if (k == "shadowcaster2d") obj->hasShadowCaster2D = true;
+    else if (k == "renderer") obj->hasRenderer = true;
+    else if (k == "ui") obj->hasUI = true;
+    else handled = false;
+
+    if (!handled) {
+        return false;
+    }
+    recordState("ai-add-component");
+    markRuntimeScriptBindingsDirty();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    return true;
+}
+
+bool Engine::attachObjectScriptFromScript(int objectId, const std::string& scriptPath) {
+    SceneObject* obj = findObjectById(objectId);
+    if (!obj) {
+        return false;
+    }
+    const fs::path resolved = resolveProjectPathFromScript(scriptPath);
+    std::error_code ec;
+    if (resolved.empty() || !fs::exists(resolved, ec)) {
+        return false;
+    }
+    ScriptComponent sc;
+    std::string ext = resolved.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext == ".cs") sc.language = ScriptLanguage::CSharp;
+    else if (ext == ".c") sc.language = ScriptLanguage::C;
+    else sc.language = ScriptLanguage::Cpp; // .moducpp / .cpp
+    sc.path = resolved.string();
+    sc.lastBinaryPath.clear();
+    sc.lastBinaryVerified = false;
+    recordState("ai-attach-script");
+    obj->scripts.push_back(std::move(sc));
+    markRuntimeScriptBindingsDirty();
+    if (projectManager.currentProject.isLoaded) {
+        projectManager.currentProject.hasUnsavedChanges = true;
+    }
+    logToConsole("AI attached script: " + resolved.filename().string());
+    return true;
+}
+
 bool Engine::saveProjectFromScript() {
     if (!projectManager.currentProject.isLoaded) {
         return false;
@@ -13486,13 +14872,12 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         return;
     }
 
-    if (compileInProgress) {
+    if (static_cast<int>(compileWorkers.size()) >= compileMaxParallelJobs()) {
+        compileUiToast = false;
+        compilePopupOpened = false;
         showCompilePopup = true;
         lastCompileStatus = "Compile already in progress";
         return;
-    }
-    if (compileWorker.joinable()) {
-        compileWorker.join();
     }
 
     compileCurrentPath = scriptPath;
@@ -13503,6 +14888,7 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
         compileBatchTotal = 1;
         compileBatchCompleted = 0;
         compileCompletionStart = 0.0;
+        compileUiToast = nextCompileFromAuto;
         playCompileStartSound();
     }
 
@@ -13522,8 +14908,8 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
     fs::path projectRoot = projectManager.currentProject.projectPath;
 
     compileInProgress = true;
-    compileResultReady = false;
-    compileWorker = std::thread([this, scriptPath, configPath, projectRoot]() {
+    compileWorkers.push_back(std::async(std::launch::async,
+                                         [this, scriptPath, configPath, projectRoot]() -> ScriptCompileJobResult {
         auto setProgress = [this](float value, const char* stage) {
             std::lock_guard<std::mutex> lock(compileMutex);
             compileProgress = value;
@@ -13541,13 +14927,26 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
             } else {
                 compileWorkerStage = "Applying package build config";
                 packageManager.applyToBuildConfig(config);
+                bool toolchainReady = true;
+#ifdef __ANDROID__
+                // On the phone there's no system compiler; point the build at the
+                // clang toolchain bundled in the editor APK (extracted on first use).
+                compileWorkerStage = "Preparing on-device compiler";
+                {
+                    std::string toolchainError;
+                    toolchainReady = configureOnDeviceScriptCompile(config, toolchainError);
+                    if (!toolchainReady) error = toolchainError;
+                }
+#endif
                 ScriptBuildCommands commands;
                 compileWorkerStage = "Preparing native script commands";
                 bool commandsReady = false;
-                try {
-                    commandsReady = scriptCompiler.makeCommands(config, scriptPath, commands, error);
-                } catch (const std::regex_error& e) {
-                    error = std::string("Preparing native script commands failed in regex processing: ") + e.what();
+                if (toolchainReady) {
+                    try {
+                        commandsReady = scriptCompiler.makeCommands(config, scriptPath, commands, error);
+                    } catch (const std::regex_error& e) {
+                        error = std::string("Preparing native script commands failed in regex processing: ") + e.what();
+                    }
                 }
                 if (!commandsReady) {
                     result.error = error;
@@ -13615,11 +15014,8 @@ void Engine::compileScriptFile(const fs::path& scriptPath) {
                 result.isManaged);
         }
 
-        std::lock_guard<std::mutex> lock(compileMutex);
-        compileResult = std::move(result);
-        compileResultReady = true;
-        compileInProgress = false;
-    });
+        return result;
+    }));
 }
 
 void Engine::compileManagedScripts() {
@@ -13628,13 +15024,12 @@ void Engine::compileManagedScripts() {
         return;
     }
 
-    if (compileInProgress) {
+    if (!compileWorkers.empty()) {
+        // A managed build isn't per-script, so it claims the whole pool; wait
+        // for any in-flight native compiles to drain first.
         showCompilePopup = true;
         lastCompileStatus = "Compile already in progress";
         return;
-    }
-    if (compileWorker.joinable()) {
-        compileWorker.join();
     }
 
     fs::path projectRoot = projectManager.currentProject.projectPath;
@@ -13647,6 +15042,7 @@ void Engine::compileManagedScripts() {
         compileBatchTotal = 1;
         compileBatchCompleted = 0;
         compileCompletionStart = 0.0;
+        compileUiToast = nextCompileFromAuto;
         playCompileStartSound();
     }
     if (!fs::exists(projectManagedProject)) {
@@ -13716,8 +15112,7 @@ void Engine::compileManagedScripts() {
     }
 
     compileInProgress = true;
-    compileResultReady = false;
-    compileWorker = std::thread([this, managedProject]() {
+    compileWorkers.push_back(std::async(std::launch::async, [this, managedProject]() -> ScriptCompileJobResult {
         auto setProgress = [this](float value, const char* stage) {
             std::lock_guard<std::mutex> lock(compileMutex);
             compileProgress = value;
@@ -13794,25 +15189,39 @@ void Engine::compileManagedScripts() {
                 result.isManaged);
         }
 
-        std::lock_guard<std::mutex> lock(compileMutex);
-        compileResult = std::move(result);
-        compileResultReady = true;
-        compileInProgress = false;
-    });
+        return result;
+    }));
 }
 
 void Engine::updateCompileJob() {
-    if (compileResultReady) {
+    // Reap the first job that's finished since last frame, if any. Scanning by
+    // completion (not launch order) lets results surface as soon as they're
+    // ready instead of waiting for their turn in launch order.
+    ScriptCompileJobResult result;
+    bool haveResult = false;
+    for (size_t i = 0; i < compileWorkers.size(); ++i) {
+        if (compileWorkers[i].wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            result = compileWorkers[i].get();
+            compileWorkers.erase(compileWorkers.begin() + static_cast<long>(i));
+            haveResult = true;
+            break;
+        }
+    }
+
+    if (compileBatchTotal > 1) {
+        // Multiple scripts can be compiling at once, so a single worker's
+        // fine-grained stage isn't meaningful; drive the bar off batch completion.
+        const float completedFrac =
+            static_cast<float>(compileBatchCompleted) / static_cast<float>(compileBatchTotal);
+        const float inFlightCredit =
+            0.5f * static_cast<float>(compileWorkers.size()) / static_cast<float>(compileBatchTotal);
+        std::lock_guard<std::mutex> lock(compileMutex);
+        compileProgress = std::clamp(completedFrac + inFlightCredit, 0.0f, 0.98f);
+        compileStage = "Compiling";
+    }
+
+    if (haveResult) {
         const auto __moduFinalizeStart = std::chrono::steady_clock::now();
-        if (compileWorker.joinable()) {
-            compileWorker.join();
-        }
-        ScriptCompileJobResult result;
-        {
-            std::lock_guard<std::mutex> lock(compileMutex);
-            result = compileResult;
-            compileResultReady = false;
-        }
 
         lastCompileDiagnostics = result.diagnostics;
         const int warningCount = static_cast<int>(std::count_if(
@@ -13825,7 +15234,6 @@ void Engine::updateCompileJob() {
         const std::string displayLabel = result.scriptPath.filename().empty()
             ? (result.isManaged ? "Managed Scripts" : "Script")
             : result.scriptPath.filename().string();
-        const bool hasQueuedContinuation = !compileRequestQueue.empty();
 
         auto logDiagnostic = [&](const Modularity::ScriptDiagnostic& diagnostic) {
             addConsoleMessage(Modularity::formatScriptDiagnostic(diagnostic),
@@ -14003,30 +15411,22 @@ void Engine::updateCompileJob() {
 
         ++compileBatchCompleted;
 
-        {
+        if (compileBatchCompleted >= compileBatchTotal) {
+            // Last job of the batch (or the common single-job case): show a clean
+            // 100%/Done rather than the fractional batch-progress estimate.
             std::lock_guard<std::mutex> lock(compileMutex);
             compileProgress = 1.0f;
             compileStage = lastCompileSuccess ? "Done" : "Failed";
         }
 
-        if (!compileRequestQueue.empty()) {
-            const ScriptCompileQueueItem next = compileRequestQueue.front();
-            compileRequestQueue.pop_front();
-            const std::string key = next.managed ? std::string("managed:") + next.scriptPath.string()
-                                                 : next.scriptPath.string();
-            compileRequestKeys.erase(key);
-            compileCurrentLabel = next.displayLabel;
-            compileCurrentPath = next.scriptPath;
-            compileCurrentManaged = next.managed;
-            if (next.managed) {
-                compileManagedScripts();
-            } else {
-                compileScriptFile(next.scriptPath);
-            }
+        startQueuedCompileJobs();
+
+        if (!compileRequestQueue.empty() || !compileWorkers.empty()) {
+            // More work outstanding, either still queued or still compiling in the pool.
             return;
         }
 
-        if (!hasQueuedContinuation) {
+        {
             // Refresh runtime state once after the entire batch finishes.
             auto __t0 = std::chrono::steady_clock::now();
             resetScriptRuntimeStateForReload(false);
@@ -14051,7 +15451,21 @@ void Engine::updateCompileJob() {
         compileBatchTotal = 0;
         compileBatchCompleted = 0;
         compileCurrentManaged = false;
+        compileInProgress = false;
         showCompilePopup = true;
+
+        // auto-dismiss: compilePopupHideTime used to be written and never read, so the window just
+        // sat there forever lol. toasts now fade on their own; the modal closes on success but
+        // stays on warnings/failures so you can read the log.
+        const double finishedAt = glfwGetTime();
+        if (compileUiToast) {
+            compilePopupHideTime = finishedAt + (lastCompileSuccess ? 1.6 : 4.0);
+        } else if (lastCompileSuccess && !finishedWithWarnings) {
+            compilePopupHideTime = finishedAt + 1.6;
+        } else {
+            compilePopupHideTime = 0.0;
+        }
+
         const double __moduFinalizeMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - __moduFinalizeStart).count();
         std::fprintf(stderr, "[ModuTimer] post-compile finalize %.2f ms  %s\n",
@@ -14060,7 +15474,9 @@ void Engine::updateCompileJob() {
 
     if (!compileInProgress && managedAutoCompileQueued) {
         managedAutoCompileQueued = false;
+        nextCompileFromAuto = true;
         compileManagedScripts();
+        nextCompileFromAuto = false;
     }
 }
 
@@ -14190,10 +15606,19 @@ void Engine::renderScriptEditorWindows() {
 #pragma region ImGui Setup
 void Engine::setupImGui() {
     float mainScale = 1.0f;
+#if defined(__ANDROID__)
+    // GLFW reports no monitor / 1.0 scale on Android, so scale the whole UI by display density
+    // or everything renders comically tiny on a tablet. extra factor + floor = finger-sized chrome.
+    mainScale = Modularity::AndroidRuntime::GetDisplayDensityScale() * 1.4f;
+    if (mainScale < 2.0f) mainScale = 2.0f;
+    if (mainScale > 5.0f) mainScale = 5.0f;
+#else
     GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
     if (primaryMonitor) {
         mainScale = ImGui_ImplGlfw_GetContentScaleForMonitor(primaryMonitor);
     }
+#endif
+    uiDpiScale = mainScale; // shared with the launcher + touch overlays
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -14205,6 +15630,9 @@ void Engine::setupImGui() {
 #endif
 #if defined(__ANDROID__)
     io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
+    // on touch, dragging a window body should scroll it, not move the window. title-bar-only
+    // moves free up body drags for the kinetic scroll.
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
 #endif
     if (usingVulkan() || playerMode) {
         io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
@@ -14221,10 +15649,9 @@ void Engine::setupImGui() {
     style.ScaleAllSizes(mainScale);
     style.FontScaleDpi = mainScale;
 
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-        style.WindowRounding = 0.0f;
-        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-    }
+    // note for future me: the old ViewportsEnable block that forced WindowRounding=0
+    // and an opaque WindowBg here is gone on purpose. ModuGUI already does both per-window for ViewportOwned windows (see RenderWindowDecorations), 
+    // and the global force was what would have flattened the glass theme on Windows multi-viewport builds.
     initUIStylePresets();
 
     if (usingVulkan()) {
@@ -14239,6 +15666,10 @@ void Engine::setupImGui() {
         if (!ImGui_ImplOpenGL3_Init(Modularity::OpenGLImGuiGlslVersion())) {
             throw std::runtime_error("ImGui error");
         }
+
+        // frosted glass windows. GL only, the hook stays inert under Vulkan since
+        // nothing ever registers a renderer there.
+        Modularity::UiGlassBlur::Install();
     }
 }
 #pragma endregion
@@ -14257,18 +15688,32 @@ void Engine::initUIStylePresets() {
     current.builtin = true;
     uiStylePresets.push_back(current);
 
+    // the pre-glass default, for anyone who wants the old opaque look back
+    UIStylePreset slate;
+    slate.name = "Slate";
+    slate.style = ImGui::GetStyle();
+    applySlateStyle(slate.style);
+    slate.fontAsset = uiEditorFontAsset;
+    slate.builtin = true;
+    uiStylePresets.push_back(slate);
+
     UIStylePreset imguiDefault;
     imguiDefault.name = "Imgui Default";
     imguiDefault.style = ImGui::GetStyle();
     ImGui::StyleColorsDark(&imguiDefault.style);
     applyEditorLayoutPreset(imguiDefault.style);
+    // StyleColorsDark doesn't know about the glass fields, clear what got copied from Default
+    imguiDefault.style.GlassBlur = false;
+    imguiDefault.style.CheckboxSwitch = false;
     imguiDefault.fontAsset = uiEditorFontAsset;
     imguiDefault.builtin = true;
     uiStylePresets.push_back(imguiDefault);
 
+    // pixel + super round keep their pre-glass colors: base them on slate, then layout
     UIStylePreset pixel;
     pixel.name = "Pixel";
     pixel.style = ImGui::GetStyle();
+    applySlateStyle(pixel.style);
     applyPixelStyle(pixel.style);
     pixel.fontAsset = uiEditorFontAsset;
     pixel.builtin = true;
@@ -14277,7 +15722,10 @@ void Engine::initUIStylePresets() {
     UIStylePreset superRound;
     superRound.name = "Super Round";
     superRound.style = ImGui::GetStyle();
+    applySlateStyle(superRound.style);
     applySuperRoundStyle(superRound.style);
+    // round theme, round switches. no blur though, the colors are opaque anyway
+    superRound.style.CheckboxSwitch = true;
     superRound.fontAsset = uiEditorFontAsset;
     superRound.builtin = true;
     uiStylePresets.push_back(superRound);
@@ -14381,8 +15829,9 @@ void Engine::refreshUIFontCatalog() {
         fs::path("Resources") / "Fonts" / "Thesunsethd-Regular (1).ttf"
     };
     for (const fs::path& fontPath : builtinCandidates) {
-        std::error_code ec;
-        if (!fs::exists(fontPath, ec) || ec || !fs::is_regular_file(fontPath, ec) || ec) {
+        // probe via AssetSource, not fs::exists: bundled fonts live inside the APK, a raw fs
+        // check would skip them and drop us to the default ImGui font.
+        if (!Modularity::Platform::GetAssetSource().Exists(fontPath.generic_string())) {
             continue;
         }
         addEntry(fontPath.generic_string(),
@@ -14467,11 +15916,23 @@ void Engine::preloadUIFontCatalogForContext(ImGuiContext* context) {
             continue;
         }
         fs::path fontPath = entry.path.empty() ? resolveUIFontPath(entry.id) : entry.path;
-        std::error_code ec;
-        if (fontPath.empty() || !fs::exists(fontPath, ec) || ec || !fs::is_regular_file(fontPath, ec) || ec) {
+        if (fontPath.empty()) {
             continue;
         }
-        ImFont* font = io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), kUIFontAtlasBaseSize);
+        // load through AssetSource so APK fonts work on Android (desktop still hits the filesystem).
+        // ImGui owns the buffer (FontDataOwnedByAtlas) and IM_FREEs it at teardown, don't free it here.
+        std::vector<uint8_t> bytes =
+            Modularity::Platform::GetAssetSource().ReadAll(fontPath.generic_string());
+        if (bytes.empty()) {
+            continue;
+        }
+        void* owned = IM_ALLOC(bytes.size());
+        if (!owned) {
+            continue;
+        }
+        std::memcpy(owned, bytes.data(), bytes.size());
+        ImFont* font = io.Fonts->AddFontFromMemoryTTF(
+            owned, static_cast<int>(bytes.size()), kUIFontAtlasBaseSize);
         if (font) {
             mergeModularityEmojiFont(io, kUIFontAtlasBaseSize, nullptr);
             state.loadedFonts[entry.id] = font;
@@ -14573,6 +16034,12 @@ bool Engine::applyUIStylePresetByName(const std::string& name) {
     uiStylePresetIndex = idx;
     uiStylePresetName = uiStylePresets[idx].name;
     ImGui::GetStyle() = uiStylePresets[idx].style;
+    // presets are authored at scale 1.0 and assigning a style wholesale drops the DPI scaling
+    // from setupImGui, so re-apply it. idempotent since the preset is always base-scale here.
+    if (uiDpiScale > 0.0f && uiDpiScale != 1.0f) {
+        ImGui::GetStyle().ScaleAllSizes(uiDpiScale);
+    }
+    ImGui::GetStyle().FontScaleDpi = (uiDpiScale > 0.0f) ? uiDpiScale : 1.0f;
     applyEditorUIFontById(uiStylePresets[idx].fontAsset);
     return true;
 }
@@ -14770,6 +16237,10 @@ void Engine::loadEditorUserSettings() {
     loadedWorkspaceLayoutVersion = 0;
     fileBrowserFavorites.clear();
     workspaceTabVisible = { true, true, true };
+    // files without a themeVersion key predate the glass theme. their color.* lines
+    // are a full dump of the old palette, not a deliberate customization, and applying
+    // them would resurrect the old opaque look on every already-touched project.
+    int loadedThemeVersion = 1;
     std::vector<ImVec4> loadedColors(ImGuiCol_COUNT);
     std::vector<bool> hasColor(ImGuiCol_COUNT, false);
     struct LoadedStylePresetEntry {
@@ -14862,6 +16333,24 @@ void Engine::loadEditorUserSettings() {
             showFileBrowserSidebar = (value == "1" || value == "true" || value == "yes");
         } else if (key == "consoleWrapText") {
             consoleWrapText = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "showTouchSticks") {
+            showTouchSticks = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "touchStickRadius") {
+            try {
+                touchStickRadius = std::clamp(std::stof(value), 24.0f, 96.0f);
+            } catch (...) {
+            }
+        } else if (key == "touchStickSensitivity") {
+            try {
+                touchStickSensitivity = std::clamp(std::stof(value), 1.0f, 16.0f);
+            } catch (...) {
+            }
+        } else if (key == "touchStickInvertY") {
+            touchStickInvertY = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "quickToolsPinned") {
+            quickToolsPinned = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "mobileEditorLayout") {
+            mobileEditorLayout = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showAnimationWindow") {
             showAnimationWindow = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showAIPathfindingWindow") {
@@ -14949,6 +16438,8 @@ void Engine::loadEditorUserSettings() {
             try { sceneGizmoOverlayScale = std::stof(value); } catch (...) {}
         } else if (key == "showSceneGrid3D") {
             showSceneGrid3D = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "uiCanvasPreviewEnabled") {
+            uiCanvasPreviewEnabled = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showCanvasOverlay") {
             showCanvasOverlay = (value == "1" || value == "true" || value == "yes");
         } else if (key == "showUIWorldGrid") {
@@ -14966,6 +16457,14 @@ void Engine::loadEditorUserSettings() {
             try { tmOpenGLRenderer.getPresentationSettings().lookPitchCompressStrength = std::stof(value); } catch (...) {}
         } else if (key == "tmPresentationPitchShearStrength") {
             try { tmOpenGLRenderer.getPresentationSettings().lookPitchShearStrength = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchCurve") {
+            try { tmOpenGLRenderer.getPresentationSettings().lookPitchCurve = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchDepthRange") {
+            try { tmOpenGLRenderer.getPresentationSettings().lookPitchDepthRange = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchMinDegrees") {
+            try { tmOpenGLRenderer.getPresentationSettings().presentationPitchMinDegrees = std::stof(value); } catch (...) {}
+        } else if (key == "tmPresentationPitchMaxDegrees") {
+            try { tmOpenGLRenderer.getPresentationSettings().presentationPitchMaxDegrees = std::stof(value); } catch (...) {}
         } else if (key == "tmPresentationWorldSnapEnabled") {
             tmOpenGLRenderer.getPresentationSettings().presentationSnapEnabled =
                 (value == "1" || value == "true" || value == "yes");
@@ -14986,6 +16485,24 @@ void Engine::loadEditorUserSettings() {
                 (value == "1" || value == "true" || value == "yes");
         } else if (key == "tmPresentationScreenSnapStep") {
             try { tmOpenGLRenderer.getPresentationSettings().screenSnapStep = std::stof(value); } catch (...) {}
+        } else if (key == "tmFake3DEnabled") {
+            tmOpenGLRenderer.getPresentationSettings().fake3DEnabled =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmFake3DInternalHeight") {
+            try { tmOpenGLRenderer.getPresentationSettings().fake3DInternalHeight = std::stoi(value); } catch (...) {}
+        } else if (key == "tmFake3DPointSampling") {
+            tmOpenGLRenderer.getPresentationSettings().fake3DPointSampling =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmFake3DFlatShading") {
+            tmOpenGLRenderer.getPresentationSettings().fake3DFlatShading =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmFake3DShadeLevels") {
+            try { tmOpenGLRenderer.getPresentationSettings().fake3DShadeLevels = std::stoi(value); } catch (...) {}
+        } else if (key == "tmFake3DAffineTextures") {
+            tmOpenGLRenderer.getPresentationSettings().fake3DAffineTextures =
+                (value == "1" || value == "true" || value == "yes");
+        } else if (key == "tmFake3DAffineStrength") {
+            try { tmOpenGLRenderer.getPresentationSettings().fake3DAffineStrength = std::stof(value); } catch (...) {}
         } else if (key == "showGameProfiler") {
             showGameProfiler = (value == "1" || value == "true" || value == "yes");
         } else if (key == "revealDebugSectionsAndMenus") {
@@ -15066,6 +16583,8 @@ void Engine::loadEditorUserSettings() {
             feedbackErrorSoundsEnabled = (value == "1" || value == "true" || value == "yes");
         } else if (key == "feedbackOtherSoundsEnabled") {
             feedbackOtherSoundsEnabled = (value == "1" || value == "true" || value == "yes");
+        } else if (key == "themeVersion") {
+            try { loadedThemeVersion = std::stoi(value); } catch (...) {}
         } else if (key.rfind("stylePreset", 0) == 0) {
             size_t indexStart = std::strlen("stylePreset");
             size_t fieldSep = key.find('_', indexStart);
@@ -15158,6 +16677,13 @@ void Engine::loadEditorUserSettings() {
         tmPresentation.cameraRelativeSnapStep = std::clamp(tmPresentation.cameraRelativeSnapStep, 0.001f, 8.0f);
         tmPresentation.vertexSnapStep = std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f);
         tmPresentation.screenSnapStep = std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f);
+        tmPresentation.fake3DInternalHeight = std::clamp(tmPresentation.fake3DInternalHeight, 64, 2160);
+        tmPresentation.fake3DShadeLevels = std::clamp(tmPresentation.fake3DShadeLevels, 0, 16);
+        tmPresentation.fake3DAffineStrength = std::clamp(tmPresentation.fake3DAffineStrength, 0.0f, 1.0f);
+        tmPresentation.lookPitchCurve = std::clamp(tmPresentation.lookPitchCurve, 0.1f, 4.0f);
+        tmPresentation.lookPitchDepthRange = std::clamp(tmPresentation.lookPitchDepthRange, 1.0f, 256.0f);
+        tmPresentation.presentationPitchMinDegrees = std::clamp(tmPresentation.presentationPitchMinDegrees, -89.0f, 89.0f);
+        tmPresentation.presentationPitchMaxDegrees = std::clamp(tmPresentation.presentationPitchMaxDegrees, -89.0f, 89.0f);
     }
     scriptAutoCompileInterval = std::clamp(scriptAutoCompileInterval, 0.1, 10.0);
     audioPreviewVolume = std::clamp(audioPreviewVolume, 0.0f, 2.0f);
@@ -15209,9 +16735,11 @@ void Engine::loadEditorUserSettings() {
 
     applyUIStylePresetByName(uiStylePresetName);
     ImGuiStyle& style = ImGui::GetStyle();
-    for (int i = 0; i < ImGuiCol_COUNT; ++i) {
-        if (hasColor[i]) {
-            style.Colors[i] = loadedColors[i];
+    if (loadedThemeVersion >= 2) {
+        for (int i = 0; i < ImGuiCol_COUNT; ++i) {
+            if (hasColor[i]) {
+                style.Colors[i] = loadedColors[i];
+            }
         }
     }
     applyEditorUIFontById(uiEditorFontAsset);
@@ -15237,6 +16765,9 @@ void Engine::saveEditorUserSettings() const {
 
     file << "# Editor UI settings\n";
     file << std::fixed << std::setprecision(4);
+    // themeVersion 2 = glass era. loaders skip color.* dumps from older files, see
+    // loadEditorUserSettings for the why.
+    file << "themeVersion=2\n";
     file << "uiStyle=" << uiStylePresetName << "\n";
     file << "uiEditorFont=" << uiEditorFontAsset << "\n";
     const char* animMode = "Off";
@@ -15263,6 +16794,12 @@ void Engine::saveEditorUserSettings() const {
     file << "fileBrowserSidebarWidth=" << fileBrowserSidebarWidth << "\n";
     file << "fileBrowserSidebarVisible=" << (showFileBrowserSidebar ? "1" : "0") << "\n";
     file << "consoleWrapText=" << (consoleWrapText ? "1" : "0") << "\n";
+    file << "showTouchSticks=" << (showTouchSticks ? "1" : "0") << "\n";
+    file << "touchStickRadius=" << std::clamp(touchStickRadius, 24.0f, 96.0f) << "\n";
+    file << "touchStickSensitivity=" << std::clamp(touchStickSensitivity, 1.0f, 16.0f) << "\n";
+    file << "touchStickInvertY=" << (touchStickInvertY ? "1" : "0") << "\n";
+    file << "quickToolsPinned=" << (quickToolsPinned ? "1" : "0") << "\n";
+    file << "mobileEditorLayout=" << (mobileEditorLayout ? "1" : "0") << "\n";
     file << "showAnimationWindow=" << (showAnimationWindow ? "1" : "0") << "\n";
     file << "showAIPathfindingWindow=" << (showAIPathfindingWindow ? "1" : "0") << "\n";
     file << "showPixelSpriteEditorWindow=" << (showPixelSpriteEditorWindow ? "1" : "0") << "\n";
@@ -15305,6 +16842,7 @@ void Engine::saveEditorUserSettings() const {
     file << "sceneGizmoIconScale=" << std::clamp(sceneGizmoIconScale, 0.4f, 3.0f) << "\n";
     file << "sceneGizmoOverlayScale=" << std::clamp(sceneGizmoOverlayScale, 0.4f, 3.0f) << "\n";
     file << "showSceneGrid3D=" << (showSceneGrid3D ? "1" : "0") << "\n";
+    file << "uiCanvasPreviewEnabled=" << (uiCanvasPreviewEnabled ? "1" : "0") << "\n";
     file << "showCanvasOverlay=" << (showCanvasOverlay ? "1" : "0") << "\n";
     file << "showUIWorldGrid=" << (showUIWorldGrid ? "1" : "0") << "\n";
     file << "pixelGridSnapEnabled=" << (pixelGridSnapEnabled ? "1" : "0") << "\n";
@@ -15315,6 +16853,10 @@ void Engine::saveEditorUserSettings() const {
         file << "tmPresentationPitchStretchStrength=" << std::clamp(tmPresentation.lookPitchStretchStrength, 0.0f, 1.5f) << "\n";
         file << "tmPresentationPitchCompressStrength=" << std::clamp(tmPresentation.lookPitchCompressStrength, 0.0f, 1.5f) << "\n";
         file << "tmPresentationPitchShearStrength=" << std::clamp(tmPresentation.lookPitchShearStrength, 0.0f, 1.0f) << "\n";
+        file << "tmPresentationPitchCurve=" << std::clamp(tmPresentation.lookPitchCurve, 0.1f, 4.0f) << "\n";
+        file << "tmPresentationPitchDepthRange=" << std::clamp(tmPresentation.lookPitchDepthRange, 1.0f, 256.0f) << "\n";
+        file << "tmPresentationPitchMinDegrees=" << std::clamp(tmPresentation.presentationPitchMinDegrees, -89.0f, 89.0f) << "\n";
+        file << "tmPresentationPitchMaxDegrees=" << std::clamp(tmPresentation.presentationPitchMaxDegrees, -89.0f, 89.0f) << "\n";
         file << "tmPresentationWorldSnapEnabled=" << (tmPresentation.presentationSnapEnabled ? "1" : "0") << "\n";
         file << "tmPresentationWorldSnapStep=" << std::clamp(tmPresentation.presentationSnapStep, 0.001f, 8.0f) << "\n";
         file << "tmPresentationCameraSnapEnabled=" << (tmPresentation.cameraRelativeSnapEnabled ? "1" : "0") << "\n";
@@ -15323,6 +16865,13 @@ void Engine::saveEditorUserSettings() const {
         file << "tmPresentationVertexSnapStep=" << std::clamp(tmPresentation.vertexSnapStep, 0.0005f, 4.0f) << "\n";
         file << "tmPresentationScreenSnapEnabled=" << (tmPresentation.screenSnapEnabled ? "1" : "0") << "\n";
         file << "tmPresentationScreenSnapStep=" << std::clamp(tmPresentation.screenSnapStep, 0.25f, 16.0f) << "\n";
+        file << "tmFake3DEnabled=" << (tmPresentation.fake3DEnabled ? "1" : "0") << "\n";
+        file << "tmFake3DInternalHeight=" << std::clamp(tmPresentation.fake3DInternalHeight, 64, 2160) << "\n";
+        file << "tmFake3DPointSampling=" << (tmPresentation.fake3DPointSampling ? "1" : "0") << "\n";
+        file << "tmFake3DFlatShading=" << (tmPresentation.fake3DFlatShading ? "1" : "0") << "\n";
+        file << "tmFake3DShadeLevels=" << std::clamp(tmPresentation.fake3DShadeLevels, 0, 16) << "\n";
+        file << "tmFake3DAffineTextures=" << (tmPresentation.fake3DAffineTextures ? "1" : "0") << "\n";
+        file << "tmFake3DAffineStrength=" << std::clamp(tmPresentation.fake3DAffineStrength, 0.0f, 1.0f) << "\n";
     }
     file << "showGameProfiler=" << (showGameProfiler ? "1" : "0") << "\n";
     file << "revealDebugSectionsAndMenus=" << (revealDebugSectionsAndMenus ? "1" : "0") << "\n";

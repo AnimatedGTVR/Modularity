@@ -16,11 +16,8 @@ Texture::Texture(const std::string& path,
     : m_FormatPolicy(formatPolicy)
 {
     stbi_set_flip_vertically_on_load(1);
-    // Read pixel bytes through the engine's AssetSource so this loader
-    // works on both desktop (std::filesystem under the hood) and Android
-    // (APK assets/ via AAssetManager) without the caller having to know
-    // which platform it's on. Stb decode of the in-memory buffer is the
-    // same regardless of source.
+    // read pixel bytes through AssetSource so desktop and APK assets both work; stb decodes
+    // the in-memory buffer the same either way.
     std::vector<uint8_t> fileBytes =
         Modularity::Platform::GetAssetSource().ReadAll(path);
     if (fileBytes.empty()) {
@@ -51,10 +48,9 @@ Texture::Texture(const std::string& path,
         }
     }
 
-    // The upload data format follows the decoded channel count; the *internal*
-    // (GPU storage) format is chosen separately below. OpenGL repacks from the
-    // 8-bit-per-channel source to whatever internal format we ask for, so the
-    // compact 16bpp paths need no manual pixel conversion here.
+    // upload format follows the decoded channel count; the GPU storage format is chosen
+    // separately below. OpenGL repacks the 8-bit source into whatever internal format we ask,
+    // so the 16bpp paths need no manual conversion.
     if (m_Channels == 1) {
         m_DataFormat = GL_RED;
     } else if (m_Channels == 3) {
@@ -63,9 +59,8 @@ Texture::Texture(const std::string& path,
         m_DataFormat = GL_RGBA;
     }
 
-    // Resolve the policy to a concrete internal format. Auto picks the smallest
-    // format the content allows: never spend alpha bits on an opaque texture,
-    // and only use 4-bit alpha when the texture actually blends.
+    // resolve the policy to a concrete internal format. Auto picks the smallest the content
+    // allows: no alpha bits on opaque textures, 4-bit alpha only when it actually blends.
     const bool hasAlpha = (m_Channels == 4);
     auto autoFormat = [&]() -> GLenum {
         if (m_Channels == 1) return GL_R8;                 // single-channel stays 8bpp
@@ -88,6 +83,17 @@ Texture::Texture(const std::string& path,
             m_InternalFormat = autoFormat();
             break;
     }
+
+#ifdef __ANDROID__
+    // GLES demands glTexImage2D's format share the internal format's base (RGB vs RGBA).
+    // desktop GL silently drops alpha, GLES throws GL_INVALID_OPERATION and the texture comes
+    // up black ( that's why file icons didn't render on device ). promote RGB internals to an
+    // RGBA equivalent whenever the decoded data carries alpha.
+    if (m_DataFormat == GL_RGBA) {
+        if (m_InternalFormat == GL_RGB565)    m_InternalFormat = GL_RGB5_A1;
+        else if (m_InternalFormat == GL_RGB8) m_InternalFormat = GL_RGBA8;
+    }
+#endif
 
     glGenTextures(1, &m_ID);
     glBindTexture(GL_TEXTURE_2D, m_ID);

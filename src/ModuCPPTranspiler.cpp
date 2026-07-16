@@ -1,6 +1,7 @@
 #include "ModuCPPTranspiler.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <optional>
@@ -8,7 +9,6 @@
 #include <set>
 #include <sstream>
 #include <unordered_set>
-
 namespace {
     enum class FieldVisibility {
         Public,
@@ -105,7 +105,8 @@ namespace {
         const unsigned char uc = static_cast<unsigned char>(c); return std::isalnum(uc) != 0 || c == '_';
     }
     size_t skipWhitespace(const std::string& text, size_t pos) {
-        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) ++pos; return pos;
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) ++pos;
+        return pos;
     }
     std::optional<ModuClassMatch> findModuClassDeclaration(const std::string& text) {
         size_t cursor = 0;
@@ -619,6 +620,61 @@ namespace {
             } else {
                 out.push_back(source[i]);
                 ++i;
+            }
+        }
+        return out;
+    }
+
+    // lets you write [/L] and [/R] in place of < and >, for folks whose keyboard makes the angle keys a pain to reach
+    // (or who just never want to type them). [/L] becomes '<', [/R] becomes '>'.
+
+    // Future me here: this runs FIRST, before dollar-strings and normalize,
+    // so the whole rest of the transpiler only ever sees real < and > . and we deliberately skip
+    // string + char literals and comments, because well, if you put [/L] inside "..." you meant it
+    // as literal text, so let's just.. leave it alone. Let's not "optimize" that skip away later.
+    static std::string unescapeAngleBracketTokens(const std::string& source) {
+        if (source.find("[/L]") == std::string::npos &&
+            source.find("[/R]") == std::string::npos) {
+            return source;
+        }
+        std::string out;
+        out.reserve(source.size());
+        enum class Mode {Normal, LineComment, BlockComment, StringLiteral, CharLiteral};
+        Mode mode = Mode::Normal;
+        bool escaped = false;
+        for (size_t i = 0; i < source.size(); ++i) {
+            const char c = source[i];
+            const char next = (i + 1 < source.size()) ? source[i + 1] : '\0';
+            switch (mode) {
+                case Mode::Normal:
+                    if (c == '/' && next == '/')      {mode = Mode::LineComment;}
+                    else if (c == '/' && next == '*') {mode = Mode::BlockComment;}
+                    else if (c == '"')                {mode = Mode::StringLiteral; escaped = false;}
+                    else if (c == '\'')               {mode = Mode::CharLiteral;   escaped = false;}
+                    else if (c == '[' && source.compare(i, 4, "[/L]") == 0) {out.push_back('<'); i += 3; continue;}
+                    else if (c == '[' && source.compare(i, 4, "[/R]") == 0) {out.push_back('>'); i += 3; continue;}
+                    out.push_back(c);
+                    break;
+                case Mode::LineComment:
+                    if (c == '\n') {mode = Mode::Normal;}
+                    out.push_back(c);
+                    break;
+                case Mode::BlockComment:
+                    if (c == '*' && next == '/') {out.push_back(c); out.push_back(next); ++i; mode = Mode::Normal; continue;}
+                    out.push_back(c);
+                    break;
+                case Mode::StringLiteral:
+                    if (escaped)        {escaped = false;}
+                    else if (c == '\\') {escaped = true;}
+                    else if (c == '"')  {mode = Mode::Normal;}
+                    out.push_back(c);
+                    break;
+                case Mode::CharLiteral:
+                    if (escaped)        {escaped = false;}
+                    else if (c == '\\') {escaped = true;}
+                    else if (c == '\'') {mode = Mode::Normal;}
+                    out.push_back(c);
+                    break;
             }
         }
         return out;
@@ -4294,6 +4350,8 @@ namespace {
                     return false;
                 };
 
+                // Later TODO: Make this a switch state instead of a if statement staircase lmfao.
+                // (Hopefully it makes it compile at least faster and make it easier to work with.)
                 if (callName == "Config") {
                     if (!requireArgs(2, "Config(Type, varName) requires exactly two arguments.")) return false;
                     const std::string typeExpr = trimCopy(args[0]);
@@ -4347,6 +4405,9 @@ namespace {
                         << ", &" << expr << ");\n";
                     return true;
                 }
+
+                // WHY does it have to keep resetting in Play mode?? 😭😭
+                // Future me: nevermind, it works fine now, it wasn't even caused by ModuCPP lmfao.
                 if (callName == "Slider") {
                     std::string labelExpr;
                     std::string expr;
@@ -4999,6 +5060,1070 @@ namespace {
 
         return out.str();
     }
+
+    // ===================== ModuCPP to C backend =====================
+    // lowers a parsed ModuCPP class straight to C against ScriptRuntimeCAPI.h instead of the C++ script api.
+    // Why? The C++ path drags ~95k preprocessed lines (Both ImGui and friends via ScriptRuntime.h)
+    // into every script TU and costs seconds per compile. the C path includes ~100 lines and compiles in milliseconds.
+    //
+    // the contract, and the ONLY reason this is safe to run on every script:
+    // if any construct is not one this backend provably knows how to lower, it declines and the classic C++ generator runs instead. when in doubt,
+    // decline. a false "no" costs a slower compile, a false "yes" ships a silently broken script.
+    // just for future reference: keep it that way!
+
+    bool cBackendDisabledByEnv() {
+        const char* v = std::getenv("MODUCPP_DISABLE_C_BACKEND");
+        return v != nullptr && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+    }
+
+    bool cIsNumericLiteral(const std::string& value) {
+        static const std::regex kNumber(R"(^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?[fF]?$)");
+        return std::regex_match(trimCopy(value), kNumber);
+    }
+
+    // "0.5f" -> 0.5 for tiny generation-time math (slider drag speed)
+    float cParseNumericLiteral(const std::string& value) {
+        return static_cast<float>(std::strtod(trimCopy(value).c_str(), nullptr));
+    }
+
+    std::string cFormatFloatLiteral(float value) {
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.6gf", static_cast<double>(value));
+        return buf;
+    }
+
+    bool cIsVec3TypeName(const std::string& name) {
+        return name == "vec3" || name == "Vector3";
+    }
+
+    // Math.<name> the support header can lower. keep in sync with
+    // include/ModuCPPCSupport.h or scripts will fail to compile, not fall back.
+    bool cMathNameSupported(const std::string& name) {
+        static const std::unordered_set<std::string> kNames = {
+            "Sin", "Cos", "Tan", "Sqrt", "Abs", "Floor", "Ceil", "Exp", "Pow",
+            "Min", "Max", "Clamp", "Clamp01", "Lerp", "Length"
+        };
+        return kNames.find(name) != kNames.end();
+    }
+
+    // ctx.<Name>(args) -> Modu_<Name>(ctx, args). only methods whose C++ ctx
+    // signature matches the ScriptRuntimeCAPI.h shape argument-for-argument
+    // belong here; anything with std::string returns, out-params or facade
+    // types stays out and forces the C++ fallback. keep in sync with
+    // include/ScriptRuntimeCAPI.h.
+    bool cCtxMethodSupported(const std::string& name) {
+        static const std::unordered_set<std::string> kNames = {
+            "GetObjectId", "IsObjectEnabled", "SetObjectEnabled",
+            "SetPosition", "SetRotation", "SetScale",
+            "IsSprintDown", "IsJumpDown", "GetMoveInputWASD",
+            "AddConsoleMessage",
+            "GetSettingFloat", "SetSettingFloat", "GetSettingBool", "SetSettingBool",
+            "HasAnimation", "PlayAnimation", "StopAnimation", "PauseAnimation",
+            "ReverseAnimation", "SetAnimationTime", "GetAnimationTime",
+            "IsAnimationPlaying", "SetAnimationLoop", "SetAnimationPlaySpeed",
+            "SetAnimationPlayOnAwake",
+            "GetSpriteClipCount", "GetSpriteClipIndex", "SetSpriteClipIndex",
+            "EnsureRigidbody", "EnsureCapsuleCollider",
+            "SetRigidbodyVelocity", "AddRigidbodyForce", "SetRigidbodyRotation",
+            "GetProjectGravityScale", "SetProjectGravityScale"
+        };
+        return kNames.find(name) != kNames.end();
+    }
+
+    bool cKeywordAllowed(const std::string& word) {
+        static const std::unordered_set<std::string> kWords = {
+            "if", "else", "for", "while", "do", "return", "break", "continue",
+            "switch", "case", "default", "const", "static", "void", "sizeof",
+            "float", "double", "int", "bool", "unsigned", "long", "short", "char",
+            "true", "false", "NULL"
+        };
+        return kWords.find(word) != kWords.end();
+    }
+
+    // walks a ModuCPP method body token by token and rewrites it into C.
+    // anything it does not recognize sets `reason` and the whole script falls
+    // back to the C++ backend.
+    struct CBodyLowerer {
+        const std::string& src;
+        const std::unordered_map<std::string, const FieldSpec*>& publicFields;
+        const std::unordered_map<std::string, const FieldSpec*>& privateFields;
+        const std::unordered_set<std::string>& helperNames;
+        bool hasCtx = false;
+        bool hasDt = false;
+        std::string dtName = "dt";
+
+        std::string out;
+        std::string reason;
+        std::set<std::string> usedPublics;
+        bool usedState = false;
+
+        size_t i = 0;
+        char prevSig = '{';
+        bool atStmtStart = true;
+        std::vector<std::string> parenInserts;
+        // pending text for the statement-level transform rewrites. emitted at
+        // the next top-level ';'. future me: only ONE of these can be live at
+        // a time, that is what keeps the rewrite from nesting into garbage.
+        std::string closeBeforeSemi;
+        std::string suffixAfterSemi;
+        std::unordered_map<std::string, char> locals; // name -> f/i/b/v
+
+        CBodyLowerer(const std::string& body,
+                     const std::unordered_map<std::string, const FieldSpec*>& pub,
+                     const std::unordered_map<std::string, const FieldSpec*>& priv,
+                     const std::unordered_set<std::string>& helpers)
+            : src(body), publicFields(pub), privateFields(priv), helperNames(helpers) {}
+
+        bool fail(const std::string& r) {
+            if (reason.empty()) reason = r;
+            return false;
+        }
+
+        static bool isWs(char c) {
+            return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+        }
+
+        // index of the next character that matters (skips whitespace and
+        // comments), npos when the body ends first.
+        size_t peekSig(size_t from) const {
+            size_t p = from;
+            while (p < src.size()) {
+                if (isWs(src[p])) { ++p; continue; }
+                if (src[p] == '/' && p + 1 < src.size() && src[p + 1] == '/') {
+                    while (p < src.size() && src[p] != '\n') ++p;
+                    continue;
+                }
+                if (src[p] == '/' && p + 1 < src.size() && src[p + 1] == '*') {
+                    p += 2;
+                    while (p + 1 < src.size() && !(src[p] == '*' && src[p + 1] == '/')) ++p;
+                    p = (p + 1 < src.size()) ? p + 2 : src.size();
+                    continue;
+                }
+                return p;
+            }
+            return std::string::npos;
+        }
+
+        std::string peekWord(size_t at) const {
+            if (at == std::string::npos || at >= src.size() || !isIdentifierStartChar(src[at])) return {};
+            size_t e = at;
+            while (e < src.size() && isIdentifierChar(src[e])) ++e;
+            return src.substr(at, e - at);
+        }
+
+        // assignment-ish operator at `at`: returns its text ("=", "+=", "++", ...)
+        // or empty. `==` is a comparison, not an assignment.
+        std::string peekAssignOp(size_t at) const {
+            if (at == std::string::npos || at >= src.size()) return {};
+            const char c = src[at];
+            const char n = (at + 1 < src.size()) ? src[at + 1] : '\0';
+            if (c == '=' && n != '=') return "=";
+            if ((c == '+' || c == '-') && n == c) return std::string(2, c);
+            if ((c == '+' || c == '-' || c == '*' || c == '/' || c == '%' ||
+                 c == '&' || c == '|' || c == '^') && n == '=') {
+                return std::string(1, c) + "=";
+            }
+            return {};
+        }
+
+        static bool isArithChar(char c) {
+            return c == '+' || c == '-' || c == '*' || c == '/' || c == '%' ||
+                   c == '<' || c == '>' || c == '!' || c == '&' || c == '|' || c == '^';
+        }
+
+        // a whole vec3 value (not .x/.y/.z) may only be assigned, passed or
+        // returned. the moment it touches an operator we bail, because C has
+        // no operator overloading and the C++ backend does this correctly.
+        bool checkVec3Context(size_t afterPos) {
+            if (isArithChar(prevSig)) {
+                return fail("vec3 arithmetic needs the C++ backend");
+            }
+            const size_t nxt = peekSig(afterPos);
+            if (nxt != std::string::npos) {
+                const char c = src[nxt];
+                if (isArithChar(c)) return fail("vec3 arithmetic needs the C++ backend");
+                if (c == '=' && nxt + 1 < src.size() && src[nxt + 1] == '=') {
+                    return fail("vec3 comparison needs the C++ backend");
+                }
+            }
+            return true;
+        }
+
+        void emitSig(const std::string& text, char sig) {
+            out += text;
+            prevSig = sig;
+            atStmtStart = false;
+        }
+
+        // counts top-level commas of the call whose '(' sits at `openAt`.
+        // returns -1 on unbalanced input, 0 for an empty arg list.
+        int countCallArgs(size_t openAt) const {
+            if (openAt == std::string::npos || openAt >= src.size() || src[openAt] != '(') return -1;
+            int depth = 0;
+            int commas = 0;
+            bool sawContent = false;
+            for (size_t p = openAt; p < src.size(); ++p) {
+                const char c = src[p];
+                if (c == '"' || c == '\'') {
+                    const char quote = c;
+                    ++p;
+                    while (p < src.size() && src[p] != quote) {
+                        if (src[p] == '\\') ++p;
+                        ++p;
+                    }
+                    sawContent = true;
+                    continue;
+                }
+                if (c == '(') { ++depth; continue; }
+                if (c == ')') {
+                    --depth;
+                    if (depth == 0) return sawContent ? commas + 1 : 0;
+                    continue;
+                }
+                if (depth == 1 && c == ',') { ++commas; continue; }
+                if (depth >= 1 && !isWs(c)) sawContent = true;
+            }
+            return -1;
+        }
+
+        // consumes the source '(' of a call we rewrote ourselves and starts
+        // its paren frame, optionally smuggling text in before the matching ')'.
+        bool consumeCallOpen(const std::string& insertBeforeClose) {
+            const size_t open = peekSig(i);
+            if (open == std::string::npos || src[open] != '(') {
+                return fail("expected '(' after rewritten call");
+            }
+            i = open + 1;
+            parenInserts.push_back(insertBeforeClose);
+            return true;
+        }
+
+        bool lowerTransformAccess();
+        bool lowerIdentifier(const std::string& word);
+        bool run();
+    };
+
+    bool CBodyLowerer::lowerTransformAccess() {
+        // obj.Transform.(position|rotation|scale), consumed as one unit
+        size_t p = peekSig(i);
+        if (p == std::string::npos || src[p] != '.') return fail("only obj.Transform.* is supported on obj");
+        p = peekSig(p + 1);
+        const std::string node = peekWord(p);
+        if (node != "Transform") return fail("only obj.Transform.* is supported on obj");
+        p = peekSig(p + node.size());
+        if (p == std::string::npos || src[p] != '.') return fail("only obj.Transform.* is supported on obj");
+        p = peekSig(p + 1);
+        const std::string prop = peekWord(p);
+        std::string getter, setter;
+        if (prop == "position") { getter = "Modu_GetPosition"; setter = "Modu_SetPosition"; }
+        else if (prop == "rotation") { getter = "Modu_GetRotation"; setter = "Modu_SetRotation"; }
+        else if (prop == "scale") { getter = "Modu_GetScale"; setter = "Modu_SetScale"; }
+        else return fail("obj.Transform." + prop + " has no C lowering yet");
+        const bool wasStmtStart = atStmtStart;
+        i = p + prop.size();
+
+        size_t after = peekSig(i);
+        if (after != std::string::npos && src[after] == '.') {
+            // member access: read, or the read-modify-write statement form
+            const size_t memberPos = peekSig(after + 1);
+            const std::string member = peekWord(memberPos);
+            if (member != "x" && member != "y" && member != "z") {
+                return fail("unknown transform member '." + member + "'");
+            }
+            const size_t afterMember = memberPos + member.size();
+            const std::string op = peekAssignOp(peekSig(afterMember));
+            if (!op.empty()) {
+                if (!wasStmtStart) return fail("transform writes must be plain statements");
+                if (!closeBeforeSemi.empty() || !suffixAfterSemi.empty()) {
+                    return fail("chained transform writes in one statement");
+                }
+                if (op == "++" || op == "--") {
+                    i = peekSig(afterMember) + 2;
+                    out += "{ ModuVec3 _moduTmp = " + getter + "(ctx); " + op +
+                           "_moduTmp." + member;
+                    suffixAfterSemi = " " + setter + "(ctx, _moduTmp); }";
+                    prevSig = 'a';
+                    atStmtStart = false;
+                    return true;
+                }
+                i = peekSig(afterMember) + op.size();
+                out += "{ ModuVec3 _moduTmp = " + getter + "(ctx); _moduTmp." +
+                       member + " " + op;
+                suffixAfterSemi = " " + setter + "(ctx, _moduTmp); }";
+                prevSig = '=';
+                atStmtStart = false;
+                return true;
+            }
+            i = afterMember;
+            emitSig(getter + "(ctx)." + member, 'a');
+            return true;
+        }
+
+        const std::string op = peekAssignOp(after);
+        if (!op.empty()) {
+            if (op != "=") return fail("vec3 arithmetic needs the C++ backend");
+            if (!wasStmtStart) return fail("transform writes must be plain statements");
+            if (!closeBeforeSemi.empty() || !suffixAfterSemi.empty()) {
+                return fail("chained transform writes in one statement");
+            }
+            i = after + 1;
+            emitSig(setter + "(ctx, ", ' ');
+            closeBeforeSemi = ")";
+            return true;
+        }
+
+        // whole-struct read
+        if (!checkVec3Context(i)) return false;
+        emitSig(getter + "(ctx)", 'a');
+        return true;
+    }
+
+    bool CBodyLowerer::lowerIdentifier(const std::string& word) {
+        const size_t after = i; // identifier already consumed by caller
+
+        if (cKeywordAllowed(word)) {
+            const bool isType = (word == "float" || word == "int" || word == "bool" || word == "double");
+            if (isType) {
+                const std::string next = peekWord(peekSig(after));
+                if (!next.empty()) {
+                    if (publicFields.count(next) || privateFields.count(next) || helperNames.count(next)) {
+                        return fail("local '" + next + "' shadows a field or method");
+                    }
+                    locals[next] = (word == "bool") ? 'b' : (word == "int" ? 'i' : 'f');
+                }
+            }
+            emitSig(word, word.back());
+            if (word == "else" || word == "do" || word == "return") atStmtStart = (word != "return");
+            return true;
+        }
+
+        if (cIsVec3TypeName(word)) {
+            const size_t nxt = peekSig(after);
+            if (nxt != std::string::npos && src[nxt] == '(') {
+                const int args = countCallArgs(nxt);
+                if (args == 1) { emitSig("ModuC_Vec3Splat", 't'); return true; }
+                if (args == 3) { emitSig("ModuC_Vec3", '3'); return true; }
+                return fail("vec3(...) needs 1 or 3 arguments");
+            }
+            const std::string next = peekWord(nxt);
+            if (!next.empty()) {
+                if (publicFields.count(next) || privateFields.count(next) || helperNames.count(next)) {
+                    return fail("local '" + next + "' shadows a field or method");
+                }
+                locals[next] = 'v';
+                emitSig("ModuVec3", '3');
+                return true;
+            }
+            return fail("unsupported vec3 usage");
+        }
+
+        if (word == "Math") {
+            size_t p = peekSig(after);
+            if (p == std::string::npos || src[p] != '.') return fail("bare 'Math' is not lowerable");
+            p = peekSig(p + 1);
+            const std::string fn = peekWord(p);
+            if (!cMathNameSupported(fn)) return fail("Math." + fn + " has no C lowering yet");
+            i = p + fn.size();
+            emitSig("ModuC_Math_" + fn, 'h');
+            return true;
+        }
+
+        if (word == "Type") {
+            size_t p = peekSig(after);
+            if (p == std::string::npos || src[p] != '.') return fail("bare 'Type' is not lowerable");
+            p = peekSig(p + 1);
+            const std::string level = peekWord(p);
+            std::string lowered;
+            if (level == "Info") lowered = "MODU_CONSOLE_INFO";
+            else if (level == "Warning") lowered = "MODU_CONSOLE_WARNING";
+            else if (level == "Error") lowered = "MODU_CONSOLE_ERROR";
+            else if (level == "Success") lowered = "MODU_CONSOLE_SUCCESS";
+            else return fail("Type." + level + " is not a console level");
+            i = p + level.size();
+            emitSig(lowered, 'S');
+            return true;
+        }
+
+        if (word == "AddLog") {
+            if (!hasCtx) return fail("AddLog outside a lifecycle method");
+            const size_t open = peekSig(after);
+            const int args = countCallArgs(open);
+            if (args != 1 && args != 2) return fail("AddLog needs 1 or 2 arguments");
+            emitSig("Modu_AddConsoleMessage", 'e');
+            if (!consumeCallOpen(args == 1 ? ", MODU_CONSOLE_INFO" : "")) return false;
+            out += "(ctx, ";
+            prevSig = ' ';
+            return true;
+        }
+
+        if (word == "ctx") {
+            if (!hasCtx) return fail("ctx in a context-free helper");
+            size_t p = peekSig(after);
+            if (p == std::string::npos || src[p] != '.') return fail("bare 'ctx' is not lowerable");
+            p = peekSig(p + 1);
+            const std::string fn = peekWord(p);
+            if (!cCtxMethodSupported(fn)) return fail("ctx." + fn + " has no C lowering yet");
+            i = p + fn.size();
+            emitSig("Modu_" + fn, 'x');
+            const size_t open = peekSig(i);
+            const int args = countCallArgs(open);
+            if (args < 0) return fail("expected a call after ctx." + fn);
+            if (!consumeCallOpen("")) return false;
+            out += (args == 0) ? "(ctx" : "(ctx, ";
+            prevSig = (args == 0) ? 'x' : ' ';
+            return true;
+        }
+
+        if (word == "obj") {
+            if (!hasCtx) return fail("obj in a context-free helper");
+            return lowerTransformAccess();
+        }
+
+        if (word == dtName) {
+            if (!hasDt) return fail("'" + word + "' is not available here");
+            emitSig(word, 't');
+            return true;
+        }
+
+        if (word.rfind("_modu", 0) == 0) {
+            return fail("identifier '" + word + "' collides with the reserved _modu prefix");
+        }
+
+        const auto priv = privateFields.find(word);
+        if (priv != privateFields.end()) {
+            if (!hasCtx) return fail("field '" + word + "' used in a context-free helper");
+            usedState = true;
+            if (priv->second->kind == FieldKind::Vec3) {
+                const size_t nxt = peekSig(after);
+                const bool memberAccess = (nxt != std::string::npos && src[nxt] == '.');
+                if (!memberAccess && !checkVec3Context(after)) return false;
+            }
+            emitSig("_moduState->" + word, 'd');
+            return true;
+        }
+
+        const auto pub = publicFields.find(word);
+        if (pub != publicFields.end()) {
+            if (!hasCtx) return fail("field '" + word + "' used in a context-free helper");
+            const std::string op = peekAssignOp(peekSig(after));
+            if (!op.empty() || prevSig == '#') {
+                return fail("public field '" + word + "' is written to (read-only in the C backend)");
+            }
+            usedPublics.insert(word);
+            emitSig(word, 'p');
+            return true;
+        }
+
+        if (helperNames.count(word)) {
+            emitSig(word, 'm');
+            return true;
+        }
+
+        const auto local = locals.find(word);
+        if (local != locals.end()) {
+            if (local->second == 'v') {
+                const size_t nxt = peekSig(after);
+                const bool memberAccess = (nxt != std::string::npos && src[nxt] == '.');
+                const std::string op = peekAssignOp(nxt);
+                // whole-struct '=' is plain C, compound assigns are vec3 math
+                if (!op.empty() && op != "=") return fail("vec3 arithmetic needs the C++ backend");
+                if (!memberAccess && op.empty() && !checkVec3Context(after)) return false;
+            }
+            emitSig(word, 'l');
+            return true;
+        }
+
+        if (word.rfind("Modu_", 0) == 0 || word.rfind("ModuC_", 0) == 0 ||
+            word.rfind("MODU_", 0) == 0 || word.rfind("MODUC_", 0) == 0 ||
+            word == "ModuVec3") {
+            emitSig(word, 'M');
+            return true;
+        }
+
+        return fail("identifier '" + word + "' has no C lowering yet");
+    }
+
+    bool CBodyLowerer::run() {
+        while (i < src.size()) {
+            const char c = src[i];
+
+            if (isWs(c)) { out += c; ++i; continue; }
+
+            if (c == '/' && i + 1 < src.size() && (src[i + 1] == '/' || src[i + 1] == '*')) {
+                const size_t start = i;
+                if (src[i + 1] == '/') {
+                    while (i < src.size() && src[i] != '\n') ++i;
+                } else {
+                    i += 2;
+                    while (i + 1 < src.size() && !(src[i] == '*' && src[i + 1] == '/')) ++i;
+                    i = (i + 1 < src.size()) ? i + 2 : src.size();
+                }
+                out += src.substr(start, i - start);
+                continue;
+            }
+
+            if (c == '"' || c == '\'') {
+                if (prevSig == '+') return fail("string concatenation needs the C++ backend");
+                const size_t start = i;
+                ++i;
+                while (i < src.size() && src[i] != c) {
+                    if (src[i] == '\\') ++i;
+                    ++i;
+                }
+                if (i < src.size()) ++i;
+                out += src.substr(start, i - start);
+                prevSig = c;
+                atStmtStart = false;
+                const size_t nxt = peekSig(i);
+                if (nxt != std::string::npos && src[nxt] == '+') {
+                    return fail("string concatenation needs the C++ backend");
+                }
+                continue;
+            }
+
+            if (std::isdigit(static_cast<unsigned char>(c)) ||
+                (c == '.' && i + 1 < src.size() && std::isdigit(static_cast<unsigned char>(src[i + 1])))) {
+                const size_t start = i;
+                while (i < src.size() &&
+                       (isIdentifierChar(src[i]) || src[i] == '.' ||
+                        ((src[i] == '+' || src[i] == '-') && i > start &&
+                         (src[i - 1] == 'e' || src[i - 1] == 'E')))) {
+                    ++i;
+                }
+                out += src.substr(start, i - start);
+                prevSig = '0';
+                atStmtStart = false;
+                continue;
+            }
+
+            if (isIdentifierStartChar(c)) {
+                size_t e = i;
+                while (e < src.size() && isIdentifierChar(src[e])) ++e;
+                const std::string word = src.substr(i, e - i);
+                i = e;
+                if (!lowerIdentifier(word)) return false;
+                continue;
+            }
+
+            // punctuation
+            if (c == '(') { parenInserts.push_back(std::string()); out += c; ++i; prevSig = '('; atStmtStart = false; continue; }
+            if (c == ')') {
+                if (!parenInserts.empty()) {
+                    out += parenInserts.back();
+                    parenInserts.pop_back();
+                }
+                out += c;
+                ++i;
+                prevSig = ')';
+                atStmtStart = parenInserts.empty();
+                continue;
+            }
+            if (c == ';') {
+                if (parenInserts.empty()) {
+                    out += closeBeforeSemi;
+                    out += ';';
+                    out += suffixAfterSemi;
+                    closeBeforeSemi.clear();
+                    suffixAfterSemi.clear();
+                    atStmtStart = true;
+                } else {
+                    out += ';'; // for-loop separators
+                }
+                ++i;
+                prevSig = ';';
+                continue;
+            }
+            if (c == '{' || c == '}') {
+                if (!closeBeforeSemi.empty() || !suffixAfterSemi.empty()) {
+                    return fail("unexpected brace inside a transform write");
+                }
+                out += c;
+                ++i;
+                prevSig = c;
+                atStmtStart = true;
+                continue;
+            }
+            if (c == '.') {
+                // every sugar form (Math./ctx./obj./Type.) consumes its own
+                // dot, so a dot landing here is struct member access, and the
+                // only structs a lowered script can hold are vec3s.
+                const size_t memberPos = peekSig(i + 1);
+                const std::string member = peekWord(memberPos);
+                if (member == "x" || member == "y" || member == "z") {
+                    out += '.';
+                    out += member;
+                    i = memberPos + member.size();
+                    prevSig = 'a';
+                    atStmtStart = false;
+                    continue;
+                }
+                return fail("member '." + member + "' has no C lowering yet");
+            }
+            if (c == ':' && i + 1 < src.size() && src[i + 1] == ':') return fail("'::' needs the C++ backend");
+            if (c == '-' && i + 1 < src.size() && src[i + 1] == '>') return fail("'->' needs the C++ backend");
+            if (c == '[' || c == ']') return fail("arrays and lambdas need the C++ backend");
+            if (c == '#') return fail("preprocessor directives inside bodies");
+
+            if ((c == '+' || c == '-') && i + 1 < src.size() && src[i + 1] == c) {
+                // prefix ++/-- on a public field is still a write
+                const std::string target = peekWord(peekSig(i + 2));
+                if (publicFields.count(target)) {
+                    return fail("public field '" + target + "' is written to (read-only in the C backend)");
+                }
+                out += c;
+                out += c;
+                i += 2;
+                prevSig = c;
+                atStmtStart = false;
+                continue;
+            }
+
+            out += c;
+            ++i;
+            prevSig = c;
+            atStmtStart = false;
+        }
+        if (!parenInserts.empty()) return fail("unbalanced parentheses");
+        if (!closeBeforeSemi.empty() || !suffixAfterSemi.empty()) {
+            return fail("transform write not closed by ';'");
+        }
+        return true;
+    }
+
+    // field-level eligibility for the C backend. publics must be inspector
+    // and settings representable (float/bool), privates just need a C type.
+    bool cFieldEligible(const FieldSpec& field, std::string& reason) {
+        if (!field.arrayDimensions.empty()) { reason = "array field '" + field.name + "'"; return false; }
+        if (field.hasObjectRefAttribute || field.hasObjectListAttribute ||
+            field.hasDialogueLinesAttribute || field.hasClipGridPairAttribute) {
+            reason = "field '" + field.name + "' uses attributes without a C lowering";
+            return false;
+        }
+        const std::string init = trimCopy(field.initializer);
+        if (field.visibility == FieldVisibility::Public || field.hasInspectorMetadata) {
+            if (field.visibility != FieldVisibility::Public) {
+                reason = "private field '" + field.name + "' with inspector metadata";
+                return false;
+            }
+            if (field.kind == FieldKind::Float) {
+                if (!init.empty() && !cIsNumericLiteral(init)) {
+                    reason = "field '" + field.name + "' has a non-literal initializer";
+                    return false;
+                }
+            } else if (field.kind == FieldKind::Bool) {
+                if (!init.empty() && init != "true" && init != "false") {
+                    reason = "field '" + field.name + "' has a non-literal initializer";
+                    return false;
+                }
+            } else {
+                reason = "public field '" + field.name + "' is not float/bool";
+                return false;
+            }
+            if (field.hasSliderAttribute) {
+                if (!field.sliderMinExpr || !field.sliderMaxExpr ||
+                    !cIsNumericLiteral(*field.sliderMinExpr) || !cIsNumericLiteral(*field.sliderMaxExpr)) {
+                    reason = "field '" + field.name + "' slider bounds are not literals";
+                    return false;
+                }
+            }
+            if (field.inspectorHeader) {
+                // stored exactly as written in the attribute, quotes included;
+                // anything fancier than a plain literal stays on the C++ side
+                static const std::regex kStringLiteral(R"(^"([^"\\]|\\.)*"$)");
+                if (!std::regex_match(trimCopy(*field.inspectorHeader), kStringLiteral)) {
+                    reason = "field '" + field.name + "' header is not a plain string";
+                    return false;
+                }
+            }
+            return true;
+        }
+        switch (field.kind) {
+        case FieldKind::Float:
+        case FieldKind::Int:
+        case FieldKind::Bool:
+            if (!init.empty() && !cIsNumericLiteral(init) && init != "true" && init != "false") {
+                reason = "field '" + field.name + "' has a non-literal initializer";
+                return false;
+            }
+            return true;
+        case FieldKind::Vec3: {
+            if (init.empty()) return true;
+            static const std::regex kVecInit(R"(^(?:vec3|Vector3)\s*\((.*)\)$)");
+            std::smatch m;
+            if (!std::regex_match(init, m, kVecInit)) {
+                reason = "field '" + field.name + "' has a non-literal vec3 initializer";
+                return false;
+            }
+            std::istringstream args(m[1].str());
+            std::string part;
+            int count = 0;
+            while (std::getline(args, part, ',')) {
+                if (!cIsNumericLiteral(part)) {
+                    reason = "field '" + field.name + "' has a non-literal vec3 initializer";
+                    return false;
+                }
+                ++count;
+            }
+            if (count != 1 && count != 3) {
+                reason = "field '" + field.name + "' vec3 initializer needs 1 or 3 args";
+                return false;
+            }
+            return true;
+        }
+        default:
+            reason = "field '" + field.name + "' type has no C lowering";
+            return false;
+        }
+    }
+
+    std::string cVec3InitExpr(const std::string& initializer) {
+        const std::string init = trimCopy(initializer);
+        if (init.empty()) return "ModuC_Vec3Splat(0.0f)";
+        static const std::regex kVecInit(R"(^(?:vec3|Vector3)\s*\((.*)\)$)");
+        std::smatch m;
+        std::regex_match(init, m, kVecInit);
+        const std::string args = trimCopy(m[1].str());
+        return (args.find(',') == std::string::npos)
+            ? "ModuC_Vec3Splat(" + args + ")"
+            : "ModuC_Vec3(" + args + ")";
+    }
+
+    std::string cScalarInitExpr(const FieldSpec& field) {
+        const std::string init = trimCopy(field.initializer);
+        if (field.kind == FieldKind::Bool) return (init == "true") ? "1" : "0";
+        if (init.empty()) return (field.kind == FieldKind::Int) ? "0" : "0.0f";
+        return init;
+    }
+
+    // the C backend entry point: true means outSource is a complete C script
+    // against ScriptRuntimeCAPI.h. false + reason means use the C++ backend.
+    bool generateTranspiledCSource(const fs::path& sourcePath, const ClassSpec& spec,
+                                   std::string& outSource, std::string& reason) {
+        if (!spec.subScripts.empty()) { reason = "sub-script structs"; return false; }
+        if (!trimCopy(spec.inspectorBlock).empty()) { reason = "custom inspector block"; return false; }
+        if (!spec.usingDirectives.empty()) { reason = "using directives"; return false; }
+
+        // the api imports are fine to see (the C support header replaces them
+        // all); any other include is user code we cannot vouch for.
+        static const std::unordered_set<std::string> kApiIncludeTargets = {
+            "ModuCPP", "ModuEngine", "ModuInput", "RMeshBuilder", "ModuCPP.Experimental",
+            "ModuCPPScriptApi.h", "ModuEngineScriptApi.h", "ModuInputScriptApi.h",
+            "RMeshBuilderScriptApi.h", "ModuCPPExperimentalScriptApi.h"
+        };
+        for (const std::string& inc : spec.includeDirectives) {
+            static const std::regex kIncludeTarget(R"(^\s*#include\s*[<"]([^>"]+)[>"]\s*$)");
+            std::smatch m;
+            if (!std::regex_match(inc, m, kIncludeTarget) ||
+                kApiIncludeTargets.find(trimCopy(m[1].str())) == kApiIncludeTargets.end()) {
+                reason = "include '" + inc + "'";
+                return false;
+            }
+        }
+
+        // anything outside the class other than comments and the api imports
+        // is real C++ we cannot see into
+        {
+            std::istringstream input(stripCommentsPreserveLayout(spec.passthroughCode));
+            std::string line;
+            while (std::getline(input, line)) {
+                const std::string trimmed = trimCopy(line);
+                if (trimmed.empty()) continue;
+                if (trimmed.rfind("#include", 0) == 0) continue;
+                reason = "top-level code outside the class";
+                return false;
+            }
+        }
+
+        std::unordered_map<std::string, const FieldSpec*> publicFields;
+        std::unordered_map<std::string, const FieldSpec*> privateFields;
+        std::vector<const FieldSpec*> publicOrder;
+        std::vector<const FieldSpec*> privateOrder;
+        for (const FieldSpec& field : spec.fields) {
+            if (!cFieldEligible(field, reason)) return false;
+            if (field.visibility == FieldVisibility::Public) {
+                publicFields[field.name] = &field;
+                publicOrder.push_back(&field);
+            } else {
+                privateFields[field.name] = &field;
+                privateOrder.push_back(&field);
+            }
+        }
+
+        struct LoweredMethod {
+            const MethodSpec* method = nullptr;
+            std::string exportName; // Modu_Begin / Modu_TickUpdate / Modu_Update, empty for helpers
+            std::string returnType;
+            std::string params;     // helpers only
+            bool wantsDt = false;
+        };
+        std::vector<LoweredMethod> lifecycle;
+        std::vector<LoweredMethod> helpers;
+        std::unordered_set<std::string> helperNames;
+
+        for (const MethodSpec& method : spec.methods) {
+            if (method.isCalc) { reason = "calc method '" + method.name + "'"; return false; }
+            if (isCollisionMethodName(method.name)) { reason = "collision hook '" + method.name + "'"; return false; }
+            LoweredMethod lowered;
+            lowered.method = &method;
+            lowered.wantsDt = method.hasDeltaTimeParam || method.autoInjectedDeltaTime;
+            if (method.name == "Begin") lowered.exportName = "Modu_Begin";
+            else if (method.name == "TickUpdate") lowered.exportName = "Modu_TickUpdate";
+            else if (method.name == "Update") lowered.exportName = "Modu_Update";
+            else if (isLifecycleMethodName(method.name)) {
+                reason = "lifecycle hook '" + method.name + "' has no C hook";
+                return false;
+            }
+
+            if (!lowered.exportName.empty()) {
+                // lifecycle hooks take nothing beyond ctx and dt
+                std::string rest = method.originalParams;
+                if (!trimCopy(rest).empty()) {
+                    std::istringstream params(rest);
+                    std::string part;
+                    while (std::getline(params, part, ',')) {
+                        const std::string p = trimCopy(part);
+                        if (p.empty()) continue;
+                        if (p.find("ScriptContext") != std::string::npos) continue;
+                        if (looksLikeDeltaTimeParameter(p)) continue;
+                        reason = "lifecycle '" + method.name + "' has extra parameters";
+                        return false;
+                    }
+                }
+                if (!isVoidReturnType(method.returnType)) {
+                    reason = "lifecycle '" + method.name + "' returns a value";
+                    return false;
+                }
+                lifecycle.push_back(lowered);
+                continue;
+            }
+
+            // helper: pure C function, no ctx, value params only
+            if (method.hasContext) { reason = "helper '" + method.name + "' takes ctx"; return false; }
+            std::string ret = trimCopy(method.returnType);
+            if (cIsVec3TypeName(ret)) ret = "ModuVec3";
+            else if (ret != "void" && ret != "float" && ret != "int" && ret != "bool" && ret != "double") {
+                reason = "helper '" + method.name + "' return type '" + ret + "'";
+                return false;
+            }
+            lowered.returnType = ret;
+            std::string loweredParams;
+            const std::string raw = trimCopy(method.originalParams);
+            if (!raw.empty()) {
+                std::istringstream params(raw);
+                std::string part;
+                while (std::getline(params, part, ',')) {
+                    std::string p = trimCopy(part);
+                    if (p.rfind("const ", 0) == 0) p = trimCopy(p.substr(6));
+                    const size_t space = p.find_last_of(" \t");
+                    if (space == std::string::npos) { reason = "helper '" + method.name + "' has an untyped parameter"; return false; }
+                    std::string type = trimCopy(p.substr(0, space));
+                    const std::string name = trimCopy(p.substr(space + 1));
+                    if (cIsVec3TypeName(type)) type = "ModuVec3";
+                    else if (type != "float" && type != "int" && type != "bool" && type != "double") {
+                        reason = "helper '" + method.name + "' parameter type '" + type + "'";
+                        return false;
+                    }
+                    if (!loweredParams.empty()) loweredParams += ", ";
+                    loweredParams += type + " " + name;
+                }
+            }
+            lowered.params = loweredParams.empty() ? "void" : loweredParams;
+            helperNames.insert(method.name);
+            helpers.push_back(lowered);
+        }
+
+        if (lifecycle.empty()) { reason = "no Begin/TickUpdate/Update hook"; return false; }
+
+        const std::string san = sanitizeIdentifier(spec.name);
+        const std::string stateType = san + "State";
+
+        // lower every body first; assembly only happens once they all pass
+        struct LoweredBody {
+            std::string text;
+            std::set<std::string> usedPublics;
+            bool usedState = false;
+        };
+        std::vector<LoweredBody> lifecycleBodies(lifecycle.size());
+        std::vector<LoweredBody> helperBodies(helpers.size());
+
+        auto lowerBody = [&](const MethodSpec& method, bool wantsDt,
+                             LoweredBody& outBody) -> bool {
+            CBodyLowerer lowerer(method.body, publicFields, privateFields, helperNames);
+            lowerer.hasCtx = true;
+            lowerer.hasDt = wantsDt;
+            lowerer.dtName = method.deltaTimeParamName.empty() ? "dt" : method.deltaTimeParamName;
+            if (!lowerer.run()) {
+                reason = "method '" + method.name + "': " + lowerer.reason;
+                return false;
+            }
+            outBody.text = std::move(lowerer.out);
+            outBody.usedPublics = std::move(lowerer.usedPublics);
+            outBody.usedState = lowerer.usedState;
+            return true;
+        };
+
+        for (size_t idx = 0; idx < helpers.size(); ++idx) {
+            CBodyLowerer lowerer(helpers[idx].method->body, publicFields, privateFields, helperNames);
+            lowerer.hasCtx = false;
+            lowerer.hasDt = false;
+            // params act as pre-declared locals
+            if (helpers[idx].params != "void") {
+                std::istringstream params(helpers[idx].params);
+                std::string part;
+                while (std::getline(params, part, ',')) {
+                    std::string p = trimCopy(part);
+                    const size_t space = p.find_last_of(' ');
+                    const std::string type = p.substr(0, space);
+                    const std::string name = p.substr(space + 1);
+                    lowerer.locals[name] = (type == "ModuVec3") ? 'v' : (type == "int" ? 'i' : (type == "bool" ? 'b' : 'f'));
+                }
+            }
+            if (!lowerer.run()) {
+                reason = "method '" + helpers[idx].method->name + "': " + lowerer.reason;
+                return false;
+            }
+            helperBodies[idx].text = std::move(lowerer.out);
+        }
+
+        for (size_t idx = 0; idx < lifecycle.size(); ++idx) {
+            if (!lowerBody(*lifecycle[idx].method, lifecycle[idx].wantsDt, lifecycleBodies[idx])) {
+                return false;
+            }
+        }
+
+        const bool anyState = std::any_of(lifecycleBodies.begin(), lifecycleBodies.end(),
+                                          [](const LoweredBody& b) { return b.usedState; });
+
+        std::ostringstream out;
+        out << "// generated by the ModuCPP transpiler (C backend) from "
+            << sourcePath.filename().string() << ". do not edit by hand,\n"
+            << "// the transpiler will happily stomp this on the next compile.\n"
+            << "//\n"
+            << "// this script qualified for the fast C path: tiny include surface,\n"
+            << "// compiles in milliseconds. if the source grows a construct the C\n"
+            << "// backend does not know, the transpiler quietly falls back to the\n"
+            << "// classic C++ output. nothing breaks either way.\n"
+            << "#include \"ModuCPPCSupport.h\"\n\n";
+
+        if (anyState || !privateOrder.empty()) {
+            out << "// per-object state (the class's private fields). slots are keyed by\n"
+                << "// object id; if more than MODUC_MAX_STATE_SLOTS objects run this script\n"
+                << "// the extras share the last slot, so bump that before shipping a horde.\n"
+                << "typedef struct " << stateType << " {\n";
+            for (const FieldSpec* field : privateOrder) {
+                const char* type = "float";
+                if (field->kind == FieldKind::Int) type = "int";
+                else if (field->kind == FieldKind::Bool) type = "int";
+                else if (field->kind == FieldKind::Vec3) type = "ModuVec3";
+                out << "    " << type << " " << field->name << ";\n";
+            }
+            out << "} " << stateType << ";\n\n";
+            out << "static " << stateType << "* " << san << "_GetState(ModuScriptContext* ctx) {\n"
+                << "    static struct { int objectId; int used; " << stateType << " state; } s_slots[MODUC_MAX_STATE_SLOTS];\n"
+                << "    const int id = Modu_GetObjectId(ctx);\n"
+                << "    int n;\n"
+                << "    for (n = 0; n < MODUC_MAX_STATE_SLOTS; ++n) {\n"
+                << "        if (s_slots[n].used && s_slots[n].objectId == id) return &s_slots[n].state;\n"
+                << "        if (!s_slots[n].used) break;\n"
+                << "    }\n"
+                << "    if (n >= MODUC_MAX_STATE_SLOTS) n = MODUC_MAX_STATE_SLOTS - 1;\n"
+                << "    s_slots[n].used = 1;\n"
+                << "    s_slots[n].objectId = id;\n";
+            for (const FieldSpec* field : privateOrder) {
+                if (field->kind == FieldKind::Vec3) {
+                    out << "    s_slots[n].state." << field->name << " = " << cVec3InitExpr(field->initializer) << ";\n";
+                } else {
+                    out << "    s_slots[n].state." << field->name << " = " << cScalarInitExpr(*field) << ";\n";
+                }
+            }
+            out << "    return &s_slots[n].state;\n"
+                << "}\n\n";
+        }
+
+        for (const LoweredMethod& helper : helpers) {
+            out << "static " << helper.returnType << " " << helper.method->name
+                << "(" << helper.params << ");\n";
+        }
+        if (!helpers.empty()) out << "\n";
+
+        for (size_t idx = 0; idx < helpers.size(); ++idx) {
+            out << "static " << helpers[idx].returnType << " " << helpers[idx].method->name
+                << "(" << helpers[idx].params << ") {" << helperBodies[idx].text << "}\n\n";
+        }
+
+        auto emitPublicLoad = [&](const FieldSpec& field, std::ostream& os) {
+            if (field.kind == FieldKind::Bool) {
+                os << "    const bool " << field.name << " = Modu_GetSettingBool(ctx, \""
+                   << field.name << "\", " << cScalarInitExpr(field) << ") != 0;\n";
+            } else {
+                os << "    const float " << field.name << " = Modu_GetSettingFloat(ctx, \""
+                   << field.name << "\", " << cScalarInitExpr(field) << ");\n";
+            }
+        };
+
+        for (size_t idx = 0; idx < lifecycle.size(); ++idx) {
+            const LoweredMethod& hook = lifecycle[idx];
+            const LoweredBody& body = lifecycleBodies[idx];
+            const std::string dtName = hook.method->deltaTimeParamName.empty()
+                ? "dt" : hook.method->deltaTimeParamName;
+            out << "void " << hook.exportName << "(ModuScriptContext* ctx";
+            if (hook.wantsDt) out << ", float " << dtName;
+            out << ") {\n";
+            if (body.usedState) {
+                out << "    " << stateType << "* _moduState = " << san << "_GetState(ctx);\n";
+            }
+            for (const FieldSpec* field : publicOrder) {
+                if (body.usedPublics.count(field->name)) emitPublicLoad(*field, out);
+            }
+            out << body.text << "\n}\n\n";
+        }
+
+        if (!publicOrder.empty()) {
+            out << "void Modu_OnInspector(ModuScriptContext* ctx) {\n";
+            for (const FieldSpec* field : publicOrder) {
+                if (field->inspectorHeader) {
+                    // already a quoted literal straight from the attribute
+                    out << "    Modu_InspectorText(ctx, " << trimCopy(*field->inspectorHeader) << ");\n";
+                }
+                if (field->hasSeparatorAttribute) {
+                    out << "    Modu_InspectorSeparator(ctx);\n";
+                }
+                const std::string label = escapeCStringLiteral(inspectorLabelFromFieldName(field->name));
+                if (field->kind == FieldKind::Bool) {
+                    out << "    {\n"
+                        << "        int _moduV = Modu_GetSettingBool(ctx, \"" << field->name << "\", "
+                        << cScalarInitExpr(*field) << ");\n"
+                        << "        if (Modu_InspectorCheckbox(ctx, \"" << label << "\", &_moduV)) {\n"
+                        << "            Modu_SetSettingBool(ctx, \"" << field->name << "\", _moduV);\n"
+                        << "        }\n"
+                        << "    }\n";
+                } else {
+                    std::string minText = "0.0f";
+                    std::string maxText = "0.0f";
+                    std::string speedText = "0.01f";
+                    if (field->hasSliderAttribute) {
+                        minText = trimCopy(*field->sliderMinExpr);
+                        maxText = trimCopy(*field->sliderMaxExpr);
+                        const float span = cParseNumericLiteral(maxText) - cParseNumericLiteral(minText);
+                        if (span > 0.0f) speedText = cFormatFloatLiteral(span * 0.005f);
+                    }
+                    out << "    {\n"
+                        << "        float _moduV = Modu_GetSettingFloat(ctx, \"" << field->name << "\", "
+                        << cScalarInitExpr(*field) << ");\n"
+                        << "        if (Modu_InspectorDragFloat(ctx, \"" << label << "\", &_moduV, "
+                        << speedText << ", " << minText << ", " << maxText << ", \"\")) {\n"
+                        << "            Modu_SetSettingFloat(ctx, \"" << field->name << "\", _moduV);\n"
+                        << "        }\n"
+                        << "    }\n";
+                }
+            }
+            out << "}\n";
+        }
+
+        outSource = out.str();
+        reason.clear();
+        return true;
+    }
 } // namespace
 
 bool ModuCPPTranspiler::shouldTranspile(const fs::path& sourcePath, const std::string& sourceText) {
@@ -5018,7 +6143,7 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     outResult = ModuCPPTranspileResult{};
 
     const std::string ext = toLowerCopy(sourcePath.extension().string());
-    const std::string normalizedSource = normalizeModuSource(preprocessDollarStrings(sourceText));
+    const std::string normalizedSource = normalizeModuSource(preprocessDollarStrings(unescapeAngleBracketTokens(sourceText)));
     const std::string stripped = stripCommentsPreserveLayout(normalizedSource);
     const bool hasHighLevelClass = findModuClassDeclaration(stripped).has_value();
 
@@ -5033,6 +6158,23 @@ bool ModuCPPTranspiler::transpile(const fs::path& sourcePath, const std::string&
     ClassSpec parsed;
     if (!parseClass(normalizedSource, parsed, error)) {
         return false;
+    }
+
+    // fast path first: if every construct maps onto ScriptRuntimeCAPI.h the
+    // script becomes plain C and compiles ~80x faster. any decline reason at
+    // all and the classic C++ backend below stays in charge, so this can
+    // never take a script hostage. MODUCPP_DISABLE_C_BACKEND=1 kills it
+    // globally if it ever misbehaves.
+    if (!cBackendDisabledByEnv()) {
+        std::string cSource;
+        std::string cReason;
+        if (generateTranspiledCSource(sourcePath, parsed, cSource, cReason)) {
+            outResult.generatedSource = std::move(cSource);
+            outResult.className = parsed.name;
+            outResult.generatedC = true;
+            return true;
+        }
+        outResult.cBackendNote = cReason;
     }
 
     std::string generated = generateTranspiledSource(sourcePath, parsed, error);

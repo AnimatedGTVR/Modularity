@@ -16,8 +16,6 @@
 extern int __argc;
 extern char** __argv;
 #endif
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #else
 #include <unistd.h>
 #endif
@@ -27,12 +25,6 @@ static std::filesystem::path getExecutableDir() {
     DWORD len = GetModuleFileNameA(nullptr, pathBuf, MAX_PATH);
     if (len == 0 || len == MAX_PATH) {return {};}
     return std::filesystem::path(pathBuf).parent_path();
-  #elif defined(__APPLE__)
-    uint32_t size = 0;
-    if (_NSGetExecutablePath(nullptr, &size) != -1 || size == 0) {return {};}
-    std::string buf(size, '\0');
-    if (_NSGetExecutablePath(buf.data(), &size) != 0) {return {};}
-    return std::filesystem::path(buf).lexically_normal().parent_path();
   #else
     std::vector<char> buf(4096, '\0');
     ssize_t len = readlink("/proc/self/exe", buf.data(), buf.size() - 1);

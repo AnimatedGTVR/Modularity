@@ -1,52 +1,99 @@
 #pragma once
 
-// Placeholder header for the Android runtime entry points. The full Android
-// bring-up is staged separately (see docs/AndroidRuntime.md). This file is
-// excluded from desktop builds via CMakeLists.txt and only takes effect when
-// compiling with the Android NDK toolchain (__ANDROID__ defined).
+// Android runtime entry points. desktop builds exclude this file via CMakeLists;
+// it only means anything under the NDK (__ANDROID__).
 
 #ifdef __ANDROID__
+
+#include <string>
+#include <vector>
 
 struct android_app;
 
 namespace Modularity::AndroidRuntime {
 
-// Bootstraps the engine against a NativeActivity-style android_app. Wires up
-// lifecycle callbacks, creates an EGL context, and hands control to the
-// existing Engine update loop. Implemented in AndroidRuntime.cpp.
+// bootstraps the engine against a NativeActivity android_app: lifecycle callbacks,
+// EGL context, then control goes to the normal Engine loop. impl in AndroidRuntime.cpp.
 void Run(android_app* app);
 
-// === Hooks called from Engine::run() ====================================
-// Engine.cpp talks to AndroidRuntime through these so its main loop stays
-// otherwise structurally identical to the desktop path. Each is a no-op
-// outside of Android (and the call sites are gated with #ifdef __ANDROID__
-// inside Engine.cpp).
+// Hooks called from Engine::run(), so its main loop stays structurally identical
+// to the desktop path. all of these are no-ops off Android.
 
 // Drain pending Android lifecycle + input events. Returns false if the
 // app has been asked to shut down, meaning the engine should break out of its loop.
 bool PollEvents();
 
-// Present the current backbuffer via eglSwapBuffers. No-op (returns
-// false) if there's no live render surface (window torn down, paused
-// in background, etc.).
+// present via eglSwapBuffers. returns false when there's no live surface
+// (backgrounded, window torn down).
 bool PresentFrame();
 
-// True iff EGL has a live window-surface bound right now. Engine should
-// skip its render + present and just spin through event processing when
-// this returns false (e.g. while the activity is backgrounded).
+// true iff EGL has a live window surface. when false the engine should skip
+// render + present and just pump events.
 bool HasRenderSurface();
 
-// Current EGL surface size in pixels. Useful for the engine's
-// framebuffer-size queries when GLFW's null-backend returns nothing
-// meaningful.
+// current EGL surface size in pixels ( GLFW's null backend returns nothing useful ).
 void GetSurfaceSize(int* outWidth, int* outHeight);
 
-// Per-app writable data directory (NativeActivity::internalDataPath,
-// typically /data/data/<pkg>/files). Returns nullptr if the runtime
-// hasn't received the activity pointer yet. The engine's
-// ProjectManager / save paths key off this on Android, since neither
-// HOME nor APPDATA exists.
+// per-app writable data dir (/data/data/<pkg>/files). nullptr until the activity
+// pointer arrives. save paths key off this since HOME/APPDATA don't exist here.
 const char* GetInternalDataPath();
+
+// Touch input
+// the runtime tracks every live finger; the engine turns the primary one into ImGui
+// mouse events plus a touch snapshot for scripts. coords are surface pixels, top-left origin.
+
+// Number of touch pointers currently down (0..kMaxTouchPointers).
+int GetPointerCount();
+
+// Fills the i-th active pointer's id and position. Returns false if i is out
+// of range. `id` is the Android pointer id (stable for a finger's lifetime).
+bool GetPointer(int i, int* outId, float* outX, float* outY);
+
+// the primary pointer (oldest finger down) as a mouse analog. x/y keep the last
+// known position while inactive.
+bool GetPrimaryPointer(float* outX, float* outY, bool* outActive);
+
+// Keyboard
+// SetSoftKeyboardVisible(io.WantTextInput) runs each frame but only JNI-toggles on change;
+// PollInputChar / PollKeyEvent drain the key queues for ImGui. InputConnection-style soft
+// keyboards never emit key events ( NativeActivity limitation ), hardware keyboards always work.
+void SetSoftKeyboardVisible(bool visible);
+bool PollInputChar(unsigned int* outChar);
+bool PollKeyEvent(int* outKeyCode, bool* outDown);
+
+// Android system file picker
+// the Java bridge copies picked content URIs into app cache files, and this side hands
+// those real paths to the existing File Browser import path.
+struct FilePickerResult {
+    std::vector<std::string> paths;
+    std::string error;
+    bool canceled = false;
+};
+
+bool SupportsFilePicker();
+bool RequestFilePicker(bool allowMultiple, std::string& error);
+bool PollFilePickerResult(FilePickerResult& result);
+
+// Shared-storage access ("all files access")
+// the editor wants projects in public Documents to mirror desktop, which needs a storage
+// grant first. wraps the Java bridge; safe no-ops in the player APK (no bridge).
+
+// public Documents dir, e.g. /storage/emulated/0/Documents. empty if unavailable
+// or the bridge isn't packaged.
+std::string GetExternalDocumentsPath();
+
+// can we touch shared storage right now? API 30+ = isExternalStorageManager(),
+// older = the WRITE_EXTERNAL_STORAGE permission. false without the bridge.
+bool HasAllFilesAccess();
+
+// kick off the storage request. API 30+ opens the system settings page, older pops the
+// permission dialog. the grant lands async so poll HasAllFilesAccess() after.
+// returns false (with error set) if the bridge is missing.
+bool RequestAllFilesAccess(std::string& error);
+
+// display density as an ImGui scale (dpi/160, clamped [1,4]). GLFW's content-scale
+// stub reports nothing on Android so without this the editor renders tiny.
+float GetDisplayDensityScale();
 
 } // namespace Modularity::AndroidRuntime
 

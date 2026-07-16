@@ -382,6 +382,14 @@ void Engine::renderInspectorPanel() {
         return;
     }
 
+    // on touch, wrap overflowing labels at the panel edge instead of letting them pan the whole
+    // inspector sideways. touch-only; balanced by PopTextWrapPos at every exit under the same flag.
+    const bool inspectorWrapText =
+        (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+    if (inspectorWrapText) {
+        ImGui::PushTextWrapPos(0.0f);
+    }
+
     fs::path selectedMaterialPath;
     bool browserHasMaterial = false;
     fs::path selectedAudioPath;
@@ -597,6 +605,22 @@ void Engine::renderInspectorPanel() {
     const InspectorUiIcon iconColorPicker = resolveInspectorIcon(
         "Resources/Engine-Root/Inspector/Materials and texturing/Color Picker Icon.png");
     (void)iconTransform;
+
+    // built-in components reuse their hierarchy icons, same treatment the script icon
+    // already gets in its header. resolve is cache-backed so per-frame is fine.
+    const InspectorUiIcon iconCompCamera = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Camera.png");
+    const InspectorUiIcon iconCompLight  = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Light Bulb.png");
+    const InspectorUiIcon iconCompVolume = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component ModuVolume.png");
+    const InspectorUiIcon iconCompAudio  = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Audio Source.png");
+    const InspectorUiIcon iconCompMesh   = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Mesh.png");
+    const InspectorUiIcon iconCompCanvas = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Canvas.png");
+    const InspectorUiIcon iconCompText   = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Text.png");
+    const InspectorUiIcon iconCompSprite = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Component Sprite.png");
+    const InspectorUiIcon iconCompCollider  = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Collider any type.png");
+    const InspectorUiIcon iconCompRigidbody = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Rigidbody 2D and 3D type.png");
+    const InspectorUiIcon iconCompParticle  = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Particle System any type.png");
+    const InspectorUiIcon iconCompVideo     = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Video Player.png");
+    const InspectorUiIcon iconCompScript    = resolveInspectorIcon("Resources/Engine-Root/Hierarchy/Script.png");
 
     auto formatAudioClock = [](double seconds, bool roundUp) -> std::string {
         if (!std::isfinite(seconds) || seconds <= 0.0) {
@@ -2176,6 +2200,21 @@ void Engine::renderInspectorPanel() {
             {
                 changed = true;
             }
+            if (shaderPresetFromPaths(vertShaderPath, fragShaderPath) == MaterialShaderPreset::ScrollingUV) {
+                drawMaterialInlineLabel("Scroll Speed");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::DragFloat("##ScrollSpeed", &materialValue.scrollSpeed, 0.01f, 0.0f, 0.0f, "%.3f")) {
+                    materialValue.scrollSpeed = std::max(0.0f, materialValue.scrollSpeed);
+                    changed = true;
+                }
+                drawMaterialInlineLabel("Scroll Direction");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::DragFloat2("##ScrollDirection", &materialValue.scrollDirection.x, 0.01f, 0.0f, 0.0f, "%.2f")) {
+                    changed = true;
+                }
+            }
         }
         if (drawInspectorSubsectionFoldout("Detail Maps", nullptr, true)) {
             changed |= drawMaterialTextureField("Detail Map", (std::string(idPrefix) + "Overlay").c_str(), overlayPath);
@@ -2626,6 +2665,7 @@ void Engine::renderInspectorPanel() {
         } else {
             ImGui::TextDisabled("No object selected");
         }
+        if (inspectorWrapText) ImGui::PopTextWrapPos();
         ImGui::PopStyleVar(3);
         ImGui::End();
         return;
@@ -2637,6 +2677,7 @@ void Engine::renderInspectorPanel() {
 
     if (it == sceneObjects.end()) {
         ImGui::TextDisabled("Object not found");
+        if (inspectorWrapText) ImGui::PopTextWrapPos();
         ImGui::PopStyleVar(3);
         ImGui::End();
         return;
@@ -3079,6 +3120,29 @@ void Engine::renderInspectorPanel() {
     static bool inspectorHistoryPending = false;
     static SceneSnapshot inspectorHistoryBefore;
 
+    // maps a drawComponentHeader id to its hierarchy icon so every built-in component
+    // gets one without touching two dozen call sites. UI resolves per element type.
+    auto componentIconForId = [&](const std::string& key) -> InspectorUiIcon {
+        if (key == "Camera" || key == "CameraFollow2D") return iconCompCamera;
+        if (key == "Light" || key == "Light2D" || key == "ShadowCaster2D") return iconCompLight;
+        if (key == "PostFX") return iconCompVolume;
+        if (key == "AudioSource" || key == "ReverbZone") return iconCompAudio;
+        if (key == "Renderer") return iconCompMesh;
+        if (key == "Collider" || key == "Collider2D") return iconCompCollider;
+        if (key == "Rigidbody3D" || key == "Rigidbody2D") return iconCompRigidbody;
+        if (key == "ParticleSystem2D") return iconCompParticle;
+        if (key == "VideoPlayer") return iconCompVideo;
+        if (key == "UI") {
+            switch (obj.ui.type) {
+                case UIElementType::Text: return iconCompText;
+                case UIElementType::Image:
+                case UIElementType::Sprite2D: return iconCompSprite;
+                default: return iconCompCanvas;
+            }
+        }
+        return {};
+    };
+
     auto drawComponentHeader = [&](const char* label,
                                    const char* id,
                                    const std::string& reorderKey,
@@ -3092,7 +3156,21 @@ void Engine::renderInspectorPanel() {
             flags |= ImGuiTreeNodeFlags_DefaultOpen;
         }
 
-        std::string headerId = std::string(label) + "##" + id;
+        // resolve the icon up front so the label can be padded past it. spaces, because
+        // CollapsingHeader owns its own text placement and there is no icon slot.
+        InspectorUiIcon headerIcon = icon;
+        if (headerIcon.id == static_cast<ImTextureID>(0)) {
+            headerIcon = componentIconForId(id ? id : "");
+        }
+        std::string headerId;
+        if (headerIcon.id != static_cast<ImTextureID>(0)) {
+            const float spaceW = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+            const float iconSpan = (ImGui::GetFrameHeight() - 9.0f) + 6.0f;
+            headerId.assign(static_cast<size_t>(std::ceil(iconSpan / spaceW)), ' ');
+        }
+        headerId += label;
+        headerId += "##";
+        headerId += id;
         ImGui::SetNextItemAllowOverlap();
         ImGuiStyle& style = ImGui::GetStyle();
 
@@ -3174,20 +3252,17 @@ void Engine::renderInspectorPanel() {
         }
         ImGui::PopID();
 
-        // Draw component icon after the collapse arrow, before the label text.
-        // Icon is sized to headerHeight - 6 so it sits with a visible gap before the label.
-        // The label is placed by ImGui at ~arrowWidth + FramePadding.x from the left edge,
-        // so keeping iconSize smaller than that gap prevents overlap.
-        // Okay yeah, i completely forgot to do that when redesigning it lmfao.
-        if (icon.id != static_cast<ImTextureID>(0)) {
+        // Draw component icon after the collapse arrow, in the gap the space-padded
+        // label leaves open (see headerId construction above).
+        if (headerIcon.id != static_cast<ImTextureID>(0)) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const float iconSize = headerHeight - 9.0f;
             const float arrowWidth = headerHeight;
             const float iconX = headerMin.x + arrowWidth + 2.0f;
             const float iconY = headerMin.y + (headerHeight - iconSize) * 0.5f;
-            const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
-            const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
-            dl->AddImage(icon.id,
+            const ImVec2 uvMin = headerIcon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+            const ImVec2 uvMax = headerIcon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+            dl->AddImage(headerIcon.id,
                 ImVec2(iconX, iconY),
                 ImVec2(iconX + iconSize, iconY + iconSize),
                 uvMin, uvMax,
@@ -3574,10 +3649,18 @@ void Engine::renderInspectorPanel() {
     if (ImGui::BeginTable("##ObjectMetaTopTable", 4, ImGuiTableFlags_SizingStretchProp))
     {
         const float objIconSize = ImGui::GetFrameHeight() + 4.0f;
+        // checkboxes render as pill switches now (~1.7x frame height wide), so these
+        // columns size off the real widget width instead of the old hardcoded 18/110.
+        const ImGuiStyle& metaStyle = ImGui::GetStyle();
+        const float checkboxWidth = metaStyle.CheckboxSwitch
+            ? std::floor(ImGui::GetFrameHeight() * 1.70f)
+            : ImGui::GetFrameHeight();
+        const float invariableColWidth = checkboxWidth + metaStyle.ItemInnerSpacing.x
+            + ImGui::CalcTextSize("Invariable").x + 6.0f;
         ImGui::TableSetupColumn("IconColumn",      ImGuiTableColumnFlags_WidthFixed, objIconSize);
-        ImGui::TableSetupColumn("EnableColumn",    ImGuiTableColumnFlags_WidthFixed, 18.0f);
+        ImGui::TableSetupColumn("EnableColumn",    ImGuiTableColumnFlags_WidthFixed, checkboxWidth + 2.0f);
         ImGui::TableSetupColumn("NameColumn",      ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("InvariableColumn",ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn("InvariableColumn",ImGuiTableColumnFlags_WidthFixed, invariableColWidth);
 
         ImGui::TableNextRow();
 
@@ -3974,6 +4057,14 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::DragInt2("Render Target (px)", size, 1.0f, 16, 4096)) {
                         obj.ui.renderTargetSize.x = std::max(16, size[0]);
                         obj.ui.renderTargetSize.y = std::max(16, size[1]);
+                        changed = true;
+                    }
+                    const char* renderFilterOptions[] = { "Bilinear", "No Filter" };
+                    int renderFilter = (obj.ui.renderTargetFilter == MaterialProperties::TextureFilter::Point) ? 1 : 0;
+                    if (ImGui::Combo("Render Filter", &renderFilter, renderFilterOptions, IM_ARRAYSIZE(renderFilterOptions))) {
+                        obj.ui.renderTargetFilter = (renderFilter == 1)
+                            ? MaterialProperties::TextureFilter::Point
+                            : MaterialProperties::TextureFilter::Bilinear;
                         changed = true;
                     }
                     ImGui::TextDisabled("Canvas renders on a 3D quad; use object scale for world size.");
@@ -4414,16 +4505,6 @@ void Engine::renderInspectorPanel() {
                     if (ImGui::SliderFloat("Emissive", &obj.ui.emissiveLighting2D, 0.0f, 8.0f, "%.2f")) {
                         changed = true;
                     }
-                    const auto routingIt = light2DObjectRoutingReasonsLastFrame.find(obj.id);
-                    /*if (routingIt != light2DObjectRoutingReasonsLastFrame.end()) {
-                        ImGui::SeparatorText("Runtime Debug");
-                        ImGui::Text("Compositor Ran: %s", light2DCompositorRanLastFrame ? "Yes" : "No");
-                        ImGui::Text("Light Buffer: %s", light2DLightBufferHadContentLastFrame ? "Non-empty" : "Empty");
-                        ImGui::Text("Active Lights: %d", light2DActiveCountLastFrame);
-                        ImGui::Text("Lit Sprite2D: %d", light2DLitSprite2DCountLastFrame);
-                        ImGui::Text("Lit UI Images: %d", light2DLitWorldImageCountLastFrame);
-                        ImGui::TextWrapped("%s", routingIt->second.c_str());
-                    }*/
                 }
             }
 
@@ -4496,7 +4577,7 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Last Pressed: %s", obj.ui.buttonPressed ? "yes" : "no");
             }
 
-            // ── Per-component color overrides ─────────────────────────────
+            // Per-component color overrides
             if (obj.ui.type == UIElementType::Slider || obj.ui.type == UIElementType::Button) {
                 if (drawInspectorSubsectionFoldout("Color Overrides")) {
                     ImGui::TextDisabled("Alpha = 0 means use default derived color.");
@@ -4539,7 +4620,7 @@ void Engine::renderInspectorPanel() {
                 ImGui::TextDisabled("Alpha = 0 uses the Tint color.");
             }
 
-            // ── Draw order ────────────────────────────────────────────────
+            // Draw order
             if (ImGui::DragInt("Sort Order", &obj.ui.sortingOrder, 1.0f, -2048, 2048)) {
                 changed = true;
             }
@@ -5418,7 +5499,7 @@ void Engine::renderInspectorPanel() {
             ImGui::Dummy(ImVec2(0.0f, 1.0f));
             if (ImGui::BeginTabBar("##VideoPlayerTabs")) {
 
-                // ── Playback tab ─────────────────────────────────────────
+                // Playback tab
                 if (ImGui::BeginTabItem("Playback")) {
                     ImGui::Dummy(ImVec2(0.0f, 1.0f));
                     if (beginCompFields("##VP_Playback")) {
@@ -5468,7 +5549,7 @@ void Engine::renderInspectorPanel() {
                     ImGui::EndTabItem();
                 }
 
-                // ── Output tab ───────────────────────────────────────────
+                // Output tab
                 if (ImGui::BeginTabItem("Output")) {
                     ImGui::Dummy(ImVec2(0.0f, 1.0f));
                     ImGui::TextDisabled("Audio");
@@ -6128,14 +6209,15 @@ void Engine::renderInspectorPanel() {
             InspectorBodyScope _ibs;
             ImGui::PushID("Skeletal");
             if (beginCompFields("##Fields_Skeletal")) {
-                ModelSceneData sceneData;
                 std::string err;
-                bool hasClips = !obj.meshPath.empty() && getModelLoader().loadModelScene(obj.meshPath, sceneData, err) &&
-                                !sceneData.animations.empty();
+                const ModelSceneData* sceneData =
+                    obj.meshPath.empty() ? nullptr
+                                         : getModelLoader().loadModelSceneCached(obj.meshPath, err);
+                bool hasClips = sceneData && !sceneData->animations.empty();
                 if (hasClips) {
                     std::vector<const char*> clipNames;
-                    clipNames.reserve(sceneData.animations.size());
-                    for (const auto& clip : sceneData.animations) {
+                    clipNames.reserve(sceneData->animations.size());
+                    for (const auto& clip : sceneData->animations) {
                         clipNames.push_back(clip.name.c_str());
                     }
                     int clipIndex = std::clamp(obj.skeletal.clipIndex, 0, (int)clipNames.size() - 1);
@@ -6315,6 +6397,14 @@ void Engine::renderInspectorPanel() {
             InspectorBodyScope _ibs;
             ImGui::PushID("Camera");
             if (beginCompFields("##Fields_Camera")) {
+                // Unity-style bold group label spanning the label column.
+                auto sectionRow = [](const char* label) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(0.82f, 0.86f, 0.94f, 1.0f), "%s", label);
+                };
+
                 const char* cameraTypes[] = { "Scene", "Player" };
                 int camType = static_cast<int>(obj.camera.type);
                 fieldRow("Type");
@@ -6322,21 +6412,115 @@ void Engine::renderInspectorPanel() {
                     obj.camera.type = static_cast<SceneCameraType>(camType);
                     changed = true;
                 }
-                fieldRow("FOV");
-                if (ImGui::SliderFloat("##FOV", &obj.camera.fov, 20.0f, 120.0f, "%.0f deg")) { changed = true; }
-                fieldRow("Near Clip");
+
+                bool project2D = isProject2DPipeline();
+                bool project25D = isProject25DPipeline();
+                bool cameraUses2D = project2D || obj.camera.use2D;
+
+                sectionRow("Projection");
+                if (!cameraUses2D) {
+                    const char* projectionModes[] = { "Perspective", "Orthographic" };
+                    int projMode = static_cast<int>(obj.camera.projection);
+                    fieldRow("Projection");
+                    if (ImGui::Combo("##Projection", &projMode, projectionModes, IM_ARRAYSIZE(projectionModes))) {
+                        obj.camera.projection = static_cast<SceneCameraProjection>(projMode);
+                        changed = true;
+                    }
+                }
+                const bool orthographic3D = !cameraUses2D &&
+                    obj.camera.projection == SceneCameraProjection::Orthographic;
+                if (!cameraUses2D && !orthographic3D) {
+                    const char* fovAxes[] = { "Vertical", "Horizontal" };
+                    int fovAxis = static_cast<int>(obj.camera.fovAxis);
+                    fieldRow("Field of View Axis");
+                    if (ImGui::Combo("##FovAxis", &fovAxis, fovAxes, IM_ARRAYSIZE(fovAxes))) {
+                        obj.camera.fovAxis = static_cast<SceneCameraFovAxis>(fovAxis);
+                        changed = true;
+                    }
+                    fieldRow("Field of View");
+                    if (ImGui::SliderFloat("##FOV", &obj.camera.fov, 1.0f, 170.0f, "%.0f deg")) { changed = true; }
+                } else if (orthographic3D) {
+                    fieldRow("Size");
+                    if (ImGui::DragFloat("##OrthoSize", &obj.camera.orthoSize, 0.1f, 0.01f, 10000.0f, "%.2f")) {
+                        obj.camera.orthoSize = std::max(0.01f, obj.camera.orthoSize);
+                        changed = true;
+                    }
+                    noteRow("World-unit half-height of the view volume.");
+                }
+                fieldRow("Clipping Planes  Near");
                 if (ImGui::DragFloat("##NearClip", &obj.camera.nearClip, 0.01f, 0.01f, obj.camera.farClip - 0.01f, "%.3f")) {
                     obj.camera.nearClip = std::max(0.01f, std::min(obj.camera.nearClip, obj.camera.farClip - 0.01f));
                     changed = true;
                 }
-                fieldRow("Far Clip");
+                fieldRow("Far");
                 if (ImGui::DragFloat("##FarClip", &obj.camera.farClip, 0.1f, obj.camera.nearClip + 0.05f, 1000.0f, "%.1f")) {
                     obj.camera.farClip = std::max(obj.camera.nearClip + 0.05f, obj.camera.farClip);
                     changed = true;
                 }
-                if (boolRow("Apply Post FX", &obj.camera.applyPostFX)) { changed = true; }
-                bool project2D = isProject2DPipeline();
-                bool project25D = isProject25DPipeline();
+
+                sectionRow("Rendering");
+                if (boolRow("Post Processing", &obj.camera.applyPostFX)) { changed = true; }
+                if (boolRow("Render Shadows", &obj.camera.renderShadows)) { changed = true; }
+
+                // Culling mask against the project's named layers, Unity-style
+                // multi-select dropdown with Everything/Nothing shortcuts.
+                {
+                    const std::vector<std::string>& layers =
+                        projectManager.currentProject.physicsSettings.collisionLayers;
+                    const int layerCount = static_cast<int>(std::min<size_t>(layers.size(), 32));
+                    uint32_t definedMask = (layerCount >= 32)
+                        ? 0xFFFFFFFFu
+                        : ((1u << layerCount) - 1u);
+                    const uint32_t maskedDefined = obj.camera.cullingMask & definedMask;
+                    const char* maskPreview = "Mixed";
+                    if (obj.camera.cullingMask == 0xFFFFFFFFu || maskedDefined == definedMask) {
+                        maskPreview = "Everything";
+                    } else if (maskedDefined == 0u) {
+                        maskPreview = "Nothing";
+                    }
+                    fieldRow("Culling Mask");
+                    if (ImGui::BeginCombo("##CullingMask", maskPreview)) {
+                        if (ImGui::Selectable("Everything", obj.camera.cullingMask == 0xFFFFFFFFu, ImGuiSelectableFlags_DontClosePopups)) {
+                            obj.camera.cullingMask = 0xFFFFFFFFu;
+                            changed = true;
+                        }
+                        if (ImGui::Selectable("Nothing", maskedDefined == 0u, ImGuiSelectableFlags_DontClosePopups)) {
+                            obj.camera.cullingMask = 0u;
+                            changed = true;
+                        }
+                        ImGui::Separator();
+                        for (int layerIdx = 0; layerIdx < layerCount; ++layerIdx) {
+                            bool layerOn = (obj.camera.cullingMask & (1u << layerIdx)) != 0u;
+                            std::string layerLabel = layers[static_cast<size_t>(layerIdx)].empty()
+                                ? ("Layer " + std::to_string(layerIdx))
+                                : layers[static_cast<size_t>(layerIdx)];
+                            if (ImGui::Checkbox((layerLabel + "##CullLayer" + std::to_string(layerIdx)).c_str(), &layerOn)) {
+                                if (layerOn) obj.camera.cullingMask |= (1u << layerIdx);
+                                else obj.camera.cullingMask &= ~(1u << layerIdx);
+                                changed = true;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+
+                sectionRow("Environment");
+                {
+                    const char* backgroundModes[] = { "Skybox", "Solid Color" };
+                    int bgMode = static_cast<int>(obj.camera.background);
+                    fieldRow("Background Type");
+                    if (ImGui::Combo("##BackgroundType", &bgMode, backgroundModes, IM_ARRAYSIZE(backgroundModes))) {
+                        obj.camera.background = static_cast<SceneCameraBackground>(bgMode);
+                        changed = true;
+                    }
+                    if (obj.camera.background == SceneCameraBackground::SolidColor) {
+                        fieldRow("Background");
+                        if (ImGui::ColorEdit3("##BackgroundColor", &obj.camera.backgroundColor.x)) {
+                            changed = true;
+                        }
+                    }
+                }
+
                 if (project2D) {
                     noteRow("2D camera mode is controlled by Project Pipeline.");
                 } else {
@@ -6345,7 +6529,6 @@ void Engine::renderInspectorPanel() {
                     }
                     if (boolRow("Legacy 2D Cam", &obj.camera.use2D)) { changed = true; }
                 }
-                bool cameraUses2D = project2D || obj.camera.use2D;
                 if (cameraUses2D) {
                     fieldRow("Pixels/Unit");
                     if (ImGui::DragFloat("##PixelsPerUnit", &obj.camera.pixelsPerUnit, 1.0f, 1.0f, 2000.0f, "%.1f")) {
@@ -6902,20 +7085,6 @@ void Engine::renderInspectorPanel() {
         });
         if (rendererHeader.open) {
             InspectorBodyScope _ibs;
-            const char* renderLabel = "None";
-            switch (obj.renderType) {
-                case RenderType::Cube: renderLabel = "Cube"; break;
-                case RenderType::Sphere: renderLabel = "Sphere"; break;
-                case RenderType::Capsule: renderLabel = "Capsule"; break;
-                case RenderType::OBJMesh: renderLabel = "OBJ Mesh"; break;
-                case RenderType::Model: renderLabel = IsRawMeshPath(obj.meshPath) ? "RMesh" : "Model"; break;
-                case RenderType::Mirror: renderLabel = "Mirror"; break;
-                case RenderType::Plane: renderLabel = "Plane"; break;
-                case RenderType::Torus: renderLabel = "Torus"; break;
-                case RenderType::Sprite: renderLabel = "Sprite"; break;
-                case RenderType::None: break;
-            }
-            /*ImGui::Text("Render Type: %s", renderLabel);*/
 
             int& selectedMaterialSlot = selectedRendererMaterialSlots[obj.id];
             const int materialSlotCount = 1 + static_cast<int>(obj.additionalMaterialPaths.size());
@@ -7099,166 +7268,6 @@ void Engine::renderInspectorPanel() {
                 selectedMaterialSlot = static_cast<int>(obj.additionalMaterialPaths.size());
                 rendererChanged = true;
             }
-            /*std::string selectedSlotName = "Slot " + std::to_string(selectedMaterialSlot);
-            if (selectedMaterialSlot == 0 && obj.materialPath.empty()) {
-                selectedSlotName += " (Embedded)";
-            } else if (selectedMaterialSlot == 0 && !obj.materialPath.empty()) {
-                selectedSlotName += ": " + fs::path(obj.materialPath).filename().string();
-            } else if (selectedMaterialSlot > 0 &&
-                       selectedMaterialSlot - 1 < static_cast<int>(obj.additionalMaterialPaths.size()) &&
-                       !obj.additionalMaterialPaths[static_cast<size_t>(selectedMaterialSlot - 1)].empty()) {
-                selectedSlotName += ": " +
-                    fs::path(obj.additionalMaterialPaths[static_cast<size_t>(selectedMaterialSlot - 1)]).filename().string();
-            }
-            /*ImGui::TextDisabled("Editing target: %s", selectedSlotName.c_str());*/
-            /*
-            if (obj.renderType == RenderType::OBJMesh) {
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::TextDisabled("Mesh Info");
-
-                const auto* meshInfo = g_objLoader.getMeshInfo(obj.meshId);
-                if (meshInfo) {
-                    ImGui::Text("Source File:");
-                    ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
-
-                    ImGui::Spacing();
-
-                    ImGui::Text("Vertices: %d", meshInfo->vertexCount);
-                    ImGui::Text("Faces: %d", meshInfo->faceCount);
-                    ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
-                    ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
-
-                    ImGui::Spacing();
-
-                    if (ImGui::Button("Reload Mesh", ImVec2(-1, 0))) {
-                        std::string errMsg;
-                        int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
-                        if (newId >= 0) {
-                            obj.meshId = newId;
-                            addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
-                        } else {
-                            addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
-                        }
-                    }
-                } else {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Mesh data not found!");
-                    ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
-
-                    if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
-                        std::string errMsg;
-                        int newId = g_objLoader.loadOBJ(obj.meshPath, errMsg);
-                        if (newId >= 0) {
-                            obj.meshId = newId;
-                            addConsoleMessage("Reloaded mesh: " + obj.name, ConsoleMessageType::Success);
-                        } else {
-                            addConsoleMessage("Failed to reload: " + errMsg, ConsoleMessageType::Error);
-                        }
-                    }
-                }
-            }
-
-            if (obj.renderType == RenderType::Model || IsRawMeshPath(obj.meshPath)) {
-                ImGui::Spacing();
-                ImGui::Separator();
-                if (IsMMeshPath(obj.meshPath)) {
-                    ImGui::TextDisabled("MMesh Info");
-                    ImGui::Text("Source File:");
-                    ImGui::TextDisabled("%s", fs::path(obj.meshPath).filename().string().c_str());
-
-                    std::string loadError;
-                    const auto* renderData = tmRenderer.getMeshCache().getOrLoad(obj.meshPath, loadError);
-                    if (renderData) {
-                        ImGui::Spacing();
-                        ImGui::Text("Submeshes: %d", static_cast<int>(renderData->submeshes.size()));
-                        ImGui::Text("Triangles: %u", renderData->totalTriangleCount);
-                    } else if (!loadError.empty()) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", loadError.c_str());
-                    }
-
-                    ImGui::Spacing();
-                    if (ImGui::Button("Reload MMesh", ImVec2(-1, 0))) {
-                        tmRenderer.getMeshCache().clear();
-                        tmOpenGLRenderer.invalidateCaches();
-                        addConsoleMessage("Reloaded MMesh cache", ConsoleMessageType::Success);
-                    }
-                } else {
-                    ImGui::TextDisabled(IsRawMeshPath(obj.meshPath) ? "RMesh Info" : "Model Info");
-
-                    const auto* meshInfo = getModelLoader().getMeshInfo(obj.meshId);
-                    if (meshInfo) {
-                        ImGui::Text("Source File:");
-                        ImGui::TextDisabled("%s", fs::path(meshInfo->path).filename().string().c_str());
-
-                        ImGui::Spacing();
-
-                        ImGui::Text("Vertices: %d", meshInfo->vertexCount);
-                        ImGui::Text("Faces: %d", meshInfo->faceCount);
-                        ImGui::Text("Has Normals: %s", meshInfo->hasNormals ? "Yes" : "No");
-                        ImGui::Text("Has UVs: %s", meshInfo->hasTexCoords ? "Yes" : "No");
-
-                        ImGui::Spacing();
-
-                        if (ImGui::Button(IsRawMeshPath(obj.meshPath) ? "Reload RMesh" : "Reload Model", ImVec2(-1, 0))) {
-                            bool reloaded = false;
-                            if (obj.meshSourceIndex >= 0) {
-                                ModelSceneData sceneData;
-                                std::string err;
-                                if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                                    int sourceIndex = obj.meshSourceIndex;
-                                    if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                        obj.meshId = sceneData.meshIndices[sourceIndex];
-                                        reloaded = true;
-                                    }
-                                }
-                            }
-                            if (!reloaded) {
-                                ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                                if (result.success) {
-                                    obj.meshId = result.meshIndex;
-                                    reloaded = true;
-                                } else {
-                                    addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
-                                }
-                            }
-                            if (reloaded) {
-                                addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
-                            }
-                        }
-                    } else {
-                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Model data not found!");
-                        ImGui::TextDisabled("Path: %s", obj.meshPath.c_str());
-
-                        if (ImGui::Button("Try Reload", ImVec2(-1, 0))) {
-                            bool reloaded = false;
-                            if (obj.meshSourceIndex >= 0) {
-                                ModelSceneData sceneData;
-                                std::string err;
-                                if (getModelLoader().loadModelScene(obj.meshPath, sceneData, err)) {
-                                    int sourceIndex = obj.meshSourceIndex;
-                                    if (sourceIndex >= 0 && sourceIndex < (int)sceneData.meshIndices.size()) {
-                                        obj.meshId = sceneData.meshIndices[sourceIndex];
-                                        reloaded = true;
-                                    }
-                                }
-                            }
-                            if (!reloaded) {
-                                ModelLoadResult result = getModelLoader().loadModel(obj.meshPath);
-                                if (result.success) {
-                                    obj.meshId = result.meshIndex;
-                                    reloaded = true;
-                                } else {
-                                    addConsoleMessage("Failed to reload: " + result.errorMessage, ConsoleMessageType::Error);
-                                }
-                            }
-                            if (reloaded) {
-                                addConsoleMessage("Reloaded model: " + obj.name, ConsoleMessageType::Success);
-                            }
-                        }
-                    }
-                }
-            }
-            */
 
         }
         if (removeRenderer) {
@@ -7871,18 +7880,6 @@ void Engine::renderInspectorPanel() {
     auto isNativeScriptLanguage = [](ScriptLanguage language) {
         return language == ScriptLanguage::Cpp || language == ScriptLanguage::C;
     };
-    auto inferNativeLanguageFromPath = [](const fs::path& path) {
-        std::string ext = path.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return (ext == ".c") ? ScriptLanguage::C : ScriptLanguage::Cpp;
-    };
-    auto isNativeScriptSourcePath = [](const fs::path& path) {
-        std::string ext = path.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx" || ext == ".moducpp";
-    };
     auto resolveExistingScriptSourcePath = [&](const fs::path& path) -> fs::path {
         if (path.empty()) return fs::path{};
         std::error_code ec;
@@ -8158,15 +8155,12 @@ void Engine::renderInspectorPanel() {
                         }
                     }
                     if (binary.empty()) {
-                        // Cheap stem-based fallback: look in the standard compiled-scripts dirs
-                        // before falling back to the heavy resolveScriptBinary() (which runs
-                        // makeCommands + regex over the source file).
+                        // Cheap stem-based fallback: look in the standard compiled-scripts dirs before falling back to the heavy resolveScriptBinary()
+                        // (which runs makeCommands + regex over the source file).
                         const std::string stem = fs::path(sc.path).stem().string();
                         if (!stem.empty() && projectManager.currentProject.isLoaded) {
 #if defined(_WIN32)
                             const char* ext = ".dll";
-#elif defined(__APPLE__)
-                            const char* ext = ".dylib";
 #else
                             const char* ext = ".so";
 #endif
@@ -8191,10 +8185,36 @@ void Engine::renderInspectorPanel() {
                     if (binaryStale) {
                         sc.lastBinaryPath.clear();
                         sc.lastBinaryVerified = false;
-                        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f),
-                                           "Script inspector binary is stale; recompiling before loading it.");
+                        // future me: this runs EVERY inspector frame for a stale binary. so if the script keeps failing to compile, the binary never goes fresh,
+                        // so an unguarded queueScriptCompile here re-kicks a build 60 times a second and the compile-start sound turns into a machine gun.
+                        // Instead, this should only kick one background recompile per source revision, once the user edits + saves, the mtime should change and then try again.
+                        bool queuedRecompile = false;
                         if (!sourceForStaleCheck.empty()) {
-                            queueScriptCompile(sourceForStaleCheck);
+                            std::error_code __staleEc;
+                            const fs::file_time_type srcTime =
+                                fs::last_write_time(sourceForStaleCheck, __staleEc);
+                            const std::string staleKey =
+                                fs::absolute(sourceForStaleCheck, __staleEc).lexically_normal().string();
+                            auto attemptedIt = inspectorStaleRecompileAttempted.find(staleKey);
+                            const bool alreadyAttempted =
+                                !__staleEc &&
+                                attemptedIt != inspectorStaleRecompileAttempted.end() &&
+                                attemptedIt->second == srcTime;
+                            if (!alreadyAttempted) {
+                                // This is a editor-driven background recompile, so it should surface it as the corner mini pop out
+                                nextCompileFromAuto = true;
+                                queueScriptCompile(sourceForStaleCheck);
+                                nextCompileFromAuto = false;
+                                if (!__staleEc) inspectorStaleRecompileAttempted[staleKey] = srcTime;
+                                queuedRecompile = true;
+                            }
+                        }
+                        if (queuedRecompile) {
+                            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f),
+                                               "Script inspector binary is stale; recompiling before loading it.");
+                        } else {
+                            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f),
+                                               "Script inspector binary is stale (last build failed). Fix the script and save to retry.");
                         }
                     } else if (ScriptRuntime::InspectorFn inspector = scriptRuntime.getInspector(binary)) {
                         ImGui::PushID(inspectorId.c_str());
@@ -8903,10 +8923,6 @@ void Engine::renderInspectorPanel() {
                     if (ext == ".dll") {
                         cachedScriptBinaries.push_back(it->path());
                     }
-#elif __APPLE__
-                    if (ext == ".dylib") {
-                        cachedScriptBinaries.push_back(it->path());
-                    }
 #else
                     if (ext == ".so") {
                         cachedScriptBinaries.push_back(it->path());
@@ -9037,6 +9053,39 @@ void Engine::renderInspectorPanel() {
             openScriptInEditor(createdPath);
         };
 
+        // same icon language as the hierarchy + component headers, so the add menu
+        // reads like the rest of the editor instead of a wall of bare labels
+        auto componentIconForPath = [&](const std::string& path) -> InspectorUiIcon {
+            if (path.rfind("Lights/", 0) == 0) return iconCompLight;
+            if (path.rfind("Audio/", 0) == 0) return iconCompAudio;
+            if (path.rfind("Renderer/", 0) == 0) return iconCompMesh;
+            // covers both "Scripting/" (sources) and "Scripting Compiled/" (binaries)
+            if (path.rfind("Scripting", 0) == 0) return iconCompScript;
+            if (path.rfind("Collider/", 0) == 0) return iconCompCollider;
+            if (path == "Physics/Rigidbody 3D" || path == "Physics/Rigidbody 2D") return iconCompRigidbody;
+            if (path == "Physics/Collider 2D") return iconCompCollider;
+            if (path == "Effects/Particle System 2D") return iconCompParticle;
+            if (path == "Rendering/Video Player") return iconCompVideo;
+            if (path == "Rendering/Camera" || path == "Rendering/Camera Follow 2D") return iconCompCamera;
+            if (path == "Rendering/ModuVolume") return iconCompVolume;
+            if (path == "UI/Text") return iconCompText;
+            if (path == "UI/Image" || path == "UI/Sprite2D") return iconCompSprite;
+            if (path.rfind("UI/", 0) == 0) return iconCompCanvas;
+            return {};
+        };
+        auto drawComponentMenuIcon = [&](const InspectorUiIcon& icon) {
+            const float iconSize = ImGui::GetFontSize();
+            if (icon.id != static_cast<ImTextureID>(0)) {
+                const ImVec2 uvMin = icon.flipY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
+                const ImVec2 uvMax = icon.flipY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+                ImGui::Image(icon.id, ImVec2(iconSize, iconSize), uvMin, uvMax);
+            } else {
+                // keep labels aligned when an entry has no icon
+                ImGui::Dummy(ImVec2(iconSize, iconSize));
+            }
+            ImGui::SameLine();
+        };
+
         ImGui::Spacing();
         ImGui::TextDisabled("%s", filterLower.empty() ? "Browse categories" : "Search results");
         ImVec2 listSize(ImGui::GetContentRegionAvail().x, 260.0f);
@@ -9070,6 +9119,7 @@ void Engine::renderInspectorPanel() {
                     if (!entry->enabled) {
                         ImGui::BeginDisabled();
                     }
+                    drawComponentMenuIcon(componentIconForPath(entry->path));
                     if (ImGui::Selectable(entry->path.c_str())) {
                         entry->action();
                         ImGui::CloseCurrentPopup();
@@ -9088,6 +9138,7 @@ void Engine::renderInspectorPanel() {
                             if (!entry->enabled) {
                                 ImGui::BeginDisabled();
                             }
+                            drawComponentMenuIcon(componentIconForPath(entry->path));
                             if (ImGui::MenuItem(split.second.c_str())) {
                                 entry->action();
                                 ImGui::CloseCurrentPopup();
@@ -9428,6 +9479,7 @@ void Engine::renderInspectorPanel() {
             APPLY_CHANGED_UI_FIELD(textEffectIntensity);
             APPLY_CHANGED_UI_FIELD(renderIn3D);
             APPLY_CHANGED_UI_FIELD(renderTargetSize);
+            APPLY_CHANGED_UI_FIELD(renderTargetFilter);
             APPLY_CHANGED_UI_FIELD(pseudo3DEnabled);
             APPLY_CHANGED_UI_FIELD(pseudo3DUseOffscreenSurface);
             APPLY_CHANGED_UI_FIELD(pseudo3DPanelSize);
@@ -9838,6 +9890,8 @@ void Engine::renderInspectorPanel() {
             APPLY_CHANGED_MATERIAL_FIELD(textureMix);
             APPLY_CHANGED_MATERIAL_FIELD(uvTiling);
             APPLY_CHANGED_MATERIAL_FIELD(uvOffset);
+            APPLY_CHANGED_MATERIAL_FIELD(scrollSpeed);
+            APPLY_CHANGED_MATERIAL_FIELD(scrollDirection);
             APPLY_CHANGED_MATERIAL_FIELD(textureFilter);
             APPLY_CHANGED_FIELD(materialPath);
             APPLY_CHANGED_FIELD(albedoTexturePath);
@@ -10128,6 +10182,7 @@ void Engine::renderInspectorPanel() {
     }
 
     ImGui::PopID(); // object scope
+    if (inspectorWrapText) ImGui::PopTextWrapPos();
     ImGui::PopStyleVar(3);
     ImGui::End();
     const double __ipMs = std::chrono::duration<double, std::milli>(

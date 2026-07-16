@@ -6,6 +6,10 @@
 #include <cmath>
 #include <atomic>
 #include <array>
+#if defined(__ANDROID__)
+#include "../include/Platform/AssetSource.h"
+#include <cstdio> // SEEK_SET / SEEK_CUR / SEEK_END
+#endif
 #if MODULARITY_HAS_SNDFILE
 #include <sndfile.h>
 #endif
@@ -213,11 +217,8 @@ static ma_node_vtable g_reverb_node_vtable = {
 };
 
 #if MODULARITY_HAS_OPUSFILE
-// ----- Ogg/Opus custom decoding backend (libopusfile) -----
-//
-// Opus playback in miniaudio via a custom ma_data_source. Also transparently
-// skips a leading ID3v2 tag if one is glued onto the front of the Ogg stream
-// (some exporters do this; libopusfile alone rejects it).
+// Ogg/Opus decoding backend (libopusfile) as a custom ma_data_source. also skips a leading
+// ID3v2 tag if an exporter glued one onto the stream ( libopusfile alone rejects those ).
 
 struct OpusReader {
     FILE* fp = nullptr;
@@ -429,14 +430,97 @@ static ma_decoding_backend_vtable* g_custom_backend_table[] = {
 
 }
 
+#if defined(__ANDROID__)
+// miniaudio VFS backed by AssetSource, so ma_sound_init_from_file() reads filesystem-then-APK
+// instead of the raw filesystem ( which on Android is the read-only "/" and every load
+// fails with "clip not found" ). the ma_vfs_file handle is just an AssetStream*.
+namespace {
+using Modularity::Platform::AssetStream;
+
+ma_result AssetVfs_Open(ma_vfs*, const char* pFilePath, ma_uint32 openMode, ma_vfs_file* pFile) {
+    if (!pFilePath || !pFile) return MA_INVALID_ARGS;
+    if (openMode & MA_OPEN_MODE_WRITE) return MA_NOT_IMPLEMENTED; // assets are read-only
+    std::unique_ptr<AssetStream> stream = Modularity::Platform::GetAssetSource().Open(pFilePath);
+    if (!stream) return MA_DOES_NOT_EXIST;
+    *pFile = stream.release();
+    return MA_SUCCESS;
+}
+ma_result AssetVfs_Close(ma_vfs*, ma_vfs_file file) {
+    delete static_cast<AssetStream*>(file);
+    return MA_SUCCESS;
+}
+ma_result AssetVfs_Read(ma_vfs*, ma_vfs_file file, void* pDst, size_t bytes, size_t* pBytesRead) {
+    auto* s = static_cast<AssetStream*>(file);
+    const size_t n = s ? s->Read(pDst, bytes) : 0;
+    if (pBytesRead) *pBytesRead = n;
+    return (n == 0 && bytes > 0) ? MA_AT_END : MA_SUCCESS;
+}
+ma_result AssetVfs_Seek(ma_vfs*, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin) {
+    auto* s = static_cast<AssetStream*>(file);
+    if (!s) return MA_INVALID_ARGS;
+    const int whence = (origin == ma_seek_origin_start) ? SEEK_SET
+                     : (origin == ma_seek_origin_end)   ? SEEK_END
+                                                        : SEEK_CUR;
+    return s->Seek(offset, whence) ? MA_SUCCESS : MA_ERROR;
+}
+ma_result AssetVfs_Tell(ma_vfs*, ma_vfs_file file, ma_int64* pCursor) {
+    auto* s = static_cast<AssetStream*>(file);
+    if (!s) return MA_INVALID_ARGS;
+    const int64_t t = s->Tell();
+    if (t < 0) return MA_ERROR;
+    if (pCursor) *pCursor = static_cast<ma_int64>(t);
+    return MA_SUCCESS;
+}
+ma_result AssetVfs_Info(ma_vfs*, ma_vfs_file file, ma_file_info* pInfo) {
+    auto* s = static_cast<AssetStream*>(file);
+    if (!s || !pInfo) return MA_INVALID_ARGS;
+    const int64_t size = s->Size();
+    pInfo->sizeInBytes = (size < 0) ? 0 : static_cast<ma_uint64>(size);
+    return MA_SUCCESS;
+}
+
+struct AssetVfs { ma_vfs_callbacks cb; };
+AssetVfs g_androidAssetVfs = { {
+    AssetVfs_Open,  // onOpen
+    nullptr,        // onOpenW (unused)
+    AssetVfs_Close, // onClose
+    AssetVfs_Read,  // onRead
+    nullptr,        // onWrite (read-only)
+    AssetVfs_Seek,  // onSeek
+    AssetVfs_Tell,  // onTell
+    AssetVfs_Info,  // onInfo
+} };
+} // namespace
+#endif // __ANDROID__
+
+namespace {
+// does a clip exist? go through AssetSource (filesystem then APK); a plain fs::exists says
+// "not found" on Android and the load gets skipped before the VFS ever runs.
+bool AudioClipExists(const std::string& path) {
+#if defined(__ANDROID__)
+    return Modularity::Platform::GetAssetSource().Exists(path);
+#else
+    std::error_code ec;
+    return fs::exists(path, ec) && !ec;
+#endif
+}
+} // namespace
+
 bool AudioSystem::init() {
     if (initialized) return true;
 
     ma_engine_config engineConfig = ma_engine_config_init();
-#if MODULARITY_HAS_OPUSFILE
+#if MODULARITY_HAS_OPUSFILE || defined(__ANDROID__)
     ma_resource_manager_config rmConfig = ma_resource_manager_config_init();
+#if MODULARITY_HAS_OPUSFILE
     rmConfig.ppCustomDecodingBackendVTables = g_custom_backend_table;
     rmConfig.customDecodingBackendCount = sizeof(g_custom_backend_table) / sizeof(g_custom_backend_table[0]);
+#endif
+#if defined(__ANDROID__)
+    // Read sound files through the engine AssetSource (APK / extracted bundle)
+    // instead of the raw filesystem, which is the read-only "/" on Android.
+    rmConfig.pVFS = &g_androidAssetVfs;
+#endif
     ma_result rmRes = ma_resource_manager_init(&rmConfig, &resourceManager);
     if (rmRes != MA_SUCCESS) {
         std::cerr << "AudioSystem: failed to init resource manager ("
@@ -451,7 +535,7 @@ bool AudioSystem::init() {
     if (res != MA_SUCCESS) {
         std::cerr << "AudioSystem: failed to init miniaudio ("
                   << ma_result_description(res) << ")\n";
-#if MODULARITY_HAS_OPUSFILE
+#if MODULARITY_HAS_OPUSFILE || defined(__ANDROID__)
         if (resourceManagerInitialized) {
             ma_resource_manager_uninit(&resourceManager);
             resourceManagerInitialized = false;
@@ -532,7 +616,7 @@ void AudioSystem::shutdown() {
         ma_engine_uninit(&engine);
         initialized = false;
     }
-#if MODULARITY_HAS_OPUSFILE
+#if MODULARITY_HAS_OPUSFILE || defined(__ANDROID__)
     if (resourceManagerInitialized) {
         ma_resource_manager_uninit(&resourceManager);
         resourceManagerInitialized = false;
@@ -617,7 +701,7 @@ bool AudioSystem::ensureSoundFor(const SceneObject& obj) {
         activeSounds.erase(it);
     }
 
-    if (!fs::exists(obj.audioSource.clipPath)) {
+    if (!AudioClipExists(obj.audioSource.clipPath)) {
         if (missingClips.insert(obj.audioSource.clipPath).second) {
             std::cerr << "AudioSystem: clip not found " << obj.audioSource.clipPath << "\n";
         }
@@ -785,7 +869,7 @@ bool AudioSystem::playPreview(const std::string& path, float volume, bool loop) 
 bool AudioSystem::playOneShot(const std::string& path, float volume) {
     if (path.empty()) return false;
     if (!initialized && !init()) return false;
-    if (!fs::exists(path)) {
+    if (!AudioClipExists(path)) {
         if (missingClips.insert(path).second) {
             std::cerr << "AudioSystem: clip not found " << path << "\n";
         }
@@ -930,7 +1014,7 @@ bool AudioSystem::playObjectOneShot(const SceneObject& obj, const std::string& c
     if (clipPath.empty()) return false;
     if (!initialized && !init()) return false;
 
-    if (!fs::exists(clipPath)) {
+    if (!AudioClipExists(clipPath)) {
         if (missingClips.insert(clipPath).second) {
             std::cerr << "AudioSystem: clip not found " << clipPath << "\n";
         }

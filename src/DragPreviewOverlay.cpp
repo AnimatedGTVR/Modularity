@@ -28,7 +28,6 @@ namespace DragPreview {
         Settings& SettRef(){ static Settings cfg;    return cfg; }
         float ExpSmooth(float current, float target, float rate, float dt) {
             if (rate <= 0.0f) return target;
-            // 1 - exp(-rate * dt) is frame-rate independent exponential easing. (yet again thanks AI for helping me think of how to explain WHY i need 'std::exp(-rate * dt);' just to reference deltatime based easing :sob:).
             const float a = 1.0f - std::exp(-rate * dt);
             return current + (target - current) * a;
         }
@@ -100,9 +99,8 @@ namespace DragPreview {
     void SubmitMeta(const char* displayName, ImTextureID icon, const char* payloadType) {
         const Settings& cfg = SettRef();
         if (cfg.enabled) {StartOrRefresh(displayName, icon, payloadType); return;}
-        // Disabled path: native tooltip is active (SourceNoPreviewTooltip not set in
-        // BeginSource above). Render a minimal fallback so drag descriptions remain.
-        // Thanks AI for helping me explain this monstrosity of WHAT THE HELL DOES 'displayName && *displayName' MEAN???
+        // Disabled path: native tooltip is active (SourceNoPreviewTooltip not set in BeginSource above). Render a minimal fallback so drag descriptions remain.
+        // (Thanks AI for helping me explain this monstrosity of WHAT THE HELL DOES 'displayName && *displayName' MEAN???)
         if (displayName && *displayName) {ImGui::TextUnformatted(displayName);}
     }
     void Cancel() {HardReset();}
@@ -126,20 +124,17 @@ namespace DragPreview {
             s.targetScale = cfg.dropEndScale;
         }
         if (!s.dropping) {const ImVec2 mouse = ImGui::GetMousePos(); ImVec2 targetPos(mouse.x + cfg.cursorOffsetX, mouse.y + cfg.cursorOffsetY);
-
             // Idle micro-float drift stuff.
             s.floatTimeAccum += static_cast<double>(dt);
             const float ft = static_cast<float>(s.floatTimeAccum);
             targetPos.x += std::sin(ft * cfg.floatFrequency)         * cfg.floatAmplitude;
             targetPos.y += std::cos(ft * cfg.floatFrequency * 0.9f)  * cfg.floatAmplitude;
-
             // Cursor velocity stuff.
             const ImVec2 rawCursorVel((targetPos.x - s.lastTargetPos.x) / dt, (targetPos.y - s.lastTargetPos.y) / dt);
             s.lastTargetPos = targetPos;
             const float cursorBlend = 1.0f - std::exp(-25.0f * dt);
             s.cursorVelocity.x += (rawCursorVel.x - s.cursorVelocity.x) * cursorBlend;
             s.cursorVelocity.y += (rawCursorVel.y - s.cursorVelocity.y) * cursorBlend;
-
             // Position spring-damper stuff.
             const ImVec2 toTarget(targetPos.x - s.currentPos.x, targetPos.y - s.currentPos.y);
             const ImVec2 accel(toTarget.x * cfg.followStiffness - s.velocity.x * cfg.followDamping, toTarget.y * cfg.followStiffness - s.velocity.y * cfg.followDamping);
@@ -147,8 +142,7 @@ namespace DragPreview {
             s.velocity.y += accel.y * dt;
             s.currentPos.x += s.velocity.x * dt;
             s.currentPos.y += s.velocity.y * dt;
-
-            // Pendulum rotation: The dangling feel.
+            // Pendulum rotation
             float targetRotDeg = s.cursorVelocity.x * cfg.rotationDrive;
             targetRotDeg = ImClamp(targetRotDeg, -cfg.maxRotationDeg, cfg.maxRotationDeg);
             const float angAccel = (targetRotDeg - s.rotation) * cfg.rotationStiffness - s.angularVelocity * cfg.rotationDamping;
@@ -156,7 +150,6 @@ namespace DragPreview {
             s.rotation += s.angularVelocity * dt;
             if (s.rotation > cfg.maxRotationDeg)  { s.rotation = cfg.maxRotationDeg;  if (s.angularVelocity > 0.0f) s.angularVelocity = 0.0f; }
             if (s.rotation < -cfg.maxRotationDeg) { s.rotation = -cfg.maxRotationDeg; if (s.angularVelocity < 0.0f) s.angularVelocity = 0.0f; }
-
             // Make the scale respond well to the overall motion magnitude.
             const float speed = std::sqrt(s.velocity.x * s.velocity.x + s.velocity.y * s.velocity.y);
             const float speedNorm = ImClamp(speed * 0.00012f, 0.0f, 1.0f);
@@ -173,8 +166,6 @@ namespace DragPreview {
             const float rotLimit = cfg.maxRotationDeg + cfg.dropExtraRotationDeg;
             s.rotation = ImClamp(s.rotation, -rotLimit, rotLimit);
             s.scale = ExpSmooth(s.scale, cfg.dropEndScale, 8.0f, dt);
-
-            // Smoothstep-driven fade-out stuff.
             const float fade = 1.0f - (t * t * (3.0f - 2.0f * t));
             s.opacity = cfg.opacity * fade;
             if (t >= 1.0f) {HardReset(); return;}
@@ -190,7 +181,6 @@ namespace DragPreview {
         const float innerW = textSz.x + iconSz + iconGap;
         const float cardW = innerW + cfg.cardPaddingX * 2.0f;
         const float cardH = innerH + cfg.cardPaddingY * 2.0f;
-
         // currentPos is the pendulum pivot for the dangling thingy. (Remember that future self!)
         const ImVec2 pivot = s.currentPos;
         const float scl = s.scale;
@@ -203,15 +193,12 @@ namespace DragPreview {
         const ImVec2 p1 = rotate( hw, 0.0f);    // top-right
         const ImVec2 p2 = rotate( hw, cardH);   // bottom-right
         const ImVec2 p3 = rotate(-hw, cardH);   // bottom-left
-
-        // Soft shadow.
         const float shadow = cfg.shadowOffset;
         const ImVec2 sh0(p0.x, p0.y + shadow);
         const ImVec2 sh1(p1.x, p1.y + shadow);
         const ImVec2 sh2(p2.x, p2.y + shadow);
         const ImVec2 sh3(p3.x, p3.y + shadow);
         dl->AddQuadFilled(sh0, sh1, sh2, sh3, ApplyAlpha(cfg.cardShadowColor, s.opacity));
-
         // Card body + thin accent border.
         dl->AddQuadFilled(p0, p1, p2, p3, ApplyAlpha(cfg.cardColor,       s.opacity));
         dl->AddQuad      (p0, p1, p2, p3, ApplyAlpha(cfg.cardBorderColor, s.opacity), 1.0f);

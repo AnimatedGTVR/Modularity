@@ -57,11 +57,27 @@ bool layoutFileNeedsUtilityDockMigration(const fs::path &layoutPath,
 void Engine::renderMainMenuBar() {
   refreshScriptEditorWindows();
 
+  // Help > About fires this, the popup itself is rendered after the menu bar
+  // closes because OpenPopup inside a BeginMenu attaches to the menu's ID
+  // stack and the modal would never find it out here.
+  static bool triggerAboutModularityPopup = false;
+
   if (ImGui::BeginMainMenuBar()) {
     const EditorChromeMetrics &chrome = getEditorChromeMetrics(uiChromeScale);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, chrome.menuItemSpacing);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, chrome.menuFramePadding);
-    ImGui::SetWindowFontScale(chrome.fontScale);
+    ImVec2 menuItemSpacing = chrome.menuItemSpacing;
+    ImVec2 menuFramePadding = chrome.menuFramePadding;
+    float menuFontScale = chrome.fontScale;
+    // On touch, fatten the menu bar + dropdown hit areas (the pushed FramePadding
+    // also governs the BeginMenu popup's MenuItem height) so they're finger-sized.
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) {
+      menuItemSpacing.x *= 1.6f;
+      menuFramePadding.x *= 1.8f;
+      menuFramePadding.y *= 2.6f;
+      if (menuFontScale < 1.0f) menuFontScale = 1.0f;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, menuItemSpacing);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, menuFramePadding);
+    ImGui::SetWindowFontScale(menuFontScale);
 
     if (ImGui::BeginMenu("Engine")) {
       if (ImGui::MenuItem("New Scene", "Ctrl+N")) {
@@ -393,18 +409,59 @@ void Engine::renderMainMenuBar() {
 
     if (ImGui::BeginMenu("Help")) {
       if (ImGui::MenuItem("About")) {
-        logToConsole("Modularity Engine - V6.8.1\nThis build may still have "
-                     "issues,\n\nif you'd like to report any bugs or missing "
-                     "features, feel free to contact us!");
+        triggerAboutModularityPopup = true;
       }
       ImGui::EndMenu();
     }
 
-    renderPlayControlsBar();
+    // On touch with the Mobile layout, the Play/Spec/Pause controls live in the
+    // Quick Tools popup instead, so keep the menu bar uncluttered. Desktop (and
+    // touch in Desktop layout) keeps the bar here.
+    if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) ||
+        !mobileEditorLayout) {
+      renderPlayControlsBar();
+    }
 
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleVar(2);
     ImGui::EndMainMenuBar();
+  }
+
+  // the About Modularity card, same design system as the Delete/Rename cards
+  if (triggerAboutModularityPopup) {
+    playEditorFeedbackPreview("Resources/Sounds/Info.mp3", 0.95f, false,
+                              EditorFeedbackSoundCategory::Other);
+    ImGui::OpenPopup("Modularity Engine##AboutModularity");
+    triggerAboutModularityPopup = false;
+  }
+  if (ImGui::IsPopupOpen("Modularity Engine##AboutModularity")) {
+    CardModalIcon moduLogo;
+    if (rendererInitialized) {
+      Texture *logo =
+          renderer.getTexture("Resources/Engine-Root/Modu-Logo.png");
+      if (logo && logo->GetID()) {
+        moduLogo = {static_cast<ImTextureID>(logo->GetID()), true};
+      }
+    }
+    if (moduLogo.id == static_cast<ImTextureID>(0) && usingVulkan() &&
+        vulkanRendererInitialized && vulkanRenderer) {
+      moduLogo = {vulkanRenderer->getOrCreateUIImage(
+                      "Resources/Engine-Root/Modu-Logo.png"),
+                  false};
+    }
+    if (beginCardModal("Modularity Engine##AboutModularity", 0.0f, nullptr,
+                       moduLogo)) {
+      ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.90f);
+      cardModalText("aka ModuEngine");
+      ImGui::PopFont();
+      ImGui::Spacing();
+      cardModalText("Modularity™ is a trademark of Tareno Labs™");
+      cardModalText("© 2025-2026 Tareno Labs™");
+      if (cardModalButton("Okay", CardButtonKind::Primary, 0, 1)) {
+        ImGui::CloseCurrentPopup();
+      }
+      endCardModal();
+    }
   }
 
   auto layoutFileHasDockNodesForDockspace = [](const fs::path &layoutPath,
@@ -524,6 +581,13 @@ void Engine::renderMainMenuBar() {
         }
         ImGui::EndCombo();
       }
+
+      // glass knobs live up here because ShowStyleEditor below doesn't know they exist
+      ImGui::Checkbox("Glass Blur", &ImGui::GetStyle().GlassBlur);
+      ImGui::SameLine();
+      ImGui::Checkbox("Pill Switches", &ImGui::GetStyle().CheckboxSwitch);
+      ImGui::SameLine();
+      ImGui::Checkbox("Pill Sliders", &ImGui::GetStyle().SliderPill);
 
       if (ImGui::Button("Save Current Preset")) {
         saveCurrentUIStyleToPreset(uiStylePresetName, true);

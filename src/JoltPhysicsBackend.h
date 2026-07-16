@@ -11,8 +11,6 @@
 #include <memory>
 #include <unordered_map>
 #include <cstdint>
-
-// JoltPhysics-backed IPhysicsBackend. Mirrors the PhysX backend's SceneObject-driven model.
 class JoltPhysicsBackend final : public IPhysicsBackend {
 public:
     JoltPhysicsBackend();
@@ -31,17 +29,12 @@ public:
     bool addImpulse(int id, const glm::vec3& impulse) override;
     bool addTorque(int id, const glm::vec3& torque) override;
     bool addAngularImpulse(int id, const glm::vec3& impulse) override;
-    bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir,
-                        float distance, int ignoreId,
-                        glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr,
-                        float* hitDistance = nullptr, int* hitActorId = nullptr,
-                        glm::vec3* hitActorVelocity = nullptr, float* hitStaticFriction = nullptr,
-                        float* hitDynamicFriction = nullptr) const override;
+    bool raycastClosest(const glm::vec3& origin, const glm::vec3& dir, float distance, int ignoreId, glm::vec3* hitPos = nullptr, glm::vec3* hitNormal = nullptr, float* hitDistance = nullptr, int* hitActorId = nullptr, glm::vec3* hitActorVelocity = nullptr, float* hitStaticFriction = nullptr, float* hitDynamicFriction = nullptr) const override;
     void onPlayStart(const std::vector<SceneObject>& objects) override;
     void onPlayStop() override;
     void simulate(float deltaTime, std::vector<SceneObject>& objects) override;
 private:
-    // Per-body authoring/cache state (mirrors PhysX backend's ActorRecord).
+    // A per-body authoring/cache state stuff
     struct BodyRecord {
         JPH::BodyID bodyId;
         bool isDynamic = false;
@@ -64,7 +57,7 @@ private:
         JPH::Vec3 currPos = JPH::Vec3::sZero();
         JPH::Quat currRot = JPH::Quat::sIdentity();
     };
-    struct JoltFilters; // PIMPL'd so the filter definitions stay out of this header.
+    struct JoltFilters;
     BodyRecord createBodyFor(const SceneObject& obj);
     void clearBodies();
     void applySceneGravity();
@@ -79,5 +72,4 @@ private:
     std::unordered_map<int, BodyRecord> mBodies;
     std::unordered_map<uint32_t, int> mIdsByBody; // BodyID.GetIndexAndSequenceNumber()
 };
-
 #endif // MODULARITY_ENABLE_JOLT
