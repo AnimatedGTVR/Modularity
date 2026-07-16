@@ -4,10 +4,10 @@
   </a>
   <p><strong>A modular native C++ game engine for building 2D and 3D experiences with an integrated editor and hot-compiled scripting.</strong></p>
   <p>
-    <a href="https://www.moduengine.xyz/">Website</a> ·
-    <a href="https://www.moduengine.xyz/docs">Engine Handbook</a> ·
-    <a href="https://www.moduengine.xyz/docs/getting-started">Getting Started</a> ·
-    <a href="https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues">Issue Tracker</a>
+    <a href="https://www.moduengine.xyz/"><img src="https://img.shields.io/badge/Website-ModuEngine-7c6aef?style=for-the-badge" alt="Visit the ModuEngine website"></a>
+    <a href="https://www.moduengine.xyz/docs"><img src="https://img.shields.io/badge/Engine_Handbook-Read_the_Docs-6554c0?style=for-the-badge" alt="Read the engine handbook"></a>
+    <a href="https://www.moduengine.xyz/docs/getting-started"><img src="https://img.shields.io/badge/Getting_Started-Start_Here-4f8f6f?style=for-the-badge" alt="Open the getting started guide"></a>
+    <a href="https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/issues"><img src="https://img.shields.io/badge/Issue_Tracker-Report_a_Bug-b56576?style=for-the-badge" alt="View the issue tracker"></a>
   </p>
 </div>
 
