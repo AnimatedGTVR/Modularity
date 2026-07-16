@@ -28,7 +28,9 @@
   <img src="https://www.moduengine.xyz/hero-editor.png" alt="Modularity Engine editor showing project settings, the scene hierarchy, inspector, and asset browser" width="100%">
 </p>
 
-## What can you build with it?
+<div align="center">
+  ## What can you build with it?
+</div>
 <table>
   <tr>
     <td width="50%">
@@ -43,7 +45,6 @@
 </table>
 
 Modularity includes:
-
 - **An integrated editor** with a scene hierarchy, inspector, asset browser, project settings, viewport gizmos, build tools, profiling views, and reusable layouts.
 - **2D and 3D rendering** through OpenGL, including model and texture loading, skyboxes, custom shaders, render targets, and post-processing such as bloom, color adjustment, motion blur, vignette, chromatic aberration, and ambient occlusion.
 - **ModuCPP scripting**, the recommended high-level gameplay layer. ModuCPP scripts are transpiled to native C++, expose public fields in the inspector, and can be compiled from inside the editor.
