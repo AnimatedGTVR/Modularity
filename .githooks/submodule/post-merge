@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-super_root="$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)"
-[[ -n "${super_root}" ]] || exit 0
-submodule_root="$(git rev-parse --show-toplevel)"
-submodule_rel="$(realpath --relative-to="${super_root}" "${submodule_root}")"
-"${super_root}/tools/git/sync_submodule_branch.sh" "${submodule_rel}"
