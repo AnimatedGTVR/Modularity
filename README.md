@@ -2,8 +2,6 @@
   <a href="https://www.moduengine.xyz/">
     <img src="https://pak.moduengine.xyz/Tareno-Labs-LLC/Modularity/media/branch/main/Resources/Modularity%20is%20a%20modular%20game%20engine%20with%20a%20package-based%20system%2C%20giving%20developers%20full%20control%20over%20features%2C%20tools%2C%20and%20workflows.%20Engine-Root/Modularity%20Full%20Logo.png" alt="Modularity Engine logo" width="650">
   </a>
-
-  <h1>Modularity Engine</h1>
   <p><strong>A modular native C++ game engine for building 2D and 3D experiences with an integrated editor and hot-compiled scripting.</strong></p>
   <p>
     <a href="https://www.moduengine.xyz/">Website</a> ·
