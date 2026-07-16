@@ -1,5 +1,4 @@
 #pragma once
-
 #include "Common.h"
 #include "SceneObject.h"
 #include "Camera.h"
@@ -7,18 +6,16 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
-
 struct AudioClipPreview {
     bool loaded = false;
     std::string path;
     uint32_t channels = 0;
     uint32_t sampleRate = 0;
     double durationSeconds = 0.0;
-    std::vector<float> waveform; // Normalized 0..1 amplitude envelope for drawing
-    std::vector<float> waveformLeft; // Left channel envelope (if available)
-    std::vector<float> waveformRight; // Right channel envelope (if available)
+    std::vector<float> waveform;
+    std::vector<float> waveformLeft;
+    std::vector<float> waveformRight;
 };
-
 class AudioSystem {
 public:
     struct DecodedAudioData {
@@ -29,15 +26,12 @@ public:
         ma_uint64 frameCount = 0;
         bool initialized = false;
     };
-
     bool init();
     void shutdown();
     bool isReady() const { return initialized; }
-
     void onPlayStart(const std::vector<SceneObject>& objects);
     void onPlayStop();
     void update(const std::vector<SceneObject>& objects, const Camera& listenerCamera, bool playing);
-
     bool playPreview(const std::string& path, float volume = 1.0f, bool loop = false);
     bool playOneShot(const std::string& path, float volume = 1.0f);
     void stopPreview();
@@ -48,21 +42,17 @@ public:
     bool setPreviewLoop(bool loop);
     bool setPreviewVolume(float volume);
     void setPrefer2DSpatialAudio(bool enabled) { prefer2DSpatialAudio = enabled; }
-
-    // Scene audio control (runtime)
     bool playObjectSound(const SceneObject& obj);
     bool playObjectOneShot(const SceneObject& obj, const std::string& clipPathOverride = "", float volumeScale = 1.0f);
     bool stopObjectSound(int objectId);
     bool setObjectLoop(const SceneObject& obj, bool loop);
     bool setObjectVolume(const SceneObject& obj, float volume);
-
     bool attachVideoStream(int streamId, ma_data_source* dataSource);
     void detachVideoStream(int streamId);
     bool configureVideoStream(int streamId, const SceneObject* routeObject, float volume, bool muted, bool loop, float pitch);
     bool setVideoStreamPlaying(int streamId, bool playing);
     bool seekVideoStreamToSeconds(int streamId, double seconds);
     bool getVideoStreamCursorSeconds(int streamId, double& cursorSeconds) const;
-
     struct SimpleReverbNode {
         ma_node_base baseNode;
         int channels = 0;
@@ -88,7 +78,6 @@ public:
         size_t preDelayMaxFrames = 0;
         size_t reflectionsMaxFrames = 0;
     };
-
 private:
     struct ReverbSettings {
         float room = -10000.0f;
@@ -107,25 +96,21 @@ private:
         float density = 100.0f;
         float dry = 1.0f;
     };
-
     struct ActiveSound {
         ma_sound sound;
         std::string clipPath;
         bool spatial = true;
-        bool started = false; // prevents auto-restart after manual stop
+        bool started = false;
         std::shared_ptr<DecodedAudioData> decodedData;
     };
-
     struct OneShotSound {
         ma_sound sound{};
         std::shared_ptr<DecodedAudioData> decodedData;
     };
-
     struct VideoStreamSound {
         ma_sound sound{};
         ma_data_source* dataSource = nullptr;
     };
-
     ma_engine engine{};
     ma_resource_manager resourceManager{};
     bool resourceManagerInitialized = false;
@@ -135,20 +120,17 @@ private:
     std::unordered_map<int, std::unique_ptr<VideoStreamSound>> videoStreams;
     std::unordered_map<std::string, AudioClipPreview> previewCache;
     std::unordered_set<std::string> missingClips;
-
     SimpleReverbNode reverbNode{};
     ma_splitter_node reverbSplitter{};
     ma_sound_group reverbGroup{};
     bool reverbReady = false;
     ReverbSettings currentReverb{};
-
     ma_sound previewSound{};
     bool previewActive = false;
     std::string previewPath;
     std::shared_ptr<DecodedAudioData> previewDecodedData;
     bool prefer2DSpatialAudio = false;
     glm::vec3 lastListenerPosition = glm::vec3(0.0f);
-
     void destroyActiveSounds();
     void destroyOneShotSounds();
     void destroyVideoStreams();
@@ -163,8 +145,7 @@ private:
     float computeCustomAttenuation(const SceneObject& obj, const glm::vec3& listenerPos, const glm::vec3& sourcePos) const;
     AudioClipPreview loadPreview(const std::string& path);
     std::shared_ptr<DecodedAudioData> decodeClipToMemory(const std::string& path);
-    bool initSoundFromPath(const std::string& path, ma_uint32 flags, ma_sound_group* group, ma_sound& sound,
-                           std::shared_ptr<DecodedAudioData>& decodedData);
+    bool initSoundFromPath(const std::string& path, ma_uint32 flags, ma_sound_group* group, ma_sound& sound, std::shared_ptr<DecodedAudioData>& decodedData);
     void releaseDecodedAudio(std::shared_ptr<DecodedAudioData>& decodedData);
     void updateReverb(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos);
     ReverbSettings getReverbTarget(const std::vector<SceneObject>& objects, const glm::vec3& listenerPos, float& outBlend) const;

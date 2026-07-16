@@ -391,6 +391,23 @@ const MMeshRenderData* MMeshCache::getOrLoad(const std::string& path, std::strin
     return insertedIt->second.get();
 }
 
+const MMeshRenderData* MMeshCache::store(const std::string& path,
+                                         const MMeshAsset& asset,
+                                         std::string& error) {
+    auto renderData = std::make_shared<MMeshRenderData>();
+    if (!loader.buildRenderData(asset, *renderData, error)) {
+        return nullptr;
+    }
+
+    renderData->sourcePath = path;
+    cache[path] = std::move(renderData);
+    return cache[path].get();
+}
+
+void MMeshCache::invalidate(const std::string& path) {
+    cache.erase(path);
+}
+
 void MMeshCache::clear() {
     cache.clear();
 }

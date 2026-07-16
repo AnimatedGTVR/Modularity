@@ -17,10 +17,19 @@ struct TMTileLayer {
     std::vector<int32_t> tileIds;
 };
 
+enum class TMFloorUvMode : uint32_t {
+    Stretch = 0,    // legacy: uvScale maps the texture across the surface
+    TileRepeat = 1  // mode7 tiles: one full texture per tileWorldSize cell
+};
+
 struct TMFloorSurface {
     bool enabled = true;
     std::string texturePath;
     glm::vec2 uvScale = glm::vec2(1.0f);
+    TMFloorUvMode uvMode = TMFloorUvMode::TileRepeat;
+    glm::vec2 tileWorldSize = glm::vec2(1.0f);
+    TMTextureFilter textureFilter = TMTextureFilter::Point;
+    bool extendToHorizon = false; // ignore segment bounds, run out to maxDistance
     float height = 0.0f;
     float perspectiveStrength = 1.0f;
     float horizonOffset = 0.0f;

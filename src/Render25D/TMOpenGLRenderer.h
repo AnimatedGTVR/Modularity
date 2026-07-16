@@ -51,7 +51,9 @@ private:
     };
 
     RenderTarget viewportTarget;
+    RenderTarget viewportLowResTarget;
     std::unordered_map<int, RenderTarget> previewTargets;
+    std::unordered_map<int, RenderTarget> previewLowResTargets;
     std::unordered_map<std::string, std::unique_ptr<Texture>> textureCache;
     std::unique_ptr<Shader> floorShader;
     std::unique_ptr<Shader> meshShader;
@@ -73,6 +75,7 @@ private:
 
     bool ensureInitialized(std::string& error);
     bool renderToTarget(RenderTarget& target,
+                        RenderTarget& lowResTarget,
                         TMRenderer& renderer,
                         const TMRenderContext& context,
                         const TMScene& scene,
@@ -91,6 +94,7 @@ private:
     unsigned int resolveTextureId(const std::string& texturePath,
                                   TMTextureFilter filter,
                                   const std::string& sourceMeshPath = std::string());
+    TMTextureFilter applyTextureFilterPolicy(TMTextureFilter filter) const;
     float getPresentationPitchDegrees() const;
 
     void beginFrame(const TMRenderContext& context) override;

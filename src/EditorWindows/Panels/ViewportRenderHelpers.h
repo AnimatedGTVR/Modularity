@@ -17,7 +17,17 @@ namespace ViewportRenderHelpers {
 constexpr int kRuntimeInternalWidth = 1280;
 constexpr int kRuntimeInternalHeight = 720;
 
-// ---------- Particle helpers ----------
+// True when the current window (between Begin/End) is docked but not the
+// selected tab. ImGui still returns true from Begin() and runs the whole window
+// body in that state — only draw submission is dropped — so scene-rendering
+// panels use this to skip their per-frame work entirely.
+inline bool IsCurrentDockTabHidden() {
+  const ImGuiWindow *window = ImGui::GetCurrentWindow();
+  return window != nullptr && window->DockNode != nullptr &&
+         !window->DockTabIsVisible;
+}
+
+// Particle helpers
 
 uint32_t ParticleHash(uint32_t x);
 float ParticleUnit(uint32_t &state);
@@ -123,7 +133,7 @@ void AppendProjectedParticleSystem2DSprites(
     RectOutsideFn rectOutsideRenderLocal, Light2DRenderRequest &lightRequest,
     int &drawOrder);
 
-// ---------- Viewport layout ----------
+// Viewport layout
 
 struct EmbeddedViewportLayout {
   ImVec2 panelMin = ImVec2(0.0f, 0.0f);
@@ -147,7 +157,7 @@ bool TryMapScreenPointToRenderPixel(const EmbeddedViewportLayout &layout,
                                     int renderHeight, glm::vec2 &outRenderPixel,
                                     glm::vec2 *outNormalized = nullptr);
 
-// ---------- Profiler stats ----------
+// Profiler stats
 
 struct Runtime2DWorldProfilerStats {
   bool useWorldUi = false;
@@ -161,14 +171,14 @@ struct Runtime2DWorldProfilerStats {
 
 void SubmitRuntime2DWorldProfilerStats(const Runtime2DWorldProfilerStats &stats);
 
-// ---------- Texture / sorting ----------
+// Texture / sorting
 
 void ApplyNearestTextureSampling(GLuint textureId);
 
 bool RuntimeUiDrawOrderLess(const SceneObject *a, const SceneObject *b);
 void StableSortRuntimeUiDrawList(std::vector<SceneObject *> &drawList);
 
-// ---------- Projection ----------
+// Projection
 
 bool ProjectWorldToOverlayPoint(const glm::vec3 &worldPos,
                                 const glm::mat4 &view, const glm::mat4 &proj,
@@ -184,7 +194,7 @@ bool ResolveProjectedSprite25DRect(const SceneObject &obj,
                                    const ImVec2 &overlaySize, ImVec2 &outMin,
                                    ImVec2 &outMax);
 
-// ---------- UI text rendering ----------
+// UI text rendering
 
 void ApplyUIFontFilterCallback(const ImDrawList *, const ImDrawCmd *cmd);
 
@@ -210,9 +220,8 @@ void AddUITextWithFilter(ImDrawList *drawList,
                          UITextVAlign vAlign, int effectFlags,
                          float effectSpeed, float effectIntensity);
 
-// Renders a non-ImGui slider style (Fill / Vertical / Stepped / Circle / Ring).
-// The Circle fan-fill is robust at all `t` values (the previous PathFillConvex
-// implementation broke for arcs > 180° and at t=0).
+// non-ImGui slider styles (Fill / Vertical / Stepped / Circle / Ring). the Circle fan-fill
+// works at every t ( the old PathFillConvex version broke past 180 degrees and at t=0 ).
 void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
                          const ImVec2 &drawMin, const ImVec2 &drawMax,
                          const ImVec2 &drawSize,
@@ -220,20 +229,17 @@ void RenderUISliderStyle(ImDrawList *dl, UISliderStyle style,
                          float t, float minValue, float maxValue,
                          const char *label);
 
-// Rotates the vertices in a draw-list range around `pivot`. Use after adding
-// text/glyphs to a draw list and before any subsequent commands so only the
-// snapshotted range gets rotated.
+// rotate the vertices in a draw-list range around pivot. use right after adding
+// text/glyphs so only the snapshotted range rotates.
 void RotateDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
                             const ImVec2 &pivot, float angleRadians);
 
 void ScaleDrawListVertices(ImDrawList *dl, int firstVertex, int lastVertex,
                            const ImVec2 &pivot, const ImVec2 &scale);
 
-// `viewportRenderScale` is the on-screen size of the viewport divided by the
-// resolution it's rendered at (e.g. 1.5 means the rendered image is being
-// upscaled 1.5x). Screen-space UI text multiplies font size by it so text
-// scales 1:1 with the rendered images instead of staying a fixed pixel size.
-// Defaults to 1.0 to preserve existing call-sites.
+// viewportRenderScale = on-screen size / render resolution (1.5 = upscaled 1.5x).
+// screen-space UI text multiplies font size by it so text tracks the upscale instead of
+// staying fixed-pixel. defaults to 1 for old call sites.
 float ComputeViewportTextFontSize(float baseFontSize, float textScale,
                                   bool useWorldUi, float worldUiZoom,
                                   float viewportRenderScale = 1.0f);
@@ -249,7 +255,7 @@ void ApplyUITextScaleFromRectResize(SceneObject &obj, float startTextScale,
                                     const ImVec2 &startScreenSize,
                                     const ImVec2 &newScreenSize);
 
-// ---------- Scene lookup cache ----------
+// Scene lookup cache
 
 struct UiSceneLookupCache {
   explicit UiSceneLookupCache(const std::vector<SceneObject> &objects) {
@@ -333,7 +339,7 @@ private:
   std::unordered_map<int, int> pseudoCanvasIdCache;
 };
 
-// ---------- Sprite texture resolver ----------
+// Sprite texture resolver
 
 class SpriteTextureResolver {
 public:
@@ -378,7 +384,7 @@ private:
   std::unordered_map<std::string, CachedTexture> textureIdCache;
 };
 
-// ---------- Batched sprite emitter ----------
+// Batched sprite emitter
 
 struct BatchedSpriteQuad {
   ImTextureID textureId = 0;
@@ -454,7 +460,7 @@ private:
   std::vector<BatchedSpriteQuad> quads;
 };
 
-// ---------- Sprite frame / nine-slice ----------
+// Sprite frame / nine-slice
 
 ImVec2 ResolveUiSourceFrameSizePx(const SceneObject &obj, int frame,
                                   const Texture *texture);
@@ -466,7 +472,7 @@ bool DrawNineSliceSprite(BatchedSpriteEmitter &spriteBatch,
                          const ImVec2 &sourceFrameSizePx, float angleRad,
                          ImU32 color);
 
-// ---------- Pseudo-3D canvas helpers ----------
+// Pseudo-3D canvas helpers
 
 glm::vec2 ResolvePseudo3DLayoutSize(const SceneObject &canvas);
 
@@ -485,12 +491,10 @@ BuildPseudo3DPanelCorners(const ImVec2 &panelMin, const ImVec2 &panelMax,
                           float perspectiveDistanceFactor,
                           const std::array<ImVec2, 4> *baseCorners = nullptr);
 
-// Project a transform-driven canvas's world-space quad to screen-space.
-// The canvas is treated as a unit quad in its local XY plane, scaled by
-// canvas.scale.xy, transformed by canvas.position and canvas.rotation (Euler XYZ
-// degrees). Corners are emitted in pseudo-3D order: 0=TL, 1=TR, 2=BR, 3=BL,
-// matching BuildPseudo3DPanelCorners. Returns false if any corner is behind the
-// camera near plane (caller should skip rendering in that case).
+// project a transform-driven canvas quad to screen space (unit quad in local XY, scaled by
+// canvas.scale.xy, placed by position/rotation). corners come out pseudo-3D order
+// (TL,TR,BR,BL) matching BuildPseudo3DPanelCorners. false if any corner sits behind the
+// near plane (caller should skip rendering).
 bool ProjectTransformDrivenCanvasCorners(const SceneObject &canvas,
                                          const glm::mat4 &view,
                                          const glm::mat4 &proj,
@@ -502,7 +506,7 @@ void ResolvePseudo3DDistanceState(const UIElementComponent &ui, float distance,
                                   float &outScale, float &outPerspectiveFactor,
                                   bool &outAllowInteraction);
 
-// ---------- AppendProjectedParticleSystem2DSprites implementation ----------
+// AppendProjectedParticleSystem2DSprites implementation
 
 template <typename RectOutsideFn>
 void AppendProjectedParticleSystem2DSprites(

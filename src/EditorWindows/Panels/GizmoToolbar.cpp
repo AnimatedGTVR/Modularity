@@ -865,7 +865,6 @@ static void DrawLocalModeIcon(ImDrawList *drawList, const ImVec2 &min,
       ImVec2((iconMin.x + iconMax.x) * 0.5f, (iconMin.y + iconMax.y) * 0.5f);
   float size = iconMax.x - iconMin.x;
   float outerR = size * 0.36f;
-  float innerR = size * 0.2f;
   float dotR = size * 0.08f;
   float thickness = std::max(1.0f, size * 0.08f);
 
@@ -873,7 +872,6 @@ static void DrawLocalModeIcon(ImDrawList *drawList, const ImVec2 &min,
   drawList->AddCircleFilled(center, dotR, lineColor, 12);
 
   const float tickLen = size * 0.12f;
-  const float tickR = outerR + tickLen * 0.5f;
   for (int i = 0; i < 4; ++i) {
     float angle = (IM_PI * 0.5f) * static_cast<float>(i);
     ImVec2 dir(std::cos(angle), std::sin(angle));

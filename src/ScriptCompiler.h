@@ -10,6 +10,19 @@ struct ScriptBuildConfig {
     std::vector<std::string> defines;
     std::vector<std::string> linuxLinkLibs;
     std::vector<std::string> windowsLinkLibs;
+
+    // --- Cross-compilation (Android NDK) ---------------------------------
+    // When crossCompilerDriver is non-empty, the POSIX build path uses it
+    // instead of g++/gcc for both the compile and link steps and bypasses
+    // ccache. Point it at the NDK's per-API clang++ wrapper
+    // (e.g. <ndk>/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android26-clang++),
+    // which already bakes in --target and --sysroot, so extraCompileFlags /
+    // extraLinkFlags are usually only needed for things like -O2 or
+    // visibility. The produced binary keeps the .so extension. Leave empty for
+    // a normal host build - nothing about the desktop path changes.
+    std::string crossCompilerDriver;
+    std::vector<std::string> extraCompileFlags;
+    std::vector<std::string> extraLinkFlags;
 };
 
 struct ScriptBuildCommands {

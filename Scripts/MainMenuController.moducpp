@@ -80,7 +80,7 @@ public class MainMenuController : ModuNode {
         UpdateHeartPosition(dt);
     }
 
-    // ---- Input ----------------------------------------------------------
+    // Input
     int ReadDirection() {
         if (orientation == MenuOrientation.Vertical) {
             if (Input.IsKeyDown(Key.S, Key.Down)) then return 1;
@@ -91,13 +91,13 @@ public class MainMenuController : ModuNode {
     }
     bool IsSubmitPressed() {return Input.IsKeyDown(Key.Enter);}
 
-    // ---- Heart cursor ---------------------------------------------------
+    // Heart cursor
     void UpdateHeartPosition(float dt) {
         if (!heart || !heart.UI.Exists) return;
         if (currentIndex < 0 || currentIndex >= menuItems.size()) return;
 
         // Local ref is a string ([ObjectList] storage). Use the UI* helpers
-        // directly — the transpiler rewrites only fire for known [ObjectRef] fields.
+        // directly - the transpiler rewrites only fire for known [ObjectRef] fields.
         string targetRef = menuItems[currentIndex];
         if (targetRef.empty() || !UIExists(targetRef)) return;
         Vector2 targetPos = UIPosition(targetRef);
@@ -116,7 +116,7 @@ public class MainMenuController : ModuNode {
         }
 
         // Restart the lerp whenever the destination changes (i.e. the user navigated).
-        // Linear in time over moveSpeed seconds — matches the original Unity coroutine.
+        // Linear in time over moveSpeed seconds - matches the original Unity coroutine.
         if (Math.Distance(lerpEnd, targetPos) > 0.001f) {
             lerpStart = heart.UI.Position;
             lerpEnd   = targetPos;
@@ -132,7 +132,7 @@ public class MainMenuController : ModuNode {
         if (Math.Distance(newPos, heart.UI.Position) > 0.001f) then heart.UI.Position = newPos;
     }
 
-    // ---- Actions --------------------------------------------------------
+    // Actions
     void SyncActionsToMenuItems() {
         if (actions.size() == menuItems.size()) return;
         actions.resize(menuItems.size());
@@ -145,7 +145,7 @@ public class MainMenuController : ModuNode {
         each obj in action.disable then obj.State(false); each obj in action.enable  then obj.State(true);
     }
 
-    // ---- Runtime panel (ModuGUI) ---------------------------------------
+    // Runtime panel (ModuGUI)
     void DrawRuntimeStatus() {
         UI.Separator();
         UI.TextDisabled("Menu Items: " + IntR(menuItems.size()));

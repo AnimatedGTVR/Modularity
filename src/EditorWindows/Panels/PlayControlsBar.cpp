@@ -164,6 +164,19 @@ void Engine::renderPlayControlsBar() {
 
     if (playPressed) {
       ImGui::ClearActiveID();
+      togglePlayMode();
+    }
+  if (pausePressed) {
+    togglePause();
+  }
+  if (specPressed) {
+    ImGui::ClearActiveID();
+    toggleSpecMode();
+  }
+}
+
+void Engine::togglePlayMode() {
+    {
       bool newState = !isPlaying;
       if (newState) {
         const auto __playStart = std::chrono::steady_clock::now();
@@ -260,13 +273,15 @@ void Engine::renderPlayControlsBar() {
       }
       isPlaying = newState;
     }
-  if (pausePressed) {
+}
+
+void Engine::togglePause() {
     isPaused = !isPaused;
     if (isPaused)
       isPlaying = true; // placeholder: pausing implies we're in play mode
-  }
-  if (specPressed) {
-    ImGui::ClearActiveID();
+}
+
+void Engine::toggleSpecMode() {
     bool enable = !specMode;
     if (enable && !physics->isReady() && !physics->init()) {
       addConsoleMessage("PhysX failed to initialize; spec mode disabled",
@@ -294,6 +309,5 @@ void Engine::renderPlayControlsBar() {
         audio.onPlayStop();
       }
     }
-  }
 }
 

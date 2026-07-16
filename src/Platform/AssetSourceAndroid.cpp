@@ -1,9 +1,7 @@
 #ifdef __ANDROID__
 
-// Android implementation of AssetSource. Reads from the APK's assets/
-// directory via AAssetManager. Installed by AndroidRuntime at startup,
-// before Engine::init(). The desktop fallback inside AssetSourceDesktop.cpp
-// covers the bootstrap window between SetAssetSource() and SetAssetSource(...).
+// Android AssetSource: reads the APK's assets/ via AAssetManager. installed by AndroidRuntime
+// before Engine::init(); the desktop fallback covers the bootstrap window before that.
 
 #include "../../include/Platform/AssetSource.h"
 
@@ -26,10 +24,8 @@ namespace Modularity::Platform {
 
 namespace {
 
-// Translate an engine-side path like "Resources/Engine-Root/Modu-Logo.png"
-// into the form AAssetManager expects. AAssetManager doesn't have a
-// leading slash and uses forward slashes only. On Android paths the
-// engine passes in are already POSIX-style, so this is mostly trimming.
+// translate an engine path into AAssetManager form (no leading slash, forward slashes only).
+// engine paths are already POSIX here, so mostly trimming.
 std::string NormalizeAssetPath(const std::string& path) {
     std::string out = path;
     while (!out.empty() && out.front() == '/') out.erase(out.begin());
@@ -66,10 +62,8 @@ private:
     AAsset* mAsset = nullptr;
 };
 
-// Filesystem-backed stream, used when the requested path resolves to the
-// extracted bundle content under the runtime cache. Logic mirrors
-// AssetSourceDesktop's DesktopAssetStream so callers see identical
-// semantics regardless of which fallback path served the open.
+// filesystem-backed stream for paths that resolve to extracted bundle content in the runtime
+// cache. mirrors DesktopAssetStream so callers can't tell which fallback served them.
 class FilesystemAssetStream final : public AssetStream {
 public:
     FilesystemAssetStream(std::unique_ptr<std::ifstream> stream, int64_t size)
@@ -98,10 +92,8 @@ class AndroidAssetSource final : public AssetSource {
 public:
     explicit AndroidAssetSource(AAssetManager* mgr) : mMgr(mgr) {}
 
-    // Try the filesystem first (relative to cwd, which after bundle
-    // extraction points at the runtime cache root). Falls back to
-    // AAssetManager for things that are only inside the raw APK assets/
-    // (the bundle file itself, before extraction).
+    // filesystem first (cwd points at the runtime cache after bundle extraction), then
+    // AAssetManager for things only inside the raw APK ( like the bundle file itself ).
 
     bool Exists(const std::string& path) const override {
         std::error_code ec;

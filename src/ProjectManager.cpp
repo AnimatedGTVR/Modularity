@@ -24,7 +24,21 @@ std::string TrimCopy(const std::string& value) {
 }
 
 std::string GetPlatformDefaultProjectsPath() {
-#ifdef _WIN32
+#if defined(__ANDROID__)
+    // mirror the desktop layout by dropping projects in public Documents once storage access is
+    // granted. no grant = fall back to the app's private data dir ( HOME doesn't exist and cwd
+    // is "/", so anything else EROFSes on create ).
+    {
+        const std::string docs = Modularity::AndroidRuntime::GetExternalDocumentsPath();
+        if (!docs.empty() && Modularity::AndroidRuntime::HasAllFilesAccess()) {
+            return (fs::path(docs) / "ModularityProjects").string();
+        }
+    }
+    if (const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath()) {
+        return (fs::path(dataPath) / "ModularityProjects").string();
+    }
+    return std::string("/data/local/tmp/ModularityProjects");
+#elif defined(_WIN32)
     const char* userProfile = std::getenv("USERPROFILE");
     if (userProfile && *userProfile) {
         return (fs::path(userProfile) / "Documents" / "ModularityProjects").string();
@@ -364,6 +378,26 @@ bool Project::load(const fs::path& projectFilePath) {
                 graphicsSettings.editorPreviewOverrides = ParseProjectBool(value);
             } else if (key == "graphicsGamePreviewOverrides") {
                 graphicsSettings.gamePreviewOverrides = ParseProjectBool(value);
+            } else if (key == "graphicsRenderingPath") {
+                graphicsSettings.renderingPath = static_cast<ProjectRenderingPath>(std::clamp(std::stoi(value), 0, 3));
+            } else if (key == "graphicsHdr") {
+                graphicsSettings.hdr = ParseProjectBool(value);
+            } else if (key == "graphicsColorResolution") {
+                graphicsSettings.colorResolution = static_cast<ProjectColorResolution>(std::clamp(std::stoi(value), 0, 2));
+            } else if (key == "graphicsDefaultTextureFormat") {
+                graphicsSettings.defaultTextureFormat = value;
+            } else if (key == "lightingMainLightEnabled") {
+                graphicsSettings.mainLightEnabled = ParseProjectBool(value);
+            } else if (key == "lightingMainLightCastShadows") {
+                graphicsSettings.mainLightCastShadows = ParseProjectBool(value);
+            } else if (key == "lightingAdditionalLightsEnabled") {
+                graphicsSettings.additionalLightsEnabled = ParseProjectBool(value);
+            } else if (key == "lightingAdditionalLightsCastShadows") {
+                graphicsSettings.additionalLightsCastShadows = ParseProjectBool(value);
+            } else if (key == "lightingSoftShadows") {
+                graphicsSettings.softShadows = ParseProjectBool(value);
+            } else if (key == "lightingShadowMaxDistance") {
+                graphicsSettings.shadowMaxDistance = std::max(0.0f, std::stof(value));
             } else if (key == "consoleMode") {
                 consoleSettings.mode = ParseProjectConsoleMode(value);
             } else if (key == "consoleAlwaysOpenOnLaunch") {
@@ -463,6 +497,16 @@ void Project::saveProjectFile() const {
     file << "graphicsFullscreenStartup=" << (graphicsSettings.fullscreenStartup ? 1 : 0) << "\n";
     file << "graphicsEditorPreviewOverrides=" << (graphicsSettings.editorPreviewOverrides ? 1 : 0) << "\n";
     file << "graphicsGamePreviewOverrides=" << (graphicsSettings.gamePreviewOverrides ? 1 : 0) << "\n";
+    file << "graphicsRenderingPath=" << static_cast<int>(graphicsSettings.renderingPath) << "\n";
+    file << "graphicsHdr=" << (graphicsSettings.hdr ? 1 : 0) << "\n";
+    file << "graphicsColorResolution=" << static_cast<int>(graphicsSettings.colorResolution) << "\n";
+    file << "graphicsDefaultTextureFormat=" << (graphicsSettings.defaultTextureFormat.empty() ? "Auto" : graphicsSettings.defaultTextureFormat) << "\n";
+    file << "lightingMainLightEnabled=" << (graphicsSettings.mainLightEnabled ? 1 : 0) << "\n";
+    file << "lightingMainLightCastShadows=" << (graphicsSettings.mainLightCastShadows ? 1 : 0) << "\n";
+    file << "lightingAdditionalLightsEnabled=" << (graphicsSettings.additionalLightsEnabled ? 1 : 0) << "\n";
+    file << "lightingAdditionalLightsCastShadows=" << (graphicsSettings.additionalLightsCastShadows ? 1 : 0) << "\n";
+    file << "lightingSoftShadows=" << (graphicsSettings.softShadows ? 1 : 0) << "\n";
+    file << "lightingShadowMaxDistance=" << std::max(0.0f, graphicsSettings.shadowMaxDistance) << "\n";
     file << "consoleMode=" << SerializeProjectConsoleMode(consoleSettings.mode) << "\n";
     file << "consoleAlwaysOpenOnLaunch=" << (consoleSettings.alwaysOpenOnLaunch ? 1 : 0) << "\n";
     file << "consoleOpenOnlyOnErrors=" << (consoleSettings.openOnlyOnErrors ? 1 : 0) << "\n";
@@ -501,17 +545,13 @@ fs::path Project::getSceneFilePath(const std::string& sceneName) const {
 // ProjectManager implementation
 ProjectManager::ProjectManager() {
     #if defined(__ANDROID__)
-    // Android has no HOME / APPDATA, and the process cwd is the read-only
-    // system root ("/"). The NativeActivity hands us a per-app writable
-    // directory at /data/data/<pkg>/files which is the right home for
-    // recent-projects metadata, launcher state, runtime caches, etc.
+    // Android has no HOME/APPDATA and cwd is the read-only "/". the NativeActivity's
+    // /data/data/<pkg>/files dir is the right home for recents, launcher state, caches.
     if (const char* dataPath = Modularity::AndroidRuntime::GetInternalDataPath()) {
         appDataPath = fs::path(dataPath) / ".Modularity";
     } else {
-        // AndroidRuntime hasn't installed the activity pointer yet, so fall back.
-        // /data/local/tmp is world-writable and survives the activity
-        // lifecycle, so use it as a defensive fallback rather than the
-        // read-only "/".
+        // activity pointer isn't installed yet, so fall back to /data/local/tmp (world-writable,
+        // survives the lifecycle) instead of the read-only "/".
         appDataPath = fs::path("/data/local/tmp/.Modularity");
     }
     #elif defined(_WIN32)
@@ -602,6 +642,7 @@ void ProjectManager::loadLauncherSettings() {
     acceptedTermsVersion.clear();
     windowsDisclaimerAcknowledgedV68 = false;
     moduCppNvimWarningDismissedV1 = false;
+    androidStoragePromptDismissedV1 = false;
     fs::path settingsFile = appDataPath / "launcher_settings.modu";
 
     if (fs::exists(settingsFile)) {
@@ -624,6 +665,8 @@ void ProjectManager::loadLauncherSettings() {
                 windowsDisclaimerAcknowledgedV68 = (value == "1" || value == "true" || value == "yes");
             } else if (key == "ModuCppNvimWarningDismissed_V1") {
                 moduCppNvimWarningDismissedV1 = (value == "1" || value == "true" || value == "yes");
+            } else if (key == "AndroidStoragePromptDismissed_V1") {
+                androidStoragePromptDismissedV1 = (value == "1" || value == "true" || value == "yes");
             }
         }
     }
@@ -632,6 +675,27 @@ void ProjectManager::loadLauncherSettings() {
         const std::string fallback = GetPlatformDefaultProjectsPath();
         std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s", fallback.c_str());
     }
+
+#if defined(__ANDROID__)
+    // a persisted path is only good if it's still writable today: stale desktop paths or an
+    // ungranted Documents path would EROFS/EACCES project creation. probe by creating it;
+    // on failure drop back to the platform default.
+    {
+        std::error_code ec;
+        bool persistedUsable = false;
+        if (defaultProjectLocation[0] != '\0') {
+            fs::create_directories(defaultProjectLocation, ec);
+            persistedUsable = !ec && fs::exists(defaultProjectLocation);
+        }
+        if (!persistedUsable) {
+            const std::string androidDefault = GetPlatformDefaultProjectsPath();
+            std::snprintf(defaultProjectLocation, sizeof(defaultProjectLocation), "%s",
+                          androidDefault.c_str());
+            ec.clear();
+            fs::create_directories(defaultProjectLocation, ec); // ensure it exists to write into
+        }
+    }
+#endif
 }
 
 void ProjectManager::saveLauncherSettings() const {
@@ -647,6 +711,7 @@ void ProjectManager::saveLauncherSettings() const {
     }
     file << "WindowsDisclaimerAcknowledged_V6_8=" << (windowsDisclaimerAcknowledgedV68 ? "1" : "0") << "\n";
     file << "ModuCppNvimWarningDismissed_V1=" << (moduCppNvimWarningDismissedV1 ? "1" : "0") << "\n";
+    file << "AndroidStoragePromptDismissed_V1=" << (androidStoragePromptDismissedV1 ? "1" : "0") << "\n";
     file << "defaultProjectLocation=" << defaultProjectLocation << "\n";
 }
 
@@ -1060,6 +1125,8 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "materialTextureMix=" << obj.material.textureMix << "\n";
             file << "materialUvTiling=" << obj.material.uvTiling.x << "," << obj.material.uvTiling.y << "\n";
             file << "materialUvOffset=" << obj.material.uvOffset.x << "," << obj.material.uvOffset.y << "\n";
+            file << "materialScrollSpeed=" << obj.material.scrollSpeed << "\n";
+            file << "materialScrollDirection=" << obj.material.scrollDirection.x << "," << obj.material.scrollDirection.y << "\n";
             file << "materialTextureFilter=" << static_cast<int>(obj.material.textureFilter) << "\n";
             file << "materialPath=" << obj.materialPath << "\n";
             file << "albedoTex=" << obj.albedoTexturePath << "\n";
@@ -1184,6 +1251,13 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "cameraPostFX=" << (obj.camera.applyPostFX ? 1 : 0) << "\n";
             file << "cameraUse2D=" << (obj.camera.use2D ? 1 : 0) << "\n";
             file << "cameraPixelsPerUnit=" << obj.camera.pixelsPerUnit << "\n";
+            file << "cameraProjection=" << static_cast<int>(obj.camera.projection) << "\n";
+            file << "cameraFovAxis=" << static_cast<int>(obj.camera.fovAxis) << "\n";
+            file << "cameraOrthoSize=" << obj.camera.orthoSize << "\n";
+            file << "cameraRenderShadows=" << (obj.camera.renderShadows ? 1 : 0) << "\n";
+            file << "cameraBackground=" << static_cast<int>(obj.camera.background) << "\n";
+            file << "cameraBackgroundColor=" << obj.camera.backgroundColor.r << "," << obj.camera.backgroundColor.g << "," << obj.camera.backgroundColor.b << "\n";
+            file << "cameraCullingMask=" << obj.camera.cullingMask << "\n";
             file << "uiAnchor=" << static_cast<int>(obj.ui.anchor) << "\n";
             file << "uiPosition=" << obj.ui.position.x << "," << obj.ui.position.y << "\n";
             file << "uiRotation=" << obj.ui.rotation << "\n";
@@ -1208,6 +1282,7 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "uiTextEffectIntensity=" << obj.ui.textEffectIntensity << "\n";
             file << "uiRenderIn3D=" << (obj.ui.renderIn3D ? 1 : 0) << "\n";
             file << "uiRenderTargetSize=" << obj.ui.renderTargetSize.x << "," << obj.ui.renderTargetSize.y << "\n";
+            file << "uiRenderTargetFilter=" << static_cast<int>(obj.ui.renderTargetFilter) << "\n";
             file << "uiPseudo3DEnabled=" << (obj.ui.pseudo3DEnabled ? 1 : 0) << "\n";
             file << "uiPseudo3DUseOffscreen=" << (obj.ui.pseudo3DUseOffscreenSurface ? 1 : 0) << "\n";
             file << "uiPseudo3DPanelSize=" << obj.ui.pseudo3DPanelSize.x << "," << obj.ui.pseudo3DPanelSize.y << "\n";
@@ -1789,6 +1864,8 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"materialTextureMix", +[](SceneObject& obj, const std::string& value) { obj.material.textureMix = std::stof(value); }},
         {"materialUvTiling", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvTiling); }},
         {"materialUvOffset", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.uvOffset); }},
+        {"materialScrollSpeed", +[](SceneObject& obj, const std::string& value) { obj.material.scrollSpeed = std::stof(value); }},
+        {"materialScrollDirection", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.material.scrollDirection); }},
         {"materialTextureFilter", +[](SceneObject& obj, const std::string& value) {
              int filterValue = std::stoi(value);
              obj.material.textureFilter = (filterValue == 1)
@@ -1900,6 +1977,13 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"cameraPostFX", +[](SceneObject& obj, const std::string& value) { obj.camera.applyPostFX = (std::stoi(value) != 0); }},
         {"cameraUse2D", +[](SceneObject& obj, const std::string& value) { obj.camera.use2D = (std::stoi(value) != 0); }},
         {"cameraPixelsPerUnit", +[](SceneObject& obj, const std::string& value) { obj.camera.pixelsPerUnit = std::stof(value); }},
+        {"cameraProjection", +[](SceneObject& obj, const std::string& value) { obj.camera.projection = static_cast<SceneCameraProjection>(std::clamp(std::stoi(value), 0, 1)); }},
+        {"cameraFovAxis", +[](SceneObject& obj, const std::string& value) { obj.camera.fovAxis = static_cast<SceneCameraFovAxis>(std::clamp(std::stoi(value), 0, 1)); }},
+        {"cameraOrthoSize", +[](SceneObject& obj, const std::string& value) { obj.camera.orthoSize = std::max(0.01f, std::stof(value)); }},
+        {"cameraRenderShadows", +[](SceneObject& obj, const std::string& value) { obj.camera.renderShadows = (std::stoi(value) != 0); }},
+        {"cameraBackground", +[](SceneObject& obj, const std::string& value) { obj.camera.background = static_cast<SceneCameraBackground>(std::clamp(std::stoi(value), 0, 1)); }},
+        {"cameraBackgroundColor", +[](SceneObject& obj, const std::string& value) { ParseVec3(value, obj.camera.backgroundColor); }},
+        {"cameraCullingMask", +[](SceneObject& obj, const std::string& value) { obj.camera.cullingMask = static_cast<uint32_t>(std::stoul(value)); }},
         {"uiAnchor", +[](SceneObject& obj, const std::string& value) { obj.ui.anchor = static_cast<UIAnchor>(std::stoi(value)); }},
         {"uiPosition", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.position); }},
         {"uiRotation", +[](SceneObject& obj, const std::string& value) { obj.ui.rotation = std::stof(value); }},
@@ -1928,6 +2012,11 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiTextEffectIntensity", +[](SceneObject& obj, const std::string& value) { obj.ui.textEffectIntensity = std::max(0.0f, std::stof(value)); }},
         {"uiRenderIn3D", +[](SceneObject& obj, const std::string& value) { obj.ui.renderIn3D = (std::stoi(value) != 0); }},
         {"uiRenderTargetSize", +[](SceneObject& obj, const std::string& value) { ParseIVec2(value, obj.ui.renderTargetSize); }},
+        {"uiRenderTargetFilter", +[](SceneObject& obj, const std::string& value) {
+             obj.ui.renderTargetFilter = (std::stoi(value) == 1)
+                 ? MaterialProperties::TextureFilter::Point
+                 : MaterialProperties::TextureFilter::Bilinear;
+         }},
         {"uiPseudo3DEnabled", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DEnabled = (std::stoi(value) != 0); }},
         {"uiPseudo3DUseOffscreen", +[](SceneObject& obj, const std::string& value) { obj.ui.pseudo3DUseOffscreenSurface = (std::stoi(value) != 0); }},
         {"uiPseudo3DPanelSize", +[](SceneObject& obj, const std::string& value) { ParseVec2(value, obj.ui.pseudo3DPanelSize); }},

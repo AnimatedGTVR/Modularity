@@ -3,6 +3,10 @@
 #include "SceneObject.h"
 #include "SpritesheetFormat.h"
 #include "ThirdParty/ModuGUI/imgui.h"
+#ifdef __ANDROID__
+#include "AndroidRuntime/AndroidRuntime.h"
+#include "AndroidScript.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -50,10 +54,6 @@ std::string trimString(const std::string& input) {
         --end;
     }
     return input.substr(start, end - start);
-}
-
-bool isUIObject(const SceneObject* obj) {
-    return obj && HasUIComponent(*obj);
 }
 
 glm::vec2 moveTowardsVec2(const glm::vec2& current, const glm::vec2& target, float maxDelta) {
@@ -235,11 +235,9 @@ fs::path makeShadowScriptBinaryPath(const fs::path& binaryPath) {
     return shadowDir / filename.str();
 }
 
-// Shadow copies accumulate across sessions because unloadAll never unmaps
-// modules (see comment there) and each load gets a unique filename. Sweep
-// copies left by other (dead) processes once per directory per session.
-// In-use files: POSIX keeps mappings valid after unlink; Windows fails the
-// remove with a sharing violation, which we ignore.
+// shadow copies pile up across sessions (unloadAll never unmaps, every load gets a unique
+// name), so sweep dead processes' leftovers once per directory. in-use files: POSIX stays
+// valid after unlink, Windows throws a sharing violation we ignore.
 void cleanupStaleShadowScriptBinaries(const fs::path& shadowDir) {
     static std::unordered_set<std::string> cleanedDirs;
     const std::string dirKey = shadowDir.lexically_normal().string();
@@ -410,6 +408,13 @@ void ScriptContext::SetPosition(const glm::vec3& pos) {
     }
 }
 
+void ScriptContext::SyncObjectLocalTransform(int objectId) {
+    if (!engine) return;
+    if (SceneObject* obj = FindObjectById(objectId)) {
+        engine->syncLocalTransform(*obj);
+    }
+}
+
 void ScriptContext::SetPosition2D(const glm::vec2& pos) {
     if (!object) return;
     object->ui.position = pos;
@@ -520,6 +525,53 @@ bool ScriptContext::IsKeyPressed(int glfwKey, ImGuiKey imguiKey) const {
         state.frame = frame;
     }
     return state.pressed;
+}
+
+// Touch
+// reads live pointer state so it's current by gameplay tick. Android = the NativeActivity
+// finger set; desktop fakes touch 0 from the left mouse button so Touch.* scripts behave
+// identically when tested in the editor.
+
+int ScriptContext::GetTouchCount() const {
+#ifdef __ANDROID__
+    return Modularity::AndroidRuntime::GetPointerCount();
+#else
+    return ImGui::IsMouseDown(ImGuiMouseButton_Left) ? 1 : 0;
+#endif
+}
+
+bool ScriptContext::GetTouch(int index, float& x, float& y) const {
+#ifdef __ANDROID__
+    int id = 0;
+    return Modularity::AndroidRuntime::GetPointer(index, &id, &x, &y);
+#else
+    if (index != 0 || !ImGui::IsMouseDown(ImGuiMouseButton_Left)) return false;
+    const ImVec2 pos = ImGui::GetIO().MousePos;
+    x = pos.x;
+    y = pos.y;
+    return true;
+#endif
+}
+
+bool ScriptContext::GetPrimaryTouch(float& x, float& y) const {
+#ifdef __ANDROID__
+    bool active = false;
+    Modularity::AndroidRuntime::GetPrimaryPointer(&x, &y, &active);
+    return active;
+#else
+    const ImVec2 pos = ImGui::GetIO().MousePos;
+    x = pos.x;
+    y = pos.y;
+    return ImGui::IsMouseDown(ImGuiMouseButton_Left);
+#endif
+}
+
+bool ScriptContext::IsTouchActive() const {
+#ifdef __ANDROID__
+    return Modularity::AndroidRuntime::GetPointerCount() > 0;
+#else
+    return ImGui::IsMouseDown(ImGuiMouseButton_Left);
+#endif
 }
 
 bool ScriptContext::ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
@@ -940,10 +992,8 @@ bool ScriptContext::SetObjectSprite(int objectId, const Sprite& sprite) {
         ui.spriteCustomFrameScales = doc.scales;
         ui.spriteCustomFrameScales.resize(doc.rects.size(), glm::vec2(1.0f));
         ui.spriteSheetAssetPath = sprite.sheetAssetPath;
-        // NOTE: only the frame table swaps here. The sprite's source image isn't
-        // owned by UIElementComponent, and no runtime sheet->object texture binding
-        // exists yet, so a cross-sheet assignment that also changes the image needs
-        // that plumbing before it fully works. Same-sheet assignment is unaffected.
+        // NOTE: only the frame table swaps here. cross-sheet assignments that also change the image
+        // need sheet->object texture binding that doesn't exist yet; same-sheet is unaffected.
         if (!doc.linkedSpriteName.empty()) {
             AddConsoleMessage("SetObjectSprite: cross-sheet image swap not yet wired; "
                               "frames updated but texture unchanged (" + sprite.sheetAssetPath + ").",
@@ -1683,6 +1733,54 @@ std::string ScriptContext::GetCurrentSceneName() const {
     return engine->getCurrentSceneNameFromScript();
 }
 
+std::string ScriptContext::GetSceneHierarchy(int maxObjects) const {
+    if (!engine) {
+        return {};
+    }
+    return engine->getSceneHierarchyFromScript(maxObjects);
+}
+
+int ScriptContext::CreateSceneObject(const std::string& type, const std::string& name, int parentId) {
+    if (!engine) return -1;
+    return engine->createSceneObjectFromScript(type, name, parentId);
+}
+
+bool ScriptContext::DeleteSceneObject(int objectId) {
+    if (!engine) return false;
+    return engine->deleteSceneObjectFromScript(objectId);
+}
+
+bool ScriptContext::RenameSceneObject(int objectId, const std::string& name) {
+    if (!engine) return false;
+    return engine->renameSceneObjectFromScript(objectId, name);
+}
+
+bool ScriptContext::SetSceneObjectParent(int objectId, int parentId) {
+    if (!engine) return false;
+    return engine->setSceneObjectParentFromScript(objectId, parentId);
+}
+
+bool ScriptContext::SetSceneObjectTransform(int objectId, const glm::vec3& position,
+                                            const glm::vec3& rotationDeg, const glm::vec3& scale) {
+    if (!engine) return false;
+    return engine->setSceneObjectTransformFromScript(objectId, position, rotationDeg, scale);
+}
+
+bool ScriptContext::SetSceneObjectEnabled(int objectId, bool enabled) {
+    if (!engine) return false;
+    return engine->setSceneObjectEnabledFromScript(objectId, enabled);
+}
+
+bool ScriptContext::AddObjectComponent(int objectId, const std::string& component) {
+    if (!engine) return false;
+    return engine->addObjectComponentFromScript(objectId, component);
+}
+
+bool ScriptContext::AttachObjectScript(int objectId, const std::string& scriptPath) {
+    if (!engine) return false;
+    return engine->attachObjectScriptFromScript(objectId, scriptPath);
+}
+
 bool ScriptContext::SaveProject() {
     if (!engine) {
         return false;
@@ -1946,6 +2044,41 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
     lastError.clear();
     if (binaryPath.empty()) return nullptr;
     auto key = binaryPath.string();
+
+#ifdef __ANDROID__
+    // two kinds of script .so on Android:
+    //  * prebuilt/exported: a 0-byte placeholder sits at binaryPath, the real lib rides in the
+    //    APK's lib/<abi>/ under a mangled soname. derive the soname and load from
+    //    nativeLibraryDir (cache keyed by soname).
+    //  * on-device editor build: clang wrote a real .so into the writable outDir; targetSdk 28
+    //    lets us dlopen it straight from disk like desktop (keyed by path, hot-reload by write-time/size).
+    std::string androidSoname;
+    bool androidSonameLoad = false;
+    fs::file_time_type binaryWriteTime{};
+    uintmax_t binarySize = 0;
+    {
+        std::error_code statEc;
+        const bool present = fs::exists(binaryPath, statEc) && !statEc;
+        const uintmax_t onDiskSize = present ? fs::file_size(binaryPath, statEc) : 0;
+        if (present && !statEc && onDiskSize > 0) {
+            // Real on-device build: load by path (key stays binaryPath.string()).
+            binaryWriteTime = fs::last_write_time(binaryPath, statEc);
+            binarySize = statEc ? 0 : onDiskSize;
+        } else {
+            // Placeholder or missing: fall back to the packaged soname.
+            fs::path rel;
+            std::error_code relEc;
+            if (!compiledScriptsRoot_.empty()) {
+                rel = fs::relative(binaryPath, compiledScriptsRoot_, relEc);
+            }
+            if (relEc || rel.empty()) rel = binaryPath.filename();
+            androidSoname = moduAndroidScriptSoname(rel);
+            key = androidSoname;
+            androidSonameLoad = true;
+        }
+    }
+#else
+    const bool androidSonameLoad = false;
     std::error_code statEc;
     const fs::file_time_type binaryWriteTime = fs::last_write_time(binaryPath, statEc);
     const uintmax_t binarySize = statEc ? 0 : fs::file_size(binaryPath, statEc);
@@ -1953,6 +2086,8 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
         lastError = "Unable to stat native script binary: " + binaryPath.string();
         return nullptr;
     }
+#endif
+    (void)androidSonameLoad;
 
     auto it = loaded.find(key);
     if (it != loaded.end()) {
@@ -2011,14 +2146,24 @@ ScriptRuntime::Module* ScriptRuntime::getModule(const fs::path& binaryPath) {
 #else
     fs::path loadPath = binaryPath;
     std::string shadowError;
-    if (!prepareShadowScriptBinary(binaryPath, loadPath, shadowError)) {
-        lastError = shadowError;
-        return nullptr;
+#ifdef __ANDROID__
+    if (androidSonameLoad) {
+        // load from nativeLibraryDir by soname, no shadow copy: the lib is immutable in the
+        // package and the data dir is noexec on modern Android anyway.
+        mod.loadedPath = androidSoname;
+        mod.loadedFromShadowCopy = false;
+        mod.handle = dlopen(androidSoname.c_str(), RTLD_LAZY);
+    } else
+#endif
+    {
+        if (!prepareShadowScriptBinary(binaryPath, loadPath, shadowError)) {
+            lastError = shadowError;
+            return nullptr;
+        }
+        mod.loadedPath = loadPath;
+        mod.loadedFromShadowCopy = true;
+        mod.handle = dlopen(loadPath.string().c_str(), RTLD_LAZY);
     }
-
-    mod.loadedPath = loadPath;
-    mod.loadedFromShadowCopy = true;
-    mod.handle = dlopen(loadPath.string().c_str(), RTLD_LAZY);
     if (!mod.handle) {
         const char* err = dlerror();
         if (err) lastError = err;

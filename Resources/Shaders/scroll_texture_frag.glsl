@@ -13,6 +13,8 @@ uniform bool unlit = false;
 uniform vec4 uvTransform = vec4(1.0, 1.0, 0.0, 0.0);
 
 uniform float uTime = 0.0;
+uniform float uScrollSpeed = 0.5;          // UV units per second
+uniform vec2 uScrollDir = vec2(1.0, 0.3);  // drift axis, normalized below
 uniform vec3 materialColor = vec3(1.0);
 uniform float materialAlpha = 1.0;
 uniform float ambientStrength = 0.2;
@@ -22,16 +24,17 @@ uniform vec3 viewPos;
 
 void main()
 {
-    float speed = mix(0.08, 1.2, clamp(mixAmount, 0.0, 1.0));
-    vec2 baseDir = normalize(vec2(1.0, 0.3));
+    float speed = max(uScrollSpeed, 0.0);
+    // pure direction; a zero vector just parks the scroll instead of NaN-ing
+    vec2 baseDir = (length(uScrollDir) > 0.0001) ? normalize(uScrollDir) : vec2(0.0);
     vec2 transformedUv = TexCoord * uvTransform.xy + uvTransform.zw;
     vec2 baseUV = transformedUv + baseDir * (uTime * speed);
     vec4 baseSample = texture(texture1, baseUV);
 
     vec3 color = baseSample.rgb;
     if (hasOverlay) {
-        vec2 overlayDir = normalize(vec2(-0.65, 1.0));
-        vec2 overlayUV = transformedUv + overlayDir * (uTime * speed * 0.65);
+        // detail layer drifts along the same axis but slower for a parallax feel
+        vec2 overlayUV = transformedUv + baseDir * (uTime * speed * 0.65);
         vec3 overlayColor = texture(overlayTex, overlayUV).rgb;
         color = mix(color, overlayColor, clamp(mixAmount, 0.0, 1.0));
     }

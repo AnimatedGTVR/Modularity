@@ -8,10 +8,26 @@ See `CLAUDE.md` for the full flag list. (it's human readable too, no worries!)
 ./build.sh --build-type=Debug    # Builds in Debug Mode
 ./build.sh --fsanitize           # AddressSanitizer + UBSan (-DMODULARITY_ENABLE_ASAN=ON)
 ./build.sh --Windows             # Cross-compile Windows via MinGW-w64
+./build.sh --Android             # Build an installable Android .apk (arm64-v8a)
 ./build.sh --jobs=N              # Parallel jobs (default: nproc-2)
 ./build.sh --generator=Ninja     # Builds using Ninja
 ./buildandrun.sh                 # Build.sh then run the resulting binary
 ```
+
+## Android (.apk)
+
+```bash
+./build.sh --Android                       # bare player APK
+./build.sh --Android --project=Game.modu   # package a game into the APK
+./build.sh --Android --project=Game.modu -o ~/Game.apk --debug
+./build.sh --Android --abi=arm64-v8a       # default ABI; override if you must
+```
+
+Needs the Android NDK + SDK with `ANDROID_NDK_ROOT` and `ANDROID_SDK_ROOT` (or
+`ANDROID_NDK_HOME` / `ANDROID_HOME`) set. If no SDK platform is installed it'll
+pull one with `sdkmanager "platforms;android-34"`. The full story (runtime, touch,
+how scripts get cross-compiled and loaded on device) is in
+[AndroidRuntime.md](AndroidRuntime.md).
 
 ## CPU / ISA target (x86_64 compatibility)
 **Public Linux releases target baseline x86-64 so they run on any 64-bit x86 CPU.**

@@ -91,6 +91,98 @@ struct InputFacade {
 
 inline const InputFacade input{};
 
+// Touch / pointer input. On Android this surfaces the live multi-touch set from
+// the NativeActivity runtime; on desktop the left mouse button is reported as a
+// single touch so the exact same Touch code runs when you test in the editor or
+// the desktop player. Coordinates are surface/framebuffer pixels, origin top-left
+// (normalize against the viewport size yourself if you want 0..1).
+struct TouchFacade {
+    // How many fingers are down right now (desktop: 1 while LMB is held, else 0).
+    int Count() const {
+        if (ScriptContext* c = ctxPtr()) return c->GetTouchCount();
+        return 0;
+    }
+
+    // Is anything touching the screen at all?
+    bool IsActive() const {
+        if (ScriptContext* c = ctxPtr()) return c->IsTouchActive();
+        return false;
+    }
+
+    // Position of the index-th active finger. Returns (0,0) if there's no such
+    // finger this frame, so guard with Count() when it matters.
+    vec2 Position(int index = 0) const {
+        vec2 p(0.0f);
+        if (ScriptContext* c = ctxPtr()) {
+            float x = 0.0f, y = 0.0f;
+            if (c->GetTouch(index, x, y)) { p.x = x; p.y = y; }
+        }
+        return p;
+    }
+
+    // Primary pointer (oldest finger / the mouse). `out` is left untouched when
+    // nothing is down, so you can keep a last-known position across taps.
+    bool Primary(vec2& out) const {
+        if (ScriptContext* c = ctxPtr()) {
+            float x = 0.0f, y = 0.0f;
+            if (c->GetPrimaryTouch(x, y)) { out.x = x; out.y = y; return true; }
+        }
+        return false;
+    }
+    vec2 Primary() const { vec2 p(0.0f); Primary(p); return p; }
+
+    // true only on the frame the primary touch goes down / lifts. Tapped() is
+    // an alias for Began() since a tap is just a press edge.
+    bool Began() const { return edge(true); }
+    bool Ended() const { return edge(false); }
+    bool Tapped() const { return Began(); }
+
+    // Primary-pointer movement since last frame (zero when inactive or on the
+    // frame it began). Handy for drag-to-look / swipe gestures.
+    vec2 Drag() const {
+        DragState& s = dragState();
+        const int frame = ImGui::GetFrameCount();
+        if (s.frame != frame) {
+            vec2 cur(0.0f);
+            const bool active = Primary(cur);
+            vec2 delta(0.0f);
+            if (active && s.hadPrev) {
+                delta.x = cur.x - s.prevX;
+                delta.y = cur.y - s.prevY;
+            }
+            s.prevX = cur.x;
+            s.prevY = cur.y;
+            s.hadPrev = active;
+            s.lastDelta = delta;
+            s.frame = frame;
+        }
+        return s.lastDelta;
+    }
+
+private:
+    // Per-frame edge/drag bookkeeping, keyed by ImGui frame so multiple calls in
+    // one tick agree. Single-pointer (primary) only; that covers taps/swipes.
+    struct EdgeState { int frame = -1; bool prevActive = false; bool down = false; bool up = false; };
+    struct DragState { int frame = -1; bool hadPrev = false; float prevX = 0.0f; float prevY = 0.0f; vec2 lastDelta = vec2(0.0f); };
+    static EdgeState& edgeState() { static EdgeState s; return s; }
+    static DragState& dragState() { static DragState s; return s; }
+
+    bool edge(bool wantDown) const {
+        EdgeState& s = edgeState();
+        const int frame = ImGui::GetFrameCount();
+        if (s.frame != frame) {
+            const bool active = IsActive();
+            s.down = active && !s.prevActive;
+            s.up   = !active && s.prevActive;
+            s.prevActive = active;
+            s.frame = frame;
+        }
+        return wantDown ? s.down : s.up;
+    }
+};
+
+inline const TouchFacade touch{};
+
 inline bool IsRuntimeKeyDown(int glfwKey, ImGuiKey imguiKey) {
     if (ctxPtr()) {
         return KeyDown(glfwKey);
@@ -111,7 +203,7 @@ constexpr int UpArrow = GLFW_KEY_UP;
 constexpr int DownArrow = GLFW_KEY_DOWN;
 constexpr int LeftArrow = GLFW_KEY_LEFT;
 constexpr int RightArrow = GLFW_KEY_RIGHT;
-// Short aliases — equivalent to the *Arrow variants above.
+// Short aliases - equivalent to the *Arrow variants above.
 constexpr int Up = GLFW_KEY_UP;
 constexpr int Down = GLFW_KEY_DOWN;
 constexpr int Left = GLFW_KEY_LEFT;

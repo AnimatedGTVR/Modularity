@@ -1,23 +1,10 @@
 #pragma once
 
-// Read-only asset access abstraction. Engine code that needs to load
-// packaged project content (ModuPak archives, engine fonts/icons, scene
-// files when wrapped) goes through this instead of std::ifstream so the
-// same source compiles + runs on:
-//
-//   * Desktop — DesktopAssetSource, std::filesystem-backed, paths are
-//     resolved relative to a configured root (typically the current
-//     working directory or the executable's resource dir).
-//   * Android — AndroidAssetSource, AAssetManager-backed, paths key
-//     directly into the APK's assets/ directory.
-//
-// Both implementations log failed reads via std::cerr / logcat so the
-// path that broke shows up in logs without the engine having to add its
-// own logging at every call site.
-//
-// Writes (savefiles, project edits) do NOT go through this abstraction —
-// they're outside Stage 3's read-only-asset scope. Use std::filesystem
-// for those and handle the Android writable-data-dir separately.
+// read-only asset access. engine code loading packaged content goes through this instead
+// of std::ifstream so the same code runs on desktop (DesktopAssetSource, filesystem-rooted)
+// and Android (AndroidAssetSource, straight into the APK's assets/).
+// both log failed reads, so broken paths show up without per-call-site logging.
+// writes do NOT go through this; use std::filesystem and the Android data dir for those.
 
 #include <cstdint>
 #include <memory>
@@ -26,9 +13,8 @@
 
 namespace Modularity::Platform {
 
-// Forward iterator-style read over an asset. Implementations are
-// expected to be cheap to construct from AssetSource::Open(). Returned
-// streams should be released before the AssetSource that produced them.
+// forward-only read over an asset. cheap to construct from Open(); release streams
+// before the AssetSource that made them.
 class AssetStream {
 public:
     virtual ~AssetStream() = default;
@@ -37,9 +23,7 @@ public:
     // (0 at end-of-stream, or partial reads when the buffer is exhausted).
     virtual size_t Read(void* dest, size_t bytes) = 0;
 
-    // Reposition the stream. `whence` matches C stdio (SEEK_SET / SEEK_CUR
-    // / SEEK_END). Returns false if the underlying source doesn't support
-    // the requested seek (rare).
+    // reposition the stream, `whence` matches C stdio. false if the source can't do that seek (rare).
     virtual bool Seek(int64_t offset, int whence) = 0;
 
     // Current read position from start of stream. -1 if unknown.
@@ -61,23 +45,17 @@ public:
     // logs the path so the failure is debuggable from outside).
     virtual std::vector<uint8_t> ReadAll(const std::string& path) const = 0;
 
-    // Opens a stream over the asset for incremental reads. Returns nullptr
-    // on failure. Useful for large assets where loading the whole thing
-    // into RAM is wasteful (e.g. ModuPak archives the engine indexes
-    // without fully buffering).
+    // stream for incremental reads (nullptr on failure). for big assets where buffering the
+    // whole thing is wasteful, like ModuPak archives we only index.
     virtual std::unique_ptr<AssetStream> Open(const std::string& path) const = 0;
 };
 
-// Process-wide accessor. The first call to GetAssetSource() with no
-// prior SetAssetSource() returns a DesktopAssetSource rooted at the
-// current working directory — matches the engine's pre-Stage-3
-// behavior so unmigrated call sites keep working unchanged.
+// process-wide accessor. first call without SetAssetSource() gives a DesktopAssetSource
+// rooted at cwd, so unmigrated call sites keep working.
 AssetSource& GetAssetSource();
 
-// Installs a new source (taking ownership). AndroidRuntime calls this
-// at startup to install an AAssetManager-backed source before Engine
-// is constructed; the desktop player can also call it if it wants to
-// pin the root (e.g. to the executable directory instead of cwd).
+// install a new source (takes ownership). AndroidRuntime installs the AAssetManager one
+// before Engine exists; desktop can also pin the root if cwd isn't right.
 void SetAssetSource(std::unique_ptr<AssetSource> source);
 
 } // namespace Modularity::Platform

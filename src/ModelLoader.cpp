@@ -1,4 +1,6 @@
 #include "ModelLoader.h"
+#include "Render25D/MMeshConvert.h"
+#include "Render25D/MMeshLoader.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -594,6 +596,7 @@ std::vector<ModelFormat> ModelLoader::getSupportedFormats() {
         {".csm", "CharacterStudio Motion", true},
         {".irrmesh", "Irrlicht Mesh", false},
         {".rmesh", "Modularity Raw Mesh", false},
+        {".mmesh", "Modularity 2.5D Mesh", false},
         {".irr", "Irrlicht Scene", false},
         {".mdl", "Quake MDL", true},
         {".md2", "Quake II MD2", true},
@@ -657,8 +660,8 @@ ModelLoadResult ModelLoader::loadModel(const std::string& filepath) {
         return result;
     }
 
-    // Handle native raw mesh import without Assimp
-    if (extLower == ".rmesh") {
+    // Handle native raw mesh import without Assimp (.mmesh converts through loadRawMesh)
+    if (extLower == ".rmesh" || extLower == ".mmesh") {
         RawMeshAsset raw;
         std::string error;
         if (!loadRawMesh(filepath, raw, error)) {
@@ -950,6 +953,31 @@ bool ModelLoader::loadModelScene(const std::string& filepath, ModelSceneData& ou
     return true;
 }
 
+const ModelSceneData* ModelLoader::loadModelSceneCached(const std::string& filepath, std::string& errorMsg) {
+    std::string extLower = fs::path(filepath).extension().string();
+    std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
+    if (extLower != ".rmesh") {
+        auto cached = cachedScenes.find(filepath);
+        if (cached != cachedScenes.end()) {
+            return &cached->second;
+        }
+    }
+
+    // Cold path: build through the copying loader (which fills the cache for
+    // non-.rmesh models), then serve from the cache so the pointer stays valid.
+    sceneRefScratch = ModelSceneData();
+    if (!loadModelScene(filepath, sceneRefScratch, errorMsg)) {
+        return nullptr;
+    }
+    auto cached = cachedScenes.find(filepath);
+    if (cached != cachedScenes.end()) {
+        return &cached->second;
+    }
+    // .rmesh scenes are intentionally never cached (live-editable meshes);
+    // hand back the scratch copy instead.
+    return &sceneRefScratch;
+}
+
 bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string& outputFile, std::string& errorMsg) {
     fs::path inPath(inputFile);
     if (!fs::exists(inPath)) {
@@ -959,6 +987,18 @@ bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string&
     if (!isSupported(inputFile)) {
         errorMsg = "Unsupported file format for raw export";
         return false;
+    }
+
+    if (IsMMeshPath(inPath)) {
+        RawMeshAsset raw;
+        if (!loadRawMesh(inputFile, raw, errorMsg)) {
+            return false;
+        }
+        fs::path outPath(outputFile.empty() ? inPath : fs::path(outputFile));
+        if (outPath.extension().empty() || IsMMeshPath(outPath)) {
+            outPath.replace_extension(".rmesh");
+        }
+        return saveRawMesh(raw, outPath.string(), errorMsg);
     }
 
     Assimp::Importer localImporter;
@@ -1001,6 +1041,20 @@ bool ModelLoader::exportRawMesh(const std::string& inputFile, const std::string&
 
 bool ModelLoader::loadRawMesh(const std::string& filepath, RawMeshAsset& out, std::string& errorMsg) {
     out = RawMeshAsset();
+
+    if (IsMMeshPath(filepath)) {
+        Modularity::Render25D::MMeshLoader mmeshLoader;
+        Modularity::Render25D::MMeshAsset mmeshAsset;
+        if (!mmeshLoader.loadAsset(filepath, mmeshAsset, errorMsg)) {
+            return false;
+        }
+        out = Modularity::Render25D::BuildRawMeshFromMMesh(mmeshAsset);
+        if (out.positions.empty() || out.faces.empty()) {
+            errorMsg = "MMesh contains no editable geometry: " + filepath;
+            return false;
+        }
+        return true;
+    }
 
     std::ifstream in(filepath, std::ios::binary);
     if (!in) {
@@ -1184,6 +1238,37 @@ bool ModelLoader::saveRawMesh(const RawMeshAsset& asset, const std::string& file
     if (asset.positions.empty() || asset.faces.empty()) {
         errorMsg = "Raw mesh is empty";
         return false;
+    }
+
+    if (IsMMeshPath(filepath)) {
+        using namespace Modularity::Render25D;
+        MMeshAsset mmeshAsset = BuildMMeshFromRawMesh(asset);
+
+        // keep texture/presentation data from the existing file; the raw mesh only carries slot names
+        MMeshLoader mmeshLoader;
+        MMeshAsset previous;
+        std::string previousError;
+        if (fs::exists(filepath) && mmeshLoader.loadAsset(filepath, previous, previousError)) {
+            for (size_t i = 0; i < mmeshAsset.materials.size(); ++i) {
+                const MMeshMaterialRef* match = nullptr;
+                for (const MMeshMaterialRef& old : previous.materials) {
+                    if (old.name == mmeshAsset.materials[i].name) {
+                        match = &old;
+                        break;
+                    }
+                }
+                if (match == nullptr && i < previous.materials.size()) {
+                    match = &previous.materials[i];
+                }
+                if (match != nullptr) {
+                    mmeshAsset.materials[i].albedoTexturePath = match->albedoTexturePath;
+                    mmeshAsset.materials[i].presentation = match->presentation;
+                }
+            }
+            mmeshAsset.metadataHooks = previous.metadataHooks;
+        }
+
+        return mmeshLoader.saveAsset(mmeshAsset, filepath, errorMsg);
     }
 
     fs::path outPath(filepath);
@@ -1621,7 +1706,7 @@ static bool buildSceneMeshes(const std::string& filepath, const aiScene* scene,
             }
         }
 
-        out.meshMaterialIndices[i] = mesh->mMaterialIndex < (int)out.materials.size()
+        out.meshMaterialIndices[i] = static_cast<size_t>(mesh->mMaterialIndex) < out.materials.size()
             ? static_cast<int>(mesh->mMaterialIndex)
             : -1;
 
@@ -1960,6 +2045,11 @@ ModelLoadResult ModelLoader::loadModel(const std::string&) {
 bool ModelLoader::loadModelScene(const std::string&, ModelSceneData&, std::string& errorMsg) {
     errorMsg = "Model loading is not available in this runtime build.";
     return false;
+}
+
+const ModelSceneData* ModelLoader::loadModelSceneCached(const std::string&, std::string& errorMsg) {
+    errorMsg = "Model loading is not available in this runtime build.";
+    return nullptr;
 }
 
 bool ModelLoader::exportRawMesh(const std::string&, const std::string&, std::string& errorMsg) {

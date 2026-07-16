@@ -2,6 +2,9 @@
 #include "ViewportRenderHelpers.h"
 #include "GizmoToolbar.h"
 #include "ModelLoader.h"
+#ifdef __ANDROID__
+#include "../../AndroidRuntime/AndroidRuntime.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -276,6 +279,23 @@ void Engine::renderViewport() {
   ImGui::PopStyleVar();
   if (!windowVisible) {ImGui::End(); return;}
 
+  // Docked behind another tab: Begin() still returns true and the whole body
+  // (including the full scene render) would run for a panel nobody can see.
+  // Keep one settle frame after the tab hides so widget state resets, then
+  // skip like a collapsed window until the tab is selected again.
+  {
+    static bool dockTabWasHidden = false;
+    const bool dockTabHidden = IsCurrentDockTabHidden();
+    const bool skipHiddenTab = dockTabHidden && dockTabWasHidden;
+    dockTabWasHidden = dockTabHidden;
+    if (skipHiddenTab) {
+      Modu2DStats::CountWindowSkipped();
+      Modu2DStats::CountSkippedRedraw();
+      ImGui::End();
+      return;
+    }
+  }
+
   ImVec2 panelMin = ImGui::GetCursorScreenPos();
   ImVec2 panelSize = ImGui::GetContentRegionAvail();
   panelSize.x = std::max(1.0f, panelSize.x);
@@ -465,8 +485,25 @@ void Engine::renderViewport() {
     // Phase A instrumentation: the Scene viewport re-renders the scene every
     // frame today (no redraw-skipping yet), so this counts exactly once here.
     Modu2DStats::CountViewportRedraw();
+    // effective editor FOV. mobile viewports are near-square and glm::perspective locks the
+    // VERTICAL fov, so the horizontal narrows until you're peering through a towel roll.
+    // widen vertical to match a 16:9 horizontal (Hor+). used for BOTH the render and the
+    // gizmo/pick projection so they stay perfectly in sync.
+    float editorFov = buildSettings.editorCameraFov;
+#ifdef __ANDROID__
+    {
+      const float aspect =
+          (float)viewportWidth / (float)std::max(1, viewportHeight);
+      const float refAspect = 16.0f / 9.0f;
+      if (aspect < refAspect && aspect > 0.01f) {
+        const float halfV = glm::radians(editorFov) * 0.5f;
+        const float newHalfV = std::atan(std::tan(halfV) * (refAspect / aspect));
+        editorFov = glm::clamp(glm::degrees(newHalfV * 2.0f), editorFov, 120.0f);
+      }
+    }
+#endif
     glm::mat4 proj = glm::perspective(
-        glm::radians(buildSettings.editorCameraFov),
+        glm::radians(editorFov),
         (float)viewportWidth / (float)viewportHeight,
         buildSettings.editorCameraNear, buildSettings.editorCameraFar);
     glm::mat4 view = camera.getViewMatrix();
@@ -477,7 +514,7 @@ void Engine::renderViewport() {
       std::string tmError;
       if (isProject25DPipeline()) {
         renderTMViewportPass(camera, viewportWidth, viewportHeight,
-                             buildSettings.editorCameraFov,
+                             editorFov,
                              buildSettings.editorCameraNear,
                              buildSettings.editorCameraFar, &tex, &tmStats,
                              &tmError);
@@ -496,7 +533,7 @@ void Engine::renderViewport() {
         renderer.beginRender(view, proj, camera.position);
         renderer.renderScene(
             camera, sceneObjects, selectedObjectId,
-            buildSettings.editorCameraFov, buildSettings.editorCameraNear,
+            editorFov, buildSettings.editorCameraNear,
             buildSettings.editorCameraFar, showSelected3DColliderPreview,
             &selectedObjectIds, sceneViewportRenderMode);
         tex = renderer.getViewportTexture();
@@ -526,10 +563,78 @@ void Engine::renderViewport() {
       viewportImageMin = imageMin;
       viewportImageMax = imageMax;
       hasViewportImageRect = true;
+
       glm::vec2 hoveredPixel(0.0f);
       mouseOverViewportImage = TryMapScreenPointToRenderPixel(
           sceneLayout, ImGui::GetIO().MousePos, viewportWidth, viewportHeight,
           hoveredPixel);
+
+      // touch camera nav: twin virtual sticks driven from the raw multi-touch set (NOT
+      // io.MouseDown, that's only the primary finger) so move + look work at the same time
+      // without fighting tap-to-select. left stick = fly, right = look. Android only;
+      // desktop keeps its right-mouse fly cam.
+#ifdef __ANDROID__
+      if (!isPlaying && showTouchSticks) {
+        const float s = (uiDpiScale > 0.0f) ? uiDpiScale : 1.0f;
+        const float r = touchStickRadius * s;
+        const float grab = r * 1.7f;
+        const ImVec2 leftC(imageMin.x + r + 26.0f * s, imageMax.y - r - 30.0f * s);
+        const ImVec2 rightC(imageMax.x - r - 26.0f * s, imageMax.y - r - 30.0f * s);
+
+        auto distTo = [](float x, float y, const ImVec2 &c) {
+          const float dx = x - c.x, dy = y - c.y;
+          return std::sqrt(dx * dx + dy * dy);
+        };
+
+        ImVec2 leftOff(0.0f, 0.0f), rightOff(0.0f, 0.0f);
+        bool leftOn = false, rightOn = false;
+        const int n = Modularity::AndroidRuntime::GetPointerCount();
+        for (int i = 0; i < n; ++i) {
+          int id = 0; float px = 0.0f, py = 0.0f;
+          if (!Modularity::AndroidRuntime::GetPointer(i, &id, &px, &py)) continue;
+          const float dl = distTo(px, py, leftC);
+          const float dr = distTo(px, py, rightC);
+          if (!leftOn && dl <= grab && dl <= dr) {
+            leftOn = true; leftOff = ImVec2(px - leftC.x, py - leftC.y);
+          } else if (!rightOn && dr <= grab) {
+            rightOn = true; rightOff = ImVec2(px - rightC.x, py - rightC.y);
+          }
+        }
+        auto clampLen = [&](ImVec2 o) {
+          const float len = std::sqrt(o.x * o.x + o.y * o.y);
+          if (len > r && len > 0.0f) { o.x *= r / len; o.y *= r / len; }
+          return o;
+        };
+        leftOff = clampLen(leftOff);
+        rightOff = clampLen(rightOff);
+
+        if (leftOn) {
+          const glm::vec3 right = glm::normalize(glm::cross(camera.front, camera.up));
+          const float fwd = -leftOff.y / r, strafe = leftOff.x / r;
+          camera.position += (camera.front * fwd + right * strafe) *
+                             camera.moveSpeed * ImGui::GetIO().DeltaTime;
+        }
+        if (rightOn) {
+          // Look rate + Y inversion come from the Quick Tools "Options" tab.
+          const float lookRate = touchStickSensitivity;
+          const float yMul = touchStickInvertY ? 1.0f : -1.0f;
+          camera.processMouseDelta(rightOff.x / r * lookRate,
+                                   yMul * rightOff.y / r * lookRate);
+        }
+
+        // draw on the viewport's own draw list so panels stacked above it (like the Console)
+        // render over the sticks instead of the sticks punching through everything.
+        ImDrawList *fg = ImGui::GetWindowDrawList();
+        auto drawStick = [&](const ImVec2 &c, const ImVec2 &off, bool on) {
+          fg->AddCircleFilled(c, r, IM_COL32(34, 38, 54, on ? 190 : 110));
+          fg->AddCircle(c, r, IM_COL32(120, 140, 200, 200), 0, 2.0f * s);
+          fg->AddCircleFilled(ImVec2(c.x + off.x, c.y + off.y), r * 0.42f,
+                              IM_COL32(150, 170, 235, on ? 255 : 190));
+        };
+        drawStick(leftC, leftOff, leftOn);
+        drawStick(rightC, rightOff, rightOn);
+      }
+#endif
     } else {
       ImTextureID texId = vulkanRenderer ? vulkanRenderer->getViewportSceneTextureID() : static_cast<ImTextureID>(0);
       ImGui::SetNextItemAllowOverlap();
@@ -559,15 +664,6 @@ void Engine::renderViewport() {
     if (worldUiEditing) {
       viewportDrawList->AddRectFilled(imageMin, imageMax, IM_COL32(14, 16, 20, 255));
     } else if (showSceneGrid3D) {
-      auto projectToScreen = [&](const glm::vec3 &p) -> std::optional<ImVec2> {
-        glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);
-        if (clip.w <= 0.0f) return std::nullopt;
-        glm::vec3 ndc = glm::vec3(clip) / clip.w;
-        ImVec2 screen;
-        screen.x = imageMin.x + (ndc.x * 0.5f + 0.5f) * (imageMax.x - imageMin.x);
-        screen.y = imageMin.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * (imageMax.y - imageMin.y);
-        return screen;
-      };
       auto clipLineToScreen = [&](glm::vec3 a, glm::vec3 b, ImVec2 &outA, ImVec2 &outB) -> bool {
         glm::vec4 va = view * glm::vec4(a, 1.0f);
         glm::vec4 vb = view * glm::vec4(b, 1.0f);
@@ -1808,34 +1904,37 @@ void Engine::renderViewport() {
           const ImU32 s2SliderBorder = (obj.ui.borderColor.a > 0.0f)     ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a))     : ImGui::GetColorU32(brighten(tint, 0.85f));
           const ImU32 s2SliderText   = (obj.ui.textColor.a > 0.0f)       ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a))             : IM_COL32(240, 240, 245, 220);
           if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
+            // future me: see the long note in GameViewportWindow's matching block.
+            // short version: never swap to a raw ImGui::SliderFloat on play, it shows
+            // the numeric value + grab and makes fill bars "turn into" default sliders.
+            // draw the same fill-bar visual in both modes, layer drag on when interactive.
             float minValue = obj.ui.sliderMin;
             float maxValue = obj.ui.sliderMax;
             float range = (maxValue - minValue);
             if (range <= 1e-6f) range = 1.0f;
+            ImDrawList *dl = ImGui::GetWindowDrawList();
             if (uiWidgetInteractive) {
-              ImGui::PushItemWidth(drawSize.x);
-              ImGui::PushStyleColor(ImGuiCol_FrameBg,      ImGui::ColorConvertU32ToFloat4(s2SliderBg));
-              ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-              ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  brighten(tint, 0.7f));
-              ImGui::PushStyleColor(ImGuiCol_SliderGrab,     brighten(tint, 0.9f));
-              ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-              if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue, minValue, maxValue))
-                projectManager.currentProject.hasUnsavedChanges = true;
-              ImGui::PopStyleColor(5);
-              ImGui::PopItemWidth();
-            } else {
-              ImDrawList *dl = ImGui::GetWindowDrawList();
-              float t = (obj.ui.sliderValue - minValue) / range;
-              t = std::clamp(t, 0.0f, 1.0f);
-              float rounding = 6.0f;
-              ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
-              dl->AddRectFilled(drawMin, drawMax, s2SliderBg, rounding);
-              if (fillMax.x > drawMin.x) dl->AddRectFilled(drawMin, fillMax, s2SliderFill, rounding);
-              dl->AddRect(drawMin, drawMax, s2SliderBorder, rounding);
-              ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
-              ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f, drawMin.y + (drawSize.y - textSize.y) * 0.5f);
-              dl->AddText(textPos, s2SliderText, obj.ui.label.c_str());
+              ImGui::InvisibleButton("##UISliderImGui", drawSize);
+              if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+                float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+                mouseT = std::clamp(mouseT, 0.0f, 1.0f);
+                float newValue = minValue + mouseT * range;
+                if (newValue != obj.ui.sliderValue) {
+                  obj.ui.sliderValue = newValue;
+                  projectManager.currentProject.hasUnsavedChanges = true;
+                }
+              }
             }
+            float t = (obj.ui.sliderValue - minValue) / range;
+            t = std::clamp(t, 0.0f, 1.0f);
+            float rounding = 6.0f;
+            ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+            dl->AddRectFilled(drawMin, drawMax, s2SliderBg, rounding);
+            if (fillMax.x > drawMin.x) dl->AddRectFilled(drawMin, fillMax, s2SliderFill, rounding);
+            dl->AddRect(drawMin, drawMax, s2SliderBorder, rounding);
+            ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+            ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f, drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+            dl->AddText(textPos, s2SliderText, obj.ui.label.c_str());
           } else {
             ImDrawList *dl = ImGui::GetWindowDrawList();
             ImU32 bg     = s2SliderBg;
@@ -2885,7 +2984,7 @@ void Engine::renderViewport() {
     const bool selectedIsSprite25D =
         selectedObj && selectedObj->type == ObjectType::Sprite25D;
     const bool selectedRMeshObject =
-        selectedObj && IsRawMeshPath(selectedObj->meshPath);
+        selectedObj && IsMeshEditablePath(selectedObj->meshPath);
     const ImVec2 rmeshModeButtonSize(34.0f, 30.0f);
     const ImVec2 rmeshActionsButtonSize(42.0f, 15.0f);
     const float rmeshModePadding = 6.0f;
@@ -3265,7 +3364,7 @@ void Engine::renderViewport() {
             out = n / len;
             return true;
           };
-          auto gatherCoplanarFaces = [&](int seed) {
+          [[maybe_unused]] auto gatherCoplanarFaces = [&](int seed) {
             std::vector<int> group;
             const size_t faceCount = meshEditAsset.faces.size();
             if (seed < 0 || seed >= (int)faceCount)
@@ -3586,9 +3685,8 @@ void Engine::renderViewport() {
             pushUnique(f.y);
             pushUnique(f.z);
           }
-          // RMesh primitives often duplicate seam vertices per face. Move all
-          // coincident vertices together so face translation keeps adjacent
-          // geometry connected.
+          // RMesh primitives duplicate seam vertices per face; move coincident vertices together
+          // so face translation keeps adjacent geometry connected.
           constexpr float coincidentEps2 = 1e-10f;
           std::vector<int> seamSeeds = baseAffectedVerts;
           for (int seedIdx : seamSeeds) {
@@ -5142,8 +5240,6 @@ void Engine::renderViewport() {
             meshEditExtrudeFaces.clear();
             int originalVertexCount =
                 static_cast<int>(meshEditAsset.positions.size());
-            int originalFaceCount =
-                static_cast<int>(meshEditAsset.faces.size());
             int newFaceStart = -1;
 
             auto duplicateVertex = [&](uint32_t idx) -> uint32_t {
@@ -5162,7 +5258,7 @@ void Engine::renderViewport() {
               }
               return newIdx;
             };
-            auto rebuildAffectedVerts = [&]() {
+            [[maybe_unused]] auto rebuildAffectedVerts = [&]() {
               baseAffectedVerts.clear();
               if (meshEditSelectionMode == MeshEditSelectionMode::Vertex) {
                 baseAffectedVerts = meshEditSelectedVertices;
@@ -5712,6 +5808,8 @@ void Engine::renderViewport() {
           gizmoBoundsMin = glm::vec3(-0.5f, -0.5f, -0.01f);
           gizmoBoundsMax = glm::vec3(0.5f, 0.5f, 0.01f);
           break;
+        default:
+          break;
         }
 
         float bounds[6] = {gizmoBoundsMin.x, gizmoBoundsMin.y,
@@ -6112,11 +6210,19 @@ void Engine::renderViewport() {
       const float farPlane = std::max(nearPlane + 0.05f, camObj.camera.farClip);
       const float drawDepth = std::clamp(farPlane, nearPlane + 0.05f,
                                          14.0f * gizmoOverlayScaleClamped);
-      const float fovDeg = std::clamp(camObj.camera.fov, 5.0f, 170.0f);
+      const float fovDeg = std::clamp(
+          ResolveCameraVerticalFovDeg(camObj.camera, cameraOverlayAspect), 5.0f,
+          170.0f);
       const float tanHalfFov = std::tan(glm::radians(fovDeg) * 0.5f);
-      const float nearHalfH = tanHalfFov * nearPlane;
+      // 3D ortho cameras have a parallel view volume, so the gizmo draws a box
+      // at the ortho size instead of a tapered frustum.
+      const bool ortho3D =
+          camObj.camera.projection == SceneCameraProjection::Orthographic &&
+          !camObj.camera.use2D;
+      const float orthoHalfH = std::max(0.01f, camObj.camera.orthoSize);
+      const float nearHalfH = ortho3D ? orthoHalfH : tanHalfFov * nearPlane;
       const float nearHalfW = nearHalfH * cameraOverlayAspect;
-      const float farHalfH = tanHalfFov * drawDepth;
+      const float farHalfH = ortho3D ? orthoHalfH : tanHalfFov * drawDepth;
       const float farHalfW = farHalfH * cameraOverlayAspect;
 
       glm::vec3 nearC = camObj.position + forward * nearPlane;
@@ -6945,15 +7051,25 @@ void Engine::renderViewport() {
     viewportDrawList->PopClipRect();
 
     const ImGuiStyle &style = ImGui::GetStyle();
-    ImVec4 bgCol = style.Colors[ImGuiCol_PopupBg];
-    bgCol.w = 0.78f;
-    ImVec4 baseCol = style.Colors[ImGuiCol_FrameBg];
-    baseCol.w = 0.85f;
-    ImVec4 hoverCol = style.Colors[ImGuiCol_ButtonHovered];
-    hoverCol.w = 0.95f;
-    ImVec4 activeCol = style.Colors[ImGuiCol_ButtonActive];
-    activeCol.w = 1.0f;
-    ImVec4 accentCol = style.Colors[ImGuiCol_HeaderActive];
+    // glass palette colors are white-at-low-alpha, so the old ".w = 0.85" trick turned
+    // every toolbar button solid white. composite them over the panel tone first, THEN
+    // pick the opacity we want. opaque palettes flatten to the exact old values.
+    const ImVec4 panelTone(style.Colors[ImGuiCol_WindowBg].x,
+                           style.Colors[ImGuiCol_WindowBg].y,
+                           style.Colors[ImGuiCol_WindowBg].z, 1.0f);
+    auto flattenOverPanel = [&](ImGuiCol idx, float alpha) {
+      const ImVec4 c = style.Colors[idx];
+      return ImVec4(panelTone.x + (c.x - panelTone.x) * c.w,
+                    panelTone.y + (c.y - panelTone.y) * c.w,
+                    panelTone.z + (c.z - panelTone.z) * c.w, alpha);
+    };
+    ImVec4 bgCol = flattenOverPanel(ImGuiCol_PopupBg, 0.78f);
+    ImVec4 baseCol = flattenOverPanel(ImGuiCol_FrameBg, 0.85f);
+    ImVec4 hoverCol = flattenOverPanel(ImGuiCol_ButtonHovered, 0.95f);
+    ImVec4 activeCol = flattenOverPanel(ImGuiCol_ButtonActive, 1.0f);
+    // selected tool gets the actual accent (same color as the slider fill) so it pops
+    // instead of being yet another shade of gray
+    ImVec4 accentCol = style.Colors[ImGuiCol_SliderGrabActive];
     accentCol.w = 1.0f;
     ImVec4 textCol = style.Colors[ImGuiCol_Text];
 
@@ -7361,6 +7477,9 @@ void Engine::renderViewport() {
                             &showLight2DStatsOverlay)) {
           toolbarEditorSettingsChanged = true;
         }
+        if (ImGui::Checkbox("UI Canvas Preview", &uiCanvasPreviewEnabled)) {
+          toolbarEditorSettingsChanged = true;
+        }
 
         const char *renderModeLabels[] = {
             "Normal", "Shaded Wireframe", "Wireframe"};
@@ -7421,17 +7540,30 @@ void Engine::renderViewport() {
           ImGui::SetTooltip("Toggle 3D grid");
         }
       }
-      if (!project2DPipeline) {
-        ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
-        if (GizmoToolbar::IconButton("##ui_world_toggle",
-                                     GizmoToolbar::Icon::UiWorldToggle,
-                                     uiWorldMode, gizmoIconButtonSize, baseBtn,
-                                     hoverBtn, activeBtn, accent, iconColor)) {
-          uiWorldMode = !uiWorldMode;
+      ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+      const bool uiWorldToggleActive =
+          project2DPipeline ? uiCanvasPreviewEnabled
+                            : (uiCanvasPreviewEnabled && uiWorldMode);
+      if (GizmoToolbar::IconButton("##ui_world_toggle",
+                                   GizmoToolbar::Icon::UiWorldToggle,
+                                   uiWorldToggleActive, gizmoIconButtonSize,
+                                   baseBtn, hoverBtn, activeBtn, accent,
+                                   iconColor)) {
+        if (project2DPipeline) {
+          uiCanvasPreviewEnabled = !uiCanvasPreviewEnabled;
+        } else {
+          if (!uiCanvasPreviewEnabled) {
+            uiCanvasPreviewEnabled = true;
+            uiWorldMode = true;
+          } else {
+            uiWorldMode = !uiWorldMode;
+          }
         }
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("Toggle 2D UI world overlay");
-        }
+        toolbarEditorSettingsChanged = true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(project2DPipeline ? "Toggle UI canvas preview"
+                                            : "Toggle 2D UI world overlay");
       }
       if (toolbarEditorSettingsChanged) {
         saveEditorUserSettings();
@@ -7990,6 +8122,8 @@ void Engine::renderViewport() {
         case ObjectType::Empty:
           hit = false;
           break;
+        default:
+          break;
         }
 
         if (hit && hitT >= 0.0f) {
@@ -8093,7 +8227,7 @@ void Engine::renderViewport() {
             }
           }
           if (ImGui::MenuItem("Rebuild Mesh Data")) {
-            if (IsRawMeshPath(selectedObj->meshPath)) {
+            if (IsMeshEditablePath(selectedObj->meshPath)) {
               RawMeshAsset rebuilt;
               std::string err;
               if (getModelLoader().loadRawMesh(selectedObj->meshPath, rebuilt,

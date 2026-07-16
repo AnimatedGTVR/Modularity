@@ -1,5 +1,6 @@
 #include "../../../include/Shaders/Shader.h"
 #include "../../../include/Graphics/OpenGL.h"
+#include "../../../include/Platform/AssetSource.h"
 #include "../../ThirdParty/glm/glm.hpp"
 #include "../../ThirdParty/glm/gtc/matrix_transform.hpp"
 #include "../../ThirdParty/glm/gtc/type_ptr.hpp"
@@ -148,22 +149,26 @@ Shader::Shader(const char* vertexPath, const char* fragmentPath)
 
 std::string Shader::readShaderFile(const char* filePath)
 {
-    std::ifstream shaderFile;
-    shaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-    
-    try
-    {
-        shaderFile.open(filePath);
+    if (!filePath) return "";
+
+    // Read through the engine AssetSource so shaders resolve from the APK
+    // (AAssetManager) on Android, where they aren't on the raw filesystem. On
+    // desktop the default source is rooted at the cwd, matching the old ifstream
+    // behavior. Falls back to a direct read for absolute paths outside the asset
+    // root (e.g. project-supplied shader packs).
+    std::vector<uint8_t> bytes = Modularity::Platform::GetAssetSource().ReadAll(filePath);
+    if (!bytes.empty()) {
+        return std::string(bytes.begin(), bytes.end());
+    }
+
+    std::ifstream shaderFile(filePath, std::ios::binary);
+    if (shaderFile) {
         std::stringstream shaderStream;
         shaderStream << shaderFile.rdbuf();
-        shaderFile.close();
         return shaderStream.str();
     }
-    catch (std::ifstream::failure& e)
-    {
-        std::cerr << "ERROR: Shader file not found: " << filePath << std::endl;
-        return "";
-    }
+    std::cerr << "ERROR: Shader file not found: " << filePath << std::endl;
+    return "";
 }
 
 void Shader::compileShaders(const char* vertexSource, const char* fragmentSource)

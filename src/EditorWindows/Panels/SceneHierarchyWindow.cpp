@@ -3,6 +3,7 @@
 #include "ModelLoader.h"
 #include "../../SpritesheetFormat.h"
 #include "../../DragPreviewOverlay.h"
+#include "../../Modu2DStats.h"
 #include "imgui.h"
 #include <algorithm>
 #include <array>
@@ -508,6 +509,10 @@ namespace {
                 default: break;
             }
         }
+        // video/particles outrank the generic renderer icon: those components need a
+        // renderer to exist, but they ARE the point of the object
+        if (obj.hasVideoPlayer) return "Resources/Engine-Root/Hierarchy/Video Player.png";
+        if (obj.hasParticleSystem2D) return "Resources/Engine-Root/Hierarchy/Particle System any type.png";
         if (obj.hasRenderer) {
             switch (obj.renderType) {
                 case RenderType::Sprite:
@@ -527,6 +532,9 @@ namespace {
             }
         }
         if (obj.hasAudioSource) return "Resources/Engine-Root/Hierarchy/Component Audio Source.png";
+        if (!obj.scripts.empty()) return "Resources/Engine-Root/Hierarchy/Script.png";
+        if (obj.hasRigidbody || obj.hasRigidbody2D) return "Resources/Engine-Root/Hierarchy/Rigidbody 2D and 3D type.png";
+        if (obj.hasCollider || obj.hasCollider2D) return "Resources/Engine-Root/Hierarchy/Collider any type.png";
         return "Resources/Engine-Root/Hierarchy/Component Default or Unknown.png";
     }
 
@@ -576,37 +584,6 @@ namespace {
         float capRadius = 1.5f;
         drawList->AddCircleFilled(ImVec2(branchEndX, rowMid), capRadius, lineColor, 10);
         drawList->AddCircleFilled(ImVec2(connectorX, rowTop + 1.0f), 1.1f, trunkColor, 8);
-    }
-
-    void DrawHierarchyLines(ImDrawList* drawList, const ImVec2& itemMin, const ImVec2& itemMax,
-                            uint64_t ancestorHasNextMask, int depth, bool isLast) {
-        if (depth <= 0) {
-            return;
-        }
-        std::vector<bool> flags(static_cast<size_t>(depth), false);
-        for (int i = 0; i < depth; ++i) {
-            flags[static_cast<size_t>(i)] = (ancestorHasNextMask & (1ull << i)) != 0;
-        }
-        DrawHierarchyLines(drawList, itemMin, itemMax, flags, depth, isLast);
-    }
-
-    uint64_t computeHierarchySceneFingerprint(const std::vector<SceneObject>& sceneObjects,
-                                              const std::string& filter,
-                                              ImGuiStorage* storage) {
-        uint64_t fingerprint = hashCombine64(0x6869657261726368ull, static_cast<uint64_t>(sceneObjects.size()));
-        fingerprint = hashCombine64(fingerprint, std::hash<std::string>{}(filter));
-        for (const SceneObject& obj : sceneObjects) {
-            fingerprint = hashCombine64(fingerprint, static_cast<uint64_t>(obj.id));
-            fingerprint = hashCombine64(fingerprint, static_cast<uint64_t>(obj.parentId + 1));
-            fingerprint = hashCombine64(fingerprint, std::hash<std::string>{}(obj.name));
-            fingerprint = hashCombine64(fingerprint, static_cast<uint64_t>(obj.childIds.size()));
-            if (storage) {
-                fingerprint = hashCombine64(
-                    fingerprint,
-                    static_cast<uint64_t>(storage->GetInt(HierarchyExpandStorageKey(obj.id), 0) != 0));
-            }
-        }
-        return fingerprint;
     }
 
     void appendHierarchyCacheRowRecursive(const SceneObject& obj,
@@ -676,8 +653,13 @@ namespace {
 #pragma region Hierarchy Panel
 void Engine::renderHierarchyPanel() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
-    ImGui::Begin("Hierarchy", &showHierarchy);
+    const bool panelVisible = ImGui::Begin("Hierarchy", &showHierarchy);
     ImGui::PopStyleVar();
+    if (!panelVisible) {
+        Modu2DStats::CountWindowSkipped();
+        ImGui::End();
+        return;
+    }
 
     static char searchBuffer[128] = "";
     float animSpeed = 0.0f;
@@ -748,9 +730,15 @@ void Engine::renderHierarchyPanel() {
         ImGui::EndDragDropTarget();
     }
 
+    // Taller rows + bigger tree-node / toggle hit areas on touch so each entry is
+    // comfortable to tap; desktop keeps its tighter list.
+    const bool hierarchyTouch =
+        (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_IsTouchScreen) != 0;
+    const ImVec2 listFramePadding = hierarchyTouch ? ImVec2(8.0f, 9.0f) : ImVec2(6.0f, 3.0f);
+    const ImVec2 listItemSpacing = hierarchyTouch ? ImVec2(8.0f, 8.0f) : ImVec2(6.0f, 3.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 3.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, listFramePadding);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, listItemSpacing);
     ImGui::BeginChild("HierarchyList", ImVec2(-1.0f, 0.0f), false);
 
     gHierarchyFrameCache.visibleIndex.clear();
@@ -1889,7 +1877,7 @@ void Engine::renderMeshBuilderPanel() {
     }
 
     if (ImGui::Button("Load Selected File")) {
-        if (!fileBrowser.selectedFile.empty() && IsRawMeshPath(fileBrowser.selectedFile)) {
+        if (!fileBrowser.selectedFile.empty() && IsMeshEditablePath(fileBrowser.selectedFile)) {
             strncpy(meshBuilderPath, fileBrowser.selectedFile.string().c_str(), sizeof(meshBuilderPath) - 1);
             meshBuilderPath[sizeof(meshBuilderPath) - 1] = '\0';
             std::string err;
@@ -1899,7 +1887,7 @@ void Engine::renderMeshBuilderPanel() {
                 addConsoleMessage("Loaded raw mesh: " + meshBuilder.loadedPath, ConsoleMessageType::Success);
             }
         } else {
-            addConsoleMessage("Select a .rmesh file in the browser to load", ConsoleMessageType::Warning);
+            addConsoleMessage("Select a .rmesh or .mmesh file in the browser to load", ConsoleMessageType::Warning);
         }
     }
     ImGui::SameLine();
@@ -2098,11 +2086,101 @@ void Engine::renderDialogs() {
         ImGui::End();
     }
 
-    if (showCompilePopup) {
+    // Auto-dismiss: compilePopupHideTime is now actually honored (it used to be set in
+    // several places and never read, so the window just lingered forever). Toasts always
+    // fade out; the modal only auto-closes on a clean success.
+    if (showCompilePopup && !compileInProgress && compilePopupHideTime > 0.0 &&
+        glfwGetTime() >= compilePopupHideTime) {
+        showCompilePopup = false;
+        compilePopupOpened = false;
+        compilePopupHideTime = 0.0;
+    }
+
+    if (showCompilePopup && compileUiToast) {
+        // Corner toast: shown for auto-compiles (save-triggered) so they never
+        // steal focus or block the scene. Manual compiles use the modal below.
+        ImGuiIO& io = ImGui::GetIO();
+        const double now = glfwGetTime();
+        const bool finished = !compileInProgress && compileCompletionStart > 0.0;
+
+        // Solid while it matters, fade out in the last stretch before the hide time.
+        float alpha = 1.0f;
+        if (finished && compilePopupHideTime > 0.0) {
+            const float remaining = static_cast<float>(compilePopupHideTime - now);
+            alpha = std::clamp(remaining / 0.45f, 0.0f, 1.0f);
+        }
+
+        float progress = 1.0f;
+        {
+            std::lock_guard<std::mutex> lock(compileMutex);
+            progress = compileInProgress ? compileProgress : 1.0f;
+        }
+        const std::string label = compileCurrentLabel.empty() ? std::string("Scripts") : compileCurrentLabel;
+
+        const ImU32 accent = compileInProgress
+            ? IM_COL32(232, 184, 36, static_cast<int>(255 * alpha))
+            : (lastCompileSuccess ? IM_COL32(78, 196, 120, static_cast<int>(255 * alpha))
+                                  : IM_COL32(224, 96, 96, static_cast<int>(255 * alpha)));
+
+        const float margin = 16.0f;
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, io.DisplaySize.y - margin),
+                                ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowSize(ImVec2(312.0f, 0.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.94f * alpha);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 9.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(13.0f, 11.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.11f, 0.14f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.24f, 0.28f, 0.36f, alpha));
+        const ImGuiWindowFlags toastFlags =
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav |
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoScrollbar;
+        if (ImGui::Begin("##CompileToast", nullptr, toastFlags)) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float lineH = ImGui::GetTextLineHeight();
+            const ImVec2 dotPos = ImGui::GetCursorScreenPos();
+            dl->AddCircleFilled(ImVec2(dotPos.x + 5.0f, dotPos.y + lineH * 0.5f), 5.0f, accent, 16);
+            ImGui::Dummy(ImVec2(18.0f, 0.0f));
+            ImGui::SameLine();
+
+            const char* headline = compileInProgress ? "Compiling"
+                                  : (lastCompileSuccess ? "Compiled" : "Compile failed");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.96f, 1.0f, alpha));
+            ImGui::TextUnformatted(headline);
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.70f, 0.84f, alpha));
+            ImGui::TextUnformatted(label.c_str());
+            ImGui::PopStyleColor();
+            if (compileBatchTotal > 1) {
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.52f, 0.58f, 0.70f, alpha));
+                ImGui::Text("%d/%d", std::min(compileBatchCompleted + 1, compileBatchTotal), compileBatchTotal);
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::Dummy(ImVec2(0.0f, 5.0f));
+            const ImVec2 barMin = ImGui::GetCursorScreenPos();
+            const float barW = ImGui::GetContentRegionAvail().x;
+            const ImVec2 barMax(barMin.x + barW, barMin.y + 4.0f);
+            dl->AddRectFilled(barMin, barMax, IM_COL32(38, 42, 52, static_cast<int>(255 * alpha)), 2.0f);
+            const float fillT = compileInProgress ? std::clamp(progress, 0.03f, 1.0f) : 1.0f;
+            dl->AddRectFilled(barMin, ImVec2(barMin.x + barW * fillT, barMax.y), accent, 2.0f);
+            ImGui::Dummy(ImVec2(barW, 4.0f));
+        }
+        ImGui::End();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(3);
+    } else if (showCompilePopup) {
         if (!compilePopupOpened) {
             ImGui::OpenPopup("Script Compile");
             compilePopupOpened = true;
         }
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 16.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         struct CompileWindowIcon {
@@ -2180,7 +2258,19 @@ void Engine::renderDialogs() {
             const char* stageLabel = stageText.empty() ? "Working..." : stageText.c_str();
             if (progress <= 0.0f) progress = 0.02f;
 
+            /*const ImU32 headerAccent = compileInProgress
+                ? IM_COL32(232, 184, 36, 255)
+                : (lastCompileSuccess ? IM_COL32(78, 196, 120, 255) : IM_COL32(224, 96, 96, 255));
+            const ImVec2 dotAt = ImGui::GetCursorScreenPos();
+            const float headerLineH = ImGui::GetTextLineHeight();
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(dotAt.x + 5.0f, dotAt.y + headerLineH * 0.5f), 5.0f, headerAccent, 16);
+            ImGui::Dummy(ImVec2(18.0f, 0.0f));*/
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Script Compiler");
+            ImGui::Separator();
             ImGui::Spacing();
+
             ImGui::TextUnformatted(lastCompileStatus.empty() ? "Idle" : lastCompileStatus.c_str());
             if (!compileCurrentLabel.empty()) {
                 ImGui::SameLine();
@@ -2311,6 +2401,7 @@ void Engine::renderDialogs() {
             }
             ImGui::EndPopup();
         }
+        ImGui::PopStyleVar(3);
     } else {
         compilePopupOpened = false;
     }

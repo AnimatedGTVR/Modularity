@@ -159,6 +159,59 @@ enum class ProjectAntiAliasing {
     MSAA8x = 3
 };
 
+// Modularity's take on Unity's Forward / Forward+ / Deferred switch. Each
+// path sets the scene light budget plus how many directional lights keep a
+// guaranteed slot on top of it. (The renderer still draws at most
+// kRendererMaxRealtimeLights per frame, nearest-first; the budget is the
+// design-time cap a scene is allowed to use in that mode.)
+enum class ProjectRenderingPath {
+    Normal = 0,        // 20 lights max, 1 directional always allowed
+    NormalPlus = 1,    // 40 lights max, 1 directional always allowed
+    Deferred = 2,      // 200 lights max, 1 directional always allowed
+    HeavyDeferred = 3  // 500 lights max, 2 directional always allowed
+};
+
+inline void ProjectRenderingPathCaps(ProjectRenderingPath path, int& lightBudget, int& directionalAllowance) {
+    switch (path) {
+        case ProjectRenderingPath::NormalPlus:    lightBudget = 40;  directionalAllowance = 1; break;
+        case ProjectRenderingPath::Deferred:      lightBudget = 200; directionalAllowance = 1; break;
+        case ProjectRenderingPath::HeavyDeferred: lightBudget = 500; directionalAllowance = 2; break;
+        case ProjectRenderingPath::Normal:
+        default:                                  lightBudget = 20;  directionalAllowance = 1; break;
+    }
+}
+
+inline const char* ProjectRenderingPathLabel(ProjectRenderingPath path) {
+    switch (path) {
+        case ProjectRenderingPath::NormalPlus:    return "Normal+";
+        case ProjectRenderingPath::Deferred:      return "Deferred";
+        case ProjectRenderingPath::HeavyDeferred: return "Heavy Deferred";
+        case ProjectRenderingPath::Normal:
+        default:                                  return "Normal";
+    }
+}
+
+inline const char* ProjectRenderingPathNote(ProjectRenderingPath path) {
+    switch (path) {
+        case ProjectRenderingPath::NormalPlus:
+            return "40 lights max, 1 directional light always allowed at any amount.";
+        case ProjectRenderingPath::Deferred:
+            return "200 lights max, 1 directional light always allowed at any amount.";
+        case ProjectRenderingPath::HeavyDeferred:
+            return "500 lights max, 2 directional lights always allowed at any amount.";
+        case ProjectRenderingPath::Normal:
+        default:
+            return "20 lights max, 1 directional light always allowed at any amount.";
+    }
+}
+
+// Offscreen color-buffer precision ("Color Resolution" in Graphics Manager).
+enum class ProjectColorResolution {
+    Auto = 0,     // 16-bit float, required for HDR/bloom (classic behavior)
+    Color8 = 1,   // 8-bit LDR, lighter on bandwidth/VRAM
+    Color16F = 2  // explicit 16-bit float
+};
+
 struct ProjectGraphicsSettings {
     bool vsync = true;
     int targetFps = 60;
@@ -169,6 +222,18 @@ struct ProjectGraphicsSettings {
     bool fullscreenStartup = false;
     bool editorPreviewOverrides = true;
     bool gamePreviewOverrides = false;
+    // Graphics Manager additions
+    ProjectRenderingPath renderingPath = ProjectRenderingPath::Normal;
+    bool hdr = true;
+    ProjectColorResolution colorResolution = ProjectColorResolution::Auto;
+    std::string defaultTextureFormat = "Auto"; // TextureFormatPolicy ToString name
+    // Lighting Manager
+    bool mainLightEnabled = true;              // Per Pixel / Off
+    bool mainLightCastShadows = true;
+    bool additionalLightsEnabled = true;       // Per Pixel / Off
+    bool additionalLightsCastShadows = true;
+    bool softShadows = true;
+    float shadowMaxDistance = 0.0f;            // 0 = follow camera far plane
 };
 
 enum class ProjectConsoleMode {
@@ -255,6 +320,7 @@ public:
     std::string acceptedTermsVersion;
     bool windowsDisclaimerAcknowledgedV68 = false;
     bool moduCppNvimWarningDismissedV1 = false;
+    bool androidStoragePromptDismissedV1 = false;
     int newProjectPipelineMode = 0;
     int newProjectRendererMode = 0;
     bool newProjectImportLastPackages = true;

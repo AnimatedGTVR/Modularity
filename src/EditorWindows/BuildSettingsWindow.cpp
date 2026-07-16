@@ -91,25 +91,31 @@ void Engine::renderBuildSettingsWindow() {
         deleteBuildSettingsProfile(buildSettings.profileName);
     }
     ImGui::EndDisabled();
-    if (ImGui::BeginPopupModal("New Build Profile", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::InputText("Name", profileNameBuf, sizeof(profileNameBuf));
-        if (ImGui::Button("Create", ImVec2(100, 0))) {
+    if (beginCardModal("New Build Profile")) {
+        cardModalText("Name the new build profile.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool submitted = ImGui::InputText("##ProfileName", profileNameBuf, sizeof(profileNameBuf),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        if (cardModalButton("Cancel", CardButtonKind::Neutral, 0, 2)) ImGui::CloseCurrentPopup();
+        if (cardModalButton("Create", CardButtonKind::Primary, 1, 2) || submitted) {
             saveBuildSettingsProfileAs(profileNameBuf);
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        endCardModal();
     }
-    if (ImGui::BeginPopupModal("Duplicate Build Profile", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::InputText("Name", duplicateNameBuf, sizeof(duplicateNameBuf));
-        if (ImGui::Button("Duplicate", ImVec2(100, 0))) {
+    if (beginCardModal("Duplicate Build Profile")) {
+        cardModalText("Name the duplicated profile.");
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool submitted = ImGui::InputText("##DuplicateName", duplicateNameBuf, sizeof(duplicateNameBuf),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        if (cardModalButton("Cancel", CardButtonKind::Neutral, 0, 2)) ImGui::CloseCurrentPopup();
+        if (cardModalButton("Duplicate", CardButtonKind::Primary, 1, 2) || submitted) {
             duplicateBuildSettingsProfile(duplicateNameBuf);
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        endCardModal();
     }
     ImGui::Separator();
 
@@ -117,15 +123,13 @@ void Engine::renderBuildSettingsWindow() {
     const float bottomPanelH  = 185.0f;
     const float sepSpace      = ImGui::GetStyle().ItemSpacing.y + 1.0f;
 
-    // =========================================================
-    // TOP SECTION  (left: scenes + target   |   right: options)
-    // =========================================================
+    // Top section: scenes + target on the left, options on the right.
     ImGui::BeginChild("BuildTopSection", ImVec2(0.0f, -(bottomPanelH + sepSpace + footerReserve)), false);
 
     const float leftColW  = 270.0f;
     const float rightColW = ImGui::GetContentRegionAvail().x - leftColW - buttonSpacing;
 
-    // ---- Left column ----------------------------------------
+    // Left column
     ImGui::BeginChild("BuildLeftCol", ImVec2(leftColW, 0.0f), false);
 
     ImGui::Text("Scenes In Build");
@@ -232,7 +236,7 @@ void Engine::renderBuildSettingsWindow() {
 
     ImGui::SameLine();
 
-    // ---- Right column ----------------------------------------
+    // Right column
     ImGui::BeginChild("BuildRightCol", ImVec2(rightColW, 0.0f), false);
     ImGui::Text("Build Options");
     const char* configurations[] = {"Release", "Debug"};
@@ -291,9 +295,7 @@ void Engine::renderBuildSettingsWindow() {
     ImGui::EndChild(); // BuildRightCol
     ImGui::EndChild(); // BuildTopSection
 
-    // =========================================================
-    // BOTTOM SECTION  (project Info fields)
-    // =========================================================
+    // Bottom section: project info fields.
     ImGui::BeginChild("BuildBottomSection", ImVec2(0.0f, -footerReserve), false);
     ImGui::Spacing();
 
@@ -396,9 +398,7 @@ void Engine::renderBuildSettingsWindow() {
 
     ImGui::EndChild(); // BuildBottomSection
 
-    // =========================================================
-    // FOOTER  (Bake actions)
-    // =========================================================
+    // Footer: bake actions.
     ImGui::Separator();
     {
         float bakeW    = 70.0f;
@@ -429,9 +429,7 @@ void Engine::renderBuildSettingsWindow() {
 
     if (changed) saveBuildSettings();
 
-    // =========================================================
-    // EXPORT DIALOG  (unchanged)
-    // =========================================================
+    // Export dialog.
     if (showExportDialog) {
         ImGui::SetNextWindowSize(ImVec2(720, 460), ImGuiCond_Appearing);
         ImGui::OpenPopup("Export Game");

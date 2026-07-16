@@ -63,6 +63,16 @@ void Engine::renderPlayerViewport() {
   ImGui::SetCursorPos(
       ImVec2(cursorStart.x + imageOffsetX, cursorStart.y + imageOffsetY));
 
+  // The centering SetCursorPos above only gets a trailing item when the renderer
+  // is up (the InvisibleButton below). With no project loaded (or for the first
+  // frames while a scene is still loading) the renderer isn't initialized, so
+  // submit a zero-size item here. Otherwise ImGui throws its recoverable
+  // "used SetCursorPos to extend boundaries without an item" message, which is
+  // what you see if you launch the player with nothing to load.
+  if (!rendererInitialized) {
+    ImGui::Dummy(imageSize);
+  }
+
   if (rendererInitialized) {
     // Phase A instrumentation: the player viewport presents the scene + 2D
     // overlay every frame.
@@ -175,7 +185,10 @@ void Engine::renderPlayerViewport() {
     if (playerMode) {
       const SceneObject *runtimeCam = findPlayerCameraObject();
       if (runtimeCam) {
-        runtimeFov = runtimeCam->camera.fov;
+        runtimeFov = ResolveCameraVerticalFovDeg(
+            runtimeCam->camera,
+            static_cast<float>(std::max(1, runtimeRenderWidth)) /
+                static_cast<float>(std::max(1, runtimeRenderHeight)));
         runtimeNear = std::max(0.01f, runtimeCam->camera.nearClip);
         runtimeFar = std::max(runtimeNear + 0.01f, runtimeCam->camera.farClip);
       }
@@ -202,7 +215,7 @@ void Engine::renderPlayerViewport() {
     auto findPseudo3DCanvasId = [&](const SceneObject &target) -> int {
       return uiSceneLookup.findPseudo3DCanvasId(target);
     };
-    auto isUiOn3DCanvas = [&](const SceneObject &target) {
+    [[maybe_unused]] auto isUiOn3DCanvas = [&](const SceneObject &target) {
       return find3DCanvasId(target) >= 0;
     };
     int editCanvas3DId = -1;
@@ -1134,20 +1147,42 @@ void Engine::renderPlayerViewport() {
         const ImU32 s4SliderBorder = (obj.ui.borderColor.a > 0.0f)     ? ImGui::GetColorU32(ImVec4(obj.ui.borderColor.r, obj.ui.borderColor.g, obj.ui.borderColor.b, obj.ui.borderColor.a))     : ImGui::GetColorU32(brighten(tint, 0.85f));
         const ImU32 s4SliderText   = (obj.ui.textColor.a > 0.0f)       ? ImGui::GetColorU32(ImVec4(obj.ui.textColor.r, obj.ui.textColor.g, obj.ui.textColor.b, obj.ui.textColor.a))             : IM_COL32(240, 240, 245, 220);
         if (obj.ui.sliderStyle == UISliderStyle::ImGui) {
-          ImGui::PushItemWidth(drawSize.x);
-          ImGui::BeginDisabled(!obj.ui.interactable || uiWorldCameraActive);
-          ImGui::PushStyleColor(ImGuiCol_FrameBg,      ImGui::ColorConvertU32ToFloat4(s4SliderBg));
-          ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, brighten(tint, 0.5f));
-          ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  brighten(tint, 0.7f));
-          ImGui::PushStyleColor(ImGuiCol_SliderGrab,     brighten(tint, 0.9f));
-          ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, brighten(tint, 1.1f));
-          if (ImGui::SliderFloat(obj.ui.label.c_str(), &obj.ui.sliderValue,
-                                 obj.ui.sliderMin, obj.ui.sliderMax)) {
-            projectManager.currentProject.hasUnsavedChanges = true;
+          // future me: this path always drew a raw ImGui::SliderFloat (numeric value +
+          // grab) even in the player, so ImGui-style fill bars showed numbers at
+          // runtime. render the same fill-bar visual the editor shows; drag when interactive.
+          float minValue = obj.ui.sliderMin;
+          float maxValue = obj.ui.sliderMax;
+          float range = (maxValue - minValue);
+          if (range <= 1e-6f)
+            range = 1.0f;
+          ImDrawList *dl = ImGui::GetWindowDrawList();
+          const bool sliderInteractive = obj.ui.interactable && !uiWorldCameraActive;
+          if (sliderInteractive) {
+            ImGui::InvisibleButton("##UISliderImGui", drawSize);
+            if (ImGui::IsItemActive() &&
+                ImGui::IsMouseDown(ImGuiMouseButton_Left) && drawSize.x > 1.0f) {
+              float mouseT = (ImGui::GetIO().MousePos.x - drawMin.x) / drawSize.x;
+              mouseT = std::clamp(mouseT, 0.0f, 1.0f);
+              float newValue = minValue + mouseT * range;
+              if (newValue != obj.ui.sliderValue) {
+                obj.ui.sliderValue = newValue;
+                projectManager.currentProject.hasUnsavedChanges = true;
+              }
+            }
           }
-          ImGui::PopStyleColor(5);
-          ImGui::EndDisabled();
-          ImGui::PopItemWidth();
+          float t = (obj.ui.sliderValue - minValue) / range;
+          t = std::clamp(t, 0.0f, 1.0f);
+          float rounding = std::min(drawSize.x, drawSize.y) * 0.5f;
+          ImVec2 fillMax(drawMin.x + drawSize.x * t, drawMax.y);
+          dl->AddRectFilled(drawMin, drawMax, s4SliderBg, rounding);
+          if (fillMax.x > drawMin.x) {
+            dl->AddRectFilled(drawMin, fillMax, s4SliderFill, rounding);
+          }
+          dl->AddRect(drawMin, drawMax, s4SliderBorder, rounding);
+          ImVec2 textSize = ImGui::CalcTextSize(obj.ui.label.c_str());
+          ImVec2 textPos(drawMin.x + (drawSize.x - textSize.x) * 0.5f,
+                         drawMin.y + (drawSize.y - textSize.y) * 0.5f);
+          dl->AddText(textPos, s4SliderText, obj.ui.label.c_str());
         } else {
           ImDrawList *dl = ImGui::GetWindowDrawList();
           ImU32 bg     = s4SliderBg;
@@ -1309,6 +1344,7 @@ void Engine::renderPlayerViewport() {
       ImVec2 layoutSize = ImVec2(1.0f, 1.0f);
       std::array<ImVec2, 4> corners;
       int depthSort = 0;
+      float distance = 0.0f;
       bool allowInteraction = false;
     };
     std::vector<PseudoPanelDrawEntry> pseudoPanels;
@@ -1413,8 +1449,10 @@ void Engine::renderPlayerViewport() {
           (canvas.ui.renderTargetSize.y > 0) ? canvas.ui.renderTargetSize.y
                                              : static_cast<int>(layoutSizePx.y),
           16, 4096);
-      Renderer::UiTargetInfo target =
-          renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight);
+	      Renderer::UiTargetInfo target =
+	          renderer.ensureUiTarget(canvas.id, targetWidth, targetHeight,
+	                                  canvas.layer,
+	                                  canvas.ui.renderTargetFilter, false);
       if (target.texture == 0) {
         continue;
       }
@@ -1471,14 +1509,21 @@ void Engine::renderPlayerViewport() {
       entry.corners = BuildPseudo3DPanelCorners(
           rectMin, rectMax, canvas.ui, distanceScale, perspectiveFactor);
       entry.depthSort = canvas.ui.pseudo3DDepthSort;
+      entry.distance = distance;
       entry.allowInteraction = allowInteraction;
       pseudoPanels.push_back(entry);
     }
 
     if (!pseudoPanels.empty()) {
+      // Order by true 3D distance so a nearer panel always draws over a farther
+      // one regardless of its manual depth-sort value. Depth Sort only breaks
+      // ties between panels at (near) the same distance - it no longer forces
+      // 2D-style layering past 3D position.
       std::stable_sort(
           pseudoPanels.begin(), pseudoPanels.end(),
           [](const PseudoPanelDrawEntry &a, const PseudoPanelDrawEntry &b) {
+            if (std::abs(a.distance - b.distance) > 0.001f)
+              return a.distance > b.distance; // farther first, nearer on top
             if (a.depthSort != b.depthSort)
               return a.depthSort < b.depthSort;
             return a.canvasId < b.canvasId;

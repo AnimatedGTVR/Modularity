@@ -2,7 +2,6 @@
 #include "ScriptSdkCommon.h"
 #include <string>
 #include <vector>
-
 enum class Light2DType             {Point = 0,    Spot = 1,     Freeform = 2,    Sprite = 3,     Global = 4};
 enum class Light2DBlendMode        {Additive = 0, Multiply = 1, Subtractive = 2};
 enum class Light2DOverlapOperation {Additive = 0, Max = 1,      AlphaBlend = 2};

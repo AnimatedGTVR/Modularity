@@ -74,6 +74,8 @@ struct MaterialProperties {
     glm::vec2 uvTiling = glm::vec2(1.0f);
     glm::vec2 uvOffset = glm::vec2(0.0f);
     TextureFilter textureFilter = TextureFilter::Bilinear;
+    float scrollSpeed = 0.5f;  // UV drift rate for the Scrolling UV shader preset
+    glm::vec2 scrollDirection = glm::vec2(1.0f, 0.3f);  // drift axis (normalized in-shader)
 };
 
 enum class LightType {
@@ -364,6 +366,27 @@ enum class SceneCameraType {
     Player = 1
 };
 
+// Unity-style camera projection controls. Orthographic here is the real 3D
+// ortho mode (world-unit Size like Unity), separate from the legacy 2D
+// pixels-per-unit camera which stays behind use2D / the 2D pipeline.
+enum class SceneCameraProjection {
+    Perspective = 0,
+    Orthographic = 1
+};
+
+// Which screen axis the fov value describes. Horizontal is converted to the
+// vertical fov the projection actually needs using the viewport aspect at
+// render time (see ResolveCameraVerticalFovDeg).
+enum class SceneCameraFovAxis {
+    Vertical = 0,
+    Horizontal = 1
+};
+
+enum class SceneCameraBackground {
+    Skybox = 0,
+    SolidColor = 1
+};
+
 enum class PostFXToneMapper {
     None = 0,
     Reinhard = 1,
@@ -403,7 +426,26 @@ struct CameraComponent {
     bool applyPostFX = true;
     bool use2D = false;
     float pixelsPerUnit = 100.0f;
+    // -- Unity-style additions (appended; SceneObject layout is script-ABI
+    //    sensitive, keep new fields at the end) --
+    SceneCameraProjection projection = SceneCameraProjection::Perspective;
+    SceneCameraFovAxis fovAxis = SceneCameraFovAxis::Vertical;
+    float orthoSize = 5.0f; // world-unit half-height when projection == Orthographic
+    bool renderShadows = true; // per-camera realtime shadow toggle
+    SceneCameraBackground background = SceneCameraBackground::Skybox;
+    glm::vec3 backgroundColor = glm::vec3(0.10f, 0.10f, 0.12f);
+    uint32_t cullingMask = 0xFFFFFFFFu; // bit per SceneObject::layer (project Layers)
 };
+
+// The projection matrix wants a vertical fov; when the camera is authored
+// with a horizontal fov, convert using the viewport aspect (width / height).
+inline float ResolveCameraVerticalFovDeg(const CameraComponent& cam, float aspectWidthOverHeight) {
+    float fovDeg = glm::clamp(cam.fov, 1.0f, 179.0f);
+    if (cam.fovAxis != SceneCameraFovAxis::Horizontal) return fovDeg;
+    const float aspect = glm::max(aspectWidthOverHeight, 0.0001f);
+    const float halfH = glm::radians(fovDeg) * 0.5f;
+    return glm::clamp(glm::degrees(2.0f * std::atan(std::tan(halfH) / aspect)), 1.0f, 179.0f);
+}
 
 struct PostFXSettings {
     bool enabled = true;
@@ -591,6 +633,7 @@ struct UIElementComponent {
     float textEffectIntensity = 1.0f;
     bool renderIn3D = false;
     glm::ivec2 renderTargetSize = glm::ivec2(512, 512);
+    MaterialProperties::TextureFilter renderTargetFilter = MaterialProperties::TextureFilter::Bilinear;
     bool pseudo3DEnabled = false;
     bool pseudo3DUseOffscreenSurface = true;
     glm::vec2 pseudo3DPanelSize = glm::vec2(0.0f); // <= 0 uses ui.size
@@ -993,6 +1036,16 @@ inline bool IsMMeshPath(const fs::path& path) {
     std::string ext = path.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     return ext == ".mmesh";
+}
+
+// formats the RMesh edit tooling can open (.mmesh converts through RawMeshAsset)
+inline bool IsMeshEditablePath(const fs::path& path) {
+    return IsRawMeshPath(path) || IsMMeshPath(path);
+}
+
+inline bool IsMeshEditablePath(const std::string& path) {
+    if (path.empty()) return false;
+    return IsMeshEditablePath(fs::path(path));
 }
 
 inline bool IsMMeshPath(const std::string& path) {

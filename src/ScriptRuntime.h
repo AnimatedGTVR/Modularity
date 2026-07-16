@@ -22,16 +22,13 @@ class Engine;
     #define MODULARITY_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
 
-#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 31
+#define MODULARITY_NATIVE_SCRIPT_ABI_VERSION 35
 
-// Layout drift guard. Scripts dereference SceneObject/ScriptComponent/ScriptContext
-// directly, so any size change in these types silently breaks every previously
-// compiled script binary (fields read at wrong offsets -> heap corruption/hangs).
-// The wrapper bakes this value in at script-compile time and the loader compares
-// it against the engine's current value, so stale binaries are rejected even when
-// nobody remembers to bump MODULARITY_NATIVE_SCRIPT_ABI_VERSION.
-// Defined as a macro so it is evaluated against whichever headers the script was
-// compiled with, not the engine's.
+// layout drift guard. scripts dereference SceneObject/ScriptContext directly, so ANY size
+// change silently breaks every compiled script (wrong offsets = heap corruption hours later).
+// the wrapper bakes this in at script-compile time and the loader rejects mismatches, even
+// when nobody remembered to bump MODULARITY_NATIVE_SCRIPT_ABI_VERSION. macro on purpose:
+// it must evaluate against the headers the SCRIPT was built with, not the engine's.
 #define MODULARITY_SCRIPT_LAYOUT_SIGNATURE() \
     ((static_cast<unsigned long long>(sizeof(SceneObject)) << 40) ^ \
      (static_cast<unsigned long long>(sizeof(ScriptComponent)) << 20) ^ \
@@ -64,6 +61,10 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     SceneObject* FindObjectByName(const std::string& name);
     SceneObject* FindObjectById(int id);
     SceneObject* ResolveObjectRef(const std::string& ref);
+    // Rebuild an object's local transform from its current world transform, so a
+    // direct world write (e.g. from a referenced-object Transform proxy) survives the
+    // per-frame hierarchy pass instead of being reverted from a stale localPosition.
+    void SyncObjectLocalTransform(int objectId);
     int GetSceneObjectCount() const;
     int GetSceneObjectIdAt(int index) const;
     const SceneObject* GetSceneObjectAt(int index) const;
@@ -88,6 +89,16 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     bool IsJumpDown() const;
     bool IsKeyDown(int glfwKey, ImGuiKey imguiKey = ImGuiKey_None) const;
     bool IsKeyPressed(int glfwKey, ImGuiKey imguiKey = ImGuiKey_None) const;
+    // Touch input. Platform-agnostic: on Android these report the live finger
+    // set from the NativeActivity runtime; on desktop the left mouse button is
+    // synthesized as touch 0 so the same Touch.* script code works everywhere.
+    // Coordinates are surface/framebuffer pixels with origin at the top-left.
+    // NOTE: declaration-only additions here are safe - ScriptContext gains no
+    // data members, so its sizeof (and the script layout signature) is unchanged.
+    int GetTouchCount() const;
+    bool GetTouch(int index, float& x, float& y) const;
+    bool GetPrimaryTouch(float& x, float& y) const;
+    bool IsTouchActive() const;
     bool ResolveGround(float capsuleHalf, float probeExtra, float groundSnap, float verticalVelocity,
                        glm::vec3* outHitPos = nullptr, bool* outHitGround = nullptr,
                        glm::vec3* outHitNormal = nullptr, int* outHitActorId = nullptr,
@@ -145,10 +156,9 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     std::string GetSpriteClipNameAt(int index) const;
     bool SetSpriteClipIndex(int index);
     bool SetSpriteClipName(const std::string& name);
-    // Assign a sheet-relative Sprite to any object's sprite component. Same-sheet
-    // (or sheet-less) assignment fast-paths to a clip-index change; a differing
-    // sheet loads its frame table first. Returns false (and logs) if the target
-    // has no sprite component, mirroring the other Set*ClipIndex helpers.
+    // assign a sheet-relative Sprite to any object's sprite component. same-sheet fast-paths to
+    // a clip-index change, a new sheet loads its frame table first. false + log if the target
+    // has no sprite component.
     bool SetObjectSprite(int objectId, const Sprite& sprite);
     float GetSpriteAlpha() const;
     void SetSpriteAlpha(float alpha);
@@ -252,6 +262,20 @@ struct MODULARITY_SCRIPT_API ScriptContext {
     std::string GetSelectedObjectInfo() const;    // human-readable dump of the selected scene object
     std::string GetProjectName() const;
     std::string GetCurrentSceneName() const;
+    // Full scene-graph dump for AI/agent tooling: a compact, indented tree of every
+    // object (name, id, type, components, attached scripts). maxObjects <= 0 means no cap.
+    std::string GetSceneHierarchy(int maxObjects = 0) const;
+    // Scene editing for AI/agent tooling. All address objects by id (see GetSceneHierarchy).
+    // CreateSceneObject returns the new object's id, or -1 on failure (unknown type).
+    int  CreateSceneObject(const std::string& type, const std::string& name, int parentId = -1);
+    bool DeleteSceneObject(int objectId);
+    bool RenameSceneObject(int objectId, const std::string& name);
+    bool SetSceneObjectParent(int objectId, int parentId);  // parentId < 0 detaches to root
+    bool SetSceneObjectTransform(int objectId, const glm::vec3& position,
+                                 const glm::vec3& rotationDeg, const glm::vec3& scale);
+    bool SetSceneObjectEnabled(int objectId, bool enabled);
+    bool AddObjectComponent(int objectId, const std::string& component);
+    bool AttachObjectScript(int objectId, const std::string& scriptPath);
     // Console helper
     void AddConsoleMessage(const std::string& message, ConsoleMessageType type = ConsoleMessageType::Info);
     // Auto-binding helpers: bind once per call, optionally load stored value.
@@ -295,6 +319,10 @@ public:
     void callEditorWindow(const fs::path& binaryPath, ScriptContext& ctx);
     void callExitEditorWindow(const fs::path& binaryPath, ScriptContext& ctx);
 
+    // Android only: tell the loader the compiled-scripts output root so sonames derive from the
+    // same relative paths the packager used. no-op on desktop. see src/AndroidScript.h.
+    void setCompiledScriptsRoot(const fs::path& root) { compiledScriptsRoot_ = root; }
+
 private:
     struct Module {
         void* handle = nullptr;
@@ -315,6 +343,7 @@ private:
     Module* getModule(const fs::path& binaryPath);
     std::unordered_map<std::string, Module> loaded;
     std::string lastError;
+    fs::path compiledScriptsRoot_; // Android soname derivation anchor; empty on desktop.
 };
 
 // Lightweight coroutine-style helpers (opt-in and no-ops unless used by scripts).

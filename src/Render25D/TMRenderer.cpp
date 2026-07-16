@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <unordered_set>
 
 namespace Modularity::Render25D {
@@ -193,9 +194,17 @@ ModelVisibilityResult EvaluateModelVisibility(const TMRenderContext& context,
     const glm::vec3 safeForward = (glm::dot(context.cameraForward, context.cameraForward) > 1e-6f)
                                       ? glm::normalize(context.cameraForward)
                                       : glm::vec3(0.0f, 0.0f, -1.0f);
-    const float pitchNormalized = glm::clamp(
-        glm::degrees(std::asin(glm::clamp(safeForward.y, -1.0f, 1.0f))) / 65.0f,
-        -1.0f, 1.0f);
+    const float pitchNormalizeDegrees =
+        std::max(1.0f, std::max(std::abs(settings.presentationPitchMinDegrees),
+                                std::abs(settings.presentationPitchMaxDegrees)));
+    const float rawPitchDegrees = glm::degrees(std::asin(glm::clamp(safeForward.y, -1.0f, 1.0f)));
+    const float clampedPitchDegrees = glm::clamp(
+        rawPitchDegrees,
+        std::min(settings.presentationPitchMinDegrees, settings.presentationPitchMaxDegrees),
+        std::max(settings.presentationPitchMinDegrees, settings.presentationPitchMaxDegrees));
+    float pitchNormalized = glm::clamp(clampedPitchDegrees / pitchNormalizeDegrees, -1.0f, 1.0f);
+    pitchNormalized = (pitchNormalized >= 0.0f ? 1.0f : -1.0f) *
+                      std::pow(std::abs(pitchNormalized), std::max(0.01f, settings.lookPitchCurve));
     const float pitchUp = std::max(pitchNormalized, 0.0f);
     const float pitchDown = std::max(-pitchNormalized, 0.0f);
     const glm::vec4 clipSlack = BuildClipSlack(context);
@@ -214,7 +223,8 @@ ModelVisibilityResult EvaluateModelVisibility(const TMRenderContext& context,
         }
 
         if (settings.lookPitchStretchEnabled) {
-            const float depthWeight = glm::clamp((-viewCorner.z) / 24.0f, 0.0f, 1.0f);
+            const float depthWeight =
+                glm::clamp((-viewCorner.z) / std::max(0.001f, settings.lookPitchDepthRange), 0.0f, 1.0f);
             const float verticalScale = 1.0f +
                                         (pitchUp * std::max(0.0f, settings.lookPitchStretchStrength)) -
                                         (pitchDown * std::max(0.0f, settings.lookPitchCompressStrength));

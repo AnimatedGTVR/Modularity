@@ -284,6 +284,11 @@ if(MODULARITY_ENABLE_ASAN)
         set(MODULARITY_SANITIZER_FLAGS
             -fsanitize=address
             -fsanitize=undefined
+            # UBSan's vptr check emits typeinfo references for every polymorphic
+            # class it sees. Jolt (and other third-party libs) build with
+            # -fno-rtti and without sanitizers, so those symbols don't exist and
+            # the link fails. Everything else in UBSan still runs.
+            -fno-sanitize=vptr
             -fno-omit-frame-pointer
             -g
         )
@@ -751,6 +756,8 @@ list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main_lsp\\.cpp$")
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/main_player.cpp")
+# Anchor TU for the Android editor .so target only; not part of the engine libs.
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX ".*/AndroidEditorEntry\\.cpp$")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/assimp/.*")
 list(FILTER ENGINE_HEADERS EXCLUDE REGEX ".*/ThirdParty/PhysX/.*")
@@ -861,6 +868,7 @@ if(MODULARITY_USE_MONO)
     target_link_libraries(core PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+target_compile_definitions(core PUBLIC MODULARITY_HAS_FFMPEG=$<BOOL:${MODULARITY_HAS_FFMPEG}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 target_compile_definitions(core PUBLIC MODULARITY_HAS_OPUSFILE=$<BOOL:${OPUSFILE_FOUND}>)
@@ -909,6 +917,7 @@ if(MODULARITY_USE_MONO)
     target_link_libraries(core_player PUBLIC ${MONO_LIBRARY})
 endif()
 target_compile_definitions(core_player PUBLIC MODULARITY_USE_MONO=$<BOOL:${MODULARITY_USE_MONO}>)
+target_compile_definitions(core_player PUBLIC MODULARITY_HAS_FFMPEG=$<BOOL:${MODULARITY_HAS_FFMPEG}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_VULKAN=$<BOOL:${MODULARITY_HAS_VULKAN}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_SNDFILE=$<BOOL:${SNDFILE_FOUND}>)
 target_compile_definitions(core_player PUBLIC MODULARITY_HAS_OPUSFILE=$<BOOL:${OPUSFILE_FOUND}>)
@@ -1146,6 +1155,35 @@ if(ANDROID)
         "-u" "ANativeActivity_onCreate"
         "-Wl,--gc-sections"
         "-Wl,--no-undefined"
+    )
+    # The editor 'core' lib also pulls in AndroidRuntime.cpp (globbed in), so it
+    # needs native_app_glue's headers to compile on Android, plus the platform
+    # libs so an editor APK (libModularity.so) can be linked straight from core.
+    target_link_libraries(core PRIVATE
+        android_native_app_glue
+        glfw
+        ${MODULARITY_OPENGL_LIBRARIES}
+        ${CMAKE_DL_LIBS}
+    )
+
+    # Editor-on-Android: libModularity.so, the full editor as a NativeActivity .so
+    # (android.app.lib_name=Modularity). Built from the editor 'core' lib (which
+    # is NOT MODULARITY_RUNTIME_ONLY, so editor panels render) with --whole-archive
+    # so android_main + editor symbols survive --gc-sections. Built on demand:
+    # `cmake --build <dir> --target Modularity`.
+    add_library(ModularityEditorAndroid SHARED ${PROJECT_SOURCE_DIR}/src/AndroidEditorEntry.cpp)
+    set_target_properties(ModularityEditorAndroid PROPERTIES OUTPUT_NAME Modularity)
+    target_link_libraries(ModularityEditorAndroid PRIVATE
+        -Wl,--whole-archive core -Wl,--no-whole-archive
+        android_native_app_glue
+        glfw
+        ${MODULARITY_OPENGL_LIBRARIES}
+        ${CMAKE_DL_LIBS}
+    )
+    target_compile_options(ModularityEditorAndroid PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(ModularityEditorAndroid PRIVATE
+        "-u" "ANativeActivity_onCreate"
+        "-Wl,--gc-sections"
     )
 elseif(NOT WIN32)
     find_package(X11 REQUIRED)

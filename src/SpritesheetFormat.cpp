@@ -408,7 +408,8 @@ namespace {
         std::string out;
         out.reserve(value.size());
         for (char c : value) {
-            if (c == '\\' || c == '"') out.push_back('\\'); out.push_back(c);
+            if (c == '\\' || c == '"') out.push_back('\\');
+            out.push_back(c);
         }
         return out;
     }

@@ -75,7 +75,8 @@ bool TMOpenGLRenderer::renderViewport(TMRenderer& renderer,
                                       const TMScene& scene,
                                       TMRenderer::RenderStats& outStats,
                                       std::string& error) {
-    return renderToTarget(viewportTarget, renderer, context, scene, viewportBackendStats, outStats, error);
+    return renderToTarget(viewportTarget, viewportLowResTarget, renderer, context, scene,
+                          viewportBackendStats, outStats, error);
 }
 
 unsigned int TMOpenGLRenderer::renderPreview(TMRenderer& renderer,
@@ -85,7 +86,8 @@ unsigned int TMOpenGLRenderer::renderPreview(TMRenderer& renderer,
                                              TMRenderer::RenderStats& outStats,
                                              std::string& error) {
     RenderTarget& target = previewTargets[previewSlot];
-    if (!renderToTarget(target, renderer, context, scene, previewBackendStats, outStats, error)) {
+    RenderTarget& lowResTarget = previewLowResTargets[previewSlot];
+    if (!renderToTarget(target, lowResTarget, renderer, context, scene, previewBackendStats, outStats, error)) {
         return 0;
     }
     return target.texture;
@@ -118,11 +120,17 @@ void TMOpenGLRenderer::invalidateCaches() {
     destroySpriteGeometry();
     destroyFallbackTexture();
     destroyRenderTarget(viewportTarget);
+    destroyRenderTarget(viewportLowResTarget);
     for (auto& [slot, target] : previewTargets) {
         (void)slot;
         destroyRenderTarget(target);
     }
     previewTargets.clear();
+    for (auto& [slot, target] : previewLowResTargets) {
+        (void)slot;
+        destroyRenderTarget(target);
+    }
+    previewLowResTargets.clear();
 }
 
 bool TMOpenGLRenderer::ensureInitialized(std::string& error) {
@@ -168,6 +176,7 @@ bool TMOpenGLRenderer::ensureInitialized(std::string& error) {
 }
 
 bool TMOpenGLRenderer::renderToTarget(RenderTarget& target,
+                                      RenderTarget& lowResTarget,
                                       TMRenderer& renderer,
                                       const TMRenderContext& context,
                                       const TMScene& scene,
@@ -192,15 +201,42 @@ bool TMOpenGLRenderer::renderToTarget(RenderTarget& target,
         return false;
     }
 
-    activeTarget = &target;
-    activeContext = &context;
+    // fake-3D draws into a low-res buffer, then nearest-upscales into the target
+    TMRenderContext drawContext = context;
+    RenderTarget* drawTarget = &target;
+    if (presentationSettings.fake3DEnabled) {
+        const int internalHeight = std::clamp(presentationSettings.fake3DInternalHeight, 64,
+                                              std::max(64, context.viewportHeight));
+        const float aspect = static_cast<float>(context.viewportWidth) /
+                             static_cast<float>(std::max(1, context.viewportHeight));
+        const int internalWidth = std::max(64, static_cast<int>(std::lround(internalHeight * aspect)));
+        ensureRenderTarget(lowResTarget, internalWidth, internalHeight);
+        if (lowResTarget.fbo != 0 && lowResTarget.texture != 0) {
+            drawTarget = &lowResTarget;
+            drawContext.viewportWidth = lowResTarget.width;
+            drawContext.viewportHeight = lowResTarget.height;
+        }
+    } else {
+        destroyRenderTarget(lowResTarget);
+    }
+
+    activeTarget = drawTarget;
+    activeContext = &drawContext;
     activeBackendStats = &backendStats;
 
-    const bool ok = renderer.render(context, scene, *this, outStats, error);
+    const bool ok = renderer.render(drawContext, scene, *this, outStats, error);
 
     activeTarget = nullptr;
     activeContext = nullptr;
     activeBackendStats = nullptr;
+
+    if (drawTarget == &lowResTarget) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, lowResTarget.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target.fbo);
+        glBlitFramebuffer(0, 0, lowResTarget.width, lowResTarget.height,
+                          0, 0, target.width, target.height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
     glBindVertexArray(0);
@@ -396,6 +432,13 @@ unsigned int TMOpenGLRenderer::resolveTextureId(const std::string& texturePath,
     return fallbackWhiteTexture;
 }
 
+TMTextureFilter TMOpenGLRenderer::applyTextureFilterPolicy(TMTextureFilter filter) const {
+    if (presentationSettings.fake3DEnabled && presentationSettings.fake3DPointSampling) {
+        return TMTextureFilter::Point;
+    }
+    return filter;
+}
+
 float TMOpenGLRenderer::getPresentationPitchDegrees() const {
     if (activeContext == nullptr) {
         return 0.0f;
@@ -445,7 +488,7 @@ void TMOpenGLRenderer::drawM7Floor(const M7FloorDrawCommand& command) {
     const glm::mat4 viewProjection = activeContext->projection * activeContext->view;
     const glm::mat4 inverseViewProjection = glm::inverse(viewProjection);
     const unsigned int textureId = resolveTextureId(command.floorSurface.texturePath,
-                                                    TMTextureFilter::Bilinear);
+                                                    applyTextureFilterPolicy(command.floorSurface.textureFilter));
 
     glDisable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
@@ -457,6 +500,9 @@ void TMOpenGLRenderer::drawM7Floor(const M7FloorDrawCommand& command) {
     floorShader->setVec2("u_boundsMinXZ", glm::vec2(command.boundsMin.x, command.boundsMin.z));
     floorShader->setVec2("u_boundsMaxXZ", glm::vec2(command.boundsMax.x, command.boundsMax.z));
     floorShader->setVec2("u_uvScale", command.floorSurface.uvScale);
+    floorShader->setInt("u_uvMode", static_cast<int>(command.floorSurface.uvMode));
+    floorShader->setVec2("u_tileWorldSize", glm::max(command.floorSurface.tileWorldSize, glm::vec2(0.0001f)));
+    floorShader->setBool("u_extendToHorizon", command.floorSurface.extendToHorizon);
     floorShader->setFloat("u_floorHeight", command.floorSurface.height);
     floorShader->setFloat("u_maxDistance", std::max(1.0f, command.floorSurface.maxDistance));
     floorShader->setFloat("u_perspectiveStrength", std::max(0.1f, command.floorSurface.perspectiveStrength));
@@ -495,6 +541,11 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
     meshShader->setVec3("u_lightDirection", glm::normalize(glm::vec3(-0.45f, 0.85f, -0.30f)));
     meshShader->setFloat("u_time", static_cast<float>(Modularity::Platform::GetTimeSeconds()));
     meshShader->setFloat("u_presentationPitchDegrees", getPresentationPitchDegrees());
+    meshShader->setFloat("u_pitchNormalizeDegrees",
+                         std::max(1.0f, std::max(std::abs(presentationSettings.presentationPitchMinDegrees),
+                                                 std::abs(presentationSettings.presentationPitchMaxDegrees))));
+    meshShader->setFloat("u_pitchCurve", std::max(0.01f, presentationSettings.lookPitchCurve));
+    meshShader->setFloat("u_pitchDepthRange", std::max(0.001f, presentationSettings.lookPitchDepthRange));
     meshShader->setFloat("u_pitchStretchStrength",
                          presentationSettings.lookPitchStretchEnabled
                              ? std::max(0.0f, presentationSettings.lookPitchStretchStrength)
@@ -518,6 +569,10 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
     meshShader->setVec2("u_viewportSize", glm::vec2(static_cast<float>(std::max(1, activeContext->viewportWidth)),
                                                     static_cast<float>(std::max(1, activeContext->viewportHeight))));
     meshShader->setInt("u_albedoTexture", 0);
+    const bool fake3D = presentationSettings.fake3DEnabled;
+    meshShader->setBool("u_flatShadingEnabled", fake3D && presentationSettings.fake3DFlatShading);
+    meshShader->setInt("u_shadeLevels",
+                       fake3D ? std::clamp(presentationSettings.fake3DShadeLevels, 0, 16) : 0);
 
     for (const MMeshRenderSubmesh& submesh : command.mesh->submeshes) {
         if (!submesh.mesh) {
@@ -526,19 +581,25 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
 
         const std::string& texturePath =
             command.textureOverridePath.empty() ? submesh.albedoTexturePath : command.textureOverridePath;
-        const TMTextureFilter textureFilter =
+        const TMTextureFilter textureFilter = applyTextureFilterPolicy(
             (command.presentation.textureFilter == TMTextureFilter::Point ||
              submesh.presentation.textureFilter == TMTextureFilter::Point)
                 ? TMTextureFilter::Point
-                : TMTextureFilter::Bilinear;
+                : TMTextureFilter::Bilinear);
         const unsigned int textureId = resolveTextureId(texturePath, textureFilter, command.mesh->sourcePath);
         const glm::vec4 tint = CombineColorTint(command.presentation.colorTint, submesh.presentation.colorTint);
-        const bool affineWarpEnabled =
-            presentationSettings.textureWarpEnabled &&
-            (command.presentation.affineTextureWarpEnabled || submesh.presentation.affineTextureWarpEnabled);
-        const float affineWarpStrength = std::clamp(
-            std::max(command.presentation.affineTextureWarpStrength, submesh.presentation.affineTextureWarpStrength),
-            0.0f, 1.0f);
+        const bool forceAffine = fake3D && presentationSettings.fake3DAffineTextures;
+        const bool affineWarpEnabled = forceAffine ||
+            (presentationSettings.textureWarpEnabled &&
+             (command.presentation.affineTextureWarpEnabled || submesh.presentation.affineTextureWarpEnabled));
+        const float affineWarpStrength = forceAffine
+            ? std::clamp(presentationSettings.fake3DAffineStrength, 0.0f, 1.0f)
+            : std::clamp(
+                  std::max(command.presentation.affineTextureWarpStrength,
+                           submesh.presentation.affineTextureWarpStrength),
+                  0.0f, 1.0f);
+        const glm::vec2 uvTiling = command.presentation.uvTiling * submesh.presentation.uvTiling;
+        const glm::vec2 uvOffset = command.presentation.uvOffset + submesh.presentation.uvOffset;
         const bool wobbleEnabled = presentationSettings.vertexWobbleEnabled && command.wobble.enabled;
         const float wobbleStrength = wobbleEnabled
                                          ? std::max(0.0f, command.wobble.strength) *
@@ -551,6 +612,8 @@ void TMOpenGLRenderer::drawSectorModel(const SectorModelDrawCommand& command) {
 
         meshShader->setBool("u_hasTexture", textureId != fallbackWhiteTexture);
         meshShader->setVec4("u_colorTint", tint);
+        meshShader->setVec2("u_uvTiling", uvTiling);
+        meshShader->setVec2("u_uvOffset", uvOffset);
         meshShader->setBool("u_affineWarpEnabled", affineWarpEnabled);
         meshShader->setFloat("u_affineWarpStrength", affineWarpStrength);
         meshShader->setBool("u_wobbleEnabled", wobbleEnabled);
@@ -614,7 +677,8 @@ void TMOpenGLRenderer::drawSprite25D(const Sprite25DDrawCommand& command) {
         {p3, glm::vec2(u0, v0), sprite.colorTint}
     };
 
-    const unsigned int textureId = resolveTextureId(sprite.texturePath, sprite.textureFilter);
+    const unsigned int textureId = resolveTextureId(sprite.texturePath,
+                                                    applyTextureFilterPolicy(sprite.textureFilter));
 
     glDisable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);

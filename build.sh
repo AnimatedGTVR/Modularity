@@ -410,6 +410,12 @@ Usage: ./build.sh [options]
 Options:
   --clean                 Remove existing build directories first
   --Windows               Cross-build a Windows target with MinGW-w64
+  --Android               Build an installable Android .apk (arm64-v8a)
+  --abi=<abi>             Android ABI to target (default: arm64-v8a)
+  --project=<path.modu>   Bundle a project into the Android APK (else a bare player)
+  --output=<path.apk>     Where to write the Android APK (-o also works)
+  --debug                 Android: build a debuggable APK (Debug config)
+  --editor                Android: build the Modularity EDITOR APK (experimental)
   --build-type=<type>     CMake build type (default: Release)
   --cpu-target=<level>    x86-64 ISA target: baseline (default, ships to everyone),
                           x86-64-v2, x86-64-v3, x86-64-v4, or native
@@ -441,6 +447,12 @@ fi
 jobs_overridden=0
 preferred_generator=""
 cmake_generator=""
+# Android APK build options (used when --Android is passed).
+android_abi="arm64-v8a"
+android_project=""
+android_output=""
+android_debug=0
+android_editor=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -449,6 +461,24 @@ for arg in "$@"; do
             ;;
         --Windows|--windows|--platform=Windows|--platform=windows)
             build_platform="windows"
+            ;;
+        --Android|--android|--platform=Android|--platform=android)
+            build_platform="android"
+            ;;
+        --abi=*)
+            android_abi="${arg#*=}"
+            ;;
+        --project=*)
+            android_project="${arg#*=}"
+            ;;
+        --output=*|-o=*)
+            android_output="${arg#*=}"
+            ;;
+        --debug)
+            android_debug=1
+            ;;
+        --editor)
+            android_editor=1
             ;;
         --platform=native|--platform=Linux|--platform=linux)
             build_platform="native"
@@ -500,6 +530,14 @@ for arg in "$@"; do
         ;;
     esac
 done
+
+if [[ "${build_platform}" == "android" ]]; then
+    # The Android APK is produced by the native editor (it cross-builds the
+    # player .so via the NDK and packages the APK itself). So this is a normal
+    # native editor build plus an --build-android post-step; no cross toolchain
+    # here. Keep the default build_dir so the editor build stays incremental.
+    build_platform_label="Android APK build"
+fi
 
 if [[ "${build_platform}" == "windows" ]]; then
     build_platform_label="Windows cross-build"
@@ -634,7 +672,15 @@ install_packages() {
             admin_cmd dnf install -y "${packages[@]}"
             ;;
         pacman)
-            admin_cmd pacman -S --noconfirm --needed "${packages[@]}"
+            local -a unsatisfied=()
+            local dep
+            while IFS= read -r dep; do
+                [[ -n "${dep}" ]] && unsatisfied+=("${dep}")
+            done < <(pacman -T "${packages[@]}" 2>/dev/null)
+            if [[ "${#unsatisfied[@]}" -eq 0 ]]; then
+                return 0
+            fi
+            admin_cmd pacman -S --noconfirm --needed "${unsatisfied[@]}"
             ;;
         zypper)
             admin_cmd zypper --non-interactive install --no-recommends "${packages[@]}"
@@ -799,9 +845,47 @@ ensure_linux_dependencies() {
     fi
 }
 
+# This repo used to ship committed hooks in .githooks/ wired up through
+# core.hooksPath. Those are gone: git-lfs owns its hooks in .git/hooks again
+# (sync_lfs_assets reinstalls them every build), and sync_submodule_branches
+# below replaces the branch-sync hooks. Old clones still point core.hooksPath
+# at the deleted folder, which makes git skip .git/hooks entirely, so pushes
+# would silently skip LFS uploads. Unset it anywhere it points into .githooks.
+retire_repo_githooks() {
+    local hooks_path
+    hooks_path="$(git -C "${script_dir}" config --local core.hooksPath 2>/dev/null || true)"
+    if [[ "${hooks_path}" == *.githooks* ]]; then
+        git -C "${script_dir}" config --local --unset core.hooksPath || true
+    fi
+    git -C "${script_dir}" submodule foreach --quiet '
+        hooks_path="$(git config --local core.hooksPath 2>/dev/null || true)"
+        case "${hooks_path}" in
+            *.githooks*) git config --local --unset core.hooksPath || true ;;
+        esac
+    ' >/dev/null 2>&1 || true
+
+    # The old hook installer also set these; they are what lets a superproject
+    # push carry ModuGUI commits along, so keep setting them here.
+    git -C "${script_dir}" config --local push.recurseSubmodules on-demand
+    git -C "${script_dir}" config --local submodule.recurse true
+}
+
+# Keeps branched submodules (ModuGUI on docking) on their branch instead of a
+# detached HEAD, carrying over any commits made while detached. This used to be
+# a post-checkout/post-commit hook; running it here covers the same flow
+# without anyone having to install hooks.
+sync_submodule_branches() {
+    local sync_script="${script_dir}/tools/git/sync_submodule_branch.sh"
+    if [[ -x "${sync_script}" ]]; then
+        "${sync_script}" || log_warn "Submodule branch sync failed; submodules may be on a detached HEAD."
+    fi
+}
+
 sync_submodules() {
+    retire_repo_githooks
     git -C "${script_dir}" submodule sync --recursive
     git -C "${script_dir}" submodule update --init --recursive
+    sync_submodule_branches
     sync_lfs_assets
     verify_lfs_assets
 }
@@ -1023,6 +1107,166 @@ verify_release_isa() {
     "${script}" --max-level="${cpu_target}" "${scan[@]}"
 }
 
+# Stage the toolchain bundle the EDITOR APK ships so the device editor can compile
+# scripts on-device. The deterministic parts (target sysroot + engine headers) come
+# straight from the NDK and this repo; the device-runnable aarch64-Android clang/lld
+# binaries are fetched from Termux packages when absent. On success this exports
+# MODULARITY_ANDROID_CLANG_DIR, which the editor reads to pack the bundle into
+# assets/. Best-effort: never fails the APK build - the editor just won't be able
+# to compile until a clang is present.
+stage_android_clang_toolchain() {
+    local ndk="$1"
+    local abi="$2"
+    local bundle="${script_dir}/build/android-clang/${abi}"
+
+    # 1) A complete user-supplied bundle takes priority and is used verbatim.
+    if [[ -n "${MODULARITY_ANDROID_CLANG_DIR:-}" && -x "${MODULARITY_ANDROID_CLANG_DIR}/bin/clang" ]]; then
+        log_ok "Using user-supplied Android clang bundle: ${MODULARITY_ANDROID_CLANG_DIR}"
+        export MODULARITY_ANDROID_CLANG_DIR
+        return 0
+    fi
+    if [[ -n "${MODULARITY_ANDROID_CLANG_DIR:-}" ]]; then
+        log_warn "MODULARITY_ANDROID_CLANG_DIR is set but '${MODULARITY_ANDROID_CLANG_DIR}/bin/clang' is missing; falling back to ${bundle}."
+    fi
+
+    local host_prebuilt
+    host_prebuilt="$(ls -d "${ndk}"/toolchains/llvm/prebuilt/*/ 2>/dev/null | head -1)"
+    if [[ -z "${host_prebuilt}" ]]; then
+        log_warn "NDK llvm prebuilt dir not found; cannot stage the on-device clang sysroot."
+        return 1
+    fi
+    local ndk_sysroot="${host_prebuilt%/}/sysroot"
+
+    mkdir -p "${bundle}/bin" "${bundle}/sysroot/usr/lib" "${bundle}/headers"
+
+    # 2) Target sysroot: bionic headers + aarch64 libs/crt (deterministic, from NDK).
+    if [[ ! -d "${bundle}/sysroot/usr/include" ]]; then
+        log_info "Staging NDK target sysroot (headers + aarch64 libs) for on-device clang..."
+        cp -a "${ndk_sysroot}/usr/include" "${bundle}/sysroot/usr/include" 2>/dev/null || true
+        cp -a "${ndk_sysroot}/usr/lib/aarch64-linux-android" "${bundle}/sysroot/usr/lib/aarch64-linux-android" 2>/dev/null || true
+    fi
+
+    # 3) Engine script-API headers + glm so generated wrappers can #include them.
+    rm -rf "${bundle}/headers/include"
+    cp -a "${script_dir}/include" "${bundle}/headers/include" 2>/dev/null || true
+    if [[ -d "${script_dir}/src/ThirdParty/glm/glm" ]]; then
+        mkdir -p "${bundle}/headers/glm-root"
+        rm -rf "${bundle}/headers/glm-root/glm"
+        cp -a "${script_dir}/src/ThirdParty/glm/glm" "${bundle}/headers/glm-root/glm" 2>/dev/null || true
+    fi
+
+    # 4) The device clang/lld themselves. The NDK only has a host clang, so the
+    #    default path stages the current Termux aarch64 packages into this bundle.
+    #    Set MODULARITY_ANDROID_CLANG_AUTO_FETCH=0 to keep the old manual behavior,
+    #    or set MODULARITY_ANDROID_CLANG_DIR above to use a prebuilt bundle.
+    if [[ ! -x "${bundle}/bin/clang" && "${MODULARITY_ANDROID_CLANG_AUTO_FETCH:-1}" != "0" ]]; then
+        local fetcher="${script_dir}/tools/stage-termux-clang.sh"
+        if [[ -x "${fetcher}" ]]; then
+            log_info "Fetching/staging Termux aarch64 clang for on-device compilation..."
+            if ! "${fetcher}" --abi "${abi}" --bundle "${bundle}" \
+                 --cache-dir "${script_dir}/build/android-clang/.termux-cache/${abi}"; then
+                log_warn "Automatic Termux clang staging failed; continuing without on-device compile."
+            fi
+        else
+            log_warn "Termux clang staging helper missing: ${fetcher}"
+        fi
+    fi
+
+    if [[ ! -x "${bundle}/bin/clang" ]]; then
+        log_warn "No device-runnable aarch64-Android clang at ${bundle}/bin/clang."
+        log_warn "Set MODULARITY_ANDROID_CLANG_DIR to a complete bundle, or leave"
+        log_warn "MODULARITY_ANDROID_CLANG_AUTO_FETCH enabled so build.sh can stage Termux clang."
+        log_warn "The editor APK will build WITHOUT on-device compile."
+        return 1
+    fi
+
+    export MODULARITY_ANDROID_CLANG_DIR="${bundle}"
+    log_ok "On-device clang bundle ready: ${bundle}"
+    return 0
+}
+
+run_android_build() {
+    # Resolve the NDK + SDK the same way the editor's exporter does.
+    local ndk="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${ANDROID_NDK:-}}}"
+    if [[ -z "${ndk}" || ! -f "${ndk}/source.properties" ]]; then
+        log_error "Android NDK not found. Set ANDROID_NDK_ROOT / ANDROID_NDK_HOME / ANDROID_NDK to a valid NDK."
+        exit 1
+    fi
+    local sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+    if [[ -z "${sdk}" ]]; then
+        log_error "Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME."
+        exit 1
+    fi
+    log_ok "Android NDK: ${ndk}"
+    log_ok "Android SDK: ${sdk}"
+    log_info "Android ABI: ${android_abi}"
+    if [[ -n "${android_project}" ]]; then
+        log_info "Android project: ${android_project}"
+    else
+        log_info "Android project: (none — building a bare player APK)"
+    fi
+
+    # aapt2 link needs a platform android.jar. The system SDK (e.g. /opt/android-sdk)
+    # is usually root-owned and not writable, so install into a local writable SDK
+    # root that the editor also searches (sourceRoot/build/android-sdk).
+    local local_sdk="${script_dir}/build/android-sdk"
+    if ! ls "${sdk}"/platforms/android-*/android.jar >/dev/null 2>&1 && \
+       ! ls "${local_sdk}"/platforms/android-*/android.jar >/dev/null 2>&1; then
+        log_warn "No Android platform installed under ${sdk} or ${local_sdk}."
+        local sdkmanager="${sdk}/cmdline-tools/latest/bin/sdkmanager"
+        if [[ ! -x "${sdkmanager}" ]]; then
+            sdkmanager="$(command -v sdkmanager 2>/dev/null || true)"
+        fi
+        if [[ -z "${sdkmanager}" ]]; then
+            log_error "android.jar missing and sdkmanager not found. Install a platform: sdkmanager \"platforms;android-34\""
+            exit 1
+        fi
+        mkdir -p "${local_sdk}"
+        log_info "Installing platforms;android-34 into ${local_sdk} via sdkmanager..."
+        # sdkmanager often exits non-zero even on success (it warns about writing
+        # a package properties file), so don't trust its exit code: run it, then
+        # check whether android.jar actually landed.
+        yes 2>/dev/null | "${sdkmanager}" --sdk_root="${local_sdk}" --licenses >/dev/null 2>&1 || true
+        yes 2>/dev/null | "${sdkmanager}" --sdk_root="${local_sdk}" "platforms;android-34" || true
+        if ! ls "${local_sdk}"/platforms/android-*/android.jar >/dev/null 2>&1; then
+            log_error "sdkmanager did not produce an android.jar under ${local_sdk}/platforms."
+            exit 1
+        fi
+        log_ok "Installed Android platform into ${local_sdk}."
+    fi
+
+    # Build the native editor: it drives the NDK player build, script
+    # cross-compile, and APK packaging through --build-android.
+    sync_submodules
+    configure_editor_build
+    build_editor_targets
+
+    local editor_bin="${build_dir}/Modularity"
+    if [[ ! -x "${editor_bin}" ]]; then
+        editor_bin="$(find "${build_dir}" -maxdepth 2 -type f -name Modularity -perm -u+x 2>/dev/null | head -1)"
+    fi
+    if [[ -z "${editor_bin}" || ! -x "${editor_bin}" ]]; then
+        log_error "Could not find the built Modularity editor binary to drive the Android build."
+        exit 1
+    fi
+
+    # Editor APK ships an on-device clang so scripts can be compiled on the phone.
+    # Best-effort: stage the bundle and let the editor pack it (warns if no clang).
+    if [[ "${android_editor}" -eq 1 ]]; then
+        stage_android_clang_toolchain "${ndk}" "${android_abi}" || \
+            log_warn "Continuing editor APK build without an on-device compiler."
+    fi
+
+    local -a build_args=(--build-android "--abi=${android_abi}")
+    [[ -n "${android_project}" ]] && build_args+=("--project=${android_project}")
+    [[ -n "${android_output}" ]] && build_args+=(-o "${android_output}")
+    [[ "${android_debug}" -eq 1 ]] && build_args+=(--debug)
+    [[ "${android_editor}" -eq 1 ]] && build_args+=(--editor)
+
+    log_info "Running: ${editor_bin} ${build_args[*]}"
+    "${editor_bin}" "${build_args[@]}"
+}
+
 show_stage_hierarchy() {
     local -a stages=()
 
@@ -1101,6 +1345,18 @@ fi
 if [[ "${build_platform}" == "windows" && -n "${windows_toolchain_file}" ]]; then
     log_info "Windows toolchain: ${windows_toolchain_file}"
 fi
+# Android takes a dedicated path: install native deps, build the editor, then
+# let it produce the signed APK. It does not run the desktop player-cache /
+# packaging / ISA-verification stages.
+if [[ "${build_platform}" == "android" ]]; then
+    if [[ "${skip_deps}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+        run_step "Installing Dependencies" ensure_linux_dependencies
+    fi
+    configure_ccache
+    run_android_build
+    exit $?
+fi
+
 show_stage_hierarchy
 
 if [[ "${skip_deps}" -eq 0 && "${build_platform}" != "windows" && "$(uname -s)" == "Linux" ]]; then

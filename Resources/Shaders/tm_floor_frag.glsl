@@ -11,26 +11,28 @@ uniform vec3 u_cameraPosition;
 uniform vec2 u_boundsMinXZ;
 uniform vec2 u_boundsMaxXZ;
 uniform vec2 u_uvScale;
+uniform int u_uvMode;         // 0 = stretch, 1 = tile repeat (mode7)
+uniform vec2 u_tileWorldSize; // world units per tile cell in tile-repeat mode
+uniform bool u_extendToHorizon;
 uniform float u_floorHeight;
 uniform float u_maxDistance;
 uniform float u_perspectiveStrength;
 uniform float u_horizonOffset;
 uniform bool u_hasTexture;
 
-vec3 sampleProceduralFloor(vec2 uv, vec2 worldXZ) {
+// glue-style fallback tile: teal checker cells with bright borders
+vec3 sampleProceduralFloor(vec2 uv) {
+    vec2 cellUv = fract(uv);
+    float edge = max(abs(cellUv.x - 0.5), abs(cellUv.y - 0.5));
+    float borderLine = smoothstep(0.36, 0.48, edge);
+
     vec2 checkerCell = floor(uv);
     float checker = mod(checkerCell.x + checkerCell.y, 2.0);
-    vec3 colorA = vec3(0.18, 0.22, 0.28);
-    vec3 colorB = vec3(0.11, 0.14, 0.19);
-    vec3 base = mix(colorA, colorB, checker);
+    vec3 base = mix(vec3(0.30, 0.78, 0.62), vec3(0.26, 0.66, 0.74), checker);
 
-    vec2 gridUv = abs(fract(uv) - 0.5);
-    float gridLine = 1.0 - smoothstep(0.46, 0.50, max(gridUv.x, gridUv.y));
-    base += vec3(0.06, 0.09, 0.12) * gridLine;
-
-    float centerGlow = 1.0 - clamp(length(worldXZ) * 0.02, 0.0, 1.0);
-    base += vec3(0.03, 0.04, 0.06) * centerGlow;
-    return base;
+    float innerGlow = 1.0 - smoothstep(0.0, 0.42, edge);
+    base += vec3(0.10, 0.12, 0.12) * innerGlow * 0.5;
+    return mix(base, vec3(0.92, 0.97, 0.95), borderLine * 0.85);
 }
 
 void main() {
@@ -55,8 +57,9 @@ void main() {
     }
 
     vec3 worldPos = u_cameraPosition + rayDir * t;
-    if (worldPos.x < u_boundsMinXZ.x || worldPos.x > u_boundsMaxXZ.x ||
-        worldPos.z < u_boundsMinXZ.y || worldPos.z > u_boundsMaxXZ.y) {
+    if (!u_extendToHorizon &&
+        (worldPos.x < u_boundsMinXZ.x || worldPos.x > u_boundsMaxXZ.x ||
+         worldPos.z < u_boundsMinXZ.y || worldPos.z > u_boundsMaxXZ.y)) {
         discard;
     }
 
@@ -65,10 +68,12 @@ void main() {
         discard;
     }
 
-    vec2 uv = worldPos.xz * u_uvScale;
+    vec2 uv = (u_uvMode == 1)
+        ? worldPos.xz / max(u_tileWorldSize, vec2(0.0001))
+        : worldPos.xz * u_uvScale;
     vec4 shaded = u_hasTexture
         ? texture(u_floorTexture, uv)
-        : vec4(sampleProceduralFloor(uv, worldPos.xz), 1.0);
+        : vec4(sampleProceduralFloor(uv), 1.0);
 
     float fade = 1.0 - smoothstep(u_maxDistance * 0.72, u_maxDistance, distanceToCamera);
     shaded.rgb *= mix(0.55, 1.0, fade);

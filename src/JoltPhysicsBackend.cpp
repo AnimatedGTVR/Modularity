@@ -29,10 +29,8 @@
 #include <iostream>
 #include <new>
 
-// Jolt initializes its global Factory + default types lazily; multiple
-// JoltPhysicsBackend instances in the same process (unlikely but possible
-// during editor scene reloads) must not register twice or shut down the
-// factory while another instance is alive. Refcounted.
+// Jolt's global Factory inits lazily, and multiple backend instances (editor scene reloads)
+// must not double-register or tear it down while another is alive. refcounted.
 namespace {
     int g_joltGlobalsRefcount = 0;
 
@@ -50,9 +48,8 @@ namespace {
         JPH::Factory::sInstance = nullptr;
     }
 
-    // Jolt's optional asserts/trace are wired to engine logging only when
-    // built with JPH_ENABLE_ASSERTS / JPH_PROFILE_ENABLED. The vendored
-    // build has them off in release, so this is a no-op normally.
+    // Jolt's asserts/trace only hook engine logging when built with JPH_ENABLE_ASSERTS /
+    // JPH_PROFILE_ENABLED; the vendored release build has them off.
 }
 
 namespace JoltLayers {
@@ -67,10 +64,8 @@ namespace JoltBPLayers {
     constexpr JPH::uint NUM_LAYERS = 2;
 }
 
-// Two broad-phase layers (static, dynamic). Static objects do not collide
-// with each other in the broad phase, which is the standard pattern Jolt's
-// HelloWorld documents and matches the engine's existing behaviour where
-// static-vs-static interaction is irrelevant.
+// two broad-phase layers (static, dynamic). static-vs-static doesn't collide in broad phase,
+// standard Jolt HelloWorld pattern and matches what the engine already did.
 class JoltBroadPhaseLayerInterface final : public JPH::BroadPhaseLayerInterface {
 public:
     JoltBroadPhaseLayerInterface() {
@@ -83,9 +78,8 @@ public:
     }
 #if defined(JPH_EXTERNAL_PROFILE) || defined(JPH_PROFILE_ENABLED)
     const char* GetBroadPhaseLayerName(JPH::BroadPhaseLayer inLayer) const override {
-        // JPH::BroadPhaseLayer::GetValue() isn't constexpr in Jolt 5.5, so
-        // a switch on these constants doesn't compile. if/else is fine here,
-        // this is only ever called by the profiler.
+        // JPH::BroadPhaseLayer::GetValue() isn't constexpr in Jolt 5.5 so a switch won't compile.
+        // if/else is fine, only the profiler calls this.
         if (inLayer == JoltBPLayers::NON_MOVING) return "NON_MOVING";
         if (inLayer == JoltBPLayers::MOVING) return "MOVING";
         return "INVALID";
@@ -189,9 +183,8 @@ namespace {
         return glm::dot(dp, dp) > 1e-8f || glm::dot(dr, dr) > 1e-8f;
     }
 
-    // === Mesh gathering ====================================================
-    // Mirrors the helpers in PhysicsSystem.cpp so Jolt can build hull /
-    // mesh shapes from the same source data.
+    // mesh gathering, mirrors the helpers in PhysicsSystem.cpp so Jolt hulls/meshes build
+    // from the same source data.
 
     void BakeScaleIntoVertices(std::vector<Float3>& vertices, const glm::vec3& scale) {
         const glm::vec3 abs = glm::abs(scale);
@@ -348,11 +341,8 @@ void JoltPhysicsBackend::setProjectSettings(const ProjectPhysicsSettings& settin
     mProjectSettings = settings;
     applySceneGravity();
     if (mPhysicsSystem) {
-        // Mirror the project's solver iteration counts. Without this, Jolt
-        // uses its own defaults (10 velocity / 1 position) regardless of
-        // what the user authored in the Physics tab. Matching PhysX
-        // behaviour also makes A/B comparisons between the two backends
-        // fair instead of comparing different solver tunings.
+        // mirror the project's solver iteration counts, or Jolt quietly uses its own defaults (10/1)
+        // no matter what the Physics tab says. also keeps Jolt-vs-PhysX A/B comparisons fair.
         JPH::PhysicsSettings sim = mPhysicsSystem->GetPhysicsSettings();
         sim.mNumVelocitySteps = (JPH::uint)std::clamp(settings.solverIterations, 1, 64);
         sim.mNumPositionSteps = std::max(1u, sim.mNumVelocitySteps / 4u);
@@ -383,7 +373,7 @@ namespace {
             return r.Get();
         };
 
-        // ---- Explicit collider component ----
+        // Explicit collider component
         if (wantsCollider && obj.collider.type == ColliderType::Box) {
             glm::vec3 half = glm::max(obj.collider.boxSize * 0.5f, glm::vec3(0.01f));
             BoxShapeSettings s(ToJVec3(half));
@@ -403,7 +393,7 @@ namespace {
             return wrapWithOffset(r.Get(), true);
         }
 
-        // ---- Mesh / convex collider ----
+        // Mesh / convex collider
         if (wantsCollider && (obj.collider.type == ColliderType::Mesh || obj.collider.type == ColliderType::ConvexMesh)) {
             std::vector<Float3> verts;
             std::vector<IndexedTriangle> tris;
@@ -461,7 +451,7 @@ namespace {
             }
         }
 
-        // ---- No collider component: derive from render primitive ----
+        // No collider component: derive from render primitive
         switch (obj.renderType) {
             case RenderType::Cube:
             case RenderType::Plane:
@@ -835,9 +825,8 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
         }
     }
 
-    // 2nd pass: sync runtime changes from SceneObject → body (hierarchy toggle,
-    // kinematic flag, gravity, damping, locks, mass, kinematic targets,
-    // static-body pose follow).
+    // 2nd pass: sync runtime changes from SceneObject -> body (kinematic flag, gravity,
+    // damping, locks, mass, kinematic targets, static pose follow).
     for (auto& [id, rec] : mBodies) {
         if (rec.bodyId.IsInvalid()) continue;
         auto objIt = objectsById.find(id);
@@ -845,9 +834,8 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
         SceneObject& obj = *objIt->second;
         const bool enabledInHierarchy = IsObjectEnabledInHierarchy(obj);
         if (enabledInHierarchy == rec.simulationDisabled) {
-            // Jolt has no per-body "disable simulation" flag; adding/removing
-            // from the simulation is the equivalent toggle. Body memory is
-            // preserved.
+            // Jolt has no per-body "disable simulation" flag; add/remove from the simulation is the
+            // toggle. body memory sticks around.
             if (enabledInHierarchy) bi.AddBody(rec.bodyId, JPH::EActivation::Activate);
             else bi.RemoveBody(rec.bodyId);
             rec.simulationDisabled = !enabledInHierarchy;
@@ -899,11 +887,8 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
                         }
                         rec.massKg = massKg;
                     }
-                    // Angular locks change the body's allowed DOFs. Jolt
-                    // requires re-setting the mass properties to update
-                    // these; for now we just record the desired mask and
-                    // let the next createBodyFor pick it up if the body
-                    // is recreated. Live update is a follow-up.
+                    // angular locks change allowed DOFs and Jolt wants mass properties re-set for that; for now
+                    // just record the mask and let the next createBodyFor pick it up. live update is a follow-up.
                     rec.angularLockMask = newLockMask;
                     (void)locksChanged;
                 }
@@ -931,12 +916,9 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
         }
     }
 
-    // Fixed-step physics with render-time interpolation between ticks.
-    // without interpolation, render frames falling between two physics
-    // steps would see no pose change, so the body appears to freeze for a
-    // few render frames then jump on the next step. we snapshot prev/curr
-    // around the step(s) and lerp between them based on how far into the
-    // *next* step the accumulator has progressed.
+    // fixed-step physics with render-time interpolation. without it, frames landing between two
+    // physics steps would see zero pose change (freeze, then jump). we snapshot prev/curr around
+    // the step and lerp by how far into the next step the accumulator is.
     // future me: the prev/curr snapshot is the whole trick here. rip out the lerp and run physics
     // straight off the render dt and everything gets jittery as hell on high-refresh monitors. don't.
     const float fixedDt = std::clamp(mProjectSettings.fixedTimestep, 0.001f, 0.1f);
@@ -946,9 +928,8 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
 
     const bool willStep = mTimeAccumulator >= fixedDt;
     if (willStep) {
-        // Roll prev forward to the start of this frame's substeps. After
-        // the step completes, currPos/currRot will hold the new pose; the
-        // interpolation alpha walks from prev → curr as accumulator grows.
+        // roll prev forward to this frame's substeps; after stepping, the interpolation alpha
+        // walks prev -> curr as the accumulator grows.
         for (auto& [id, rec] : mBodies) {
             if (rec.bodyId.IsInvalid() || !rec.isDynamic || rec.isKinematic) continue;
             rec.prevPos = rec.currPos;
@@ -974,10 +955,9 @@ void JoltPhysicsBackend::simulate(float deltaTime, std::vector<SceneObject>& obj
 
     const float alpha = std::clamp(mTimeAccumulator / fixedDt, 0.0f, 1.0f);
 
-    // Writeback: dynamic-only, mirror PhysX's lock-aware rotation handling.
-    // Dynamic bodies use the interpolated render pose; kinematic bodies
-    // read straight from the body interface (MoveKinematic already smooths
-    // their motion across the step).
+    // writeback: dynamic-only, PhysX-style lock-aware rotation. dynamic bodies use the
+    // interpolated pose; kinematic ones read straight from the body interface
+    // (MoveKinematic already smooths their motion).
     for (auto& [id, rec] : mBodies) {
         if (rec.bodyId.IsInvalid() || !rec.isDynamic || rec.isKinematic) continue;
         auto objIt = objectsById.find(id);

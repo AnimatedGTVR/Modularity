@@ -1,7 +1,91 @@
 #include "Profiler.h"
 
+#include <cstdio>
+#include <unordered_map>
+
 namespace {
 using ProfilerClock = std::chrono::steady_clock;
+
+// Opt-in stdout profiling summary for headless/terminal runs. Set
+// MODULARITY_PROFILE_DUMP=1 (or an interval in seconds, e.g. =2) to print the
+// average frame time and the top CPU samples every interval. Zero cost when
+// the env var is unset.
+struct ProfileDumpState {
+    bool enabled = false;
+    double intervalSec = 5.0;
+    bool windowStarted = false;
+    ProfilerClock::time_point windowStart;
+    int frameCount = 0;
+    double frameMsSum = 0.0;
+    // name -> (cpuMs sum, call count sum)
+    std::unordered_map<std::string, std::pair<double, uint64_t>> sampleTotals;
+};
+
+ProfileDumpState& profileDumpState() {
+    static ProfileDumpState state = [] {
+        ProfileDumpState s;
+        if (const char* env = std::getenv("MODULARITY_PROFILE_DUMP")) {
+            s.enabled = env[0] != '\0' && !(env[0] == '0' && env[1] == '\0');
+            const double parsed = std::atof(env);
+            if (parsed > 0.0) {
+                s.intervalSec = std::max(0.5, parsed);
+            }
+        }
+        return s;
+    }();
+    return state;
+}
+
+void accumulateProfileDump(const ProfilerFrameRecord& frame) {
+    ProfileDumpState& state = profileDumpState();
+    if (!state.enabled) {
+        return;
+    }
+
+    const auto now = ProfilerClock::now();
+    if (!state.windowStarted) {
+        state.windowStarted = true;
+        state.windowStart = now;
+    }
+
+    state.frameCount += 1;
+    state.frameMsSum += frame.cpuMs;
+    for (const ProfilerSampleRecord& sample : frame.samples) {
+        if (sample.parentIndex < 0) continue; // skip the synthetic "Frame" root
+        auto& total = state.sampleTotals[sample.name];
+        total.first += sample.cpuMs;
+        total.second += sample.callCount;
+    }
+
+    const double elapsedSec = std::chrono::duration<double>(now - state.windowStart).count();
+    if (elapsedSec < state.intervalSec || state.frameCount <= 0) {
+        return;
+    }
+
+    const double avgFrameMs = state.frameMsSum / state.frameCount;
+    const double fps = avgFrameMs > 0.0 ? 1000.0 / avgFrameMs : 0.0;
+    std::fprintf(stdout, "[ProfileDump avg/%df] frame=%.3fms fps=%.0f\n",
+                 state.frameCount, avgFrameMs, fps);
+
+    std::vector<std::pair<std::string, std::pair<double, uint64_t>>> sorted(
+        state.sampleTotals.begin(), state.sampleTotals.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        return a.second.first > b.second.first;
+    });
+    const size_t topCount = std::min<size_t>(sorted.size(), 12);
+    for (size_t i = 0; i < topCount; ++i) {
+        std::fprintf(stdout, "[ProfileDump]   %-32s %8.3fms/frame  (%.1f calls/frame)\n",
+                     sorted[i].first.c_str(),
+                     sorted[i].second.first / state.frameCount,
+                     static_cast<double>(sorted[i].second.second) / state.frameCount);
+    }
+    std::fflush(stdout);
+
+    state.frameCount = 0;
+    state.frameMsSum = 0.0;
+    state.sampleTotals.clear();
+    state.windowStart = now;
+}
 }
 
 Profiler& Profiler::instance() {
@@ -100,6 +184,8 @@ void Profiler::endFrame() {
             currentFrame.uiMs += sample.cpuMs;
         }
     }
+
+    accumulateProfileDump(currentFrame);
 
     historyFrames[historyWriteIndex] = std::move(currentFrame);
     historyWriteIndex = (historyWriteIndex + 1) % kMaxHistoryFrames;

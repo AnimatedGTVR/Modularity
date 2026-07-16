@@ -160,6 +160,10 @@ void TMSceneBuilder::buildFromSceneObjects(const std::vector<SceneObject>& scene
     segment.floorSurface.enabled = false;
     segment.floorSurface.height = 0.0f;
     segment.floorSurface.uvScale = glm::vec2(0.125f);
+    segment.floorSurface.uvMode = TMFloorUvMode::TileRepeat;
+    segment.floorSurface.tileWorldSize = glm::vec2(1.0f);
+    segment.floorSurface.textureFilter = TMTextureFilter::Point;
+    segment.floorSurface.extendToHorizon = true;
     segment.floorSurface.maxDistance = 128.0f;
     segment.floorSurface.perspectiveStrength = 1.0f;
 
@@ -185,6 +189,7 @@ void TMSceneBuilder::buildFromSceneObjects(const std::vector<SceneObject>& scene
         segment.floorSurface.height = obj.position.y;
         if (segment.floorSurface.texturePath.empty() && !obj.albedoTexturePath.empty()) {
             segment.floorSurface.texturePath = obj.albedoTexturePath;
+            segment.floorSurface.textureFilter = ToTMTextureFilter(obj.material.textureFilter);
         }
 
         segment.floorSurface.enabled = true;
@@ -225,6 +230,8 @@ void TMSceneBuilder::buildFromSceneObjects(const std::vector<SceneObject>& scene
         instance.enabled = true;
         instance.presentation.colorTint = glm::vec4(obj.material.color, obj.material.alpha);
         instance.presentation.textureFilter = ToTMTextureFilter(obj.material.textureFilter);
+        instance.presentation.uvTiling = obj.material.uvTiling;
+        instance.presentation.uvOffset = obj.material.uvOffset;
         instance.wobble.seed = BuildStableWobbleSeed(obj);
         instance.wobble.offset = obj.position;
         outScene.sectorModels.push_back(std::move(instance));

@@ -214,6 +214,22 @@ ModuCPP form                 | Lowered form
 `time.deltaTime`             | `::ModuCPP::time.deltaTime`
 `ModuEngine.FPS`             | `::ModuCPP::ModuEngine.FPS`
 
+### Angle Bracket Escapes
+If you can't (or would rather not) type `<` and `>`, write `[/L]` and `[/R]` instead.
+The transpiler swaps them back before anything else runs, so they work anywhere a
+real angle bracket would: generic types, comparisons, shifts, even raw `#include`s in
+a `ctx` block.
+Escape  | Lowered form
+`[/L]`  | `<`
+`[/R]`  | `>`
+```moducpp
+public List[/L]SceneObj*[/R] targets;   // -> List<SceneObj*>
+if (count [/L] max) { ... }              // -> if (count < max)
+```
+The slash is what makes this safe: `[/L]` can never be a valid array subscript or
+`[Attribute]`, so it never collides with normal code. The swap is skipped inside
+string and character literals and comments, so `"[/L]"` stays literal text.
+
 ## Object List Syntax
 For persisted object-list fields, this convenience statement is supported:
 ```moducpp
@@ -377,6 +393,20 @@ input.WASD()
 input.WASDNormalized()
 input.sprint()
 input.jump()
+```
+### Touch
+Multi-touch + pointer input. On Android these are real fingers; on desktop the
+left mouse button is reported as a single touch, so the same code runs in both.
+Coordinates are surface pixels with the origin at the top-left.
+```text
+touch.Count()          // fingers down right now
+touch.IsActive()       // anything touching?
+touch.Position(index)  // i-th finger position (vec2)
+touch.Primary()        // primary finger / mouse (vec2)
+touch.Began()          // true the frame the primary touch goes down
+touch.Ended()          // true the frame it lifts
+touch.Tapped()         // alias for Began()
+touch.Drag()           // primary-finger movement since last frame (vec2)
 ```
 
 ## ModuCPP.Experimental API
@@ -595,3 +625,32 @@ UIElementType.Text
 UIElementType.Sprite2D
 ```
 The transpiler also accepts the C++ scoped enum form, for example `ConsoleMessageType::Warning`.
+## The C Backend (Fast Compile Path)
+The transpiler has two backends. The classic one lowers your script to C++ against
+the full script api. The C backend lowers it to plain C against
+`ScriptRuntimeCAPI.h` instead, and it exists for exactly one reason: the C++ path
+pulls ~95k preprocessed lines into every script, the C path pulls ~100, so a
+script that qualifies compiles in milliseconds instead of seconds. same script,
+same behavior, just a faster trip through the compiler.
+
+You do not opt in and you cannot get hurt by it. the transpiler tries C first and
+the moment it meets anything it cannot prove it can lower, it silently falls back
+to the C++ backend. to see which path a script took, look at the generated file
+next to the compiled binaries: `.moducpp.gen.c` means fast path,
+`.moducpp.gen.cpp` means classic. `MODUCPP_DISABLE_C_BACKEND=1` turns the whole
+thing off if you ever need to rule it out while debugging.
+
+What currently fits through the C path:
+```text
+public float / bool fields        (with [Header], [Separator] and [Slider], read-only in method bodies)
+private float / int / bool / vec3 fields   (per-object state, literal initializers)
+Begin / TickUpdate / Update       (plus pure helper methods without ctx)
+Math.*                            (Sin, Cos, Clamp, Lerp, the usual suspects)
+vec3 construction and .x/.y/.z    (but NOT vec3 arithmetic like a + b)
+obj.Transform.position/rotation/scale   (reads, writes and compound writes)
+AddLog(message, Type.X)
+a ctx.* subset that maps 1:1 onto Modu_* C calls
+```
+Anything else, `each` loops, object refs, strings beyond literals, vec3 math,
+custom inspectors, falls back. `Scripts/Spinny.moducpp` is the living demo of a
+script that qualifies.

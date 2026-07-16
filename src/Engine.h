@@ -169,9 +169,17 @@ private:
 
     std::vector<SceneObject> sceneObjects;
     std::unordered_map<int, std::unique_ptr<VideoPlayer>> videoPlayers;
+    // object id -> resolved path whose LoadVideo failed. A failed load is not
+    // retried until the path changes (or runtime mode restarts); retrying every
+    // frame re-probes the file and floods the log (see syncVideoPlayers).
+    std::unordered_map<int, std::string> videoLoadFailedPaths;
     std::unordered_map<int, size_t> sceneObjectIndexById;
     const SceneObject* sceneObjectIndexData = nullptr;
     size_t sceneObjectIndexCount = 0;
+    // frame the id->index map was last verified against sceneObjects, so the
+    // O(n) validation scan runs once per frame instead of once per lookup
+    // (findObjectById is hit per bone per skinned object per frame).
+    uint64_t sceneObjectIndexVerifiedFrame = std::numeric_limits<uint64_t>::max();
     struct RuntimeScriptBinding {
         int objectId = -1;
         size_t scriptIndex = 0;
@@ -336,6 +344,7 @@ private:
     ImGuiID mainDockspaceId = 0;
     bool editorSettingsDirty = false;
     bool windowsDisclaimerPopupOpened = false;
+    bool androidStorageAccessPopupOpened = false;
     bool moduCppNvimWarningChecked = false;
     bool moduCppNvimWarningDetected = false;
     bool moduCppNvimWarningPopupOpened = false;
@@ -495,6 +504,7 @@ private:
     bool gameViewportFocused = false;
     bool showGameProfiler = true;
     bool revealDebugSectionsAndMenus = false;
+    bool uiCanvasPreviewEnabled = true;
     bool showCanvasOverlay = false;
     bool showUIWorldGrid = true;
     bool showSceneGrid3D = false;
@@ -594,6 +604,20 @@ private:
     ViewportDisplayMode sceneViewportDisplayMode = ViewportDisplayMode::Stretch;
     ViewportDisplayMode gameViewportDisplayMode = ViewportDisplayMode::Fit;
     ViewportToolbarCorner sceneViewportToolbarCorner = ViewportToolbarCorner::BottomLeft;
+    // Touch (Android): on-screen twin-stick camera nav in the Scene viewport.
+    // Toggled from the Quick Tools toolbar; radius is in pre-DPI pixels.
+    bool showTouchSticks = true;
+    float touchStickRadius = 44.0f;
+    // Right-stick look feel (saved). Sensitivity is the look rate; invert flips Y.
+    float touchStickSensitivity = 6.0f;
+    bool touchStickInvertY = false;
+    // Quick Tools popup (Android touch toolbar). quickToolsOpen is runtime-only
+    // (popup expanded this session); the rest are saved to editor settings.
+    bool quickToolsOpen = false;
+    bool quickToolsPinned = false;
+    // Mobile layout hides the top play-controls bar (Play/Spec/Pause live in the
+    // Quick Tools popup instead). Desktop layout keeps the bar. Touch-only effect.
+    bool mobileEditorLayout = true;
     int gameViewportLastRenderWidth = 0;
     int gameViewportLastRenderHeight = 0;
     int activePlayerId = -1;
@@ -672,6 +696,11 @@ private:
     struct UiCanvas3DContext {
         ImGuiContext* context = nullptr;
         bool backendReady = false;
+        // input was routed to this canvas last frame; redraw-skipping waits one
+        // extra frame after input stops so ImGui can release hover/active state.
+        bool hadInputLastFrame = false;
+        uint64_t lastContentSignature = 0;
+        bool hasRenderedTarget = false;
     };
     struct UiCanvas3DInput {
         ImVec2 mousePos = ImVec2(-FLT_MAX, -FLT_MAX);
@@ -703,6 +732,13 @@ private:
     bool showCompilePopup = false;
     bool compilePopupOpened = false;
     double compilePopupHideTime = 0.0;
+    // current compile UI is a non-blocking corner toast (auto-compile on save) rather
+    // than the centered modal (manual / batch compiles).
+    bool compileUiToast = false;
+    // set true for the duration of an auto-triggered compile call so the open points
+    // can capture toast-vs-modal, then immediately cleared. manual compiles leave it
+    // false and get the modal.
+    bool nextCompileFromAuto = false;
     double compileCompletionStart = 0.0;
     bool lastCompileSuccess = false;
     std::string lastCompileStatus;
@@ -716,9 +752,8 @@ private:
         Android = 2
     };
 
-    // Single source of truth for build target metadata. UI combos, serialization,
-    // and the export pipeline all derive from these tables so a new platform only
-    // needs to be added here (plus its runtime hooks).
+    // single source of truth for build target metadata; UI combos, serialization and export
+    // all derive from these tables so a new platform only gets added here.
     static constexpr int kBuildPlatformCount = 3;
     static constexpr const char* kBuildPlatformLabels[kBuildPlatformCount] = {
         "Windows",
@@ -792,6 +827,26 @@ private:
     // Defined in AndroidExport.cpp. Returns an empty string if no usable NDK
     // can be located via ANDROID_NDK_ROOT / ANDROID_NDK_HOME / ANDROID_NDK.
     static std::string resolveAndroidNdkPath();
+
+    // defined in AndroidExport.cpp. cross-compiles every project script for the ABI with the
+    // NDK clang, stages them by soname into apk/lib/<abi>/, and drops 0-byte placeholders at
+    // the bundle paths so the runtime's binary-present gate passes. false + error on first failure.
+    bool crossCompileAndroidScripts(const ScriptBuildConfig& scriptConfig,
+                                    const fs::path& projectRoot,
+                                    const fs::path& ndkRoot,
+                                    const std::string& androidAbi,
+                                    const fs::path& libDir,
+                                    const fs::path& runtimeStageRoot,
+                                    const fs::path& compiledScriptsRel,
+                                    const std::function<void(const std::string&)>& appendLog,
+                                    std::string& error);
+
+    // on-device (Android editor) script compile. ensureOnDeviceToolchain extracts the bundled
+    // clang to the files dir on first use; configureOnDeviceScriptCompile points a
+    // ScriptBuildConfig at it so the normal compileScriptFile path makes a loadable .so on the
+    // phone. no-op stubs off Android. see src/AndroidScriptCompile.cpp.
+    fs::path ensureOnDeviceToolchain(std::string& error);
+    bool configureOnDeviceScriptCompile(ScriptBuildConfig& config, std::string& error);
 
     struct BuildSceneEntry {
         std::string name;
@@ -898,10 +953,11 @@ private:
         double completedAt = 0.0;
     };
     std::atomic<bool> compileInProgress = false;
-    std::atomic<bool> compileResultReady = false;
-    std::thread compileWorker;
+    // Pool of in-flight script compile jobs. Sized up to compileMaxParallelJobs()
+    // (CPU core count) so independent .moducpp scripts build concurrently instead
+    // of one at a time; a managed (dotnet) build claims the whole pool by itself.
+    std::vector<std::future<ScriptCompileJobResult>> compileWorkers;
     std::mutex compileMutex;
-    ScriptCompileJobResult compileResult;
     std::deque<ScriptCompileQueueItem> compileRequestQueue;
     std::unordered_set<std::string> compileRequestKeys;
     std::vector<ScriptCompileHistoryItem> compileHistory;
@@ -912,6 +968,10 @@ private:
     int compileBatchCompleted = 0;
     std::unordered_map<std::string, fs::file_time_type> scriptLastAutoCompileTime;
     std::unordered_map<std::string, fs::file_time_type> scriptAutoCompileCheckedSourceTime;
+    // last source revision the inspector kicked a "stale binary" background recompile
+    // for. without this, a script that keeps failing to compile re-queues a build every
+    // single inspector frame and machine-guns the compile-start sound.
+    std::unordered_map<std::string, fs::file_time_type> inspectorStaleRecompileAttempted;
     std::unordered_map<std::string, fs::path> scriptAutoCompileBinaryCache;
     std::unordered_set<std::string> scriptAutoCompileDiscoveredSources;
     struct ScriptBinaryResolveCacheEntry {
@@ -944,6 +1004,11 @@ private:
     fs::path managedAutoCompileCachedProjectDir;
     fs::file_time_type managedAutoCompileNewestSource{};
     bool managedAutoCompileHasSource = false;
+    // last managed source state we actually kicked an auto-compile for. without this a
+    // relocated/stale managed output path fails the up-to-date check on every scan and
+    // we recompile C# forever.
+    fs::file_time_type managedAutoCompileCompiledSource{};
+    bool managedAutoCompileHasCompiled = false;
     double scriptAutoCompileLastCheck = 0.0;
     double scriptAutoCompileInterval = 0.5;
     double scriptAutoCompileLastDirectoryScan = 0.0;
@@ -1095,6 +1160,11 @@ private:
     void renderMainMenuBar();
     void renderSceneObjectCreateMenu();
     void renderPlayControlsBar();
+    // Play-control actions, shared by the desktop play bar and the touch Quick
+    // Tools toolbar so both drive identical play/spec/pause behavior.
+    void togglePlayMode();
+    void toggleSpecMode();
+    void togglePause();
     void renderEnvironmentWindow();
     void renderCameraWindow();
     void renderAnimationWindow();
@@ -1113,6 +1183,29 @@ private:
     void renderEditorToast();
     void renderViewport();
     void renderPlayerViewport();
+    // runtime "lite" dev overlay (player only, dev builds): touch-friendly inspector for live
+    // tweaking on device. RuntimeDevOverlay.cpp; compiled into the player too.
+    void renderRuntimeDevOverlay();
+    // movable touch toolbar (Undo/Redo/Save) for the editor on touch screens, so those don't
+    // need tiny menu pokes. TouchEditToolbar.cpp; no-op in the player.
+    void renderTouchEditToolbar();
+    // finger drag-to-scroll for ImGui windows (Android; ImGui has no native touch scrolling).
+    // returns true if the press should still hit ImGui as a click, false if it got swallowed
+    // as a scroll drag. TouchScroll.cpp.
+    bool updateAndroidTouchScroll(float px, float py, bool active);
+    bool devOverlayOpen_ = false;
+    int devOverlaySelectedId_ = -1;
+    // global UI scale from setupImGui (display density on Android, monitor scale on desktop),
+    // shared so launcher/touch overlays don't each guess their own.
+    float uiDpiScale = 1.0f;
+    // --play / "dev play": once the startup project + scene load, boot straight into the
+    // running game with the dev overlay on and the cursor usable.
+    bool autoPlayOnLoad_ = false;
+    bool devToolsForced_ = false;
+
+public:
+    void setAutoPlayDevMode(bool on) { autoPlayOnLoad_ = on; devToolsForced_ = on; }
+private:
     void renderGameViewportWindow();
     void drawGameProfilerContent();
     void renderGameProfilerWindow();
@@ -1140,6 +1233,8 @@ private:
     Light2DPostFXSettings resolveWorld2DPostFx(const Camera& effectCamera) const;
     Light2DPostFXSettings resolveWorld2DPostFx(const UIWorldCamera2D& effectCamera) const;
     void compileScriptFile(const fs::path& scriptPath);
+    // Tops up compileWorkers from compileRequestQueue up to the parallel job cap.
+    void startQueuedCompileJobs();
     void updateAutoCompileScripts();
     void processAutoCompileQueue();
     void queueAutoCompile(const fs::path& scriptPath, const fs::file_time_type& sourceTime);
@@ -1148,6 +1243,9 @@ private:
     float getSceneViewportInternalAspect() const;
     void getRuntimeInternalResolution(int& outWidth, int& outHeight) const;
     float getRuntimeInternalAspect() const;
+    // pushes the project's Graphics/Lighting settings (light budget, shadows, color precision,
+    // texture default) into the live renderer. runs on project load + settings changes.
+    void applyProjectGraphicsToRenderer();
     void startProjectLoad(const std::string& path);
     void pollProjectLoad();
     void finishProjectLoad(ProjectLoadResult& result);
@@ -1191,6 +1289,7 @@ private:
     void buildWorkspaceLayout(WorkspaceMode mode);
     void updateDockDrawerInteractions();
     void renderWindowsDisclaimerPopup();
+    void renderAndroidStorageAccessPopup();
     void renderModuCppNvimWarningPopup();
     void checkModuCppNvimUsage();
     bool bakeAIPathGrid(bool logResult);
@@ -1237,7 +1336,23 @@ private:
     void applyAutoStartMode();
     void startExportBuild(const fs::path& outputDir, bool runAfter);
     void pollExportBuild();
-    
+
+public:
+    // headless Android APK build (./build.sh --Android -> --build-android). no window/GL:
+    // construct an Engine, call this, return the exit code. with a project it reuses the full
+    // export pipeline; empty projectPath = bare player APK. 0 on success.
+    struct AndroidBuildRequest {
+        std::string projectPath; // empty => bare player APK
+        std::string abi = "arm64-v8a";
+        std::string outputApk;   // -o destination; copied from the produced APK
+        std::string outputDir;   // staging/output root; defaults beside the APK
+        bool debug = false;
+        bool editor = false;     // build the Modularity editor APK instead of the player
+    };
+    int buildAndroidApkHeadless(const AndroidBuildRequest& request, std::string& error);
+    int buildBareAndroidApk(const AndroidBuildRequest& request, std::string& error);
+private:
+
     void renderFileBrowserToolbar();
     void renderFileBrowserBreadcrumb();
     void renderFileBrowserGridView();
@@ -1366,6 +1481,17 @@ public:
     fs::path getEngineDocsRootPathFromScript() const;
     std::string getSelectedFilePathFromScript() const;
     std::string getSelectedObjectInfoFromScript() const;
+    std::string getSceneHierarchyFromScript(int maxObjects = 0) const;
+    // Scene editing for AI/agent tooling (addressed by object id).
+    int  createSceneObjectFromScript(const std::string& type, const std::string& name, int parentId);
+    bool deleteSceneObjectFromScript(int objectId);
+    bool renameSceneObjectFromScript(int objectId, const std::string& name);
+    bool setSceneObjectParentFromScript(int objectId, int parentId);
+    bool setSceneObjectTransformFromScript(int objectId, const glm::vec3& position,
+                                           const glm::vec3& rotationDeg, const glm::vec3& scale);
+    bool setSceneObjectEnabledFromScript(int objectId, bool enabled);
+    bool addObjectComponentFromScript(int objectId, const std::string& component);
+    bool attachObjectScriptFromScript(int objectId, const std::string& scriptPath);
     std::string getProjectNameFromScript() const;
     std::string getCurrentSceneNameFromScript() const;
     std::string httpPostFromScript(const std::string& url, const std::string& contentType,

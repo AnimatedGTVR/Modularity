@@ -403,7 +403,7 @@ void Engine::renderRegistryPackagesWindow() {
         return {};
     };
 
-    // ---- Tab strip (launcher-style: text + soft glow + animated underline) ----
+    // Tab strip (launcher-style: text + soft glow + animated underline)
     const float tabHeight = 40.0f;
     const float tabSpacing = 2.0f;
     const float availTabsWidth = ImGui::GetContentRegionAvail().x;
@@ -506,7 +506,7 @@ void Engine::renderRegistryPackagesWindow() {
                                    indH * 0.5f);
     }
 
-    // ---- Filter / sort row ----
+    // Filter / sort row
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
     const float searchWidth = std::min(280.0f, ImGui::GetContentRegionAvail().x * 0.45f);
     ImGui::SetNextItemWidth(searchWidth);
@@ -537,7 +537,7 @@ void Engine::renderRegistryPackagesWindow() {
     }
     ImGui::PopStyleVar();
 
-    // ---- Filtering ----
+    // Filtering
     const std::string loweredSearch = toLowerCopy(std::string(registryPackageSearch));
     std::vector<const PackageInfo*> filteredPackages;
     filteredPackages.reserve(allPackages.size());
@@ -590,7 +590,7 @@ void Engine::renderRegistryPackagesWindow() {
         }
     }
 
-    // ---- Two-pane layout ----
+    // Two-pane layout
     const float listWidth = std::clamp(ImGui::GetContentRegionAvail().x * 0.38f, 260.0f, 420.0f);
 
     ImGui::BeginChild("ModupakListPane", ImVec2(listWidth, 0.0f), true);
@@ -826,7 +826,7 @@ void Engine::renderRegistryPackagesWindow() {
     ImGui::EndChild();
     ImGui::EndChild();
 
-    // ---- Unpack preview popup ----
+    // Unpack preview popup
     if (gOpenUnpackPreview) {
         ImGui::OpenPopup("ModuPAK Unpack Preview");
         gOpenUnpackPreview = false;
