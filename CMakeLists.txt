@@ -1748,7 +1748,7 @@ if(MODULARITY_BUILD_NEBULA_BINDINGS AND MODULARITY_BUILD_EDITOR)
                     --manifest-path "${MODULARITY_NEBULA_MANIFEST}"
                     --target-dir "${_nebula_target_dir}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${_nebula_lib}" "$<TARGET_FILE_DIR:Modularity>/"
+                    "${_nebula_lib}" "${CMAKE_BINARY_DIR}/"
             BYPRODUCTS "${_nebula_lib}"
             COMMENT "Building Nebula bake bindings (cargo ${_nebula_cargo_profile_dir})"
             VERBATIM
