@@ -1,4 +1,5 @@
 build/
+build-ninja/
 .cache/
 Images-thingy/
 svgimagesamples/
