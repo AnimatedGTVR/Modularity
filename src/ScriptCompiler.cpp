@@ -535,6 +535,11 @@ namespace {
         }
         return "g++";
     }
+    const char* posixOptFlags(const ScriptBuildConfig& config) {
+        return config.optimization == ScriptOptimizationLevel::Speed
+                   ? " -O2"
+                   : " -O0";
+    }
     // ModuCPP's config/state/timer stores are function-local statics inside inline
     // functions, which g++ emits with STB_GNU_UNIQUE binding. The dynamic linker keeps
     // exactly one instance of such a symbol per process and binds every later dlopen to
