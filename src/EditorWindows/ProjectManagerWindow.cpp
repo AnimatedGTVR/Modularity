@@ -1,5 +1,6 @@
 #include "Engine.h"
 #include "ModelLoader.h"
+#include "ProjectVersionControl.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -15,6 +16,7 @@
 #include <unordered_set>
 #include <optional>
 #include <future>
+#include <memory>
 #include <chrono>
 #include <future>
 
@@ -25,6 +27,225 @@
 #ifdef __ANDROID__
 #include "AndroidRuntime/AndroidRuntime.h"
 #endif
+
+namespace {
+struct ProjectGitResult {
+    bool success = false;
+    std::string output;
+};
+
+struct ProjectGitUiState {
+    fs::path projectPath;
+    char remoteUrl[512] = "";
+    char commitMessage[256] = "Update project";
+    bool privateRepository = true;
+    int provider = 0;
+    bool busy = false;
+    std::future<ProjectGitResult> future;
+    std::string action;
+    std::string status = "Press Refresh to inspect this project.";
+};
+
+std::string QuoteProjectGitArgument(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (char c : value) {
+        if (c == '"') quoted += "\\\"";
+        else quoted += c;
+    }
+    return quoted + "\"";
+#else
+    std::string quoted = "'";
+    for (char c : value) {
+        if (c == '\'') quoted += "'\"'\"'";
+        else quoted += c;
+    }
+    return quoted + "'";
+#endif
+}
+
+ProjectGitResult RunProjectGitCommand(const fs::path& projectPath,
+                                      const std::string& arguments) {
+    ProjectGitResult result;
+    const std::string command =
+        "git -C " + QuoteProjectGitArgument(projectPath.string()) + " " +
+        arguments + " 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        result.output = "Unable to start Git. Make sure Git is installed.";
+        return result;
+    }
+    char buffer[1024];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) result.output += buffer;
+#ifdef _WIN32
+    const int exitCode = _pclose(pipe);
+#else
+    const int exitCode = pclose(pipe);
+#endif
+    result.success = exitCode == 0;
+    if (result.output.empty()) result.output = result.success ? "Done." : "Git command failed.";
+    return result;
+}
+
+ProjectGitResult RunProjectGitHubPublish(const fs::path& projectPath,
+                                         const std::string& repositoryName,
+                                         bool privateRepository) {
+    ProjectGitResult result;
+    const std::string command =
+        "gh repo create " + QuoteProjectGitArgument(repositoryName) +
+        " --source " + QuoteProjectGitArgument(projectPath.string()) +
+        " --remote origin --push " +
+        (privateRepository ? "--private" : "--public") + " 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        result.output = "Unable to start GitHub CLI. Install gh and sign in with: gh auth login";
+        return result;
+    }
+    char buffer[1024];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) result.output += buffer;
+#ifdef _WIN32
+    const int exitCode = _pclose(pipe);
+#else
+    const int exitCode = pclose(pipe);
+#endif
+    result.success = exitCode == 0;
+    if (result.output.empty()) result.output = result.success ? "Published to GitHub." : "GitHub publish failed.";
+    return result;
+}
+
+ProjectGitResult RunProjectGitLabPublish(const fs::path& projectPath,
+                                         const std::string& repositoryName,
+                                         bool privateRepository) {
+    ProjectGitResult result;
+    const std::string command =
+        "cd " + QuoteProjectGitArgument(projectPath.string()) + " && glab repo create " +
+        QuoteProjectGitArgument(repositoryName) + " --remoteName origin " +
+        (privateRepository ? "--private" : "--public") + " 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        result.output = "Unable to start GitLab CLI. Install glab and sign in with: glab auth login";
+        return result;
+    }
+    char buffer[1024];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) result.output += buffer;
+#ifdef _WIN32
+    const int exitCode = _pclose(pipe);
+#else
+    const int exitCode = pclose(pipe);
+#endif
+    result.success = exitCode == 0;
+    if (result.output.empty()) result.output = result.success ? "Published to GitLab." : "GitLab publish failed.";
+    return result;
+}
+
+ProjectGitResult CheckProjectGitHubLogin() {
+    ProjectGitResult result;
+    const std::string command = "gh auth status --hostname github.com 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        result.output = "Unable to start GitHub CLI. Install gh first.";
+        return result;
+    }
+    char buffer[1024];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) result.output += buffer;
+#ifdef _WIN32
+    const int exitCode = _pclose(pipe);
+#else
+    const int exitCode = pclose(pipe);
+#endif
+    result.success = exitCode == 0;
+    if (result.output.empty()) {
+        result.output = result.success ? "Signed in to GitHub." : "Not signed in to GitHub.";
+    }
+    return result;
+}
+
+bool LaunchProjectGitHubLogin() {
+#ifdef _WIN32
+    return std::system("start \"GitHub Login\" cmd /k \"gh auth login --hostname github.com --git-protocol https --web\"") == 0;
+#elif defined(__APPLE__)
+    return std::system(
+        "osascript -e 'tell application \"Terminal\" to do script \"gh auth login --hostname github.com --git-protocol https --web\"'") == 0;
+#else
+    const char* loginCommand =
+        "gh auth login --hostname github.com --git-protocol https --web; "
+        "printf '\\nLogin finished. You can close this terminal.\\n'; exec sh";
+    const std::string quotedLogin = QuoteProjectGitArgument(loginCommand);
+    const std::string command =
+        "if command -v x-terminal-emulator >/dev/null 2>&1; then "
+        "x-terminal-emulator -e sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "elif command -v gnome-terminal >/dev/null 2>&1; then "
+        "gnome-terminal -- sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "elif command -v konsole >/dev/null 2>&1; then "
+        "konsole -e sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "else exit 1; fi";
+    return std::system(command.c_str()) == 0;
+#endif
+}
+
+ProjectGitResult CheckProjectGitLabLogin() {
+    ProjectGitResult result;
+    const std::string command = "glab auth status 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        result.output = "Unable to start GitLab CLI. Install glab first.";
+        return result;
+    }
+    char buffer[1024];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) result.output += buffer;
+#ifdef _WIN32
+    const int exitCode = _pclose(pipe);
+#else
+    const int exitCode = pclose(pipe);
+#endif
+    result.success = exitCode == 0;
+    if (result.output.empty()) result.output = result.success ? "Signed in to GitLab." : "Not signed in to GitLab.";
+    return result;
+}
+
+bool LaunchProjectGitLabLogin() {
+#ifdef _WIN32
+    return std::system("start \"GitLab Login\" cmd /k \"glab auth login\"") == 0;
+#elif defined(__APPLE__)
+    return std::system(
+        "osascript -e 'tell application \"Terminal\" to do script \"glab auth login\"'") == 0;
+#else
+    const char* loginCommand =
+        "glab auth login; printf '\\nLogin finished. You can close this terminal.\\n'; exec sh";
+    const std::string quotedLogin = QuoteProjectGitArgument(loginCommand);
+    const std::string command =
+        "if command -v x-terminal-emulator >/dev/null 2>&1; then "
+        "x-terminal-emulator -e sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "elif command -v gnome-terminal >/dev/null 2>&1; then "
+        "gnome-terminal -- sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "elif command -v konsole >/dev/null 2>&1; then "
+        "konsole -e sh -c " + quotedLogin + " >/dev/null 2>&1 & "
+        "else exit 1; fi";
+    return std::system(command.c_str()) == 0;
+#endif
+}
+
+} // namespace
 
 #pragma region ImGui Helpers
 namespace ImGui {
@@ -1709,7 +1930,8 @@ void Engine::renderLauncher() {
         const TabDef tabs[] = {
             {"Projects", 0},
             {"ModuPak", 1},
-            {"Settings", 2}
+            {"Settings", 2},
+            {"Source Control", 3}
         };
         const int tabCount = (int)(sizeof(tabs) / sizeof(tabs[0]));
 
@@ -2976,6 +3198,297 @@ void Engine::renderLauncher() {
             ImGui::PopStyleColor();
         };
 
+        auto renderGitHubView = [&]() {
+            static int selectedRecentProject = 0;
+            static ProjectGitUiState gitUi;
+            static bool githubLoginStarted = false;
+            const auto& projects = projectManager.recentProjects;
+
+            ImGui::TextColored(ImVec4(0.95f, 0.97f, 1.0f, 1.0f), "Hosted Git Projects");
+            ImGui::TextColored(ImVec4(0.59f, 0.66f, 0.75f, 1.0f),
+                               "Publish and synchronize Modularity projects with GitHub, GitLab, or another Git host.");
+            ImGui::Dummy(ImVec2(0.0f, 12.0f * uiScale));
+
+            if (projects.empty()) {
+                ImGui::TextDisabled("No projects are registered in the Hub yet.");
+                return;
+            }
+
+            selectedRecentProject = std::clamp(
+                selectedRecentProject, 0, static_cast<int>(projects.size()) - 1);
+            const RecentProject& selectedProject = projects[static_cast<size_t>(selectedRecentProject)];
+            if (ImGui::BeginCombo("Project", selectedProject.name.c_str())) {
+                for (size_t i = 0; i < projects.size(); ++i) {
+                    const bool selected = selectedRecentProject == static_cast<int>(i);
+                    if (ImGui::Selectable(projects[i].name.c_str(), selected)) {
+                        selectedRecentProject = static_cast<int>(i);
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            fs::path selectedPath = selectedProject.path;
+            const fs::path projectPath = fs::is_directory(selectedPath)
+                ? selectedPath
+                : selectedPath.parent_path();
+            if (gitUi.projectPath != projectPath) {
+                gitUi = ProjectGitUiState{};
+                gitUi.projectPath = projectPath;
+            }
+            if (gitUi.busy && gitUi.future.valid() &&
+                gitUi.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                ProjectGitResult result = gitUi.future.get();
+                gitUi.busy = false;
+                gitUi.status = result.output;
+            }
+            auto startAction = [&](std::string action, auto task) {
+                if (gitUi.busy) return;
+                gitUi.busy = true;
+                gitUi.action = std::move(action);
+                gitUi.status = gitUi.action + "...";
+                gitUi.future = std::async(std::launch::async, std::move(task));
+            };
+
+            const char* providerNames[] = { "GitHub", "GitLab", "Other Git Host" };
+            ImGui::SetNextItemWidth(220.0f * uiScale);
+            ImGui::Combo("Provider", &gitUi.provider, providerNames, IM_ARRAYSIZE(providerNames));
+
+            ImGui::SeparatorText("Provider Account");
+            ImGui::BeginDisabled(gitUi.busy);
+            const char* connectLabel = gitUi.provider == 0
+                ? "Connect GitHub to Modularity"
+                : gitUi.provider == 1
+                    ? "Connect GitLab to Modularity"
+                    : "Connect Using Remote URL";
+            if (ImGui::Button(connectLabel)) {
+                githubLoginStarted = false;
+                if (gitUi.provider == 2) {
+                    gitUi.status = "Enter the repository clone URL below. Authentication is handled by Git or your credential manager.";
+                } else {
+                    ImGui::OpenPopup("Connect Git Provider to Modularity");
+                }
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(gitUi.provider == 2);
+            if (ImGui::Button("Check Connection")) {
+                const int provider = gitUi.provider;
+                startAction("Checking provider login", [provider]() {
+                    return provider == 0 ? CheckProjectGitHubLogin()
+                                         : CheckProjectGitLabLogin();
+                });
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Credentials stay with the provider CLI or Git credential manager; Modularity never stores tokens.");
+            ImGui::Dummy(ImVec2(0.0f, 8.0f * uiScale));
+
+            ImGui::SetNextWindowSize(ImVec2(520.0f * uiScale, 300.0f * uiScale),
+                                     ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("Connect Git Provider to Modularity", nullptr,
+                                       ImGuiWindowFlags_NoResize |
+                                           ImGuiWindowFlags_NoSavedSettings)) {
+                ImGui::TextColored(ImVec4(0.92f, 0.96f, 1.0f, 1.0f),
+                                   "Connect your hosted Git account");
+                ImGui::Separator();
+                ImGui::TextWrapped(
+                    gitUi.provider == 0
+                        ? "Modularity uses GitHub's official CLI login. A secure browser page will open for authorization."
+                        : "Modularity uses GitLab's official CLI login. Follow its secure authorization prompts. Your password and token are never stored by Modularity.");
+                ImGui::Spacing();
+                ImGui::TextUnformatted("1. Start the GitHub login.");
+                ImGui::TextUnformatted("2. Finish authorization in your browser.");
+                ImGui::TextUnformatted("3. Return here and check the connection.");
+                ImGui::Spacing();
+
+                ImGui::BeginDisabled(gitUi.busy);
+                if (ImGui::Button(githubLoginStarted ? "Open Login Again" : "Open Secure Provider Login")) {
+                    githubLoginStarted = gitUi.provider == 0
+                        ? LaunchProjectGitHubLogin()
+                        : LaunchProjectGitLabLogin();
+                    gitUi.status = githubLoginStarted
+                        ? "Login started. Complete GitHub authorization, then check the connection."
+                        : "Could not open the login flow. Install GitHub CLI and run: gh auth login";
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Check Connection")) {
+                    const int provider = gitUi.provider;
+                    startAction("Checking provider connection", [provider]() {
+                        return provider == 0 ? CheckProjectGitHubLogin()
+                                             : CheckProjectGitLabLogin();
+                    });
+                }
+                ImGui::EndDisabled();
+
+                if (gitUi.busy) {
+                    ImGui::Spacing();
+                    ImGui::Spinner("##GitHubLoginSpinner", 7.0f, 2,
+                                   ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted("Checking connection...");
+                }
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", gitUi.status.c_str());
+                ImGui::PopTextWrapPos();
+
+                ImGui::SetCursorPosY(ImGui::GetWindowHeight() -
+                                     ImGui::GetFrameHeightWithSpacing() - 12.0f * uiScale);
+                if (ImGui::Button("Done", ImVec2(100.0f * uiScale, 0.0f))) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            ImGui::TextDisabled("%s", projectPath.string().c_str());
+            if (gitUi.busy) {
+                ImGui::Spinner("##HubGitSpinner", 7.0f, 2,
+                               ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(gitUi.action.c_str());
+            }
+
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Refresh")) {
+                startAction("Refreshing Git status", [projectPath]() {
+                    return RunProjectGitCommand(
+                        projectPath,
+                        "status --short --branch && git -C " +
+                            QuoteProjectGitArgument(projectPath.string()) + " remote -v");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Initialize Git")) {
+                startAction("Initializing repository", [projectPath]() {
+                    WriteModularityGitIgnore(projectPath);
+                    ProjectGitResult result = RunProjectGitCommand(projectPath, "init -b main");
+                    if (!result.success) result = RunProjectGitCommand(projectPath, "init");
+                    return result;
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("Publish or connect");
+            ImGui::SetNextItemWidth(std::min(620.0f * uiScale, ImGui::GetContentRegionAvail().x));
+            const char* remoteHint = gitUi.provider == 0
+                ? "https://github.com/owner/repository.git"
+                : gitUi.provider == 1
+                    ? "https://gitlab.com/owner/repository.git"
+                    : "https://your-git-host.example/owner/repository.git";
+            ImGui::InputTextWithHint("##HubGitRemote", remoteHint,
+                                     gitUi.remoteUrl, sizeof(gitUi.remoteUrl));
+            ImGui::BeginDisabled(gitUi.busy || gitUi.remoteUrl[0] == '\0');
+            if (ImGui::Button("Connect Existing Repository")) {
+                const std::string remoteUrl = gitUi.remoteUrl;
+                startAction("Connecting GitHub repository", [projectPath, remoteUrl]() {
+                    ProjectGitResult probe = RunProjectGitCommand(projectPath, "remote get-url origin");
+                    return RunProjectGitCommand(
+                        projectPath,
+                        std::string("remote ") + (probe.success ? "set-url origin " : "add origin ") +
+                            QuoteProjectGitArgument(remoteUrl));
+                });
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::Checkbox("Private", &gitUi.privateRepository);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(gitUi.busy || gitUi.provider == 2);
+            const char* createLabel = gitUi.provider == 1
+                ? "Create New GitLab Repository"
+                : "Create New GitHub Repository";
+            if (ImGui::Button(createLabel)) {
+                const std::string repositoryName = selectedProject.name;
+                const bool privateRepository = gitUi.privateRepository;
+                const int provider = gitUi.provider;
+                startAction("Publishing repository", [projectPath, repositoryName, privateRepository, provider]() {
+                    WriteModularityGitIgnore(projectPath);
+                    ProjectGitResult init = RunProjectGitCommand(projectPath, "rev-parse --git-dir");
+                    if (!init.success) {
+                        init = RunProjectGitCommand(projectPath, "init -b main");
+                        if (!init.success) return init;
+                    }
+                    ProjectGitResult add = RunProjectGitCommand(projectPath, "add -A");
+                    if (!add.success) return add;
+                    ProjectGitResult commit = RunProjectGitCommand(
+                        projectPath, "commit -m " + QuoteProjectGitArgument("Initial Modularity project"));
+                    if (!commit.success && commit.output.find("nothing to commit") == std::string::npos)
+                        return commit;
+                    return provider == 0
+                        ? RunProjectGitHubPublish(projectPath, repositoryName, privateRepository)
+                        : RunProjectGitLabPublish(projectPath, repositoryName, privateRepository);
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("Changes");
+            ImGui::SetNextItemWidth(std::min(520.0f * uiScale, ImGui::GetContentRegionAvail().x));
+            ImGui::InputTextWithHint("##HubGitCommit", "Commit message",
+                                     gitUi.commitMessage, sizeof(gitUi.commitMessage));
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Stage All")) {
+                startAction("Staging all project files", [projectPath]() {
+                    WriteModularityGitIgnore(projectPath);
+                    return RunProjectGitCommand(projectPath, "add .");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stage Tracked")) {
+                startAction("Staging tracked files", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "add -u");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Unstage All")) {
+                startAction("Unstaging files", [projectPath]() {
+                    ProjectGitResult result = RunProjectGitCommand(projectPath, "restore --staged .");
+                    if (!result.success) result = RunProjectGitCommand(projectPath, "reset");
+                    return result;
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(gitUi.busy || gitUi.commitMessage[0] == '\0');
+            if (ImGui::Button("Commit Staged")) {
+                const std::string message = gitUi.commitMessage;
+                startAction("Committing project", [projectPath, message]() {
+                    return RunProjectGitCommand(projectPath,
+                                                "commit -m " + QuoteProjectGitArgument(message));
+                });
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Fetch")) {
+                startAction("Fetching remote changes", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "fetch --prune origin");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Pull")) {
+                startAction("Pulling remote changes", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "pull --ff-only");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Push")) {
+                startAction("Pushing project", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "push -u origin HEAD");
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::Dummy(ImVec2(0.0f, 8.0f * uiScale));
+            ImGui::BeginChild("HubGitOutput", ImVec2(0.0f, 150.0f * uiScale), true);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(gitUi.status.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+            ImGui::TextDisabled(
+                gitUi.provider == 0 ? "GitHub creation uses gh."
+                : gitUi.provider == 1 ? "GitLab creation uses glab."
+                : "Other hosts work through a repository clone URL; create the empty repository on that host first.");
+        };
+
         // Section dispatch (with cross-fade between Projects list and New Project)
         if (launcherSection == 0) {
             const ImVec2 projectsRoot = ImGui::GetCursorPos();
@@ -3005,8 +3518,10 @@ void Engine::renderLauncher() {
             projectsDrawList->PopClipRect();
         } else if (launcherSection == 1) {
             renderPackagesView();
-        } else {
+        } else if (launcherSection == 2) {
             renderSettingsView();
+        } else {
+            renderGitHubView();
         }
 
         ImGui::EndChild();      // LauncherActiveSection
@@ -3941,7 +4456,8 @@ void Engine::renderProjectBrowserPanel() {
         { "Editor", "Resources/Engine-Root/Project Settings/Tabs/Editor.png", "E" },
         { "Build", "Resources/Engine-Root/Project Settings/Tabs/Build.png", "B" },
         { "Compilation", "Resources/Engine-Root/Project Settings/Tabs/Compilation.png", "C" },
-        { "OpenXR Manager", "Resources/Engine-Root/Project Settings/Tabs/ModuVR Manager.png", "X" }
+        { "OpenXR Manager", "Resources/Engine-Root/Project Settings/Tabs/ModuVR Manager.png", "X" },
+        { "Version Control", "Resources/Engine-Root/Project Settings/Tabs/Work in Progress.png", "V" }
     };
 
     static constexpr int kInputManagerTab = 2;
@@ -3956,6 +4472,7 @@ void Engine::renderProjectBrowserPanel() {
     static constexpr int kBuildTab = 11;
     static constexpr int kCompilationTab = 12;
     static constexpr int kOpenXRTab = 13;
+    static constexpr int kVersionControlTab = 14;
 
     static int selectedTab = 0;
     constexpr int tabCount = static_cast<int>(IM_ARRAYSIZE(tabs));
@@ -6101,6 +6618,168 @@ void Engine::renderProjectBrowserPanel() {
 
         if (editorSettingsChanged) {
             saveEditorUserSettings();
+        }
+    } else if (selectedTab == kVersionControlTab) {
+        static ProjectGitUiState gitUi;
+        const fs::path projectPath = projectManager.currentProject.projectPath;
+        if (gitUi.projectPath != projectPath) {
+            gitUi = ProjectGitUiState{};
+            gitUi.projectPath = projectPath;
+        }
+
+        if (gitUi.busy && gitUi.future.valid() &&
+            gitUi.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            ProjectGitResult result = gitUi.future.get();
+            gitUi.busy = false;
+            gitUi.status = result.output;
+            addConsoleMessage(gitUi.action + (result.success ? " completed." : " failed."),
+                              result.success ? ConsoleMessageType::Success : ConsoleMessageType::Error);
+        }
+
+        auto startGitAction = [&](std::string action, auto task) {
+            if (gitUi.busy) return;
+            gitUi.busy = true;
+            gitUi.action = std::move(action);
+            gitUi.status = gitUi.action + "...";
+            gitUi.future = std::async(std::launch::async, std::move(task));
+        };
+
+        if (DrawSettingSection("[G]", "Git Repository",
+                               "Track this Modularity project and synchronize it with GitHub.")) {
+            ImGui::TextDisabled("Project: %s", projectPath.string().c_str());
+            if (gitUi.busy) {
+                ImGui::Spinner("##ProjectGitSpinner", 7.0f, 2,
+                               ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(gitUi.action.c_str());
+            }
+
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Refresh Status")) {
+                startGitAction("Refreshing Git status", [projectPath]() {
+                    return RunProjectGitCommand(
+                        projectPath,
+                        "status --short --branch && git -C " +
+                            QuoteProjectGitArgument(projectPath.string()) + " remote -v");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Initialize Repository")) {
+                startGitAction("Initializing repository", [projectPath]() {
+                    WriteModularityGitIgnore(projectPath);
+                    ProjectGitResult result = RunProjectGitCommand(projectPath, "init -b main");
+                    if (!result.success) result = RunProjectGitCommand(projectPath, "init");
+                    return result;
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("GitHub Remote");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint("##ProjectGitRemote", "https://github.com/owner/repository.git",
+                                     gitUi.remoteUrl, sizeof(gitUi.remoteUrl));
+            ImGui::BeginDisabled(gitUi.busy || gitUi.remoteUrl[0] == '\0');
+            if (ImGui::Button("Connect Existing Repository")) {
+                const std::string remoteUrl = gitUi.remoteUrl;
+                startGitAction("Connecting GitHub repository", [projectPath, remoteUrl]() {
+                    ProjectGitResult probe = RunProjectGitCommand(projectPath, "remote get-url origin");
+                    return RunProjectGitCommand(
+                        projectPath,
+                        std::string("remote ") + (probe.success ? "set-url origin " : "add origin ") +
+                            QuoteProjectGitArgument(remoteUrl));
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("Publish New Repository");
+            ImGui::Checkbox("Private repository", &gitUi.privateRepository);
+            ImGui::TextDisabled("Uses GitHub CLI (gh). Sign in once with: gh auth login");
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Create and Publish on GitHub")) {
+                const std::string repositoryName = projectManager.currentProject.name;
+                const bool privateRepository = gitUi.privateRepository;
+                startGitAction("Publishing to GitHub", [projectPath, repositoryName, privateRepository]() {
+                    WriteModularityGitIgnore(projectPath);
+                    ProjectGitResult init = RunProjectGitCommand(projectPath, "rev-parse --git-dir");
+                    if (!init.success) {
+                        init = RunProjectGitCommand(projectPath, "init -b main");
+                        if (!init.success) return init;
+                    }
+                    ProjectGitResult add = RunProjectGitCommand(projectPath, "add -A");
+                    if (!add.success) return add;
+                    ProjectGitResult commit = RunProjectGitCommand(
+                        projectPath, "commit -m " + QuoteProjectGitArgument("Initial Modularity project"));
+                    if (!commit.success && commit.output.find("nothing to commit") == std::string::npos)
+                        return commit;
+                    return RunProjectGitHubPublish(projectPath, repositoryName, privateRepository);
+                });
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (DrawSettingSection("[S]", "Changes and Synchronization",
+                               "Commit locally, then pull or push through the configured origin.")) {
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint("##ProjectGitCommit", "Commit message",
+                                     gitUi.commitMessage, sizeof(gitUi.commitMessage));
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Stage All")) {
+                startGitAction("Staging all project files", [projectPath]() {
+                    WriteModularityGitIgnore(projectPath);
+                    return RunProjectGitCommand(projectPath, "add .");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stage Tracked")) {
+                startGitAction("Staging tracked files", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "add -u");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Unstage All")) {
+                startGitAction("Unstaging files", [projectPath]() {
+                    ProjectGitResult result = RunProjectGitCommand(projectPath, "restore --staged .");
+                    if (!result.success) result = RunProjectGitCommand(projectPath, "reset");
+                    return result;
+                });
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(gitUi.busy || gitUi.commitMessage[0] == '\0');
+            if (ImGui::Button("Commit Staged")) {
+                const std::string message = gitUi.commitMessage;
+                startGitAction("Committing project", [projectPath, message]() {
+                    return RunProjectGitCommand(projectPath,
+                                                "commit -m " + QuoteProjectGitArgument(message));
+                });
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(gitUi.busy);
+            if (ImGui::Button("Fetch")) {
+                startGitAction("Fetching remote changes", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "fetch --prune origin");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Pull")) {
+                startGitAction("Pulling remote changes", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "pull --ff-only");
+                });
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Push")) {
+                startGitAction("Pushing project", [projectPath]() {
+                    return RunProjectGitCommand(projectPath, "push -u origin HEAD");
+                });
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (DrawSettingSection("[O]", "Output", "Latest Git or GitHub operation output.")) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(gitUi.status.c_str());
+            ImGui::PopTextWrapPos();
         }
     } else if (selectedTab == kOpenXRTab) {
         if (DrawSettingSection("[XR]", "OpenXR Management", "VR and OpenXR project support status.")) {

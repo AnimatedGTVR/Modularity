@@ -626,6 +626,7 @@ struct UIElementComponent {
     float textScale = 1.0f;
     std::string textFont;
     bool textAutoWrap = true;
+    bool textAutoFit = false;
     UITextHAlign textHAlign = UITextHAlign::Left;
     UITextVAlign textVAlign = UITextVAlign::Top;
     int textEffectFlags = 0;

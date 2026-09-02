@@ -4255,6 +4255,12 @@ void Engine::renderInspectorPanel() {
                 if (ImGui::Checkbox("Auto Wrap", &obj.ui.textAutoWrap)) {
                     changed = true;
                 }
+                if (ImGui::Checkbox("Shrink To Fit", &obj.ui.textAutoFit)) {
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Reduce the configured text size when needed to fit this element's bounds.");
+                }
                 const char* hAlignLabels[] = { "Left", "Center", "Right" };
                 int hAlignIndex = static_cast<int>(obj.ui.textHAlign);
                 if (ImGui::Combo("Horizontal Align", &hAlignIndex, hAlignLabels, IM_ARRAYSIZE(hAlignLabels))) {
@@ -9472,6 +9478,7 @@ void Engine::renderInspectorPanel() {
             APPLY_CHANGED_UI_FIELD(textScale);
             APPLY_CHANGED_UI_FIELD(textFont);
             APPLY_CHANGED_UI_FIELD(textAutoWrap);
+            APPLY_CHANGED_UI_FIELD(textAutoFit);
             APPLY_CHANGED_UI_FIELD(textHAlign);
             APPLY_CHANGED_UI_FIELD(textVAlign);
             APPLY_CHANGED_UI_FIELD(textEffectFlags);

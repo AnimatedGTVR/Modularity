@@ -1448,7 +1448,7 @@ void EmitFlatSceneDocument(std::ostream& out, const FlatSceneDocument& doc) {
             "cameraBackgroundColor", "cameraCullingMask",
             "uiAnchor", "uiPosition", "uiRotation", "uiSize", "uiMaskChildren", "uiSliderValue", "uiSliderMin", "uiSliderMax",
             "uiLabel", "uiColor", "uiInteractable", "uiSliderStyle", "uiButtonStyle", "uiStylePreset", "uiTextScale", "uiTextFont",
-            "uiTextWrap", "uiTextHAlign", "uiTextVAlign", "uiTextEffectFlags", "uiTextEffectSpeed", "uiTextEffectIntensity",
+            "uiTextWrap", "uiTextAutoFit", "uiTextHAlign", "uiTextVAlign", "uiTextEffectFlags", "uiTextEffectSpeed", "uiTextEffectIntensity",
             "uiRenderIn3D", "uiRenderTargetSize", "uiRenderTargetFilter", "uiPseudo3DEnabled", "uiPseudo3DUseOffscreen", "uiPseudo3DPanelSize",
             "uiPseudo3DTopLeftOffset", "uiPseudo3DTopRightOffset", "uiPseudo3DBottomRightOffset", "uiPseudo3DBottomLeftOffset",
             "uiPseudo3DPivot", "uiPseudo3DPerspectiveIntensity", "uiPseudo3DSkewAmount", "uiPseudo3DCurvatureAmount",

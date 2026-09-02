@@ -2042,7 +2042,7 @@ void Engine::renderViewport() {
           AddUITextWithFilter(
               dl, obj.material.textureFilter, ImGui::GetFont(), fontSize,
               drawMin, drawMax, ImGui::GetColorU32(tint),
-              obj.ui.label.c_str(), obj.ui.textAutoWrap, obj.ui.textHAlign,
+              obj.ui.label.c_str(), obj.ui.textAutoWrap, obj.ui.textAutoFit, obj.ui.textHAlign,
               obj.ui.textVAlign, obj.ui.textEffectFlags, obj.ui.textEffectSpeed,
               obj.ui.textEffectIntensity);
           if (textIsRotated) {

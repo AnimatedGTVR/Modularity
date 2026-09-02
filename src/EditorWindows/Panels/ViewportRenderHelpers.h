@@ -216,7 +216,7 @@ void AddUITextWithFilter(ImDrawList *drawList,
                          MaterialProperties::TextureFilter filter, ImFont *font,
                          float fontSize, const ImVec2 &drawMin,
                          const ImVec2 &drawMax, ImU32 color, const char *text,
-                         bool autoWrap, UITextHAlign hAlign,
+                         bool autoWrap, bool autoFit, UITextHAlign hAlign,
                          UITextVAlign vAlign, int effectFlags,
                          float effectSpeed, float effectIntensity);
 
