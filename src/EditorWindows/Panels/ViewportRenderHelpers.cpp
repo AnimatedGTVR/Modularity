@@ -736,7 +736,7 @@ void AddUITextWithFilter(ImDrawList *drawList,
                          MaterialProperties::TextureFilter filter, ImFont *font,
                          float fontSize, const ImVec2 &drawMin,
                          const ImVec2 &drawMax, ImU32 color, const char *text,
-                         bool autoWrap, UITextHAlign hAlign,
+                         bool autoWrap, bool autoFit, UITextHAlign hAlign,
                          UITextVAlign vAlign, int effectFlags,
                          float effectSpeed, float effectIntensity,
                          float stableRasterFontSize,
@@ -756,6 +756,35 @@ void AddUITextWithFilter(ImDrawList *drawList,
   const ImVec2 contentMax(layoutMax.x - 4.0f, layoutMax.y - 2.0f);
   const float contentWidth = std::max(1.0f, contentMax.x - contentMin.x);
   const float contentHeight = std::max(1.0f, contentMax.y - contentMin.y);
+
+  if (autoFit) {
+    const auto fits = [&](float candidateSize) {
+      const std::vector<std::string> candidateLines =
+          BuildWrappedTextLines(font, candidateSize, text, contentWidth, autoWrap);
+      if (candidateLines.empty() ||
+          candidateSize * static_cast<float>(candidateLines.size()) > contentHeight) {
+        return false;
+      }
+      for (const std::string &line : candidateLines) {
+        if (font->CalcTextSizeA(candidateSize, FLT_MAX, 0.0f, line.c_str()).x >
+            contentWidth) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    if (!fits(fontSize)) {
+      float low = 1.0f;
+      float high = std::max(low, fontSize);
+      for (int i = 0; i < 10; ++i) {
+        const float middle = (low + high) * 0.5f;
+        if (fits(middle)) low = middle;
+        else high = middle;
+      }
+      fontSize = low;
+    }
+  }
 
   std::vector<std::string> lines =
       BuildWrappedTextLines(font, rasterFontSize, text, contentWidth, autoWrap);
@@ -1064,20 +1093,13 @@ void ApplyUITextScaleFromRectResize(SceneObject &obj, float startTextScale,
                                     float startFontSize,
                                     const ImVec2 &startScreenSize,
                                     const ImVec2 &newScreenSize) {
-  if (obj.ui.type != UIElementType::Text || startScreenSize.y <= 0.01f)
-    return;
-
-  const float heightRatio =
-      std::max(0.01f, newScreenSize.y) / std::max(0.01f, startScreenSize.y);
-  if (std::abs(heightRatio - 1.0f) < 0.001f)
-    return;
-
-  if (startFontSize > 0.0f) {
-    obj.ui.fontSize = std::max(0.1f, startFontSize * heightRatio);
-  } else {
-    obj.ui.fontSize = 0.0f;
-    obj.ui.textScale = std::max(0.1f, startTextScale * heightRatio);
-  }
+  // Rect Scale edits layout bounds only. Text size is authored independently;
+  // Shrink To Fit can reduce it at render time without changing that value.
+  (void)obj;
+  (void)startTextScale;
+  (void)startFontSize;
+  (void)startScreenSize;
+  (void)newScreenSize;
 }
 
 // Sprite frame / nine-slice

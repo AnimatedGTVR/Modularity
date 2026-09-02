@@ -8320,7 +8320,12 @@ void Engine::handleKeyboardShortcuts() {
         if (ImGui::IsKeyPressed(ImGuiKey_Q)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
         if (ImGui::IsKeyPressed(ImGuiKey_W)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
         if (ImGui::IsKeyPressed(ImGuiKey_E)) mCurrentGizmoOperation = ImGuizmo::SCALE;
-        if (ImGui::IsKeyPressed(ImGuiKey_R)) mCurrentGizmoOperation = ImGuizmo::BOUNDS;
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) {
+            mCurrentGizmoOperation =
+                (mCurrentGizmoOperation == ImGuizmo::BOUNDS)
+                    ? ImGuizmo::TRANSLATE
+                    : ImGuizmo::BOUNDS;
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_T)) mCurrentGizmoOperation = ImGuizmo::UNIVERSAL;
 
         if (ImGui::IsKeyPressed(ImGuiKey_U)) {

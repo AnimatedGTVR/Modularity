@@ -156,6 +156,7 @@ void Engine::renderUiCanvas3DTargets() {
     seed = hashCombine64(seed, hashFloat64(obj.ui.textScale));
     seed = hashCombine64(seed, hashString64(obj.ui.textFont));
     seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textAutoWrap ? 1 : 0));
+    seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textAutoFit ? 1 : 0));
     seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textHAlign));
     seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textVAlign));
     seed = hashCombine64(seed, static_cast<uint64_t>(obj.ui.textEffectFlags));
@@ -886,7 +887,7 @@ void Engine::renderUiCanvas3DTargets() {
         AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
-                            obj.ui.textAutoWrap, obj.ui.textHAlign,
+                            obj.ui.textAutoWrap, obj.ui.textAutoFit, obj.ui.textHAlign,
                             obj.ui.textVAlign, obj.ui.textEffectFlags,
                             obj.ui.textEffectSpeed, obj.ui.textEffectIntensity);
         if (textIsRotated) {

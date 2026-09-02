@@ -1,5 +1,6 @@
 #include "ProjectManager.h"
 #include "../include/Platform/AssetSource.h"
+#include "ProjectVersionControl.h"
 #include "SceneSerializationInternal.h"
 #include "EditorLocalization.h"
 #include "ModuCPPLanguagePack.h"
@@ -328,6 +329,7 @@ bool Project::create() {
         fs::create_directories(projectPath / "Library" / "Temp");
         fs::create_directories(projectPath / "ProjectUserSettings" / "ProjectLayout");
         fs::create_directories(projectPath / "ProjectUserSettings" / "ScriptSettings");
+        WriteModularityGitIgnore(projectPath);
 
         saveProjectFile();
 
@@ -1876,6 +1878,7 @@ bool SceneSerializationInternal::WriteLegacySceneStream(std::ostream& file,
             file << "uiTextScale=" << obj.ui.textScale << "\n";
             file << "uiTextFont=" << obj.ui.textFont << "\n";
             file << "uiTextWrap=" << (obj.ui.textAutoWrap ? 1 : 0) << "\n";
+            file << "uiTextAutoFit=" << (obj.ui.textAutoFit ? 1 : 0) << "\n";
             file << "uiTextHAlign=" << static_cast<int>(obj.ui.textHAlign) << "\n";
             file << "uiTextVAlign=" << static_cast<int>(obj.ui.textVAlign) << "\n";
             file << "uiTextEffectFlags=" << obj.ui.textEffectFlags << "\n";
@@ -2921,6 +2924,7 @@ const std::unordered_map<std::string, KeyHandler>& GetSceneObjectKeyHandlers() {
         {"uiTextScale", +[](SceneObject& obj, const std::string& value) { obj.ui.textScale = std::stof(value); }},
         {"uiTextFont", +[](SceneObject& obj, const std::string& value) { obj.ui.textFont = value; }},
         {"uiTextWrap", +[](SceneObject& obj, const std::string& value) { obj.ui.textAutoWrap = (std::stoi(value) != 0); }},
+        {"uiTextAutoFit", +[](SceneObject& obj, const std::string& value) { obj.ui.textAutoFit = (std::stoi(value) != 0); }},
         {"uiTextHAlign", +[](SceneObject& obj, const std::string& value) {
              obj.ui.textHAlign = static_cast<UITextHAlign>(std::clamp(std::stoi(value), 0, 2));
          }},

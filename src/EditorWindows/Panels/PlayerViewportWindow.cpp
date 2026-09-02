@@ -1470,7 +1470,7 @@ void Engine::renderPlayerViewport() {
         AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
-                            obj.ui.textAutoWrap, obj.ui.textHAlign,
+                            obj.ui.textAutoWrap, obj.ui.textAutoFit, obj.ui.textHAlign,
                             obj.ui.textVAlign, obj.ui.textEffectFlags,
                             obj.ui.textEffectSpeed, obj.ui.textEffectIntensity,
                             0.0f,

@@ -463,6 +463,29 @@ void Engine::renderGameViewportWindow() {
       uiCanvasPreviewEnabled = !uiCanvasPreviewEnabled;
       gameViewportToolbarChanged = true;
     }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Show editor UI canvas previews while not playing");
+    }
+    SceneObject *toolbarSelection = getSelectedObject();
+    const bool canEditUiBounds =
+        toolbarSelection && toolbarSelection->hasUI &&
+        toolbarSelection->ui.type != UIElementType::None &&
+        toolbarSelection->ui.type != UIElementType::Canvas;
+    ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
+    ImGui::BeginDisabled(!canEditUiBounds);
+    const bool editingUiBounds = mCurrentGizmoOperation == ImGuizmo::BOUNDS;
+    if (ImGui::Button(editingUiBounds ? "Close UI Bounds" : "Edit UI Bounds")) {
+      uiCanvasPreviewEnabled = true;
+      mCurrentGizmoOperation = editingUiBounds
+                                   ? ImGuizmo::TRANSLATE
+                                   : ImGuizmo::BOUNDS;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(canEditUiBounds
+                            ? "Resize the selected UI component's boundaries"
+                            : "Select an object with a non-Canvas UI component");
+    }
     ImGui::SameLine(0.0f, toolbarSpacing * 0.8f);
     if (toolbarIconSwitch(
             "##GameViewportWorld2DPostFx",
@@ -988,7 +1011,7 @@ void Engine::renderGameViewportWindow() {
 
     ImVec2 overlayPos = ImGui::GetWindowPos();
     ImVec2 overlaySize = ImGui::GetWindowSize();
-    bool allowEditorUi = false;
+    const bool allowEditorUi = !isPlaying;
     bool useWorldUi =
         project2DPipeline || (playerCam && playerCam->camera.use2D);
     UIWorldCamera2D uiWorldCameraBackup = uiWorldCamera;
@@ -2466,7 +2489,7 @@ void Engine::renderGameViewportWindow() {
         AddUITextWithFilter(dl, obj.material.textureFilter, textFont,
                             fontSize, drawMin, drawMax,
                             ImGui::GetColorU32(tint), obj.ui.label.c_str(),
-                            obj.ui.textAutoWrap, obj.ui.textHAlign,
+                            obj.ui.textAutoWrap, obj.ui.textAutoFit, obj.ui.textHAlign,
                             obj.ui.textVAlign, obj.ui.textEffectFlags,
                             obj.ui.textEffectSpeed, obj.ui.textEffectIntensity,
                             authoredFontSize,
